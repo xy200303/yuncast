@@ -9,7 +9,16 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
-import { ttsConfigured, type AppTheme, type TtsConfig, type TtsProvider } from '../../../shared/types'
+import {
+  LLM_PROVIDER_META,
+  LLM_PROVIDERS,
+  ttsConfigured,
+  type AppTheme,
+  type LlmConfig,
+  type LlmProvider,
+  type TtsConfig,
+  type TtsProvider
+} from '../../../shared/types'
 
 const THEME_OPTIONS: { id: AppTheme; label: string; icon: typeof Sun }[] = [
   { id: 'light', label: '浅色', icon: Sun },
@@ -74,9 +83,12 @@ export function SettingsPage() {
 
         <TabsContent value="access" className="overflow-auto p-6">
           <section className="max-w-xl">
-            <TtsSection />
-            <div className="mt-3 grid grid-cols-3 gap-3">
-              {['LLM 模型', '推流', '评论接入'].map((name) => (
+            <LlmSection />
+            <div className="mt-3">
+              <TtsSection />
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-3">
+              {['推流', '评论接入'].map((name) => (
                 <div
                   key={name}
                   className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground"
@@ -94,8 +106,96 @@ export function SettingsPage() {
   )
 }
 
-/** TTS 双通道表单（火山引擎 / 阿里云百炼），字段照旧版 SettingsView */
-function TtsSection() {
+/** LLM 表单：主播 Agent 的大脑。provider 切换时带出默认模型和默认地址 */
+function LlmSection() {
+  const config = useAppStore((s) => s.config)
+  const saveConfig = useAppStore((s) => s.saveConfig)
+  const [form, setForm] = useState<LlmConfig>({ ...config.llm })
+  const [saving, setSaving] = useState(false)
+
+  const dirty = JSON.stringify(form) !== JSON.stringify(config.llm)
+  const patch = (part: Partial<LlmConfig>) => setForm((prev) => ({ ...prev, ...part }))
+  const meta = LLM_PROVIDER_META[form.provider]
+
+  const save = () => {
+    setSaving(true)
+    saveConfig({ llm: form })
+      .then(() => toast.success('LLM 配置已保存', { description: '已启动的主播重启后使用新配置' }))
+      .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
+      .finally(() => setSaving(false))
+  }
+
+  return (
+    <div className="rounded-lg border bg-card px-4 py-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[13px] font-medium">语言模型（LLM）</p>
+          <p className="text-xs text-muted-foreground">主播 Agent 的大脑，DeepSeek / 通义 / 豆包 / Kimi / 智谱</p>
+        </div>
+        <Button size="sm" disabled={!dirty || saving} onClick={save}>
+          {saving ? '保存中…' : dirty ? '保存' : '已保存'}
+        </Button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <Label className="mb-1">服务商</Label>
+          <Select
+            value={form.provider}
+            onValueChange={(v) => {
+              const provider = v as LlmProvider
+              // 切换服务商时如果模型还是上一个服务商的默认值，跟随换默认值
+              const followDefault =
+                !form.model || form.model === LLM_PROVIDER_META[form.provider].defaultModel
+              patch({
+                provider,
+                model: followDefault ? LLM_PROVIDER_META[provider].defaultModel : form.model
+              })
+            }}
+          >
+            <SelectTrigger className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LLM_PROVIDERS.map((id) => (
+                <SelectItem key={id} value={id}>
+                  {LLM_PROVIDER_META[id].label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <Field
+          label="API Key"
+          value={form.apiKey}
+          onChange={(v) => patch({ apiKey: v })}
+          type="password"
+          placeholder="sk-…"
+        />
+        <Field
+          label="模型"
+          value={form.model}
+          onChange={(v) => patch({ model: v })}
+          placeholder={meta.defaultModel}
+        />
+        <div className="col-span-2">
+          <Field
+            label="自定义 API 地址（留空走默认）"
+            value={form.baseUrl}
+            onChange={(v) => patch({ baseUrl: v })}
+            placeholder={meta.defaultBaseUrl}
+          />
+        </div>
+      </div>
+
+      {!form.apiKey && (
+        <p className="mt-3 text-xs text-muted-foreground">填好 API Key 后，到「主播团」启动主播</p>
+      )}
+    </div>
+  )
+}
+
+/** TTS 双通道表单（火山引擎 / 阿里云百炼），字段照旧版 SettingsView */function TtsSection() {
   const config = useAppStore((s) => s.config)
   const saveConfig = useAppStore((s) => s.saveConfig)
   const [form, setForm] = useState<TtsConfig>({ ...config.tts })

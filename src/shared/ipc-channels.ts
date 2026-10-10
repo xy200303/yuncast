@@ -22,5 +22,24 @@ export const IPC = {
   poolSnapshotEvent: 'pool:snapshot-event',
 
   // TTS
-  ttsTest: 'tts:test'
+  ttsTest: 'tts:test',
+
+  // 主播 Agent
+  agentStart: 'agent:start',
+  agentStop: 'agent:stop',
+  agentRestart: 'agent:restart',
+  agentStatus: 'agent:status',
+  /** main → renderer：Agent 状态 + 生成中预览 */
+  agentStatusEvent: 'agent:status-event',
+
+  // 人设卡
+  personaGet: 'persona:get',
+  personaSave: 'persona:save',
+
+  // 评论模拟器
+  simStart: 'sim:start',
+  simStop: 'sim:stop',
+  simStatus: 'sim:status',
+  /** main → renderer：模拟评论事件（toast 展示用） */
+  commentEvent: 'comment:event'
 } as const

@@ -2,7 +2,9 @@ import { create } from 'zustand'
 import {
   APP_THEMES,
   DEFAULT_CONFIG,
+  llmConfigured,
   ttsConfigured,
+  type AgentStatus,
   type AppConfig,
   type AppTheme,
   type PartialDeep,
@@ -41,6 +43,14 @@ interface AppState {
   /** 音频引擎电平 */
   levels: { tts: number; master: number }
   setLevels: (levels: { tts: number; master: number }) => void
+
+  /** 主播 Agent 状态（含生成中预览 draft） */
+  agent: AgentStatus
+  setAgent: (status: AgentStatus) => void
+
+  /** 评论模拟器开关 */
+  simRunning: boolean
+  setSimRunning: (running: boolean) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -90,10 +100,21 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setLoopRunning: (loopRunning) => set({ loopRunning }),
 
   levels: { tts: 0, master: 0 },
-  setLevels: (levels) => set({ levels })
+  setLevels: (levels) => set({ levels }),
+
+  agent: { state: 'stopped', draft: '' },
+  setAgent: (agent) => set({ agent }),
+
+  simRunning: false,
+  setSimRunning: (simRunning) => set({ simRunning })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */
 export function selectTtsReady(config: AppConfig): boolean {
   return ttsConfigured(config.tts)
+}
+
+/** LLM 是否已配置（状态栏徽章用） */
+export function selectLlmReady(config: AppConfig): boolean {
+  return llmConfigured(config.llm)
 }

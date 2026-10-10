@@ -33,6 +33,8 @@ export default function App() {
   const setPool = useAppStore((s) => s.setPool)
   const setLevels = useAppStore((s) => s.setLevels)
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
+  const setAgent = useAppStore((s) => s.setAgent)
+  const setSimRunning = useAppStore((s) => s.setSimRunning)
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
@@ -66,6 +68,21 @@ export default function App() {
       setLoopRunning(false)
     }
   }, [setPool, setLevels, setLoopRunning])
+
+  // 主播 Agent 状态 + 评论事件订阅
+  useEffect(() => {
+    if (!('api' in window)) return
+    const offAgent = window.api.agent.onStatus(setAgent)
+    void window.api.agent.status().then(setAgent)
+    void window.api.sim.status().then((s) => setSimRunning(s.running))
+    const offComment = window.api.comment.onComment((comment) => {
+      toast.message(`💬 ${comment.author}`, { description: comment.content })
+    })
+    return () => {
+      offAgent()
+      offComment()
+    }
+  }, [setAgent, setSimRunning])
 
   return (
     <TooltipProvider>

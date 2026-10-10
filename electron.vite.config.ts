@@ -6,7 +6,11 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   main: {
     build: {
-      // node:sqlite 是 Electron 内置模块，交给运行时解析
+      // pi SDK 系列是 ESM-only（exports 只给 import 条件），外部化成 CJS require 会炸，
+      // 全部打进 bundle；node:sqlite 是 Electron 内置模块，交给运行时解析
+      externalizeDeps: {
+        exclude: ['@earendil-works/pi-coding-agent', 'typebox']
+      },
       rollupOptions: {
         external: ['node:sqlite']
       }

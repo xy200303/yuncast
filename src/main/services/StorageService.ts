@@ -7,6 +7,7 @@ import {
   parseAppConfig,
   type AppConfig,
   type PartialDeep,
+  type Persona,
   type SpeechItem,
   type SpeechLane,
   type SpeechReplyTo,
@@ -15,14 +16,14 @@ import {
 
 /**
  * 持久化层：
- * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey 用 safeStorage 加密落盘）
- * - 话术池等业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
+ * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey / llm.apiKey 用 safeStorage 加密落盘）
+ * - 话术池、人设卡等业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
  */
 
 type StoredValue = string | { __enc: string }
 
 /** 以 dot path 标记的敏感字段，写入前加密、读出后解密 */
-const SECRET_KEYS = ['tts.accessToken', 'tts.apiKey'] as const
+const SECRET_KEYS = ['tts.accessToken', 'tts.apiKey', 'llm.apiKey'] as const
 
 function getPath(obj: Record<string, unknown>, path: string): unknown {
   return path.split('.').reduce<unknown>((acc, key) => {
@@ -166,6 +167,19 @@ export class StorageService {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS speech_items_status ON speech_items(status, created_at)'
     )
+    // 人设卡（M3 单主播，表结构为多主播预留）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        personality TEXT NOT NULL DEFAULT '',
+        catchphrases TEXT NOT NULL DEFAULT '',
+        background TEXT NOT NULL DEFAULT '',
+        taboos TEXT NOT NULL DEFAULT '',
+        voice_id TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      )
+    `)
   }
 
   // ---------- 应用配置 ----------
@@ -338,6 +352,47 @@ export class StorageService {
         SELECT id FROM speech_items WHERE status = 'done' ORDER BY played_at DESC LIMIT 200
       )`
     )
+  }
+
+  // ---------- 人设卡 ----------
+
+  /** 取第一张人设卡（M3 单主播）；库里没有返回 null，由 PersonaService 负责播种 */
+  personaGet(): Persona | null {
+    const row = this.db.prepare('SELECT * FROM agents ORDER BY updated_at ASC LIMIT 1').get()
+    if (!row) return null
+    const r = row as Record<string, unknown>
+    return {
+      id: str(r.id),
+      name: str(r.name),
+      personality: str(r.personality),
+      catchphrases: str(r.catchphrases),
+      background: str(r.background),
+      taboos: str(r.taboos),
+      voiceId: str(r.voice_id),
+      updatedAt: num(r.updated_at) ?? 0
+    }
+  }
+
+  personaSave(persona: Persona): void {
+    this.db
+      .prepare(
+        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, personality = excluded.personality,
+           catchphrases = excluded.catchphrases, background = excluded.background,
+           taboos = excluded.taboos, voice_id = excluded.voice_id, updated_at = excluded.updated_at`
+      )
+      .run(
+        persona.id,
+        persona.name,
+        persona.personality,
+        persona.catchphrases,
+        persona.background,
+        persona.taboos,
+        persona.voiceId,
+        persona.updatedAt
+      )
   }
 
   close(): void {

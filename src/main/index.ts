@@ -4,9 +4,12 @@ import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { IPC } from '../shared/ipc-channels'
 import {
+  type AgentStatus,
   type AppConfig,
   type AppInfo,
+  type LiveComment,
   type PartialDeep,
+  type Persona,
   type PoolResult,
   type PoolSayInput,
   type PoolSnapshot,
@@ -16,6 +19,9 @@ import {
 import { StorageService } from './services/StorageService'
 import { TtsService } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
+import { PersonaService } from './services/PersonaService'
+import { AgentService } from './services/AgentService'
+import { CommentSimulator } from './services/CommentSimulator'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -144,7 +150,25 @@ function broadcastPool(snapshot: PoolSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.poolSnapshotEvent, snapshot)
   }
+  // 主播节奏驱动：池水位低时催主播补货
+  agent?.onPoolSnapshot(snapshot)
 }
+
+/** Agent 状态（含生成中预览）广播给所有窗口 */
+function broadcastAgent(status: AgentStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.agentStatusEvent, status)
+  }
+}
+
+/** 评论事件广播（toast 展示用） */
+function broadcastComment(comment: LiveComment): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.commentEvent, comment)
+  }
+}
+
+let agent: AgentService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
 function guard(fn: () => SpeechItem): PoolResult<SpeechItem>
@@ -158,7 +182,14 @@ function guard(fn: () => SpeechItem | void): PoolResult<SpeechItem> | PoolResult
   }
 }
 
-function registerIpc(storage: StorageService, tts: TtsService, pool: SpeechPool): void {
+function registerIpc(
+  storage: StorageService,
+  tts: TtsService,
+  pool: SpeechPool,
+  agent: AgentService,
+  persona: PersonaService,
+  sim: CommentSimulator
+): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
     version: app.getVersion(),
@@ -186,6 +217,41 @@ function registerIpc(storage: StorageService, tts: TtsService, pool: SpeechPool)
 
   // ---------- TTS ----------
   ipcMain.handle(IPC.ttsTest, (_e, text: string) => tts.test(String(text ?? '').slice(0, 200)))
+
+  // ---------- 主播 Agent ----------
+  ipcMain.handle(IPC.agentStart, async () => {
+    try {
+      await agent.start()
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC.agentStop, () => agent.stop())
+  ipcMain.handle(IPC.agentRestart, async () => {
+    try {
+      await agent.restart()
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC.agentStatus, () => agent.status())
+
+  // ---------- 人设卡 ----------
+  ipcMain.handle(IPC.personaGet, () => persona.get())
+  ipcMain.handle(IPC.personaSave, (_e, input: Omit<Persona, 'id' | 'updatedAt'>) => persona.save(input))
+
+  // ---------- 评论模拟器 ----------
+  ipcMain.handle(IPC.simStart, () => {
+    sim.start()
+    return sim.status()
+  })
+  ipcMain.handle(IPC.simStop, () => {
+    sim.stop()
+    return sim.status()
+  })
+  ipcMain.handle(IPC.simStatus, () => sim.status())
 }
 
 const single = app.requestSingleInstanceLock()
@@ -209,6 +275,13 @@ if (!single) {
     const storage = new StorageService()
     const tts = new TtsService(storage)
     pool = new SpeechPool(storage, tts, broadcastPool)
+    const persona = new PersonaService(storage)
+    agent = new AgentService(storage, pool, persona, broadcastAgent)
+    const sim = new CommentSimulator((comment) => {
+      // 评论进主播（主播自己决定回不回），同时广播给渲染进程弹 toast
+      agent?.onComment(comment)
+      broadcastComment(comment)
+    })
 
     // media:// 只服务 audio-cache 目录里的 basename，拒绝任何路径穿越
     protocol.handle('media', (request) => {
@@ -222,7 +295,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool)
+    registerIpc(storage, tts, pool, agent, persona, sim)
     createWindow(storage)
 
     app.on('activate', () => {
@@ -233,5 +306,6 @@ if (!single) {
 
 app.on('window-all-closed', () => {
   pool?.dispose()
+  void agent?.stop()
   if (process.platform !== 'darwin') app.quit()
 })

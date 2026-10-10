@@ -50,17 +50,53 @@ export function ttsConfigured(tts: TtsConfig): boolean {
   return Boolean(tts.appId && tts.accessToken && tts.voiceId)
 }
 
+// ---------- LLM 配置（主播 Agent 的大脑） ----------
+
+export const LLM_PROVIDERS = ['deepseek', 'qwen', 'doubao', 'kimi', 'zai'] as const
+export type LlmProvider = (typeof LLM_PROVIDERS)[number]
+
+export interface LlmConfig {
+  provider: LlmProvider
+  /** 模型 id（留空用该服务商默认值） */
+  model: string
+  /** API Key（敏感字段，safeStorage 加密落盘，运行时注入 pi，不落 pi 的盘） */
+  apiKey: string
+  /** 自定义 API 地址，留空走服务商默认 */
+  baseUrl: string
+}
+
+export const LLM_PROVIDER_META: Record<LlmProvider, { label: string; defaultModel: string; defaultBaseUrl: string }> = {
+  deepseek: { label: 'DeepSeek', defaultModel: 'deepseek-flash', defaultBaseUrl: 'https://api.deepseek.com' },
+  qwen: { label: '通义千问（DashScope）', defaultModel: 'qwen-plus', defaultBaseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  doubao: { label: '豆包（火山方舟）', defaultModel: 'doubao-pro-32k', defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3' },
+  kimi: { label: 'Kimi（月之暗面）', defaultModel: 'kimi-k2.6', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
+  zai: { label: '智谱（Z.ai）', defaultModel: 'glm-4.7', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' }
+}
+
+export const DEFAULT_LLM_CONFIG: LlmConfig = {
+  provider: 'deepseek',
+  model: LLM_PROVIDER_META.deepseek.defaultModel,
+  apiKey: '',
+  baseUrl: ''
+}
+
+export function llmConfigured(llm: LlmConfig): boolean {
+  return Boolean(llm.apiKey && (llm.model || LLM_PROVIDER_META[llm.provider].defaultModel))
+}
+
 // ---------- 应用配置 ----------
 
 /** 持久化到 userData/config.json 的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
   tts: TtsConfig
+  llm: LlmConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
-  tts: DEFAULT_TTS_CONFIG
+  tts: DEFAULT_TTS_CONFIG,
+  llm: DEFAULT_LLM_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -84,9 +120,21 @@ export function parseAppConfig(input: unknown): AppConfig {
     voiceId: typeof ttsRow.voiceId === 'string' ? ttsRow.voiceId : '',
     speed: typeof ttsRow.speed === 'number' && ttsRow.speed > 0 ? ttsRow.speed : 1.0
   }
+  const llmRow = row.llm && typeof row.llm === 'object' ? (row.llm as Record<string, unknown>) : {}
+  const llmProvider = LLM_PROVIDERS.find((id) => id === llmRow.provider) ?? DEFAULT_LLM_CONFIG.provider
+  const llm: LlmConfig = {
+    provider: llmProvider,
+    model:
+      typeof llmRow.model === 'string' && llmRow.model
+        ? llmRow.model
+        : LLM_PROVIDER_META[llmProvider].defaultModel,
+    apiKey: typeof llmRow.apiKey === 'string' ? llmRow.apiKey : '',
+    baseUrl: typeof llmRow.baseUrl === 'string' ? llmRow.baseUrl : ''
+  }
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
-    tts
+    tts,
+    llm
   }
 }
 
@@ -203,3 +251,60 @@ export const POOL_LIMITS = {
   /** 单条话术字数上限 */
   textMaxLength: 500
 } as const
+
+// ---------- 人设卡（Persona，主播 Agent 的人格） ----------
+
+export interface Persona {
+  id: string
+  /** 主播名字 */
+  name: string
+  /** 性格（开朗/沉稳/毒舌……） */
+  personality: string
+  /** 口癖（口头禅、语气词） */
+  catchphrases: string
+  /** 背景故事 */
+  background: string
+  /** 禁区（绝不能说的话题/承诺） */
+  taboos: string
+  /** 默认音色（对应 config.tts 的 voiceId 体系） */
+  voiceId: string
+  updatedAt: number
+}
+
+export const DEFAULT_PERSONA: Omit<Persona, 'id' | 'updatedAt'> = {
+  name: '小陶',
+  personality: '开朗亲切、节奏明快的带货主播，像邻家姐姐一样和观众聊天',
+  catchphrases: '家人们、真的绝了、闭眼入、给你们安排上',
+  background: '做了三年直播带货，熟悉各种家居好物，对成分和材质很有研究',
+  taboos: '不承诺绝对最低价；不贬低其它品牌；不谈论政治和隐私话题；不夸大功效',
+  voiceId: ''
+}
+
+// ---------- 主播 Agent 状态 ----------
+
+export type AgentRunState = 'stopped' | 'starting' | 'running' | 'error'
+
+/** agent:status 广播给渲染进程的状态 */
+export interface AgentStatus {
+  state: AgentRunState
+  error?: string
+  /** provider/model 展示用 */
+  model?: string
+  personaName?: string
+  /** 生成中预览：text_delta 累积的文本，入池即清空 */
+  draft: string
+}
+
+// ---------- 评论（M3 来自模拟器，PipeSDK 真接入后续里程碑） ----------
+
+export interface LiveComment {
+  id: string
+  author: string
+  content: string
+  ts: number
+}
+
+export interface SimulatorStatus {
+  running: boolean
+  count: number
+}

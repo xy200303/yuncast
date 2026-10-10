@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { Clapperboard, Megaphone, Pause, Play, Radio, RadioTower, SlidersHorizontal, X } from 'lucide-react'
+import { Clapperboard, Megaphone, MessageSquareText, OctagonAlert, Pause, Play, Radio, RadioTower, SlidersHorizontal, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -163,6 +163,7 @@ export function LivePage() {
         <aside className="flex w-80 shrink-0 flex-col border-l">
           <div className="flex h-8 shrink-0 items-center border-b px-4 text-xs text-muted-foreground">提词器</div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <AgentDraft />
             {playing ? (
               <TeleprompterCurrent item={playing} />
             ) : (
@@ -200,6 +201,7 @@ function TurnGroup({ group }: { group: SpeechItem[] }) {
       <div className="flex items-center gap-1.5 border-b px-3 py-1.5">
         <Badge variant={LANE_BADGE_VARIANT[first.lane]}>{LANE_LABEL[first.lane]}</Badge>
         <Badge variant="ghost">{SOURCE_LABEL[first.source.kind]}</Badge>
+        {first.replyTo && <Badge variant="outline">回复 @{first.replyTo.author}</Badge>}
         {first.voiceId && <Badge variant="outline">{first.voiceId}</Badge>}
         <span className="ml-auto text-xs text-muted-foreground">话轮 {first.turnId.slice(-6)}</span>
       </div>
@@ -293,9 +295,51 @@ function TeleprompterCurrent({ item }: { item: SpeechItem }) {
   )
 }
 
+/** AI 正在组织语言：text_delta 实时预览（品牌色），入池即消失 */
+function AgentDraft() {
+  const draft = useAppStore((s) => s.agent.draft)
+  if (!draft) return null
+  return (
+    <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-3">
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <Badge variant="outline" className="text-primary border-primary/40">
+          AI 正在组织语言…
+        </Badge>
+      </div>
+      <p className="text-sm leading-6 text-primary">{draft}</p>
+    </div>
+  )
+}
+
 /** 右侧操作面板：人工控制入口。后续场控/场景/音量等能力都往这里加按钮。 */
 function ControlPanel() {
   const [broadcastOpen, setBroadcastOpen] = useState(false)
+  const [panicOpen, setPanicOpen] = useState(false)
+  const simRunning = useAppStore((s) => s.simRunning)
+  const setSimRunning = useAppStore((s) => s.setSimRunning)
+  const agentState = useAppStore((s) => s.agent.state)
+
+  const toggleSim = () => {
+    void (simRunning ? window.api.sim.stop() : window.api.sim.start()).then((status) => {
+      setSimRunning(status.running)
+      toast.message(status.running ? '模拟评论已开启' : '模拟评论已关闭', {
+        description: status.running ? '每 3-8 秒来一条观众评论' : undefined
+      })
+    })
+  }
+
+  const panic = () => {
+    setPanicOpen(false)
+    void (async () => {
+      // 急停链：停主播 → 清全部车道 → 停当前播放（播放循环会把 playing 条目收掉）
+      await window.api.agent.stop()
+      for (const lane of ['interrupt', 'next', 'normal', 'filler'] as const) {
+        await window.api.pool.clearLane(lane)
+      }
+      audioEngine.stopCurrentTts()
+      toast.success('已紧急停止', { description: '主播已停，话术池已清空' })
+    })()
+  }
 
   return (
     <div className="shrink-0 border-t p-3">
@@ -305,9 +349,22 @@ function ControlPanel() {
           <Megaphone />
           人工播报
         </Button>
+        <Button
+          variant={simRunning ? 'secondary' : 'outline'}
+          size="sm"
+          onClick={toggleSim}
+          title={agentState === 'running' ? undefined : '主播未启动时评论只会进 toast，不会触发回复'}
+        >
+          <MessageSquareText />
+          {simRunning ? '关闭模拟评论' : '模拟评论'}
+        </Button>
         <Button variant="outline" size="sm" disabled title="剧本场景上线后可用">
           <Clapperboard />
           切场景
+        </Button>
+        <Button variant="destructive" size="sm" onClick={() => setPanicOpen(true)}>
+          <OctagonAlert />
+          紧急停止
         </Button>
         <Button variant="outline" size="sm" disabled title="场控能力上线后可用">
           <RadioTower />
@@ -319,6 +376,24 @@ function ControlPanel() {
         </Button>
       </div>
       <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
+      <Dialog open={panicOpen} onOpenChange={setPanicOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>紧急停止</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            立即停止主播 Agent、清空话术池全部车道、停止当前播报。池里未播的内容都会作废。
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPanicOpen(false)}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={panic}>
+              确认急停
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

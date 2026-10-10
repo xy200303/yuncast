@@ -1,13 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type {
+  AgentStatus,
   AppConfig,
   AppInfo,
+  LiveComment,
   PartialDeep,
+  Persona,
   PoolResult,
   PoolSayInput,
   PoolSnapshot,
   PoolStatus,
+  SimulatorStatus,
   SpeechItem,
   SpeechLane
 } from '../shared/types'
@@ -53,6 +57,40 @@ const api = {
   tts: {
     test: (text: string) =>
       ipcRenderer.invoke(IPC.ttsTest, text) as Promise<{ ok: boolean; error?: string; audioPath?: string }>
+  },
+  agent: {
+    start: () => ipcRenderer.invoke(IPC.agentStart) as Promise<{ ok: boolean; error?: string }>,
+    stop: () => ipcRenderer.invoke(IPC.agentStop) as Promise<void>,
+    restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
+    status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
+    /** 订阅 Agent 状态 + 生成中预览，返回取消订阅函数 */
+    onStatus: (cb: (status: AgentStatus) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, status: AgentStatus) => cb(status)
+      ipcRenderer.on(IPC.agentStatusEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.agentStatusEvent, listener)
+      }
+    }
+  },
+  persona: {
+    get: () => ipcRenderer.invoke(IPC.personaGet) as Promise<Persona>,
+    save: (input: Omit<Persona, 'id' | 'updatedAt'>) =>
+      ipcRenderer.invoke(IPC.personaSave, input) as Promise<Persona>
+  },
+  sim: {
+    start: () => ipcRenderer.invoke(IPC.simStart) as Promise<SimulatorStatus>,
+    stop: () => ipcRenderer.invoke(IPC.simStop) as Promise<SimulatorStatus>,
+    status: () => ipcRenderer.invoke(IPC.simStatus) as Promise<SimulatorStatus>
+  },
+  comment: {
+    /** 订阅评论事件（M3 来自模拟器），返回取消订阅函数 */
+    onComment: (cb: (comment: LiveComment) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, comment: LiveComment) => cb(comment)
+      ipcRenderer.on(IPC.commentEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.commentEvent, listener)
+      }
+    }
   }
 }
 

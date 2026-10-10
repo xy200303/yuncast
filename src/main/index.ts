@@ -192,6 +192,8 @@ const single = app.requestSingleInstanceLock()
 if (!single) {
   app.quit()
 } else {
+  // 开发期开 CDP 端口，便于外部检查渲染层 DOM/布局（打包版不开）
+  if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9222')
   app.on('second-instance', () => {
     const win = mainWindow
     if (!win || win.isDestroyed()) return

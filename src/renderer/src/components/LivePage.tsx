@@ -1,13 +1,20 @@
 import { Fragment, useEffect, useMemo, useState } from 'react'
-import { Pause, Play, Radio, X } from 'lucide-react'
+import { Clapperboard, Megaphone, Pause, Play, Radio, RadioTower, SlidersHorizontal, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
@@ -58,7 +65,6 @@ function splitSentences(text: string): string[] {
 
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
-  const config = useAppStore((s) => s.config)
   const levels = useAppStore((s) => s.levels)
   const loopRunning = useAppStore((s) => s.loopRunning)
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
@@ -83,7 +89,7 @@ export function LivePage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <Radio className="size-4 text-primary" />
         <h1 className="text-sm font-medium">直播台</h1>
-        <p className="text-xs text-muted-foreground">话术池 · 提词器 · 手动测试</p>
+        <p className="text-xs text-muted-foreground">话术池 · 提词器</p>
         <div className="ml-auto flex items-center gap-3">
           {/* 主输出电平 */}
           <div className="flex items-center gap-1.5" title="输出电平">
@@ -124,7 +130,7 @@ export function LivePage() {
             {groups.length === 0 && pool.failed.length === 0 ? (
               <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                 <Radio className="size-10" strokeWidth={1.25} />
-                <p className="text-sm">话术池是空的，从下方手动测试区丢一条进去</p>
+                <p className="text-sm">话术池是空的，从右侧操作面板发起人工播报</p>
               </div>
             ) : (
               <div className="flex flex-col gap-2">
@@ -153,7 +159,7 @@ export function LivePage() {
           </div>
         </section>
 
-        {/* 提词器 */}
+        {/* 右侧面板：提词器 + 操作面板 */}
         <aside className="flex w-80 shrink-0 flex-col border-l">
           <div className="flex h-8 shrink-0 items-center border-b px-4 text-xs text-muted-foreground">提词器</div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
@@ -179,10 +185,9 @@ export function LivePage() {
               </div>
             )}
           </div>
+          <ControlPanel />
         </aside>
       </div>
-
-      <ManualTestBar defaultVoice={config.tts.voiceId} />
     </div>
   )
 }
@@ -288,8 +293,45 @@ function TeleprompterCurrent({ item }: { item: SpeechItem }) {
   )
 }
 
-/** 手动测试区：M2 验收入口——手动丢话术能播 */
-function ManualTestBar({ defaultVoice }: { defaultVoice: string }) {
+/** 右侧操作面板：人工控制入口。后续场控/场景/音量等能力都往这里加按钮。 */
+function ControlPanel() {
+  const [broadcastOpen, setBroadcastOpen] = useState(false)
+
+  return (
+    <div className="shrink-0 border-t p-3">
+      <p className="mb-2 px-1 text-xs text-muted-foreground">操作面板</p>
+      <div className="grid grid-cols-2 gap-2">
+        <Button variant="outline" size="sm" onClick={() => setBroadcastOpen(true)}>
+          <Megaphone />
+          人工播报
+        </Button>
+        <Button variant="outline" size="sm" disabled title="剧本场景上线后可用">
+          <Clapperboard />
+          切场景
+        </Button>
+        <Button variant="outline" size="sm" disabled title="场控能力上线后可用">
+          <RadioTower />
+          场控指令
+        </Button>
+        <Button variant="outline" size="sm" disabled title="音频控制上线后可用">
+          <SlidersHorizontal />
+          调音量
+        </Button>
+      </div>
+      <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
+    </div>
+  )
+}
+
+/** 人工播报弹窗：输入内容丢进话术池 */
+function ManualBroadcastDialog({
+  open,
+  onOpenChange
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  const defaultVoice = useAppStore((s) => s.config.tts.voiceId)
   const [text, setText] = useState('')
   const [lane, setLane] = useState<'normal' | 'next'>('normal')
   const [voice, setVoice] = useState('')
@@ -309,6 +351,7 @@ function ManualTestBar({ defaultVoice }: { defaultVoice: string }) {
       .then((result) => {
         if (result.ok) {
           setText('')
+          onOpenChange(false)
           toast.success('已丢进话术池', { description: '合成完成后自动播出' })
         } else {
           toast.error('没能进池', { description: result.error })
@@ -318,47 +361,60 @@ function ManualTestBar({ defaultVoice }: { defaultVoice: string }) {
   }
 
   return (
-    <footer className="shrink-0 border-t p-3">
-      <div className="flex items-end gap-2">
-        <div className="min-w-0 flex-1">
-          <Label htmlFor="manual-text" className="mb-1 text-xs text-muted-foreground">
-            手动测试 · 丢一条话术进池
-          </Label>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>人工播报</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-3">
           <Textarea
-            id="manual-text"
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder="例如：欢迎来到直播间，今天给大家准备了好物……"
-            className="h-16 resize-none"
+            className="min-h-24 resize-none"
+            autoFocus
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) submit()
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                submit()
+              }
             }}
           />
+          <div className="flex items-center justify-between gap-3">
+            <Label className="shrink-0 text-xs text-muted-foreground">车道</Label>
+            <ToggleGroup
+              type="single"
+              value={lane}
+              onValueChange={(v) => v && setLane(v as 'normal' | 'next')}
+              className="rounded-lg bg-muted p-0.5"
+            >
+              <ToggleGroupItem value="normal" className="h-6 px-2.5 text-xs" title="排进常规队列">
+                排队
+              </ToggleGroupItem>
+              <ToggleGroupItem value="next" className="h-6 px-2.5 text-xs" title="当前播完就播这条">
+                下一条
+              </ToggleGroupItem>
+            </ToggleGroup>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <Label className="shrink-0 text-xs text-muted-foreground">音色</Label>
+            <Input
+              value={voice}
+              onChange={(e) => setVoice(e.target.value)}
+              placeholder={defaultVoice ? `留空用默认（${defaultVoice}）` : '留空用默认音色'}
+              className="h-7 text-xs"
+            />
+          </div>
         </div>
-        <div className="w-28 shrink-0">
-          <Label className="mb-1 text-xs text-muted-foreground">车道</Label>
-          <Select value={lane} onValueChange={(v) => setLane(v as 'normal' | 'next')}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="normal">常规</SelectItem>
-              <SelectItem value="next">下一条</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="w-44 shrink-0">
-          <Label className="mb-1 text-xs text-muted-foreground">音色（留空用默认）</Label>
-          <Input
-            value={voice}
-            onChange={(e) => setVoice(e.target.value)}
-            placeholder={defaultVoice || '未配置默认音色'}
-          />
-        </div>
-        <Button className="shrink-0" disabled={!text.trim() || busy} onClick={submit}>
-          丢进池里
-        </Button>
-      </div>
-    </footer>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button disabled={!text.trim() || busy} onClick={submit}>
+            丢进池里
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

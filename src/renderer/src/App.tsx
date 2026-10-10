@@ -35,6 +35,7 @@ export default function App() {
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
 
   useEffect(() => {
+    if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
     loadConfig()
     const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
     const onTheme = () => syncSystemTheme()
@@ -44,6 +45,7 @@ export default function App() {
 
   // 音频引擎 + 话术池订阅 + 播放循环（应用级单例，挂载即运行）
   useEffect(() => {
+    if (!('api' in window)) return
     audioEngine.init({ onLevels: setLevels })
     const offSnapshot = window.api.pool.onSnapshot((snapshot) => {
       const prevFailed = new Set(useAppStore.getState().pool.failed.map((item) => item.id))

@@ -1,3 +1,4 @@
+import { Badge } from '@/components/ui/badge'
 import { useAppStore } from '../stores/useAppStore'
 import { NAV_ITEMS } from './Sidebar'
 
@@ -9,14 +10,11 @@ export function StatusBar() {
   return (
     <footer className="flex h-7 items-center gap-2 border-t bg-muted/40 px-3 text-xs text-muted-foreground">
       <span className="truncate">{current ? `就绪 · ${current.label}` : '就绪'}</span>
-      <span className="ml-auto flex items-center gap-2">
-        <span>推流未配置</span>
-        <span className="text-border">·</span>
-        <span>LLM 未配置</span>
-        <span className="text-border">·</span>
-        <span>TTS 未配置</span>
-        <span className="text-border">·</span>
-        <span>评论未接入</span>
+      <span className="ml-auto flex items-center gap-1.5">
+        <Badge variant="outline">推流未配置</Badge>
+        <Badge variant="outline">LLM 未配置</Badge>
+        <Badge variant="outline">TTS 未配置</Badge>
+        <Badge variant="outline">评论未接入</Badge>
       </span>
     </footer>
   )

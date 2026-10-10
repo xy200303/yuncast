@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Monitor, Moon, Settings, Sun } from 'lucide-react'
-import { cn } from '@/lib/utils'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAppStore } from '../stores/useAppStore'
 import type { AppTheme } from '../../../shared/types'
 
@@ -38,29 +38,32 @@ export function SettingsPage() {
                 <p className="text-[13px]">主题</p>
                 <p className="text-xs text-muted-foreground">界面配色，跟随系统时随系统自动切换</p>
               </div>
-              <div className="inline-flex items-center gap-0.5 rounded-lg bg-muted p-0.5">
+              <ToggleGroup
+                type="single"
+                value={theme}
+                onValueChange={(v) => {
+                  if (!v) return
+                  setError(null)
+                  setTheme(v as AppTheme).catch((e) =>
+                    setError(e instanceof Error ? e.message : String(e))
+                  )
+                }}
+                className="rounded-lg bg-muted p-0.5"
+              >
                 {THEME_OPTIONS.map((option) => {
                   const Icon = option.icon
-                  const active = theme === option.id
                   return (
-                    <button
+                    <ToggleGroupItem
                       key={option.id}
-                      type="button"
-                      onClick={() => {
-                        setError(null)
-                        setTheme(option.id).catch((e) => setError(e instanceof Error ? e.message : String(e)))
-                      }}
-                      className={cn(
-                        'flex h-7 items-center gap-1.5 rounded-md px-3 text-[13px] text-muted-foreground transition-colors',
-                        active && 'bg-background text-foreground shadow-sm'
-                      )}
+                      value={option.id}
+                      className="h-7 gap-1.5 rounded-md px-3 text-[13px] data-[state=on]:bg-background data-[state=on]:shadow-sm"
                     >
                       <Icon className="size-3.5" />
                       {option.label}
-                    </button>
+                    </ToggleGroupItem>
                   )
                 })}
-              </div>
+              </ToggleGroup>
             </div>
             {error && <p className="mt-2 text-xs text-destructive">保存主题失败：{error}</p>}
           </section>

@@ -1,0 +1,165 @@
+import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
+import { join } from 'node:path'
+import { IPC } from '../shared/ipc-channels'
+import { APP_THEMES, type AppConfig, type AppInfo } from '../shared/types'
+import { StorageService } from './services/StorageService'
+
+// 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
+// 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
+app.setPath('userData', join(app.getPath('appData'), 'AgentAnchor'))
+
+let mainWindow: BrowserWindow | null = null
+
+/** Windows 上标题栏覆盖层偶发把第一帧停在白底。显示后改一次尺寸让系统重画；画面仍是空的就重新加载。 */
+function recoverBlankWindow(win: BrowserWindow): void {
+  let shown = false
+  let loaded = false
+  let nudged = false
+  let reloads = 0
+
+  const reload = (why: string) => {
+    if (win.isDestroyed() || reloads >= 2) return
+    reloads += 1
+    console.error(`[AgentAnchor] 窗口没有画出来（${why}），重新加载`)
+    setTimeout(() => {
+      if (!win.isDestroyed()) win.webContents.reload()
+    }, 200)
+  }
+
+  const show = () => {
+    if (win.isDestroyed()) return
+    shown = true
+    if (!win.isVisible()) win.show()
+    if (nudged || !loaded || process.platform !== 'win32') return
+    nudged = true
+    setTimeout(() => {
+      if (win.isDestroyed()) return
+      const [width, height] = win.getContentSize()
+      win.setContentSize(width, height + 1)
+      win.setContentSize(width, height)
+    }, 50)
+  }
+
+  win.once('ready-to-show', show)
+
+  win.webContents.on('did-finish-load', () => {
+    loaded = true
+    show()
+    setTimeout(() => {
+      if (win.isDestroyed()) return
+      void win.webContents
+        .executeJavaScript(
+          'Boolean(document.getElementById("root") && document.getElementById("root").childElementCount > 0)',
+          true
+        )
+        .then((painted) => {
+          if (!painted) reload('画面是空的')
+        })
+        .catch(() => reload('画面检查失败'))
+    }, 400)
+  })
+
+  win.webContents.on('preload-error', (_event, _path, error) => {
+    reload(error instanceof Error ? error.message : 'preload')
+  })
+
+  win.webContents.on('did-fail-load', (_event, code, description, _url, isMainFrame) => {
+    if (!isMainFrame || code === -3) return
+    reload(`${code} ${description}`)
+  })
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return
+    reload(details.reason)
+  })
+}
+
+function createWindow(storage: StorageService): void {
+  const dark = followAppTheme(storage.get('theme'))
+  const win = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 960,
+    minHeight: 600,
+    show: false,
+    backgroundColor: windowBackground(dark),
+    title: 'Agent Anchor',
+    autoHideMenuBar: true,
+    ...(process.platform === 'win32'
+      ? {
+          // 系统按钮留在右上角，左边这一行由界面自己画，和它们齐平。
+          titleBarStyle: 'hidden' as const,
+          titleBarOverlay: titleBarOverlay(dark)
+        }
+      : {}),
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      // 安全基线：沙箱 + 上下文隔离，渲染进程无 Node 能力
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      // 隐藏期间也要画出第一帧，否则显示时会停在白底。
+      backgroundThrottling: false
+    }
+  })
+  mainWindow = win
+
+  recoverBlankWindow(win)
+
+  // 外部链接一律交给系统浏览器，不在应用内打开
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url)
+    return { action: 'deny' }
+  })
+
+  if (process.env['ELECTRON_RENDERER_URL']) {
+    win.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    win.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+function registerIpc(storage: StorageService): void {
+  ipcMain.handle(IPC.appInfo, (): AppInfo => ({
+    name: 'Agent Anchor',
+    version: app.getVersion(),
+    platform: process.platform
+  }))
+  ipcMain.handle(IPC.configGet, () => storage.getConfig())
+  ipcMain.handle(IPC.configSet, (_event, patch: Partial<AppConfig>) => {
+    if (patch.theme && APP_THEMES.includes(patch.theme)) storage.set('theme', patch.theme)
+    return storage.getConfig()
+  })
+}
+
+const single = app.requestSingleInstanceLock()
+if (!single) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const win = mainWindow
+    if (!win || win.isDestroyed()) return
+    if (win.isMinimized()) win.restore()
+    win.show()
+    win.focus()
+  })
+
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(null)
+    watchSystemChrome()
+    const storage = new StorageService()
+    // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
+    storage.onChange(() => paintAllWindows(storage.get('theme')))
+    registerIpc(storage)
+    createWindow(storage)
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow(storage)
+    })
+  })
+}
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') app.quit()
+})

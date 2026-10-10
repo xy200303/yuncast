@@ -1,29 +1,194 @@
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { DEFAULT_CONFIG, parseAppConfig, type AppConfig } from '../../shared/types'
+import { DatabaseSync } from 'node:sqlite'
+import {
+  DEFAULT_CONFIG,
+  parseAppConfig,
+  type AppConfig,
+  type PartialDeep,
+  type SpeechItem,
+  type SpeechLane,
+  type SpeechReplyTo,
+  type SpeechStatus
+} from '../../shared/types'
 
 /**
- * 应用配置的持久化。一个 JSON 文件（userData/config.json）够了，
- * 等配置多到要按表查的时候再换 sqlite。
+ * 持久化层：
+ * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey 用 safeStorage 加密落盘）
+ * - 话术池等业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
  */
+
+type StoredValue = string | { __enc: string }
+
+/** 以 dot path 标记的敏感字段，写入前加密、读出后解密 */
+const SECRET_KEYS = ['tts.accessToken', 'tts.apiKey'] as const
+
+function getPath(obj: Record<string, unknown>, path: string): unknown {
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (acc && typeof acc === 'object') return (acc as Record<string, unknown>)[key]
+    return undefined
+  }, obj)
+}
+
+function setPath(obj: Record<string, unknown>, path: string, value: unknown): void {
+  const segments = path.split('.')
+  const last = segments.pop()!
+  let parent = obj
+  for (const seg of segments) parent = parent[seg] as Record<string, unknown>
+  parent[last] = value
+}
+
+function mergeDeep<T>(target: T, patch: PartialDeep<T>): T {
+  if (!patch || typeof patch !== 'object') return target
+  const out: Record<string, unknown> = { ...(target as Record<string, unknown>) }
+  for (const [key, value] of Object.entries(patch)) {
+    const current = out[key]
+    if (
+      value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      current &&
+      typeof current === 'object'
+    ) {
+      out[key] = mergeDeep(current, value as PartialDeep<typeof current>)
+    } else if (value !== undefined) {
+      out[key] = value
+    }
+  }
+  return out as T
+}
+
+// ---------- speech_items 行 ↔ SpeechItem ----------
+
+interface SpeechRow {
+  id: unknown
+  session_id: unknown
+  text: unknown
+  turn_id: unknown
+  seq: unknown
+  voice_id: unknown
+  source_agent_id: unknown
+  source_kind: unknown
+  lane: unknown
+  dedupe_key: unknown
+  expires_at: unknown
+  reply_to: unknown
+  status: unknown
+  audio_path: unknown
+  error: unknown
+  sort_order: unknown
+  created_at: unknown
+  played_at: unknown
+}
+
+function str(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function num(value: unknown): number | undefined {
+  return typeof value === 'number' ? value : undefined
+}
+
+function rowToItem(row: SpeechRow): SpeechItem {
+  let replyTo: SpeechReplyTo | undefined
+  const rawReplyTo = str(row.reply_to)
+  if (rawReplyTo) {
+    try {
+      replyTo = JSON.parse(rawReplyTo) as SpeechReplyTo
+    } catch {
+      replyTo = undefined
+    }
+  }
+  return {
+    id: str(row.id),
+    sessionId: str(row.session_id),
+    text: str(row.text),
+    turnId: str(row.turn_id),
+    seq: num(row.seq) ?? 0,
+    voiceId: str(row.voice_id),
+    source: {
+      agentId: str(row.source_agent_id),
+      kind: (str(row.source_kind) || 'manual') as SpeechItem['source']['kind']
+    },
+    lane: (str(row.lane) || 'normal') as SpeechLane,
+    dedupeKey: str(row.dedupe_key) || undefined,
+    expiresAt: num(row.expires_at),
+    replyTo,
+    status: (str(row.status) || 'pending') as SpeechStatus,
+    audioPath: str(row.audio_path) || undefined,
+    error: str(row.error) || undefined,
+    sortOrder: num(row.sort_order),
+    createdAt: num(row.created_at) ?? 0,
+    playedAt: num(row.played_at)
+  }
+}
+
+const ACTIVE_STATUSES: SpeechStatus[] = ['pending', 'synthesizing', 'ready', 'playing']
+
 export class StorageService {
-  private readonly file: string
+  private readonly configFile: string
   private config: AppConfig
-  private listeners = new Set<(config: AppConfig) => void>()
+  private configListeners = new Set<(config: AppConfig) => void>()
+  private db: DatabaseSync
 
   constructor() {
-    this.file = join(app.getPath('userData'), 'config.json')
-    this.config = this.load()
+    const dir = app.getPath('userData')
+    mkdirSync(dir, { recursive: true })
+    this.configFile = join(dir, 'config.json')
+    this.config = this.loadConfig()
+
+    this.db = new DatabaseSync(join(dir, 'agentanchor.db'))
+    this.db.exec('PRAGMA journal_mode = WAL')
+    this.db.exec('PRAGMA busy_timeout = 5000')
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS speech_items (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL DEFAULT '',
+        text TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        seq INTEGER NOT NULL DEFAULT 0,
+        voice_id TEXT NOT NULL DEFAULT '',
+        source_agent_id TEXT NOT NULL DEFAULT '',
+        source_kind TEXT NOT NULL DEFAULT 'manual',
+        lane TEXT NOT NULL DEFAULT 'normal',
+        dedupe_key TEXT,
+        expires_at INTEGER,
+        reply_to TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        audio_path TEXT,
+        error TEXT,
+        sort_order INTEGER,
+        created_at INTEGER NOT NULL,
+        played_at INTEGER
+      )
+    `)
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS speech_items_status ON speech_items(status, created_at)'
+    )
   }
 
-  private load(): AppConfig {
+  // ---------- 应用配置 ----------
+
+  private loadConfig(): AppConfig {
     try {
-      if (!existsSync(this.file)) return { ...DEFAULT_CONFIG }
-      return parseAppConfig(JSON.parse(readFileSync(this.file, 'utf8')))
+      if (!existsSync(this.configFile)) return structuredClone(DEFAULT_CONFIG)
+      const raw = JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
+      // 解密敏感字段
+      for (const key of SECRET_KEYS) {
+        const value = getPath(raw, key) as StoredValue | undefined
+        if (value && typeof value === 'object' && '__enc' in value) {
+          try {
+            setPath(raw, key, safeStorage.decryptString(Buffer.from(value.__enc, 'base64')))
+          } catch {
+            setPath(raw, key, '')
+          }
+        }
+      }
+      return parseAppConfig(raw)
     } catch (error) {
       console.error('[AgentAnchor] 读取配置失败，用默认值:', error)
-      return { ...DEFAULT_CONFIG }
+      return structuredClone(DEFAULT_CONFIG)
     }
   }
 
@@ -31,29 +196,151 @@ export class StorageService {
     return this.config
   }
 
-  get<K extends keyof AppConfig>(key: K): AppConfig[K] {
-    return this.config[key]
-  }
-
-  set<K extends keyof AppConfig>(key: K, value: AppConfig[K]): AppConfig {
-    this.config = { ...this.config, [key]: value }
-    this.save()
-    for (const listener of this.listeners) listener(this.config)
+  setConfig(patch: PartialDeep<AppConfig>): AppConfig {
+    this.config = parseAppConfig(mergeDeep(this.config, patch))
+    this.saveConfig()
+    for (const listener of this.configListeners) listener(this.config)
     return this.config
   }
 
   /** 配置变了就回调（主进程里用来同步窗口 chrome） */
-  onChange(listener: (config: AppConfig) => void): () => void {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+  onConfigChange(listener: (config: AppConfig) => void): () => void {
+    this.configListeners.add(listener)
+    return () => this.configListeners.delete(listener)
   }
 
-  private save(): void {
+  private saveConfig(): void {
     try {
-      mkdirSync(dirname(this.file), { recursive: true })
-      writeFileSync(this.file, JSON.stringify(this.config, null, 2), 'utf8')
+      mkdirSync(dirname(this.configFile), { recursive: true })
+      const clone = JSON.parse(JSON.stringify(this.config)) as Record<string, unknown>
+      if (safeStorage.isEncryptionAvailable()) {
+        for (const key of SECRET_KEYS) {
+          const value = getPath(clone, key)
+          if (typeof value === 'string' && value.length > 0) {
+            setPath(clone, key, { __enc: safeStorage.encryptString(value).toString('base64') })
+          }
+        }
+      }
+      writeFileSync(this.configFile, JSON.stringify(clone, null, 2), 'utf8')
     } catch (error) {
       console.error('[AgentAnchor] 写入配置失败:', error)
     }
+  }
+
+  // ---------- 话术池存储 ----------
+
+  speechInsert(item: SpeechItem): void {
+    this.db
+      .prepare(
+        `INSERT INTO speech_items
+         (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
+          dedupe_key, expires_at, reply_to, status, audio_path, error, sort_order, created_at, played_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        item.id,
+        item.sessionId,
+        item.text,
+        item.turnId,
+        item.seq,
+        item.voiceId,
+        item.source.agentId,
+        item.source.kind,
+        item.lane,
+        item.dedupeKey ?? null,
+        item.expiresAt ?? null,
+        item.replyTo ? JSON.stringify(item.replyTo) : null,
+        item.status,
+        item.audioPath ?? null,
+        item.error ?? null,
+        item.sortOrder ?? null,
+        item.createdAt,
+        item.playedAt ?? null
+      )
+  }
+
+  speechUpdate(id: string, patch: Partial<SpeechItem>): void {
+    const columns: Record<string, unknown> = {}
+    if (patch.text !== undefined) columns.text = patch.text
+    if (patch.status !== undefined) columns.status = patch.status
+    if (patch.audioPath !== undefined) columns.audio_path = patch.audioPath ?? null
+    if (patch.error !== undefined) columns.error = patch.error ?? null
+    if (patch.sortOrder !== undefined) columns.sort_order = patch.sortOrder ?? null
+    if (patch.expiresAt !== undefined) columns.expires_at = patch.expiresAt ?? null
+    if (patch.playedAt !== undefined) columns.played_at = patch.playedAt ?? null
+    if (patch.voiceId !== undefined) columns.voice_id = patch.voiceId
+    const keys = Object.keys(columns)
+    if (keys.length === 0) return
+    const sql = `UPDATE speech_items SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`
+    this.db.prepare(sql).run(...(keys.map((k) => columns[k]) as never[]), id)
+  }
+
+  speechGet(id: string): SpeechItem | null {
+    const row = this.db.prepare('SELECT * FROM speech_items WHERE id = ?').get(id)
+    return row ? rowToItem(row as unknown as SpeechRow) : null
+  }
+
+  /** 未播完的条目（pending/synthesizing/ready/playing），排序由 SpeechPool 负责 */
+  speechActive(): SpeechItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM speech_items WHERE status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`
+      )
+      .all(...ACTIVE_STATUSES)
+    return rows.map((row) => rowToItem(row as unknown as SpeechRow))
+  }
+
+  /** 某时间点之后进入终态失败的条目 */
+  speechFailedSince(since: number): SpeechItem[] {
+    const rows = this.db
+      .prepare("SELECT * FROM speech_items WHERE status = 'failed' AND created_at >= ? ORDER BY created_at DESC")
+      .all(since)
+    return rows.map((row) => rowToItem(row as unknown as SpeechRow))
+  }
+
+  /** 最近播完的条目（get_recent_played 工具用） */
+  speechRecentPlayed(n: number): SpeechItem[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM speech_items WHERE status IN ('done', 'interrupted') ORDER BY played_at DESC LIMIT ?"
+      )
+      .all(n)
+    return rows.map((row) => rowToItem(row as unknown as SpeechRow))
+  }
+
+  /** 限流统计：某来源在 since 之后创建的条目数 */
+  speechCountBySourceSince(sourceAgentId: string, sourceKind: string, since: number): number {
+    const row = this.db
+      .prepare(
+        'SELECT COUNT(*) AS n FROM speech_items WHERE source_agent_id = ? AND source_kind = ? AND created_at >= ?'
+      )
+      .get(sourceAgentId, sourceKind, since)
+    return typeof row?.n === 'number' ? row.n : 0
+  }
+
+  /** 按 dedupeKey 找未播条目（去重合并用） */
+  speechFindActiveByDedupeKey(dedupeKey: string): SpeechItem | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM speech_items WHERE dedupe_key = ? AND status IN ('pending', 'synthesizing', 'ready') ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(dedupeKey)
+    return row ? rowToItem(row as unknown as SpeechRow) : null
+  }
+
+  /** 清理过期终态：done 只留最近 200 条，其余终态 1 小时后删除 */
+  speechPrune(): void {
+    this.db.exec(
+      `DELETE FROM speech_items WHERE status IN ('skipped', 'failed', 'expired') AND created_at < ${Date.now() - 3600_000}`
+    )
+    this.db.exec(
+      `DELETE FROM speech_items WHERE status = 'done' AND id NOT IN (
+        SELECT id FROM speech_items WHERE status = 'done' ORDER BY played_at DESC LIMIT 200
+      )`
+    )
+  }
+
+  close(): void {
+    this.db.close()
   }
 }

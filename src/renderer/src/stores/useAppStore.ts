@@ -1,5 +1,13 @@
 import { create } from 'zustand'
-import { APP_THEMES, DEFAULT_CONFIG, type AppTheme } from '../../../shared/types'
+import {
+  APP_THEMES,
+  DEFAULT_CONFIG,
+  ttsConfigured,
+  type AppConfig,
+  type AppTheme,
+  type PartialDeep,
+  type PoolSnapshot
+} from '../../../shared/types'
 import { applyAppearance, readCachedTheme, resolveAppTheme, type ResolvedAppTheme } from '../theme/applyAppearance'
 
 /** 六个导航页。key 同时用作路由和 store 状态。 */
@@ -12,25 +20,35 @@ const bootTheme = readCachedTheme()
 interface AppState {
   page: NavPage
   setPage: (page: NavPage) => void
+
   theme: AppTheme
   resolvedApp: ResolvedAppTheme
-  loadConfig: () => Promise<void>
   setTheme: (theme: AppTheme) => Promise<void>
   syncSystemTheme: () => void
+
+  config: AppConfig
+  loadConfig: () => Promise<void>
+  saveConfig: (patch: PartialDeep<AppConfig>) => Promise<void>
+
+  /** 话术池快照（主进程广播驱动） */
+  pool: PoolSnapshot
+  setPool: (snapshot: PoolSnapshot) => void
+
+  /** 播放循环开关 */
+  loopRunning: boolean
+  setLoopRunning: (running: boolean) => void
+
+  /** 音频引擎电平 */
+  levels: { tts: number; master: number }
+  setLevels: (levels: { tts: number; master: number }) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
   page: 'live',
-  theme: bootTheme,
-  resolvedApp: resolveAppTheme(bootTheme),
-
   setPage: (page) => set({ page }),
 
-  loadConfig: async () => {
-    const config = await window.api.config.get()
-    const theme = APP_THEMES.find((id) => id === config.theme) ?? DEFAULT_CONFIG.theme
-    set({ theme, resolvedApp: applyAppearance(theme) })
-  },
+  theme: bootTheme,
+  resolvedApp: resolveAppTheme(bootTheme),
 
   setTheme: async (theme) => {
     const prev = get().theme
@@ -47,5 +65,35 @@ export const useAppStore = create<AppState>()((set, get) => ({
   syncSystemTheme: () => {
     if (get().theme !== 'system') return
     set({ resolvedApp: applyAppearance(get().theme, false) })
-  }
+  },
+
+  config: DEFAULT_CONFIG,
+  loadConfig: async () => {
+    const config = await window.api.config.get()
+    const theme = APP_THEMES.find((id) => id === config.theme) ?? DEFAULT_CONFIG.theme
+    set({ config, theme, resolvedApp: applyAppearance(theme) })
+  },
+
+  saveConfig: async (patch) => {
+    const prev = get().config
+    const saved = await window.api.config.set(patch)
+    set({ config: saved })
+    if (saved.theme !== prev.theme) {
+      set({ theme: saved.theme, resolvedApp: applyAppearance(saved.theme) })
+    }
+  },
+
+  pool: { items: [], failed: [] },
+  setPool: (pool) => set({ pool }),
+
+  loopRunning: false,
+  setLoopRunning: (loopRunning) => set({ loopRunning }),
+
+  levels: { tts: 0, master: 0 },
+  setLevels: (levels) => set({ levels })
 }))
+
+/** TTS 是否已配置（状态栏徽章用） */
+export function selectTtsReady(config: AppConfig): boolean {
+  return ttsConfigured(config.tts)
+}

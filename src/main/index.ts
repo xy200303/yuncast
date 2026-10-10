@@ -1,15 +1,34 @@
-import { app, BrowserWindow, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Menu, net, protocol, shell } from 'electron'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { IPC } from '../shared/ipc-channels'
-import { APP_THEMES, type AppConfig, type AppInfo } from '../shared/types'
+import {
+  type AppConfig,
+  type AppInfo,
+  type PartialDeep,
+  type PoolResult,
+  type PoolSayInput,
+  type PoolSnapshot,
+  type SpeechItem,
+  type SpeechLane
+} from '../shared/types'
 import { StorageService } from './services/StorageService'
+import { TtsService } from './services/TtsService'
+import { SpeechPool } from './services/SpeechPool'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
 app.setPath('userData', join(app.getPath('appData'), 'AgentAnchor'))
 
+// 自定义媒体协议：渲染进程经 WebAudio 播放 audio-cache 内的合成音频（火山 mp3 / 百炼 wav）。
+// dev 环境页面是 http://，无法直接引用 file:// 资源。
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }
+])
+
 let mainWindow: BrowserWindow | null = null
+let pool: SpeechPool | null = null
 
 /** Windows 上标题栏覆盖层偶发把第一帧停在白底。显示后改一次尺寸让系统重画；画面仍是空的就重新加载。 */
 function recoverBlankWindow(win: BrowserWindow): void {
@@ -76,7 +95,7 @@ function recoverBlankWindow(win: BrowserWindow): void {
 }
 
 function createWindow(storage: StorageService): void {
-  const dark = followAppTheme(storage.get('theme'))
+  const dark = followAppTheme(storage.getConfig().theme)
   const win = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -120,17 +139,53 @@ function createWindow(storage: StorageService): void {
   }
 }
 
-function registerIpc(storage: StorageService): void {
+/** 池快照广播给所有窗口 */
+function broadcastPool(snapshot: PoolSnapshot): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.poolSnapshotEvent, snapshot)
+  }
+}
+
+/** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
+function guard(fn: () => SpeechItem): PoolResult<SpeechItem>
+function guard(fn: () => void): PoolResult
+function guard(fn: () => SpeechItem | void): PoolResult<SpeechItem> | PoolResult {
+  try {
+    const result = fn()
+    return result ? { ok: true, item: result } : { ok: true }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function registerIpc(storage: StorageService, tts: TtsService, pool: SpeechPool): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
     version: app.getVersion(),
     platform: process.platform
   }))
   ipcMain.handle(IPC.configGet, () => storage.getConfig())
-  ipcMain.handle(IPC.configSet, (_event, patch: Partial<AppConfig>) => {
-    if (patch.theme && APP_THEMES.includes(patch.theme)) storage.set('theme', patch.theme)
-    return storage.getConfig()
-  })
+  ipcMain.handle(IPC.configSet, (_event, patch: PartialDeep<AppConfig>) => storage.setConfig(patch))
+
+  // ---------- 话术池 ----------
+  ipcMain.handle(IPC.poolSay, (_e, input: PoolSayInput) => guard(() => pool.say(input)))
+  ipcMain.handle(IPC.poolInsertNext, (_e, input: Omit<PoolSayInput, 'lane'>) =>
+    guard(() => pool.insertNext(input))
+  )
+  ipcMain.handle(IPC.poolRevise, (_e, id: string, text: string) =>
+    guard(() => pool.revise(id, text))
+  )
+  ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
+  ipcMain.handle(IPC.poolReorder, (_e, ids: string[]) => guard(() => pool.reorder(ids)))
+  ipcMain.handle(IPC.poolClearLane, (_e, lane: SpeechLane) => guard(() => pool.clearLane(lane)))
+  ipcMain.handle(IPC.poolStatus, () => pool.getStatus())
+  ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) => pool.getRecentPlayed(n))
+  ipcMain.handle(IPC.poolNext, () => pool.next())
+  ipcMain.handle(IPC.poolMarkDone, (_e, id: string) => pool.markDone(id))
+  ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
+
+  // ---------- TTS ----------
+  ipcMain.handle(IPC.ttsTest, (_e, text: string) => tts.test(String(text ?? '').slice(0, 200)))
 }
 
 const single = app.requestSingleInstanceLock()
@@ -148,10 +203,24 @@ if (!single) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     watchSystemChrome()
+
     const storage = new StorageService()
+    const tts = new TtsService(storage)
+    pool = new SpeechPool(storage, tts, broadcastPool)
+
+    // media:// 只服务 audio-cache 目录里的 basename，拒绝任何路径穿越
+    protocol.handle('media', (request) => {
+      const url = new URL(request.url)
+      const requestedName = decodeURIComponent(url.pathname).replace(/^\//, '')
+      if (!requestedName || requestedName !== basename(requestedName)) {
+        return new Response('Forbidden', { status: 403 })
+      }
+      return net.fetch(pathToFileURL(join(tts.audioCacheDir(), requestedName)).toString())
+    })
+
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
-    storage.onChange(() => paintAllWindows(storage.get('theme')))
-    registerIpc(storage)
+    storage.onConfigChange((config) => paintAllWindows(config.theme))
+    registerIpc(storage, tts, pool)
     createWindow(storage)
 
     app.on('activate', () => {
@@ -161,5 +230,6 @@ if (!single) {
 }
 
 app.on('window-all-closed', () => {
+  pool?.dispose()
   if (process.platform !== 'darwin') app.quit()
 })

@@ -1,6 +1,8 @@
 import { useEffect, type ComponentType } from 'react'
+import { toast } from 'sonner'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { Toaster } from '@/components/ui/sonner'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from './components/Sidebar'
 import { DragStrip } from './components/DragStrip'
@@ -12,6 +14,8 @@ import { SessionsPage } from './components/SessionsPage'
 import { StatsPage } from './components/StatsPage'
 import { SettingsPage } from './components/SettingsPage'
 import { useAppStore, type NavPage } from './stores/useAppStore'
+import { audioEngine } from './audio/engine'
+import { playbackLoop } from './audio/playbackLoop'
 
 const PAGES: Record<NavPage, ComponentType> = {
   live: LivePage,
@@ -26,6 +30,9 @@ export default function App() {
   const page = useAppStore((s) => s.page)
   const loadConfig = useAppStore((s) => s.loadConfig)
   const syncSystemTheme = useAppStore((s) => s.syncSystemTheme)
+  const setPool = useAppStore((s) => s.setPool)
+  const setLevels = useAppStore((s) => s.setLevels)
+  const setLoopRunning = useAppStore((s) => s.setLoopRunning)
 
   useEffect(() => {
     loadConfig()
@@ -34,6 +41,29 @@ export default function App() {
     themeQuery.addEventListener('change', onTheme)
     return () => themeQuery.removeEventListener('change', onTheme)
   }, [loadConfig, syncSystemTheme])
+
+  // 音频引擎 + 话术池订阅 + 播放循环（应用级单例，挂载即运行）
+  useEffect(() => {
+    audioEngine.init({ onLevels: setLevels })
+    const offSnapshot = window.api.pool.onSnapshot((snapshot) => {
+      const prevFailed = new Set(useAppStore.getState().pool.failed.map((item) => item.id))
+      for (const item of snapshot.failed) {
+        if (!prevFailed.has(item.id)) {
+          toast.error('合成失败', { description: `${item.text.slice(0, 40)}：${item.error ?? '未知原因'}` })
+        }
+      }
+      setPool(snapshot)
+      playbackLoop.kick()
+    })
+    void window.api.pool.snapshot().then(setPool)
+    playbackLoop.start()
+    setLoopRunning(true)
+    return () => {
+      offSnapshot()
+      playbackLoop.stop()
+      setLoopRunning(false)
+    }
+  }, [setPool, setLevels, setLoopRunning])
 
   return (
     <TooltipProvider>
@@ -54,6 +84,7 @@ export default function App() {
           </div>
           <StatusBar />
         </SidebarInset>
+        <Toaster />
       </SidebarProvider>
     </TooltipProvider>
   )

@@ -12,7 +12,7 @@ import { AnchorsPage } from './components/AnchorsPage'
 import { KnowledgePage } from './components/KnowledgePage'
 import { SessionsPage } from './components/SessionsPage'
 import { StatsPage } from './components/StatsPage'
-import { SettingsPage } from './components/SettingsPage'
+import { SettingsDialog } from './components/SettingsDialog'
 import { useAppStore, type NavPage } from './stores/useAppStore'
 import { audioEngine } from './audio/engine'
 import { playbackLoop } from './audio/playbackLoop'
@@ -22,8 +22,7 @@ const PAGES: Record<NavPage, ComponentType> = {
   anchors: AnchorsPage,
   knowledge: KnowledgePage,
   sessions: SessionsPage,
-  stats: StatsPage,
-  settings: SettingsPage
+  stats: StatsPage
 }
 
 export default function App() {
@@ -90,7 +89,7 @@ export default function App() {
         <AppSidebar />
         <SidebarInset className="min-h-0 overflow-hidden">
           <DragStrip />
-          {/* 六个页面常驻不卸载，只切换显隐（不用会卸载内容的 Tabs 组件） */}
+          {/* 五个页面常驻不卸载，只切换显隐（不用会卸载内容的 Tabs 组件） */}
           <div className="flex min-h-0 flex-1 flex-col">
             {(Object.keys(PAGES) as NavPage[]).map((id) => {
               const Page = PAGES[id]
@@ -103,6 +102,7 @@ export default function App() {
           </div>
           <StatusBar />
         </SidebarInset>
+        <SettingsDialog />
         <Toaster />
       </SidebarProvider>
     </TooltipProvider>

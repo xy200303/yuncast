@@ -24,8 +24,7 @@ export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon }[] = [
   { id: 'anchors', label: '主播团', icon: Bot },
   { id: 'knowledge', label: '知识库', icon: BookOpen },
   { id: 'sessions', label: '场次', icon: CalendarDays },
-  { id: 'stats', label: '数据', icon: BarChart3 },
-  { id: 'settings', label: '设置', icon: Settings }
+  { id: 'stats', label: '数据', icon: BarChart3 }
 ]
 
 /**
@@ -94,6 +93,30 @@ export function AppSidebar() {
           )
         })}
       </nav>
+
+      {/* 底部：设置入口（弹窗，不占页面流） */}
+      <div className={cn('shrink-0 border-t p-2', collapsed && 'flex justify-center px-1')}>
+        {(() => {
+          const button = (
+            <Button
+              variant="ghost"
+              size={collapsed ? 'icon-sm' : 'sm'}
+              className={cn(!collapsed && 'w-full justify-start gap-2')}
+              onClick={() => useAppStore.getState().setSettingsOpen(true)}
+            >
+              <Settings />
+              {!collapsed && <span>设置</span>}
+            </Button>
+          )
+          if (!collapsed) return button
+          return (
+            <Tooltip>
+              <TooltipTrigger asChild>{button}</TooltipTrigger>
+              <TooltipContent side="right">设置</TooltipContent>
+            </Tooltip>
+          )
+        })()}
+      </div>
     </div>
   )
 }

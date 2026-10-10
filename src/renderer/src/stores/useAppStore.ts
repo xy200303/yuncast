@@ -12,8 +12,8 @@ import {
 } from '../../../shared/types'
 import { applyAppearance, readCachedTheme, resolveAppTheme, type ResolvedAppTheme } from '../theme/applyAppearance'
 
-/** 六个导航页。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'anchors', 'knowledge', 'sessions', 'stats', 'settings'] as const
+/** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
+export const NAV_PAGES = ['live', 'anchors', 'knowledge', 'sessions', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 
 // 启动时先用 localStorage 缓存的主题，避免等 IPC 回来闪一下白/黑
@@ -22,6 +22,10 @@ const bootTheme = readCachedTheme()
 interface AppState {
   page: NavPage
   setPage: (page: NavPage) => void
+
+  /** 设置弹窗开关（设置不是页面，是全局弹窗，对齐 TermPilot） */
+  settingsOpen: boolean
+  setSettingsOpen: (open: boolean) => void
 
   theme: AppTheme
   resolvedApp: ResolvedAppTheme
@@ -56,6 +60,9 @@ interface AppState {
 export const useAppStore = create<AppState>()((set, get) => ({
   page: 'live',
   setPage: (page) => set({ page }),
+
+  settingsOpen: false,
+  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
   theme: bootTheme,
   resolvedApp: resolveAppTheme(bootTheme),

@@ -1,12 +1,13 @@
 import { useState } from 'react'
-import { Monitor, Moon, Settings, Sun } from 'lucide-react'
+import { Cable, Monitor, Moon, Palette, Sun } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import {
@@ -20,89 +21,121 @@ import {
   type TtsProvider
 } from '../../../shared/types'
 
+type Pane = 'appearance' | 'access'
+
+const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
+  { id: 'appearance', label: '外观', icon: Palette },
+  { id: 'access', label: '接入', icon: Cable }
+]
+
 const THEME_OPTIONS: { id: AppTheme; label: string; icon: typeof Sun }[] = [
   { id: 'light', label: '浅色', icon: Sun },
   { id: 'dark', label: '深色', icon: Moon },
   { id: 'system', label: '跟随系统', icon: Monitor }
 ]
 
-/** 设置页。选项卡组织：外观 / 接入（M2 接入 TTS，LLM/推流/评论继续占位）。 */
-export function SettingsPage() {
+/** 设置：全局弹窗（对齐 TermPilot），左侧栏目、右侧当前项。从侧边栏底部入口打开。 */
+export function SettingsDialog() {
+  const open = useAppStore((s) => s.settingsOpen)
+  const setOpen = useAppStore((s) => s.setSettingsOpen)
+  const [pane, setPane] = useState<Pane>('appearance')
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogContent
+        showCloseButton
+        className="flex h-[min(640px,85vh)] w-[min(880px,calc(100%-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+      >
+        <DialogTitle className="sr-only">设置</DialogTitle>
+        <div className="flex min-h-0 flex-1">
+          <nav className="flex w-44 shrink-0 flex-col gap-1 border-r bg-muted/40 p-3">
+            <div className="px-2 py-1.5 text-sm font-medium">设置</div>
+            {PANES.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={cn(
+                  'flex items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm',
+                  pane === item.id ? 'bg-background font-medium shadow-sm' : 'hover:bg-background/70'
+                )}
+                onClick={() => setPane(item.id)}
+              >
+                <item.icon className="size-4 shrink-0" />
+                {item.label}
+              </button>
+            ))}
+          </nav>
+          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+            {pane === 'appearance' ? <AppearancePane /> : <AccessPane />}
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function AppearancePane() {
   const theme = useAppStore((s) => s.theme)
   const setTheme = useAppStore((s) => s.setTheme)
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Settings className="size-4 text-primary" />
-        <h1 className="text-sm font-medium">设置</h1>
-      </header>
-      <Tabs defaultValue="appearance" className="min-h-0 flex-1 gap-0">
-        <div className="shrink-0 border-b px-4 pt-2">
-          <TabsList variant="line">
-            <TabsTrigger value="appearance" className="px-3">外观</TabsTrigger>
-            <TabsTrigger value="access" className="px-3">接入</TabsTrigger>
-          </TabsList>
+    <section>
+      <h2 className="text-sm font-medium">外观</h2>
+      <div className="mt-3 flex items-center justify-between rounded-lg border bg-card px-4 py-3">
+        <div>
+          <p className="text-[13px]">主题</p>
+          <p className="text-xs text-muted-foreground">界面配色，跟随系统时随系统自动切换</p>
         </div>
-
-        <TabsContent value="appearance" className="overflow-auto p-6">
-          <section className="max-w-xl">
-            <div className="flex items-center justify-between rounded-lg border bg-card px-4 py-3">
-              <div>
-                <p className="text-[13px]">主题</p>
-                <p className="text-xs text-muted-foreground">界面配色，跟随系统时随系统自动切换</p>
-              </div>
-              <ToggleGroup
-                type="single"
-                value={theme}
-                onValueChange={(v) => {
-                  if (!v) return
-                  setTheme(v as AppTheme).catch((e) =>
-                    toast.error('保存主题失败', { description: e instanceof Error ? e.message : String(e) })
-                  )
-                }}
-                className="rounded-lg bg-muted p-0.5"
+        <ToggleGroup
+          type="single"
+          value={theme}
+          onValueChange={(v) => {
+            if (!v) return
+            setTheme(v as AppTheme).catch((e) =>
+              toast.error('保存主题失败', { description: e instanceof Error ? e.message : String(e) })
+            )
+          }}
+          className="rounded-lg bg-muted p-0.5"
+        >
+          {THEME_OPTIONS.map((option) => {
+            const Icon = option.icon
+            return (
+              <ToggleGroupItem
+                key={option.id}
+                value={option.id}
+                className="h-7 gap-1.5 rounded-md px-3 text-[13px] data-[state=on]:bg-background data-[state=on]:shadow-sm"
               >
-                {THEME_OPTIONS.map((option) => {
-                  const Icon = option.icon
-                  return (
-                    <ToggleGroupItem
-                      key={option.id}
-                      value={option.id}
-                      className="h-7 gap-1.5 rounded-md px-3 text-[13px] data-[state=on]:bg-background data-[state=on]:shadow-sm"
-                    >
-                      <Icon className="size-3.5" />
-                      {option.label}
-                    </ToggleGroupItem>
-                  )
-                })}
-              </ToggleGroup>
-            </div>
-          </section>
-        </TabsContent>
+                <Icon className="size-3.5" />
+                {option.label}
+              </ToggleGroupItem>
+            )
+          })}
+        </ToggleGroup>
+      </div>
+    </section>
+  )
+}
 
-        <TabsContent value="access" className="overflow-auto p-6">
-          <section className="max-w-xl">
-            <LlmSection />
-            <div className="mt-3">
-              <TtsSection />
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-3">
-              {['推流', '评论接入'].map((name) => (
-                <div
-                  key={name}
-                  className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground"
-                >
-                  {name}
-                  <br />
-                  后续里程碑开放
-                </div>
-              ))}
-            </div>
-          </section>
-        </TabsContent>
-      </Tabs>
-    </div>
+function AccessPane() {
+  return (
+    <section className="max-w-xl">
+      <LlmSection />
+      <div className="mt-3">
+        <TtsSection />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        {['推流', '评论接入'].map((name) => (
+          <div
+            key={name}
+            className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground"
+          >
+            {name}
+            <br />
+            后续里程碑开放
+          </div>
+        ))}
+      </div>
+    </section>
   )
 }
 
@@ -195,7 +228,8 @@ function LlmSection() {
   )
 }
 
-/** TTS 双通道表单（火山引擎 / 阿里云百炼），字段照旧版 SettingsView */function TtsSection() {
+/** TTS 双通道表单（火山引擎 / 阿里云百炼） */
+function TtsSection() {
   const config = useAppStore((s) => s.config)
   const saveConfig = useAppStore((s) => s.saveConfig)
   const [form, setForm] = useState<TtsConfig>({ ...config.tts })

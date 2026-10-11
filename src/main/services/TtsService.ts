@@ -12,6 +12,18 @@ import type { StorageService } from './StorageService'
 
 const VOLCANO_TTS_URL = 'https://openspeech.bytedance.com/api/v1/tts'
 const BAILIAN_TTS_PATH = '/services/aigc/multimodal-generation/generation'
+/** 百炼端点按模型系列区分（端点不可混用）：Qwen-TTS 走通用端点，其余走 maas 业务空间端点 */
+const BAILIAN_QWEN_TTS_PREFIX = 'qwen3-tts'
+const MAAS_TTS_PATH = '/services/audio/tts/SpeechSynthesizer'
+const MAAS_BASE = '.cn-beijing.maas.aliyuncs.com/api/v1'
+const MAAS_REGION_SUFFIX = '.cn-beijing.maas.aliyuncs.com'
+
+interface BailianTarget {
+  url: string
+  body: Record<string, unknown>
+}
+
+
 const REQUEST_TIMEOUT_MS = 30000
 
 interface VolcanoTtsRequest {
@@ -135,18 +147,15 @@ export class TtsService {
     const voice = voiceId || tts.voiceId
     if (!voice) throw new Error('未选择百炼音色（voiceId 为空）')
 
-    const baseUrl = (tts.baseUrl || 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
-    const res = await fetch(`${baseUrl}${BAILIAN_TTS_PATH}`, {
+    const target = this.buildBailianTarget(text, voice, { stream: true })
+    const res = await fetch(target.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${tts.apiKey}`,
         'X-DashScope-SSE': 'enable'
       },
-      body: JSON.stringify({
-        model: tts.model,
-        input: { text, voice, language_type: tts.languageType || 'Chinese' }
-      }),
+      body: JSON.stringify(target.body),
       signal: this.combinedSignal(signal)
     })
     if (!res.ok) {
@@ -189,8 +198,58 @@ export class TtsService {
           }
           const base64 = frame.output?.audio?.data
           if (base64) {
-            yield { pcm: Buffer.from(base64, 'base64'), sampleRate: 24000 }
+            // 流式固定要 pcm（见 buildBailianTarget），采样率跟随配置
+            yield { pcm: Buffer.from(base64, 'base64'), sampleRate: tts.sampleRate || 24000 }
           }
+        }
+      }
+    }
+  }
+
+  /** 依据模型名与配置，构造百炼请求的端点与请求体（端点系列见 docs/02 §端点多系列） */
+  private buildBailianTarget(
+    text: string,
+    voice: string,
+    extra: { stream: boolean }
+  ): BailianTarget {
+    const { tts } = this.storage.getConfig()
+    const base = (tts.baseUrl || 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
+    const instruction = tts.instruction?.trim()
+
+    // Qwen-TTS 系列（qwen3-tts-flash）：通用端点 + multimodal-generation 请求体
+    if (tts.model.startsWith(BAILIAN_QWEN_TTS_PREFIX)) {
+      return {
+        url: `${base}${BAILIAN_TTS_PATH}`,
+        body: {
+          model: tts.model,
+          input: {
+            text,
+            voice,
+            language_type: tts.languageType || 'Chinese',
+            ...(instruction ? { instruction } : {})
+          }
+        }
+      }
+    }
+
+    // 其余系列（Qwen-Audio-TTS / CosyVoice / MiniMax）：maas 端点，需要业务空间 ID
+    if (!tts.workspaceId) {
+      throw new Error(
+        `模型 ${tts.model} 需要「业务空间 ID」（设置 → 语音合成）：端点形如 https://{业务空间ID}.cn-beijing.maas.aliyuncs.com`
+      )
+    }
+    const maasBase = `https://${tts.workspaceId}${MAAS_BASE}`
+    void MAAS_REGION_SUFFIX
+    return {
+      url: `${maasBase}${MAAS_TTS_PATH}`,
+      body: {
+        model: tts.model,
+        input: {
+          text,
+          voice,
+          format: extra.stream ? 'pcm' : tts.format,
+          sample_rate: tts.sampleRate,
+          ...(instruction ? { instruction } : {})
         }
       }
     }
@@ -208,21 +267,14 @@ export class TtsService {
     const voice = voiceId || tts.voiceId
     if (!voice) throw new Error('未选择百炼音色（voiceId 为空）')
 
-    const baseUrl = (tts.baseUrl || 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
-    const res = await fetch(`${baseUrl}${BAILIAN_TTS_PATH}`, {
+    const target = this.buildBailianTarget(text, voice, { stream: false })
+    const res = await fetch(target.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${tts.apiKey}`
       },
-      body: JSON.stringify({
-        model: tts.model,
-        input: {
-          text,
-          voice,
-          language_type: tts.languageType || 'Chinese'
-        }
-      }),
+      body: JSON.stringify(target.body),
       signal: this.combinedSignal(signal)
     })
     if (!res.ok) {

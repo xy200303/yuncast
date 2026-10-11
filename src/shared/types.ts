@@ -43,6 +43,17 @@ export interface TtsConfig {
   speed: number
   /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
   realtime: boolean
+  /**
+   * 百炼业务空间 ID：Qwen-Audio-TTS / CosyVoice / MiniMax 系列的端点形如
+   * https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/...，与 Qwen-TTS 的通用端点不可混用
+   */
+  workspaceId: string
+  /** 语气指令（instruction，≤100 字符）：自然语言描述语音表现，如「语速稍快，语气热情」 */
+  instruction: string
+  /** 输出音频格式：mp3 兼容性最好；pcm 适合流式（无需解码，直接喂播放器/混音器） */
+  format: 'mp3' | 'wav' | 'pcm'
+  /** 输出采样率（Hz） */
+  sampleRate: number
 }
 
 export const DEFAULT_TTS_CONFIG: TtsConfig = {
@@ -56,7 +67,11 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   languageType: 'Chinese',
   voiceId: '',
   speed: 1.0,
-  realtime: false
+  realtime: false,
+  workspaceId: '',
+  instruction: '',
+  format: 'mp3',
+  sampleRate: 24000
 }
 
 /** 该服务商是否已具备合成所需的最小凭据 */
@@ -250,7 +265,14 @@ export function parseAppConfig(input: unknown): AppConfig {
       typeof ttsRow.languageType === 'string' ? ttsRow.languageType : DEFAULT_TTS_CONFIG.languageType,
     voiceId: typeof ttsRow.voiceId === 'string' ? ttsRow.voiceId : '',
     speed: typeof ttsRow.speed === 'number' && ttsRow.speed > 0 ? ttsRow.speed : 1.0,
-    realtime: ttsRow.realtime === true
+    realtime: ttsRow.realtime === true,
+    workspaceId: typeof ttsRow.workspaceId === 'string' ? ttsRow.workspaceId : '',
+    instruction: typeof ttsRow.instruction === 'string' ? ttsRow.instruction : '',
+    format:
+      ttsRow.format === 'wav' || ttsRow.format === 'pcm'
+        ? ttsRow.format
+        : 'mp3',
+    sampleRate: typeof ttsRow.sampleRate === 'number' && ttsRow.sampleRate > 0 ? ttsRow.sampleRate : 24000
   }
   const llmRow = row.llm && typeof row.llm === 'object' ? (row.llm as Record<string, unknown>) : {}
   const llmProvider = LLM_PROVIDERS.find((id) => id === llmRow.provider) ?? DEFAULT_LLM_CONFIG.provider

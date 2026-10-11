@@ -676,6 +676,54 @@ function TtsSection() {
             <Field label="模型" value={form.model} onChange={(v) => patch({ model: v })} placeholder="qwen3-tts-flash" />
             <Field label="API 地址" value={form.baseUrl} onChange={(v) => patch({ baseUrl: v })} placeholder="https://dashscope.aliyuncs.com/api/v1" />
             <Field label="语种" value={form.languageType} onChange={(v) => patch({ languageType: v })} placeholder="Chinese" />
+            <div className="col-span-2">
+              <Field
+                label="业务空间 ID（Qwen-Audio-TTS / CosyVoice / MiniMax 系列必需）"
+                value={form.workspaceId}
+                onChange={(v) => patch({ workspaceId: v })}
+                placeholder="模型名不以 qwen3-tts 开头时必须填；端点形如 https://{ID}.cn-beijing.maas.aliyuncs.com"
+              />
+            </div>
+            <div className="col-span-2">
+              <Field
+                label="语气指令 instruction（可选，≤100 字）"
+                value={form.instruction}
+                onChange={(v) => patch({ instruction: v })}
+                placeholder="例如：语速稍快，语气热情，像直播间卖货"
+              />
+            </div>
+            <div>
+              <Label className="mb-1">输出格式</Label>
+              <Select
+                value={form.format}
+                onValueChange={(v) => patch({ format: v as TtsConfig['format'] })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="mp3">MP3（兼容最好）</SelectItem>
+                  <SelectItem value="wav">WAV</SelectItem>
+                  <SelectItem value="pcm">PCM（流式推荐，免解码）</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="mb-1">采样率（Hz）</Label>
+              <Select
+                value={String(form.sampleRate)}
+                onValueChange={(v) => patch({ sampleRate: Number(v) })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="24000">24000（推荐）</SelectItem>
+                  <SelectItem value="16000">16000</SelectItem>
+                  <SelectItem value="48000">48000</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </>
         )}
         <div className="col-span-2">

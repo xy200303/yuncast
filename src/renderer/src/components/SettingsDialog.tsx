@@ -209,7 +209,6 @@ function CommentGatewayCard() {
   const connector = useAppStore((s) => s.connector)
   const config = useAppStore((s) => s.config)
   const saveConfig = useAppStore((s) => s.saveConfig)
-  const simRunning = useAppStore((s) => s.simRunning)
   const [port, setPort] = useState(String(config.comment.connectorPort))
   const [token, setToken] = useState(config.comment.connectorToken)
 
@@ -244,7 +243,7 @@ function CommentGatewayCard() {
           variant={connector.state === 'connected' ? 'secondary' : connector.state === 'error' ? 'destructive' : 'outline'}
           title={connector.error}
         >
-          {simRunning && connector.state !== 'connected' ? '模拟器中' : STATE_LABEL[connector.state]}
+          {STATE_LABEL[connector.state]}
         </Badge>
       </div>
       <div className="mt-3 grid grid-cols-[1fr_auto_auto] items-end gap-2">
@@ -253,7 +252,7 @@ function CommentGatewayCard() {
           <Input value={port} onChange={(e) => setPort(e.target.value)} placeholder="8102" />
         </div>
         <div className="col-span-3">
-          <Label className="mb-1">Bearer Token（连接器「设置 → 开放接口」里复制）</Label>
+          <Label className="mb-1">Bearer Token（连接器「设置 → 智能体接口」里复制）</Label>
           <Input
             type="password"
             value={token}
@@ -276,7 +275,7 @@ function CommentGatewayCard() {
         </div>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        连接器没开时会自动退避重试；开发调试可用直播台的「模拟评论」（内置假连接器，走同一条事件总线）。
+        连接器没开时会自动退避重试；开发调试可单独运行连接器的独立模式（内置演示数据，走同一条事件总线）。
       </p>
     </div>
   )

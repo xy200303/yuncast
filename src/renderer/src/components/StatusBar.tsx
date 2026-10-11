@@ -10,7 +10,6 @@ export function StatusBar() {
   const agentState = useAppStore((s) => s.agent.state)
   const stream = useAppStore((s) => s.stream)
   const connector = useAppStore((s) => s.connector)
-  const simRunning = useAppStore((s) => s.simRunning)
   const current = NAV_ITEMS.find((item) => item.id === page)
   const playing = pool.items.find((item) => item.status === 'playing')
   const ttsReady = selectTtsReady(config)
@@ -27,7 +26,6 @@ export function StatusBar() {
 
   const gatewayBadge = (() => {
     if (connector.state === 'connected') return { variant: 'secondary' as const, text: '连接器已连接' }
-    if (simRunning) return { variant: 'secondary' as const, text: '评论模拟器中' }
     if (connector.state === 'connecting') return { variant: 'outline' as const, text: '连接器连接中…' }
     return { variant: 'outline' as const, text: '评论未接入' }
   })()

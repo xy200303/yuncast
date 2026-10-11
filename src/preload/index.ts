@@ -21,7 +21,6 @@ import type {
   ProductInput,
   Script,
   ScriptInput,
-  SimulatorStatus,
   SpeechItem,
   SpeechLane,
   StreamStats,
@@ -91,13 +90,8 @@ const api = {
     save: (input: Omit<Persona, 'id' | 'updatedAt'>) =>
       ipcRenderer.invoke(IPC.personaSave, input) as Promise<Persona>
   },
-  sim: {
-    start: () => ipcRenderer.invoke(IPC.simStart) as Promise<SimulatorStatus>,
-    stop: () => ipcRenderer.invoke(IPC.simStop) as Promise<SimulatorStatus>,
-    status: () => ipcRenderer.invoke(IPC.simStatus) as Promise<SimulatorStatus>
-  },
   comment: {
-    /** 订阅评论事件（M3 来自模拟器），返回取消订阅函数 */
+    /** 订阅评论事件（来自连接器），返回取消订阅函数 */
     onComment: (cb: (comment: LiveComment) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, comment: LiveComment) => cb(comment)
       ipcRenderer.on(IPC.commentEvent, listener)

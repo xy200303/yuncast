@@ -227,7 +227,7 @@ function CommentList({ comments }: { comments: LiveComment[] }) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
         <MessageSquareText className="size-8" strokeWidth={1.25} />
-        <p className="text-sm">还没有评论，开「模拟评论」试试</p>
+        <p className="text-sm">还没有评论，开连接器的演示模式试试</p>
       </div>
     )
   }
@@ -399,18 +399,6 @@ function ControlPanel() {
   const [broadcastOpen, setBroadcastOpen] = useState(false)
   const [panicOpen, setPanicOpen] = useState(false)
   const [volumeOpen, setVolumeOpen] = useState(false)
-  const simRunning = useAppStore((s) => s.simRunning)
-  const setSimRunning = useAppStore((s) => s.setSimRunning)
-  const agentState = useAppStore((s) => s.agent.state)
-
-  const toggleSim = () => {
-    void (simRunning ? window.api.sim.stop() : window.api.sim.start()).then((status) => {
-      setSimRunning(status.running)
-      toast.message(status.running ? '模拟评论已开启' : '模拟评论已关闭', {
-        description: status.running ? '每 3-8 秒来一条观众评论' : undefined
-      })
-    })
-  }
 
   const panic = () => {
     setPanicOpen(false)
@@ -432,15 +420,6 @@ function ControlPanel() {
         <Button variant="outline" size="sm" onClick={() => setBroadcastOpen(true)}>
           <Megaphone />
           人工播报
-        </Button>
-        <Button
-          variant={simRunning ? 'secondary' : 'outline'}
-          size="sm"
-          onClick={toggleSim}
-          title={agentState === 'running' ? undefined : '主播未启动时评论只会进 toast，不会触发回复'}
-        >
-          <MessageSquareText />
-          {simRunning ? '关闭模拟评论' : '模拟评论'}
         </Button>
         <Button variant="outline" size="sm" disabled title="剧本场景上线后可用">
           <Clapperboard />

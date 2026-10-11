@@ -36,11 +36,7 @@ export const IPC = {
   personaGet: 'persona:get',
   personaSave: 'persona:save',
 
-  // 评论模拟器
-  simStart: 'sim:start',
-  simStop: 'sim:stop',
-  simStatus: 'sim:status',
-  /** main → renderer：模拟评论事件（toast 展示用） */
+  /** main → renderer：评论事件（toast 展示用） */
   commentEvent: 'comment:event',
 
   // 知识库

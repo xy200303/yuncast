@@ -137,7 +137,7 @@ export function StatsPage() {
 
         <TabsContent value="events" className="overflow-auto p-4">
           {events.length === 0 ? (
-            <EmptyState icon={Activity} text="还没有事件。开播或开模拟评论后这里会滚起来" />
+            <EmptyState icon={Activity} text="还没有事件。开播或启动连接器演示模式后这里会滚起来" />
           ) : (
             <div className="flex flex-col gap-1">
               {events.map((event) => {

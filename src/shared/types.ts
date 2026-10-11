@@ -375,18 +375,13 @@ export interface AgentStatus {
   scene?: { title: string; index: number; total: number }
 }
 
-// ---------- 评论（M3 来自模拟器，PipeSDK 真接入后续里程碑） ----------
+// ---------- 评论（来自连接器，docs/04） ----------
 
 export interface LiveComment {
   id: string
   author: string
   content: string
   ts: number
-}
-
-export interface SimulatorStatus {
-  running: boolean
-  count: number
 }
 
 // ---------- 知识库（docs/01 §4） ----------
@@ -602,7 +597,7 @@ export const INITIAL_STREAM_STATS: StreamStats = {
   durationSec: 0
 }
 
-// ---------- 评论接入（docs/04 解耦：本地连接器 WS 事件流 + 内置模拟器） ----------
+// ---------- 评论接入（docs/04 v2：本地连接器 MCP） ----------
 
 export type ConnectorState = 'idle' | 'connecting' | 'connected' | 'error'
 
@@ -613,7 +608,7 @@ export interface ConnectorStatus {
   receivedCount: number
 }
 
-// ---------- 评论接入（docs/04 解耦：连接器 + 内置模拟器） ----------
+// ---------- 评论接入配置 ----------
 
 export interface CommentConfig {
   /** 本地连接器 MCP 端口（v2 单一协议：事件推送 + 工具调用都走它） */

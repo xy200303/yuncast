@@ -33,7 +33,6 @@ export default function App() {
   const setLevels = useAppStore((s) => s.setLevels)
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
   const setAgent = useAppStore((s) => s.setAgent)
-  const setSimRunning = useAppStore((s) => s.setSimRunning)
   const setStream = useAppStore((s) => s.setStream)
   const setConnector = useAppStore((s) => s.setConnector)
 
@@ -75,7 +74,6 @@ export default function App() {
     if (!('api' in window)) return
     const offAgent = window.api.agent.onStatus(setAgent)
     void window.api.agent.status().then(setAgent)
-    void window.api.sim.status().then((s) => setSimRunning(s.running))
     void window.api.stream.stats().then(setStream)
     void window.api.connector.status().then(setConnector)
     const offStream = window.api.stream.onStats((stats) => {
@@ -94,7 +92,7 @@ export default function App() {
       offConnector()
       offComment()
     }
-  }, [setAgent, setSimRunning, setStream, setConnector])
+  }, [setAgent, setStream, setConnector])
 
   return (
     <TooltipProvider>

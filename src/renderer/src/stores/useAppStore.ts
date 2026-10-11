@@ -55,10 +55,6 @@ interface AppState {
   agent: AgentStatus
   setAgent: (status: AgentStatus) => void
 
-  /** 评论模拟器开关 */
-  simRunning: boolean
-  setSimRunning: (running: boolean) => void
-
   /** 推流状态（主进程广播驱动） */
   stream: StreamStats
   setStream: (stats: StreamStats) => void
@@ -122,9 +118,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   agent: { state: 'stopped', draft: '' },
   setAgent: (agent) => set({ agent }),
-
-  simRunning: false,
-  setSimRunning: (simRunning) => set({ simRunning }),
 
   stream: INITIAL_STREAM_STATS,
   setStream: (stream) => set({ stream }),

@@ -27,7 +27,6 @@ import { TtsService } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
 import { PersonaService } from './services/PersonaService'
 import { AgentService } from './services/AgentService'
-import { CommentSimulator } from './services/CommentSimulator'
 import { KnowledgeService } from './services/KnowledgeService'
 import { MemoryService } from './services/MemoryService'
 import { EventBus } from './services/EventBus'
@@ -223,7 +222,6 @@ function registerIpc(
   pool: SpeechPool,
   agent: AgentService,
   persona: PersonaService,
-  sim: CommentSimulator,
   knowledge: KnowledgeService,
   memory: MemoryService,
   bus: EventBus,
@@ -291,17 +289,6 @@ function registerIpc(
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
   ipcMain.handle(IPC.personaSave, (_e, input: Omit<Persona, 'id' | 'updatedAt'>) => persona.save(input))
-
-  // ---------- 评论模拟器 ----------
-  ipcMain.handle(IPC.simStart, () => {
-    sim.start()
-    return sim.status()
-  })
-  ipcMain.handle(IPC.simStop, () => {
-    sim.stop()
-    return sim.status()
-  })
-  ipcMain.handle(IPC.simStatus, () => sim.status())
 
   // ---------- 知识库 ----------
   ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listProducts())
@@ -437,7 +424,7 @@ if (!single) {
     triggers = new TriggerRuntime(storage, bus, pool, agent)
     streamSvc = new StreamService(storage, broadcastStream)
 
-    // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（连接器/模拟器下游无感知）
+    // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（任何事件源下游都无感知）
     bus.subscribe((event) => {
       if (event.type !== 'comment.new') return
       const comment: LiveComment = {
@@ -451,20 +438,7 @@ if (!single) {
       broadcastComment(comment)
     })
 
-    // 模拟器 = 内置假连接器（docs/04）：产出只进事件总线
-    const sim = new CommentSimulator((event) => {
-      if (event.type === 'comment.new') {
-        bus?.emit(
-          'comment.new',
-          { id: event.comment.id, author: event.comment.author, content: event.comment.content, ts: event.comment.ts, simulated: true },
-          'system'
-        )
-      } else {
-        bus?.emit(event.type, event.payload, 'system')
-      }
-    })
-
-    // 平台连接器：订阅本地连接器 WS 事件流，断线退避重连
+    // 平台连接器：MCP 客户端，事件流注入事件总线，断线退避重连
     connector = new ConnectorService(storage, bus, broadcastConnector)
     connector.start()
     // 端口改了重连
@@ -499,7 +473,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers, script, streamSvc, connector)
+    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector)
     createWindow(storage)
 
     app.on('activate', () => {

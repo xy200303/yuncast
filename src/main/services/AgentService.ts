@@ -124,7 +124,7 @@ export class AgentService {
     await this.start()
   }
 
-  /** 评论入口（模拟器 / 后续 PipeSDK）：主播自己决定回不回、怎么回。老粉画像随评论注入。 */
+  /** 评论入口（连接器）：主播自己决定回不回、怎么回。老粉画像随评论注入。 */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     // 先查画像（老粉识别），再记一次互动

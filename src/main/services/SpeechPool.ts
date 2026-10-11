@@ -52,6 +52,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * 实时合成开启后仍然预合成的话术类型：文本在入池时就已确定（剧本/暖场），
+ * 提前合成好则播出零延迟；动态生成的回复类内容才值得为"最快首包"牺牲预合成。
+ */
+const PRE_SYNTH_KINDS: SpeechItem['source']['kind'][] = ['scene', 'filler']
+
 export class SpeechPool {
   /** 预合成任务的取消令牌（被挤出窗口时 abort） */
   private synthJobs = new Map<string, AbortController>()
@@ -287,8 +293,10 @@ export class SpeechPool {
   }
 
   private async synthesize(item: SpeechItem): Promise<void> {
-    // 实时合成模式：不预合成文件，直接标 ready+stream，播出时由渲染进程流式合成（首包延迟最低）
-    if (this.storage.getConfig().tts.realtime) {
+    // 混合策略（tts.realtime 开启时）：
+    // - 文本已知的剧情/暖场话术 → 照常预合成成文件（提前备好，播出零延迟）
+    // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时流式合成（首包延迟最低）
+    if (this.storage.getConfig().tts.realtime && !PRE_SYNTH_KINDS.includes(item.source.kind)) {
       this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
       this.broadcast(this.snapshot())
       return

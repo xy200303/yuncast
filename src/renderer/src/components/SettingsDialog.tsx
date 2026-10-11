@@ -581,10 +581,11 @@ function TtsSection() {
 
       <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
         <div>
-          <p className="text-[13px]">实时合成（流式播报）</p>
+          <p className="text-[13px]">实时合成（动态内容流式播报）</p>
           <p className="text-xs text-muted-foreground">
-            话术不再整段合成完才播，而是边合成边播，首包延迟最低。
-            百炼（Qwen-TTS）走官方 SSE 真流式；火山暂为「整段合成后按实时速率分块」的等效回退
+            开启后按内容分工：剧本/暖场话术文本已知，照常提前预合成（播出零延迟）；
+            评论回复等动态内容边合成边播，首包延迟最低。
+            百炼（Qwen-TTS）走官方 SSE 真流式；火山暂为等效回退
           </p>
         </div>
         <Switch

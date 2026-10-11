@@ -125,6 +125,18 @@ export function builtinTriggers(): TriggerInput[] {
           '直播进行一段时间了。先用 get_pool_status 看看话术池存货，再决定：补几句产品话术、做一波互动，还是继续当前节奏。别重复最近播过的。'
       },
       throttle: { maxPerSession: 12 }
+    },
+    {
+      name: '价格变动提醒',
+      enabled: true,
+      on: { event: 'product.price_changed' },
+      target: {
+        agentId: 'anchor',
+        mode: 'task',
+        promptTemplate:
+          '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；没有要改的就照常继续，不用特意播报。'
+      },
+      throttle: { cooldownMs: 10_000 }
     }
   ]
 }
@@ -146,13 +158,16 @@ export class TriggerRuntime {
     private readonly pool: SpeechPool,
     private readonly agent: AgentService
   ) {
-    if (this.storage.triggerList().length === 0) this.seedBuiltins()
+    this.seedMissingBuiltins()
     this.reload()
     bus.subscribe((event) => this.onEvent(event))
   }
 
-  private seedBuiltins(): void {
+  /** 内建触发器按名播种：库里缺的补上，已有的不动（用户可能改过） */
+  private seedMissingBuiltins(): void {
+    const existing = new Set(this.storage.triggerList().map((t) => t.name))
     for (const input of builtinTriggers()) {
+      if (existing.has(input.name)) continue
       this.storage.triggerSave({ ...input, id: `tr-${randomUUID().replace(/-/g, '').slice(0, 10)}` })
     }
   }

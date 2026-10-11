@@ -96,19 +96,29 @@ export const DEFAULT_TRIGGER_CONFIG: TriggerConfig = {
   maxLlmPerMinute: 6
 }
 
+/** 当前场次（config.live 段） */
+export interface LiveStateConfig {
+  /** 当前选中的场次 id（空串 = 未选择） */
+  activePlanId: string
+}
+
+export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activePlanId: '' }
+
 /** 持久化到 userData/config.json 的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
   tts: TtsConfig
   llm: LlmConfig
   trigger: TriggerConfig
+  live: LiveStateConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
   tts: DEFAULT_TTS_CONFIG,
   llm: DEFAULT_LLM_CONFIG,
-  trigger: DEFAULT_TRIGGER_CONFIG
+  trigger: DEFAULT_TRIGGER_CONFIG,
+  live: DEFAULT_LIVE_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -151,11 +161,13 @@ export function parseAppConfig(input: unknown): AppConfig {
         ? triggerRow.maxLlmPerMinute
         : DEFAULT_TRIGGER_CONFIG.maxLlmPerMinute
   }
+  const liveRow = row.live && typeof row.live === 'object' ? (row.live as Record<string, unknown>) : {}
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     tts,
     llm,
-    trigger
+    trigger,
+    live: { activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '' }
   }
 }
 
@@ -289,6 +301,8 @@ export interface Persona {
   taboos: string
   /** 默认音色（对应 config.tts 的 voiceId 体系） */
   voiceId: string
+  /** 编剧模式角色：主播一个脑子写多个角色的台词，按 voiceId 路由音色 */
+  roles: PersonaRole[]
   updatedAt: number
 }
 
@@ -298,7 +312,8 @@ export const DEFAULT_PERSONA: Omit<Persona, 'id' | 'updatedAt'> = {
   catchphrases: '家人们、真的绝了、闭眼入、给你们安排上',
   background: '做了三年直播带货，熟悉各种家居好物，对成分和材质很有研究',
   taboos: '不承诺绝对最低价；不贬低其它品牌；不谈论政治和隐私话题；不夸大功效',
-  voiceId: ''
+  voiceId: '',
+  roles: []
 }
 
 // ---------- 主播 Agent 状态 ----------
@@ -314,6 +329,8 @@ export interface AgentStatus {
   personaName?: string
   /** 生成中预览：text_delta 累积的文本，入池即清空 */
   draft: string
+  /** 当前场景（提词器显示用），无剧本为空 */
+  scene?: { title: string; index: number; total: number }
 }
 
 // ---------- 评论（M3 来自模拟器，PipeSDK 真接入后续里程碑） ----------
@@ -449,3 +466,53 @@ export interface Trigger {
 }
 
 export type TriggerInput = Omit<Trigger, 'id'> & { id?: string }
+
+// ---------- 剧本与场景（docs/01 §4） ----------
+
+export interface ScriptScene {
+  id: string
+  title: string
+  /** 这场要达成什么（开场留人/痛点共鸣/讲解卖点/互动/催单/收尾） */
+  goal: string
+  /** 必讲要点，一行一条 */
+  keyPoints: string
+  /** 预计时长（分钟） */
+  estDurationMin: number
+}
+
+export interface Script {
+  id: string
+  title: string
+  /** 剧本主题/方向 */
+  theme: string
+  scenes: ScriptScene[]
+  createdAt: number
+  updatedAt: number
+}
+
+export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
+
+// ---------- 场次（docs/01 §5 场次页） ----------
+
+export interface LivePlan {
+  id: string
+  name: string
+  /** 本场主题/方向（注入主播 system prompt） */
+  theme: string
+  scriptId: string | null
+  /** 剧本推进进度（断播续播用），advance_scene 更新 */
+  currentSceneIdx: number
+  createdAt: number
+  updatedAt: number
+}
+
+export type LivePlanInput = Omit<LivePlan, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
+
+// ---------- 人设卡角色（编剧模式多音色，docs/01 §3.1） ----------
+
+export interface PersonaRole {
+  name: string
+  voiceId: string
+  /** 口吻提示（写进 system prompt，告诉主播怎么写这个角色的台词） */
+  style: string
+}

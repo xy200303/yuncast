@@ -1,9 +1,10 @@
-import { DEFAULT_PERSONA, type Persona } from '../../shared/types'
+import { DEFAULT_PERSONA, type LivePlan, type Persona, type Script } from '../../shared/types'
 import type { StorageService } from './StorageService'
 
 /**
  * 人设卡服务（docs/01 §5 主播团）。
  * M3 只有一张卡：库里没有就播种默认卡；保存即更新，AgentService 重启会话后生效。
+ * M6 起人设卡带 roles（编剧模式多音色角色）。
  */
 export class PersonaService {
   constructor(private readonly storage: StorageService) {}
@@ -31,9 +32,36 @@ export class PersonaService {
     return persona
   }
 
-  /** 组装主播 Agent 的 system prompt（人设 + 池操作约定） */
-  buildSystemPrompt(persona: Persona, defaultVoiceId: string): string {
+  /** 组装主播 Agent 的 system prompt（人设 + 场次/剧本 + 角色 + 池操作约定） */
+  buildSystemPrompt(
+    persona: Persona,
+    defaultVoiceId: string,
+    plan?: LivePlan | null,
+    script?: Script | null
+  ): string {
     const voice = persona.voiceId || defaultVoiceId
+
+    const rolesSection =
+      persona.roles.length > 0
+        ? `\n# 编剧模式（多角色台词）
+你一个人写所有角色的台词。需要配合/对话/起哄时，用 say 的 role 参数写对应角色的台词，会按角色音色播出：
+${persona.roles.map((r) => `- ${r.name}：${r.style}`).join('\n')}
+别滥用：角色台词是调味料，主线还是你自己（${persona.name}）的节奏。`
+        : ''
+
+    const planSection = plan
+      ? `\n# 本场直播
+- 场次：${plan.name}
+- 主题方向：${plan.theme || '（未设定，自由发挥）'}${
+          script
+            ? `
+- 剧本场景序列（用 advance_scene 逐场推进，每场播得差不多就推进）：
+${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 分钟）目标：${s.goal}；要点：${s.keyPoints.replace(/\n/g, '；')}`).join('\n')}
+- 播完最后一场后，是收尾下播还是循环返场由你根据现场气氛判断`
+            : '\n- 本场没有绑定剧本，按主题自由发挥'
+        }`
+      : ''
+
     return `你是「${persona.name}」，一位正在直播的 AI 带货主播。
 
 # 人设
@@ -43,12 +71,15 @@ export class PersonaService {
 
 # 禁区（绝对遵守）
 ${persona.taboos}
+${rolesSection}${planSection}
 
 # 工作方式
 你说话的唯一方式是调用工具，你写的每一句话都会经过语音合成直接播给观众听：
-- say(text)：说一句常规话术，排进队列
-- insert_next(text)：插播一句（当前播完立即播），只在回复观众评论或紧急情况用
-- get_pool_status()：查看话术池水位，队列快空了要主动补充
+- say(text, role?)：说一句常规话术，排进队列；role 写角色台词（编剧模式）
+- insert_next(text, role?)：插播一句（当前播完立即播），只在回复观众评论或紧急情况用
+- revise_item(itemId, newText)：修订还没播的话术（价格/口径变了就改腹稿，条目 id 从 get_pool_status 拿）
+- advance_scene()：推进剧本到下一场景
+- get_pool_status()：查看话术池水位和未播条目，队列快空了要主动补充
 - get_recent_played(n)：回看最近播过什么，避免重复和自相矛盾
 - search_knowledge(query)：查商品资料和知识文件，观众问细节先查再答
 - check_price(product?)：查价格
@@ -64,6 +95,6 @@ ${persona.taboos}
 - 观众评论来了由你决定回不回：值得回的用 insert_next 回复，不值得的忽略，继续自己的节奏
 - 老粉（有画像的观众）来了要表现出记得他，别像第一次见面
 - 保持直播节奏：不要冷场，也不要连着说广告，穿插互动和闲聊
-- 音色参数 voice 固定用 "${voice || '默认'}"${voice ? '' : '（即不传）'}，除非要扮演对话里的另一个角色`
+- 音色参数 voice 固定用 "${voice || '默认'}"${voice ? '' : '（即不传）'}；只有写角色台词时才用 role 参数`
   }
 }

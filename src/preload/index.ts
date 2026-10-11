@@ -8,6 +8,8 @@ import type {
   KnowledgeFile,
   LiveComment,
   LiveEvent,
+  LivePlan,
+  LivePlanInput,
   PartialDeep,
   Persona,
   PoolResult,
@@ -16,6 +18,8 @@ import type {
   PoolStatus,
   Product,
   ProductInput,
+  Script,
+  ScriptInput,
   SimulatorStatus,
   SpeechItem,
   SpeechLane,
@@ -132,6 +136,20 @@ const api = {
   event: {
     /** 最近 n 条事件（数据页时间线） */
     recent: (n: number) => ipcRenderer.invoke(IPC.eventRecent, n) as Promise<LiveEvent[]>
+  },
+  script: {
+    list: () => ipcRenderer.invoke(IPC.scriptList) as Promise<Script[]>,
+    save: (input: ScriptInput, id?: string) =>
+      ipcRenderer.invoke(IPC.scriptSave, input, id) as Promise<PoolResult<Script>>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.scriptDelete, id) as Promise<PoolResult>
+  },
+  plan: {
+    list: () => ipcRenderer.invoke(IPC.planList) as Promise<LivePlan[]>,
+    save: (input: LivePlanInput, id?: string) =>
+      ipcRenderer.invoke(IPC.planSave, input, id) as Promise<PoolResult<LivePlan>>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.planDelete, id) as Promise<PoolResult>,
+    /** 设为当前场次，返回生效的 activePlanId */
+    setActive: (id: string) => ipcRenderer.invoke(IPC.planSetActive, id) as Promise<string>
   }
 }
 

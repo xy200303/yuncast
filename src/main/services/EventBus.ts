@@ -19,7 +19,8 @@ const EVENT_REGISTRY = new Map<string, string>([
   ['stream.started', '开播'],
   ['stream.ended', '下播'],
   ['trigger.fired', '触发器执行'],
-  ['trigger.dropped', '触发器被防护拦截']
+  ['trigger.dropped', '触发器被防护拦截'],
+  ['product.price_changed', '商品价格变动']
 ])
 
 export function listEventTypes(): { type: string; label: string }[] {

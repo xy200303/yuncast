@@ -164,6 +164,7 @@ export function LivePage() {
         <aside className="flex w-80 shrink-0 flex-col border-l">
           <div className="flex h-8 shrink-0 items-center border-b px-4 text-xs text-muted-foreground">提词器</div>
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
+            <SceneLine />
             <AgentDraft />
             {playing ? (
               <TeleprompterCurrent item={playing} />
@@ -342,8 +343,18 @@ function TeleprompterCurrent({ item }: { item: SpeechItem }) {
   )
 }
 
-/** AI 正在组织语言：text_delta 实时预览（品牌色），入池即消失 */
-function AgentDraft() {
+/** 当前场景小字（主播状态广播带来），无剧本不显示 */
+function SceneLine() {
+  const scene = useAppStore((s) => s.agent.scene)
+  if (!scene) return null
+  return (
+    <p className="mb-2 text-xs text-muted-foreground">
+      当前场景：<span className="text-foreground">{scene.title}</span>（第 {scene.index + 1}/{scene.total} 场）
+    </p>
+  )
+}
+
+/** AI 正在组织语言：text_delta 实时预览（品牌色），入池即消失 */function AgentDraft() {
   const draft = useAppStore((s) => s.agent.draft)
   if (!draft) return null
   return (

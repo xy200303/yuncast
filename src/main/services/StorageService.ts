@@ -11,6 +11,8 @@ import {
   type PartialDeep,
   type Persona,
   type Product,
+  type Script,
+  type LivePlan,
   type SpeechItem,
   type SpeechLane,
   type SpeechReplyTo,
@@ -251,6 +253,36 @@ export class StorageService {
       )
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS event_log_ts ON event_log(ts)')
+    // 剧本 + 场次（M6）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS scripts (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        theme TEXT NOT NULL DEFAULT '',
+        scenes TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS live_plans (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        theme TEXT NOT NULL DEFAULT '',
+        script_id TEXT,
+        current_scene_idx INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
+    this.ensureColumn('agents', 'roles', "TEXT NOT NULL DEFAULT '[]'")
+  }
+
+  /** 兼容老库的加列 */
+  private ensureColumn(table: string, column: string, definition: string): void {
+    const rows = this.db.prepare(`PRAGMA table_info(${table})`).all()
+    if (rows.some((row) => (row as Record<string, unknown>).name === column)) return
+    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
   // ---------- 应用配置 ----------
@@ -432,6 +464,13 @@ export class StorageService {
     const row = this.db.prepare('SELECT * FROM agents ORDER BY updated_at ASC LIMIT 1').get()
     if (!row) return null
     const r = row as Record<string, unknown>
+    let roles: Persona['roles'] = []
+    try {
+      const parsed = JSON.parse(str(r.roles) || '[]')
+      if (Array.isArray(parsed)) roles = parsed
+    } catch {
+      roles = []
+    }
     return {
       id: str(r.id),
       name: str(r.name),
@@ -440,6 +479,7 @@ export class StorageService {
       background: str(r.background),
       taboos: str(r.taboos),
       voiceId: str(r.voice_id),
+      roles,
       updatedAt: num(r.updated_at) ?? 0
     }
   }
@@ -447,12 +487,13 @@ export class StorageService {
   personaSave(persona: Persona): void {
     this.db
       .prepare(
-        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, roles, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, personality = excluded.personality,
            catchphrases = excluded.catchphrases, background = excluded.background,
-           taboos = excluded.taboos, voice_id = excluded.voice_id, updated_at = excluded.updated_at`
+           taboos = excluded.taboos, voice_id = excluded.voice_id,
+           roles = excluded.roles, updated_at = excluded.updated_at`
       )
       .run(
         persona.id,
@@ -462,6 +503,7 @@ export class StorageService {
         persona.background,
         persona.taboos,
         persona.voiceId,
+        JSON.stringify(persona.roles),
         persona.updatedAt
       )
   }
@@ -656,8 +698,92 @@ export class StorageService {
       })
   }
 
+  // ---------- 剧本 ----------
+
+  scriptList(): Script[] {
+    return this.db
+      .prepare('SELECT * FROM scripts ORDER BY created_at ASC')
+      .all()
+      .map((row) => rowToScript(row as Record<string, unknown>))
+  }
+
+  scriptSave(script: Script): void {
+    this.db
+      .prepare(
+        `INSERT INTO scripts (id, title, theme, scenes, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title, theme = excluded.theme,
+           scenes = excluded.scenes, updated_at = excluded.updated_at`
+      )
+      .run(script.id, script.title, script.theme, JSON.stringify(script.scenes), script.createdAt, script.updatedAt)
+  }
+
+  scriptDelete(id: string): void {
+    this.db.prepare('DELETE FROM scripts WHERE id = ?').run(id)
+  }
+
+  // ---------- 场次 ----------
+
+  planList(): LivePlan[] {
+    return this.db
+      .prepare('SELECT * FROM live_plans ORDER BY created_at ASC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          id: str(r.id),
+          name: str(r.name),
+          theme: str(r.theme),
+          scriptId: str(r.script_id) || null,
+          currentSceneIdx: num(r.current_scene_idx) ?? 0,
+          createdAt: num(r.created_at) ?? 0,
+          updatedAt: num(r.updated_at) ?? 0
+        }
+      })
+  }
+
+  planSave(plan: LivePlan): void {
+    this.db
+      .prepare(
+        `INSERT INTO live_plans (id, name, theme, script_id, current_scene_idx, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, theme = excluded.theme,
+           script_id = excluded.script_id, updated_at = excluded.updated_at`
+      )
+      .run(plan.id, plan.name, plan.theme, plan.scriptId ?? null, plan.currentSceneIdx, plan.createdAt, plan.updatedAt)
+  }
+
+  planDelete(id: string): void {
+    this.db.prepare('DELETE FROM live_plans WHERE id = ?').run(id)
+  }
+
+  /** 场景推进进度落库（断播能续） */
+  planSetSceneIdx(id: string, idx: number): void {
+    this.db.prepare('UPDATE live_plans SET current_scene_idx = ? WHERE id = ?').run(idx, id)
+  }
+
   close(): void {
     this.db.close()
+  }
+}
+
+function rowToScript(r: Record<string, unknown>): Script {
+  let scenes: Script['scenes'] = []
+  try {
+    const parsed = JSON.parse(str(r.scenes) || '[]')
+    if (Array.isArray(parsed)) scenes = parsed
+  } catch {
+    scenes = []
+  }
+  return {
+    id: str(r.id),
+    title: str(r.title),
+    theme: str(r.theme),
+    scenes,
+    createdAt: num(r.created_at) ?? 0,
+    updatedAt: num(r.updated_at) ?? 0
   }
 }
 

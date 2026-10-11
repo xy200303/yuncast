@@ -174,6 +174,65 @@ export function AnchorsPage() {
                   className="min-h-16 resize-none"
                 />
               </div>
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <Label>角色（编剧模式多音色）</Label>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-6 text-xs"
+                    onClick={() =>
+                      patch({ roles: [...persona.roles, { name: '', voiceId: '', style: '' }] })
+                    }
+                  >
+                    加一个角色
+                  </Button>
+                </div>
+                {persona.roles.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    没有角色时主播一个人说。加了角色（比如「小助理」），主播可以用 say 的 role 参数写它的台词，按角色音色播出。
+                  </p>
+                ) : (
+                  <div className="flex flex-col gap-2">
+                    {persona.roles.map((role, i) => (
+                      <div key={i} className="flex items-center gap-1.5">
+                        <Input
+                          value={role.name}
+                          onChange={(e) =>
+                            patch({ roles: persona.roles.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)) })
+                          }
+                          placeholder="角色名"
+                          className="h-7 w-28 shrink-0 text-xs"
+                        />
+                        <Input
+                          value={role.voiceId}
+                          onChange={(e) =>
+                            patch({ roles: persona.roles.map((r, j) => (j === i ? { ...r, voiceId: e.target.value } : r)) })
+                          }
+                          placeholder="音色 voiceId"
+                          className="h-7 w-40 shrink-0 text-xs"
+                        />
+                        <Input
+                          value={role.style}
+                          onChange={(e) =>
+                            patch({ roles: persona.roles.map((r, j) => (j === i ? { ...r, style: e.target.value } : r)) })
+                          }
+                          placeholder="口吻提示，例如：活泼的捧哏小助理"
+                          className="h-7 min-w-0 flex-1 text-xs"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          title="删除角色"
+                          onClick={() => patch({ roles: persona.roles.filter((_, j) => j !== i) })}
+                        >
+                          ×
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="flex justify-end">
                 <Button size="sm" disabled={busy || !persona.name.trim()} onClick={() => void save()}>
                   保存人设

@@ -65,6 +65,17 @@ export const IPC = {
   // 事件时间线
   eventRecent: 'event:recent',
 
+  // 剧本
+  scriptList: 'script:list',
+  scriptSave: 'script:save',
+  scriptDelete: 'script:delete',
+
+  // 场次
+  planList: 'plan:list',
+  planSave: 'plan:save',
+  planDelete: 'plan:delete',
+  planSetActive: 'plan:set-active',
+
   // 系统对话框
   dialogPickFile: 'dialog:pick-file'
 } as const

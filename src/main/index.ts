@@ -14,6 +14,8 @@ import {
   type PoolSayInput,
   type PoolSnapshot,
   type ProductInput,
+  type ScriptInput,
+  type LivePlanInput,
   type SpeechItem,
   type SpeechLane,
   type TriggerInput
@@ -28,6 +30,7 @@ import { KnowledgeService } from './services/KnowledgeService'
 import { MemoryService } from './services/MemoryService'
 import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
+import { ScriptService } from './services/ScriptService'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -203,7 +206,8 @@ function registerIpc(
   knowledge: KnowledgeService,
   memory: MemoryService,
   bus: EventBus,
-  triggers: TriggerRuntime
+  triggers: TriggerRuntime,
+  script: ScriptService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -279,7 +283,19 @@ function registerIpc(
   // ---------- 知识库 ----------
   ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listProducts())
   ipcMain.handle(IPC.knowledgeProductSave, (_e, input: ProductInput, id?: string) =>
-    guard(() => knowledge.saveProduct(input, id))
+    guard(() => {
+      // 价格变动发事件：腹稿修订链路（主播收到后自己决定 revise 池里没播的报价）
+      const before = id ? knowledge.listProducts().find((p) => p.id === id) : undefined
+      const saved = knowledge.saveProduct(input, id)
+      if (before && before.price !== saved.price) {
+        bus.emit(
+          'product.price_changed',
+          { name: saved.name, oldPrice: before.price, newPrice: saved.price },
+          'human'
+        )
+      }
+      return saved
+    })
   )
   ipcMain.handle(IPC.knowledgeProductDelete, (_e, id: string) => guard(() => knowledge.deleteProduct(id)))
   ipcMain.handle(IPC.knowledgeFileList, () => knowledge.listFiles())
@@ -313,6 +329,24 @@ function registerIpc(
 
   // ---------- 事件时间线 ----------
   ipcMain.handle(IPC.eventRecent, (_e, n: number) => bus.recent(n))
+
+  // ---------- 剧本 ----------
+  ipcMain.handle(IPC.scriptList, () => script.listScripts())
+  ipcMain.handle(IPC.scriptSave, (_e, input: ScriptInput, id?: string) =>
+    guard(() => script.saveScript(input, id))
+  )
+  ipcMain.handle(IPC.scriptDelete, (_e, id: string) => guard(() => script.deleteScript(id)))
+
+  // ---------- 场次 ----------
+  ipcMain.handle(IPC.planList, () => script.listPlans())
+  ipcMain.handle(IPC.planSave, (_e, input: LivePlanInput, id?: string) =>
+    guard(() => script.savePlan(input, id))
+  )
+  ipcMain.handle(IPC.planDelete, (_e, id: string) => guard(() => script.deletePlan(id)))
+  ipcMain.handle(IPC.planSetActive, (_e, id: string) => {
+    script.setActivePlan(String(id ?? ''))
+    return storage.getConfig().live.activePlanId
+  })
 
   // ---------- 系统对话框 ----------
   ipcMain.handle(IPC.dialogPickFile, async (_e, filtersName: string, extensions: string[]) => {
@@ -350,8 +384,9 @@ if (!single) {
     const persona = new PersonaService(storage)
     const knowledge = new KnowledgeService(storage)
     const memory = new MemoryService(storage)
+    const script = new ScriptService(storage)
     bus = new EventBus(storage)
-    agent = new AgentService(storage, pool, persona, knowledge, memory, broadcastAgent)
+    agent = new AgentService(storage, pool, persona, knowledge, memory, script, broadcastAgent)
     triggers = new TriggerRuntime(storage, bus, pool, agent)
     const sim = new CommentSimulator((event) => {
       // 模拟器产出统一进事件总线；评论额外喂主播 + 广播给评论流
@@ -379,7 +414,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers)
+    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers, script)
     createWindow(storage)
 
     app.on('activate', () => {

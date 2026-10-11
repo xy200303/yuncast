@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Bot, ChevronRight, Loader2, Play, Square, Zap } from 'lucide-react'
+import { useCallback, useEffect, useState } from 'react'
+import { Bot, ChevronRight, Loader2, Play, Plus, Square, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,35 +39,36 @@ type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
   const llmReady = useAppStore((s) => s.config.llm.apiKey !== '')
-  const [persona, setPersona] = useState<PersonaForm | null>(null)
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [activeId, setActiveId] = useState('')
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'persona' | 'triggers'>('persona')
-  const [voicePickerOpen, setVoicePickerOpen] = useState(false)
+  /** 编辑器：undefined=关闭；{id?}=编辑某张卡；{}=新建 */
+  const [editing, setEditing] = useState<{ persona?: Persona } | null>(null)
 
-  useEffect(() => {
-    void window.api.persona.get().then((p) => {
-      const { id: _id, updatedAt: _at, ...form } = p
-      setPersona(form)
-    })
+  const reload = useCallback(async () => {
+    const [list, current] = await Promise.all([
+      window.api.persona.list(),
+      window.api.persona.get()
+    ])
+    setPersonas(list)
+    setActiveId(current?.id ?? '')
   }, [])
 
-  const patch = (part: Partial<PersonaForm>) => setPersona((prev) => (prev ? { ...prev, ...part } : prev))
+  useEffect(() => {
+    void reload()
+  }, [reload])
 
-  const save = async () => {
-    if (!persona || busy) return
-    setBusy(true)
-    try {
-      await window.api.persona.save(persona)
-      // 主播在跑就重启会话，让人设立即生效
-      if (useAppStore.getState().agent.state === 'running') {
-        const result = await window.api.agent.restart()
-        if (result.ok) toast.success('人设已保存，主播已按新人设重启')
-        else toast.error('人设已保存，但主播重启失败', { description: result.error })
-      } else {
-        toast.success('人设已保存')
-      }
-    } finally {
-      setBusy(false)
+  const openEditor = (persona?: Persona) => setEditing(persona ? { persona } : {})
+
+  /** 主播在跑就重启会话，让人设立即生效 */
+  const applyIfRunning = async (okText: string) => {
+    if (useAppStore.getState().agent.state === 'running') {
+      const result = await window.api.agent.restart()
+      if (result.ok) toast.success(`${okText}，主播已按新人设重启`)
+      else toast.error(`${okText}，但主播重启失败`, { description: result.error })
+    } else {
+      toast.success(okText)
     }
   }
 
@@ -130,155 +131,314 @@ export function AnchorsPage() {
           {agent.state === 'error' && agent.error && (
             <div className="mb-3 max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {agent.error}
-              {!llmReady && ' — 去「设置 → 接入」配置 LLM 后再启动'}
+              {!llmReady && ' — 去「设置 → 语言模型」配置 LLM 后再启动'}
             </div>
           )}
-          {!persona ? (
-            <p className="text-sm text-muted-foreground">加载人设卡…</p>
-          ) : (
-          <Card className="max-w-2xl">
-            <CardHeader>
-              <CardTitle className="text-sm">人设卡</CardTitle>
-              <CardDescription className="text-xs">
-                主播的人格设定，保存后作为 system prompt 注入；主播在跑时会自动重启会话生效
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <Label className="mb-1">名字</Label>
-                  <Input value={persona.name} onChange={(e) => patch({ name: e.target.value })} />
-                </div>
-                <div>
-                  <div className="mb-1 flex items-center justify-between">
-                    <Label>默认音色（留空用 TTS 默认）</Label>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="h-6 text-xs"
-                      onClick={() => setVoicePickerOpen(true)}
-                    >
-                      从音色库选择
-                    </Button>
+
+          <div className="mb-3 flex items-center gap-2">
+            <p className="text-xs text-muted-foreground">主播团 · {personas.length} 位</p>
+            <Button variant="outline" size="sm" className="ml-auto h-7 text-xs" onClick={() => openEditor()}>
+              <Plus className="size-3.5" />
+              新建人设卡
+            </Button>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+            {personas.map((item) => {
+              const active = item.id === activeId
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => openEditor(item)}
+                  className={cn(
+                    'flex flex-col gap-2 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:bg-accent/40',
+                    active && 'border-primary'
+                  )}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/12 text-sm font-semibold text-primary">
+                      {item.name.trim().slice(0, 1) || '主'}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.name}</span>
+                    {active && <Badge variant="secondary" className="shrink-0">当前主播</Badge>}
                   </div>
-                  <Input
-                    value={persona.voiceId}
-                    onChange={(e) => patch({ voiceId: e.target.value })}
-                    placeholder="voiceId"
-                  />
-                </div>
-              </div>
-              <div>
-                <Label className="mb-1">性格</Label>
-                <Textarea
-                  value={persona.personality}
-                  onChange={(e) => patch({ personality: e.target.value })}
-                  className="min-h-16 resize-none"
-                />
-              </div>
-              <div>
-                <Label className="mb-1">口癖（口头禅、语气词）</Label>
-                <Input value={persona.catchphrases} onChange={(e) => patch({ catchphrases: e.target.value })} />
-              </div>
-              <div>
-                <Label className="mb-1">背景</Label>
-                <Textarea
-                  value={persona.background}
-                  onChange={(e) => patch({ background: e.target.value })}
-                  className="min-h-16 resize-none"
-                />
-              </div>
-              <div>
-                <Label className="mb-1">禁区（绝不能说的话题/承诺）</Label>
-                <Textarea
-                  value={persona.taboos}
-                  onChange={(e) => patch({ taboos: e.target.value })}
-                  className="min-h-16 resize-none"
-                />
-              </div>
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <Label>角色（编剧模式多音色）</Label>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-6 text-xs"
-                    onClick={() =>
-                      patch({ roles: [...persona.roles, { name: '', voiceId: '', style: '' }] })
-                    }
-                  >
-                    加一个角色
-                  </Button>
-                </div>
-                {persona.roles.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">
-                    没有角色时主播一个人说。加了角色（比如「小助理」），主播可以用 say 的 role 参数写它的台词，按角色音色播出。
+                  <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
+                    {item.personality || '（还没写性格）'}
                   </p>
-                ) : (
-                  <div className="flex flex-col gap-2">
-                    {persona.roles.map((role, i) => (
-                      <div key={i} className="flex items-center gap-1.5">
-                        <Input
-                          value={role.name}
-                          onChange={(e) =>
-                            patch({ roles: persona.roles.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)) })
-                          }
-                          placeholder="角色名"
-                          className="h-7 w-28 shrink-0 text-xs"
-                        />
-                        <Input
-                          value={role.voiceId}
-                          onChange={(e) =>
-                            patch({ roles: persona.roles.map((r, j) => (j === i ? { ...r, voiceId: e.target.value } : r)) })
-                          }
-                          placeholder="音色 voiceId"
-                          className="h-7 w-40 shrink-0 text-xs"
-                        />
-                        <Input
-                          value={role.style}
-                          onChange={(e) =>
-                            patch({ roles: persona.roles.map((r, j) => (j === i ? { ...r, style: e.target.value } : r)) })
-                          }
-                          placeholder="口吻提示，例如：活泼的捧哏小助理"
-                          className="h-7 min-w-0 flex-1 text-xs"
-                        />
-                        <Button
-                          variant="ghost"
-                          size="icon-sm"
-                          title="删除角色"
-                          onClick={() => patch({ roles: persona.roles.filter((_, j) => j !== i) })}
-                        >
-                          ×
-                        </Button>
-                      </div>
+                  <div className="flex flex-wrap gap-1">
+                    {item.roles.slice(0, 2).map((role) => (
+                      <Badge key={role.name} variant="outline" className="text-[11px]">
+                        角色 · {role.name || '未命名'}
+                      </Badge>
                     ))}
+                    {item.voiceId && (
+                      <Badge variant="outline" className="text-[11px]">
+                        音色 {item.voiceId.slice(0, 10)}
+                      </Badge>
+                    )}
                   </div>
-                )}
-              </div>
-              <div className="flex justify-end">
-                <Button size="sm" disabled={busy || !persona.name.trim()} onClick={() => void save()}>
-                  保存人设
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-          )}
+                </button>
+              )
+            })}
+          </div>
         </TabsContent>
 
         <TabsContent value="triggers" className="overflow-auto p-4">
           <TriggerSection />
         </TabsContent>
       </Tabs>
-      <VoicePickerDialog
-        open={voicePickerOpen}
-        onOpenChange={setVoicePickerOpen}
-        onPick={(voiceType) => {
-          patch({ voiceId: voiceType })
-          setVoicePickerOpen(false)
-          toast.success('已填入音色标识', { description: '保存人设后生效' })
+      {/* 人设卡编辑器 */}
+      <PersonaEditorDialog
+        key={editing?.persona?.id ?? 'new'}
+        editing={editing}
+        isActive={editing?.persona?.id === activeId}
+        onOpenChange={(open) => !open && setEditing(null)}
+        onSaved={async (text) => {
+          setEditing(null)
+          await reload()
+          await applyIfRunning(text)
+        }}
+        onDeleted={async () => {
+          setEditing(null)
+          await reload()
         }}
       />
     </div>
+  )
+}
+
+/** 人设卡编辑器：点击卡片弹出，含设为当前主播与删除 */
+function PersonaEditorDialog({
+  editing,
+  isActive,
+  onOpenChange,
+  onSaved,
+  onDeleted
+}: {
+  editing: { persona?: Persona } | null
+  isActive: boolean
+  onOpenChange: (open: boolean) => void
+  onSaved: (okText: string) => void | Promise<void>
+  onDeleted: () => void | Promise<void>
+}) {
+  const open = editing !== null
+  const source = editing?.persona
+  const [form, setForm] = useState<PersonaForm>(() => ({
+    name: source?.name ?? '',
+    personality: source?.personality ?? '',
+    catchphrases: source?.catchphrases ?? '',
+    background: source?.background ?? '',
+    taboos: source?.taboos ?? '',
+    voiceId: source?.voiceId ?? '',
+    roles: source?.roles ?? []
+  }))
+  const [busy, setBusy] = useState(false)
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+
+  const patch = (part: Partial<PersonaForm>) => setForm((prev) => ({ ...prev, ...part }))
+
+  const save = async (alsoActivate: boolean) => {
+    if (busy) return
+    if (!form.name.trim()) {
+      toast.warning('请填写主播名字')
+      return
+    }
+    setBusy(true)
+    try {
+      const saved = await window.api.persona.save(form, source?.id)
+      if (alsoActivate) await window.api.persona.setActive(saved.id)
+      await onSaved(alsoActivate ? '已保存并设为当前主播' : '人设已保存')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>{source ? `人设卡 · ${source.name || '未命名'}` : '新建人设卡'}</DialogTitle>
+        </DialogHeader>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="mb-1">名字</Label>
+              <Input value={form.name} onChange={(e) => patch({ name: e.target.value })} placeholder="如：小陶 / 小助理" />
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between">
+                <Label>默认音色（留空用 TTS 默认）</Label>
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setVoicePickerOpen(true)}>
+                  从音色库选择
+                </Button>
+              </div>
+              <Input
+                value={form.voiceId}
+                onChange={(e) => patch({ voiceId: e.target.value })}
+                placeholder="voiceId"
+              />
+            </div>
+          </div>
+
+          <div>
+            <Label className="mb-1">性格</Label>
+            <Textarea
+              value={form.personality}
+              onChange={(e) => patch({ personality: e.target.value })}
+              className="min-h-16 resize-none"
+            />
+          </div>
+          <div>
+            <Label className="mb-1">口癖（口头禅、语气词）</Label>
+            <Input value={form.catchphrases} onChange={(e) => patch({ catchphrases: e.target.value })} />
+          </div>
+          <div>
+            <Label className="mb-1">背景</Label>
+            <Textarea
+              value={form.background}
+              onChange={(e) => patch({ background: e.target.value })}
+              className="min-h-16 resize-none"
+            />
+          </div>
+          <div>
+            <Label className="mb-1">禁区（绝不能说的话题/承诺）</Label>
+            <Textarea
+              value={form.taboos}
+              onChange={(e) => patch({ taboos: e.target.value })}
+              className="min-h-16 resize-none"
+            />
+          </div>
+
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <Label>角色（编剧模式多音色）</Label>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-xs"
+                onClick={() => patch({ roles: [...form.roles, { name: '', voiceId: '', style: '' }] })}
+              >
+                加一个角色
+              </Button>
+            </div>
+            {form.roles.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                没有角色时主播一个人说。加了角色（比如「小助理」），主播可以用 say 的 role 参数写它的台词，按角色音色播出。
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {form.roles.map((role, i) => (
+                  <div key={i} className="flex items-center gap-1.5">
+                    <Input
+                      value={role.name}
+                      onChange={(e) =>
+                        patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)) })
+                      }
+                      placeholder="角色名"
+                      className="h-7 w-28 shrink-0 text-xs"
+                    />
+                    <Input
+                      value={role.voiceId}
+                      onChange={(e) =>
+                        patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, voiceId: e.target.value } : r)) })
+                      }
+                      placeholder="音色 voiceId"
+                      className="h-7 w-40 shrink-0 text-xs"
+                    />
+                    <Input
+                      value={role.style}
+                      onChange={(e) =>
+                        patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, style: e.target.value } : r)) })
+                      }
+                      placeholder="口吻提示，例如：活泼的捧哏小助理"
+                      className="h-7 min-w-0 flex-1 text-xs"
+                    />
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="删除角色"
+                      onClick={() => patch({ roles: form.roles.filter((_, j) => j !== i) })}
+                    >
+                      ×
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <p className="text-xs text-muted-foreground">
+            保存后作为 system prompt 注入；当前主播在跑时会自动重启会话生效。
+          </p>
+        </div>
+
+        <DialogFooter className="gap-2 sm:justify-between">
+          <div>
+            {source && (
+              <Button variant="ghost" className="text-destructive" onClick={() => setConfirmDelete(true)}>
+                删除
+              </Button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={() => onOpenChange(false)}>
+              取消
+            </Button>
+            {!isActive && source && (
+              <Button variant="outline" disabled={busy} onClick={() => void save(true)}>
+                保存并设为当前
+              </Button>
+            )}
+            <Button disabled={busy} onClick={() => void save(false)}>
+              {busy ? '保存中…' : '保存'}
+            </Button>
+          </div>
+        </DialogFooter>
+
+        <VoicePickerDialog
+          open={voicePickerOpen}
+          onOpenChange={setVoicePickerOpen}
+          onPick={(voiceType) => {
+            patch({ voiceId: voiceType })
+            setVoicePickerOpen(false)
+            toast.success('已填入音色标识', { description: '保存后生效' })
+          }}
+        />
+
+        <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+          <DialogContent className="sm:max-w-sm">
+            <DialogHeader>
+              <DialogTitle>删除人设卡</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              确认删除「{source?.name}」？删掉当前主播时会自动切到剩余的第一张卡。
+            </p>
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setConfirmDelete(false)}>
+                取消
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => {
+                  const id = source?.id
+                  setConfirmDelete(false)
+                  if (!id) return
+                  void window.api.persona.remove(id).then(async () => {
+                    toast.success('已删除')
+                    await onDeleted()
+                  })
+                }}
+              >
+                删除
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </DialogContent>
+    </Dialog>
   )
 }
 

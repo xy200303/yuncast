@@ -277,6 +277,8 @@ export class StorageService {
       )
     `)
     this.ensureColumn('agents', 'roles', "TEXT NOT NULL DEFAULT '[]'")
+    // 多张人设卡（主播团）：active=1 的那张是当前主播
+    this.ensureColumn('agents', 'active', 'INTEGER NOT NULL DEFAULT 0')
     // 音色库（M8 声音克隆）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS voices (
@@ -520,10 +522,33 @@ export class StorageService {
   // ---------- 人设卡 ----------
 
   /** 取第一张人设卡（M3 单主播）；库里没有返回 null，由 PersonaService 负责播种 */
+  /** 人设卡列表（主播团），active 的在最前 */
+  personaList(): Persona[] {
+    return this.db
+      .prepare('SELECT * FROM agents ORDER BY active DESC, updated_at ASC')
+      .all()
+      .map((row) => this.toPersona(row as Record<string, unknown>))
+  }
+
+  /** 当前主播（active=1；没有标记就退回最早的一张，兼容老库） */
   personaGet(): Persona | null {
+    const active = this.db.prepare('SELECT * FROM agents WHERE active = 1 LIMIT 1').get()
+    if (active) return this.toPersona(active as Record<string, unknown>)
     const row = this.db.prepare('SELECT * FROM agents ORDER BY updated_at ASC LIMIT 1').get()
-    if (!row) return null
-    const r = row as Record<string, unknown>
+    return row ? this.toPersona(row as Record<string, unknown>) : null
+  }
+
+  /** 指定某张卡为当前主播（互斥） */
+  personaSetActive(id: string): void {
+    this.db.prepare('UPDATE agents SET active = 0').run()
+    this.db.prepare('UPDATE agents SET active = 1 WHERE id = ?').run(id)
+  }
+
+  personaDelete(id: string): void {
+    this.db.prepare('DELETE FROM agents WHERE id = ?').run(id)
+  }
+
+  private toPersona(r: Record<string, unknown>): Persona {
     let roles: Persona['roles'] = []
     try {
       const parsed = JSON.parse(str(r.roles) || '[]')

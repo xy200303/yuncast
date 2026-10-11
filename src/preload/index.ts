@@ -88,8 +88,11 @@ const api = {
   },
   persona: {
     get: () => ipcRenderer.invoke(IPC.personaGet) as Promise<Persona>,
-    save: (input: Omit<Persona, 'id' | 'updatedAt'>) =>
-      ipcRenderer.invoke(IPC.personaSave, input) as Promise<Persona>
+    list: () => ipcRenderer.invoke(IPC.personaList) as Promise<Persona[]>,
+    save: (input: Omit<Persona, 'id' | 'updatedAt'>, id?: string) =>
+      ipcRenderer.invoke(IPC.personaSave, input, id) as Promise<Persona>,
+    setActive: (id: string) => ipcRenderer.invoke(IPC.personaSetActive, id) as Promise<Persona | null>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.personaRemove, id) as Promise<void>
   },
   voice: {
     list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,

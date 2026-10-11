@@ -298,7 +298,13 @@ function registerIpc(
 
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
-  ipcMain.handle(IPC.personaSave, (_e, input: Omit<Persona, 'id' | 'updatedAt'>) => persona.save(input))
+  ipcMain.handle(IPC.personaList, () => persona.list())
+  ipcMain.handle(
+    IPC.personaSave,
+    (_e, input: Omit<Persona, 'id' | 'updatedAt'>, id?: string) => persona.save(input, id)
+  )
+  ipcMain.handle(IPC.personaSetActive, (_e, id: string) => persona.setActive(id))
+  ipcMain.handle(IPC.personaRemove, (_e, id: string) => persona.remove(id))
 
   // ---------- 音色库（M8 声音克隆） ----------
   ipcMain.handle(IPC.voiceList, () => voiceSvc?.list() ?? [])

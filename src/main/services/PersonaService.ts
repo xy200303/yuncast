@@ -22,14 +22,42 @@ export class PersonaService {
     return seeded
   }
 
-  save(input: Omit<Persona, 'id' | 'updatedAt'>): Persona {
+  /** 主播团：全部人设卡 */
+  list(): Persona[] {
+    const list = this.storage.personaList()
+    if (list.length > 0) return list
+    this.get() // 空库播种默认卡
+    return this.storage.personaList()
+  }
+
+  /** 保存：带 id 更新，不带则新建一张（新建即设为当前主播） */
+  save(input: Omit<Persona, 'id' | 'updatedAt'>, id?: string): Persona {
+    const isNew = !id
     const persona: Persona = {
-      id: this.get().id,
+      id: id ?? `anchor-${Date.now().toString(36)}`,
       ...input,
       updatedAt: Date.now()
     }
     this.storage.personaSave(persona)
+    if (isNew) this.storage.personaSetActive(persona.id)
     return persona
+  }
+
+  /** 设为当前主播（AgentService 用这张卡） */
+  setActive(id: string): Persona | null {
+    this.storage.personaSetActive(id)
+    return this.storage.personaGet()
+  }
+
+  /** 删除；删掉的是当前主播时自动改指到剩余的第一张 */
+  remove(id: string): void {
+    const wasActive = this.storage.personaGet()?.id === id
+    this.storage.personaDelete(id)
+    if (wasActive) {
+      const rest = this.storage.personaList()
+      const next = rest[0]
+      if (next) this.storage.personaSetActive(next.id)
+    }
   }
 
   /** 组装主播 Agent 的 system prompt（人设 + 场次/剧本 + 角色 + 池操作约定） */

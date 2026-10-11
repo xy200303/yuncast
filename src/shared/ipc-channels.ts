@@ -34,7 +34,10 @@ export const IPC = {
 
   // 人设卡
   personaGet: 'persona:get',
+  personaList: 'persona:list',
   personaSave: 'persona:save',
+  personaSetActive: 'persona:set-active',
+  personaRemove: 'persona:remove',
 
   // 音色库（M8 声音克隆）
   voiceList: 'voice:list',

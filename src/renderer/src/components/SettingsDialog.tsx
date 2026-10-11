@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AudioLines, Brain, Cable, MessageSquareText, Monitor, Moon, Palette, Sun } from 'lucide-react'
+import { AudioLines, Brain, Cable, ExternalLink, MessageSquareText, Monitor, Moon, Palette, Sun } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -39,6 +39,66 @@ const THEME_OPTIONS: { id: AppTheme; label: string; icon: typeof Sun }[] = [
   { id: 'dark', label: '深色', icon: Moon },
   { id: 'system', label: '跟随系统', icon: Monitor }
 ]
+
+/** 各家服务商的控制台与文档直达入口（凭据去哪儿拿） */
+const LLM_LINKS: Record<LlmProvider, { console: string; docs: string }> = {
+  deepseek: {
+    console: 'https://platform.deepseek.com/api_keys',
+    docs: 'https://api-docs.deepseek.com/zh-cn/'
+  },
+  qwen: {
+    console: 'https://bailian.console.aliyun.com/?tab=model#/api-key',
+    docs: 'https://help.aliyun.com/zh/model-studio/getting-started/what-is-model-studio'
+  },
+  doubao: {
+    console: 'https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey',
+    docs: 'https://www.volcengine.com/docs/82379/1298454'
+  },
+  kimi: {
+    console: 'https://platform.moonshot.cn/console/api-keys',
+    docs: 'https://platform.moonshot.cn/docs/guide/start-using-kimi-api'
+  },
+  zai: {
+    console: 'https://open.bigmodel.cn/usercenter/apikeys',
+    docs: 'https://docs.bigmodel.cn/cn/guide/develop/openai/introduction'
+  }
+}
+
+const TTS_LINKS = {
+  volcano: {
+    console: 'https://console.volcengine.com/speech/app',
+    docs: 'https://www.volcengine.com/docs/6561/79820'
+  },
+  bailian: {
+    console: 'https://bailian.console.aliyun.com/?tab=model#/api-key',
+    docs: 'https://help.aliyun.com/zh/model-studio/qwen-tts-api'
+  }
+}
+
+/** 跳转外链（主进程 setWindowOpenHandler 会交给系统浏览器打开） */
+function openExternal(url: string): void {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
+
+/** 一键直达入口：控制台拿凭据 / 查文档 */
+function DocLinks({ items }: { items: { label: string; url: string }[] }) {
+  return (
+    <div className="mt-2 flex flex-wrap gap-2">
+      {items.map((item) => (
+        <Button
+          key={item.url}
+          variant="outline"
+          size="sm"
+          className="h-6 text-xs"
+          onClick={() => openExternal(item.url)}
+        >
+          <ExternalLink className="size-3" />
+          {item.label}
+        </Button>
+      ))}
+    </div>
+  )
+}
 
 /** 设置：全局弹窗（对齐 TermPilot），左侧栏目、右侧当前项。从侧边栏底部入口打开。 */
 export function SettingsDialog() {
@@ -197,6 +257,14 @@ function StreamSection() {
           </>
         )}
       </div>
+      <div className="mt-3">
+        <DocLinks
+          items={[
+            { label: '下载抖音直播伴侣', url: 'https://www.douyin.com/falcon/live_pc/download' },
+            { label: '抖音开播页（复制推流地址）', url: 'https://creator.douyin.com/' }
+          ]}
+        />
+      </div>
       {form.mode === 'direct' && (!form.serverUrl || !form.streamKey) && (
         <p className="mt-3 text-xs text-muted-foreground">直推模式需要服务器地址和推流密钥（抖音开播页可复制）</p>
       )}
@@ -339,6 +407,12 @@ function LlmSection() {
               ))}
             </SelectContent>
           </Select>
+          <DocLinks
+            items={[
+              { label: `去 ${meta.label} 控制台拿 API Key`, url: LLM_LINKS[form.provider].console },
+              { label: '查看接入文档', url: LLM_LINKS[form.provider].docs }
+            ]}
+          />
         </div>
         <Field
           label="API Key"
@@ -434,6 +508,19 @@ function TtsSection() {
               <SelectItem value="bailian">阿里云百炼（Qwen-TTS）</SelectItem>
             </SelectContent>
           </Select>
+          <DocLinks
+            items={
+              form.provider === 'volcano'
+                ? [
+                    { label: '去火山语音控制台拿 AppId / Token', url: TTS_LINKS.volcano.console },
+                    { label: '查看接入文档', url: TTS_LINKS.volcano.docs }
+                  ]
+                : [
+                    { label: '去百炼控制台拿 API Key', url: TTS_LINKS.bailian.console },
+                    { label: '查看 Qwen-TTS 文档', url: TTS_LINKS.bailian.docs }
+                  ]
+            }
+          />
         </div>
 
         {form.provider === 'volcano' ? (

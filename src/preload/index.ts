@@ -100,9 +100,11 @@ const api = {
     stop: (sessionId: string) =>
       ipcRenderer.invoke(IPC.ttsStreamStop, sessionId) as Promise<{ ok: boolean }>,
     /** 订阅 PCM 块与结束事件，返回取消订阅函数 */
-    onChunk: (cb: (payload: { sessionId: string; pcm: Uint8Array }) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, payload: { sessionId: string; pcm: Uint8Array }) =>
-        cb(payload)
+    onChunk: (cb: (payload: { sessionId: string; pcm: Uint8Array; sampleRate: number }) => void) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        payload: { sessionId: string; pcm: Uint8Array; sampleRate: number }
+      ) => cb(payload)
       ipcRenderer.on(IPC.ttsStreamChunk, listener)
       return () => ipcRenderer.removeListener(IPC.ttsStreamChunk, listener)
     },

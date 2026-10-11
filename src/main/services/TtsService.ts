@@ -31,6 +31,11 @@ export class TtsService {
     return dir
   }
 
+  /** 当前 TTS 服务商是否为百炼（流式接口已核实可用） */
+  providerIsBailian(): boolean {
+    return this.storage.getConfig().tts.provider === 'bailian'
+  }
+
   outputExtension(): 'mp3' | 'wav' {
     return this.storage.getConfig().tts.provider === 'bailian' ? 'wav' : 'mp3'
   }
@@ -109,6 +114,86 @@ export class TtsService {
 
     await mkdir(dirname(outPath), { recursive: true }).catch(() => undefined)
     await writeFile(outPath, Buffer.from(data.data, 'base64'))
+  }
+
+
+  /**
+   * 百炼 Qwen-TTS **真流式**合成（依据 help.aliyun.com/zh/model-studio/qwen-tts-api）。
+   * 端点与鉴权同非流式，加 X-DashScope-SSE: enable 头，服务端按 SSE 返回多个 chunk：
+   *   中间帧：output.audio.data = base64 音频片段（PCM 16bit 单声道 24kHz）
+   *   末帧：finish_reason = stop，data 为空、url 为完整音频地址（不用它）
+   * 文本上限 600 字符。
+   */
+  async *synthesizeBailianStream(
+    text: string,
+    voiceId?: string,
+    signal?: AbortSignal
+  ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
+    const { tts } = this.storage.getConfig()
+    if (!tts.apiKey) throw new Error('百炼 API Key 未配置')
+    if (!tts.model) throw new Error('百炼模型未配置')
+    const voice = voiceId || tts.voiceId
+    if (!voice) throw new Error('未选择百炼音色（voiceId 为空）')
+
+    const baseUrl = (tts.baseUrl || 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
+    const res = await fetch(`${baseUrl}${BAILIAN_TTS_PATH}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${tts.apiKey}`,
+        'X-DashScope-SSE': 'enable'
+      },
+      body: JSON.stringify({
+        model: tts.model,
+        input: { text, voice, language_type: tts.languageType || 'Chinese' }
+      }),
+      signal: this.combinedSignal(signal)
+    })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`百炼流式 TTS 请求失败 ${res.status}: ${body.slice(0, 200)}`)
+    }
+    if (!res.body) throw new Error('百炼流式 TTS 无响应体')
+
+    const sep = new RegExp(String.fromCharCode(13) + '?\\n{2}')
+    const brk = new RegExp(String.fromCharCode(13) + '?\\n')
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const blocks = buffer.split(sep)
+      buffer = blocks.pop() ?? ''
+      for (const block of blocks) {
+        for (const line of block.split(brk)) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data:')) continue
+          const payload = trimmed.slice(5).trim()
+          if (!payload || payload === '[DONE]') continue
+          let frame: {
+            status_code?: number
+            message?: string
+            output?: { audio?: { data?: string }; finish_reason?: string | null }
+          }
+          try {
+            frame = JSON.parse(payload)
+          } catch {
+            continue
+          }
+          if (frame.status_code && frame.status_code !== 200) {
+            throw new Error(
+              `百炼流式 TTS 返回 ${frame.status_code}${frame.message ? `：${frame.message}` : ''}`
+            )
+          }
+          const base64 = frame.output?.audio?.data
+          if (base64) {
+            yield { pcm: Buffer.from(base64, 'base64'), sampleRate: 24000 }
+          }
+        }
+      }
+    }
   }
 
   private async synthesizeBailian(

@@ -52,7 +52,10 @@ class PlaybackLoop {
       }
       const offChunk = window.api.ttsStream.onChunk((payload) => {
         if (payload.sessionId !== sessionId) return
-        streamPlayer.push(new Int16Array(payload.pcm.buffer, payload.pcm.byteOffset, payload.pcm.byteLength / 2))
+        streamPlayer.push(
+          new Int16Array(payload.pcm.buffer, payload.pcm.byteOffset, payload.pcm.byteLength / 2),
+          payload.sampleRate
+        )
       })
       const offEnd = window.api.ttsStream.onEnd((payload) => {
         if (payload.sessionId !== sessionId) return

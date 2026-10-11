@@ -41,7 +41,21 @@
 3. 成功后到「设置 → 语音合成」把默认音色设为该克隆音色，测发音验证
 
 
-## 附：实时 TTS（流式合成）待核对项 · 2026-10-11
+## 附：实时 TTS（流式合成）· 2026-10-11
+
+### 已核实并实现：百炼 Qwen-TTS 真流式（SSE）
+
+依据官方文档（help.aliyun.com/zh/model-studio/qwen-tts-api）实测口径：
+- 端点与鉴权同非流式，**加请求头 `X-DashScope-SSE: enable`** 即进入流式
+- 服务端按 SSE 返回多个 chunk：中间帧 `output.audio.data` 为 base64 音频片段；末帧 `finish_reason = "stop"`、`data` 为空
+- **流式音频为 PCM 16bit 单声道 24kHz**（官方 Python/Java 示例的采样率）
+- 文本上限 600 字符
+
+实现：`TtsService.synthesizeBailianStream()` → `TtsStreamService`（百炼走真流式，其余回退切片）→
+渲染进程 `streamPlayer`（AudioBuffer 按块采样率建buffer，WebAudio 自动重采样播放）→
+直推模式另有一条 `resampleTo48k()`（线性插值）喂混音器。
+
+### 仍待核对：火山流式协议
 
 M9 实现了"边合成边播"的**完整管线**（PCM 分块 → 渲染进程 WebAudio 无缝排播 → 混音器直通），
 但**取数方式仍是"整段合成后按真实速率切片"**（`TtsStreamService.streamChunks`），并非服务商真流式。

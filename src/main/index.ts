@@ -201,6 +201,25 @@ function broadcastConnector(status: ConnectorStatus): void {
   }
 }
 
+/** 线性插值重采样到 48k（混音器口径固定 48k mono s16le） */
+function resampleTo48k(pcm: Buffer, fromRate: number): Buffer {
+  if (fromRate === 48000) return pcm
+  const inSamples = Math.floor(pcm.length / 2)
+  if (inSamples === 0) return pcm
+  const ratio = 48000 / fromRate
+  const outSamples = Math.floor(inSamples * ratio)
+  const out = Buffer.alloc(outSamples * 2)
+  for (let i = 0; i < outSamples; i++) {
+    const pos = i / ratio
+    const idx = Math.floor(pos)
+    const frac = pos - idx
+    const a = pcm.readInt16LE(Math.min(idx, inSamples - 1) * 2)
+    const b = pcm.readInt16LE(Math.min(idx + 1, inSamples - 1) * 2)
+    out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac))), i * 2)
+  }
+  return out
+}
+
 /** 音色库变化广播（训练状态更新/新增/删除） */
 function broadcastVoices(voices: VoiceRecord[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -312,11 +331,13 @@ function registerIpc(
   // ---------- 实时 TTS 流式合成 ----------
   ipcMain.handle(IPC.ttsStreamStart, async (_e, sessionId: string, text: string, voiceId?: string) => {
     void ttsStream?.start(sessionId, text, voiceId, {
-      onChunk: (pcm) => {
-        // 直推模式：PCM 同时进混音器；两种模式都推给渲染进程播放
-        if (storage.getConfig().stream.mode === 'direct') audioMixer.pushTtsPcm(pcm)
+      onChunk: (pcm, sampleRate) => {
+        // 直推模式：PCM 同时进混音器（混音器口径固定 48k，非 48k 先重采样）
+        if (storage.getConfig().stream.mode === 'direct') {
+          audioMixer.pushTtsPcm(sampleRate === 48000 ? pcm : resampleTo48k(pcm, sampleRate))
+        }
         for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamChunk, { sessionId, pcm })
+          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamChunk, { sessionId, pcm, sampleRate })
         }
       },
       onEnd: () => {

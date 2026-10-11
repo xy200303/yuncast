@@ -29,14 +29,15 @@ class StreamPlayer {
     return ctx
   }
 
-  /** 推入一块 PCM；返回 true 表示这是本次会话的第一块（已开始出声） */
-  push(pcm: Int16Array): boolean {
+  /** 推入一块 PCM（sampleRate 为该块原始采样率）；返回 true 表示这是本次会话的第一块（已开始出声） */
+  push(pcm: Int16Array, sampleRate = SAMPLE_RATE): boolean {
     const ctx = this.ensureGraph()
     void ctx.resume()
 
     const samples = pcm.length
     if (samples === 0) return false
-    const buffer = ctx.createBuffer(1, samples, SAMPLE_RATE)
+    // AudioBuffer 的采样率可与上下文不同：WebAudio 播放时自动重采样
+    const buffer = ctx.createBuffer(1, samples, sampleRate)
     const channel = buffer.getChannelData(0)
     for (let i = 0; i < samples; i++) channel[i] = pcm[i] / 32768
 

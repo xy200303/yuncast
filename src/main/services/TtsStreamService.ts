@@ -23,8 +23,8 @@ const CHUNK_BYTES = (SAMPLE_RATE * BYTES_PER_SAMPLE * CHUNK_MS) / 1000
 
 export interface TtsStreamSession {
   sessionId: string
-  /** 收到一块 PCM（s16le 48k mono） */
-  onChunk: (pcm: Buffer) => void
+  /** 收到一块 PCM（s16le mono；采样率见第二个参数） */
+  onChunk: (pcm: Buffer, sampleRate: number) => void
   /** 播放队列已排满、可以开始播的时刻（首块到达） */
   onFirstChunk?: () => void
   onEnd: () => void
@@ -58,7 +58,7 @@ export class TtsStreamService {
           firstChunkSent = true
           handlers.onFirstChunk?.()
         }
-        handlers.onChunk(chunk)
+        handlers.onChunk(chunk.pcm, chunk.sampleRate)
       }
       if (abort.signal.aborted) return
       handlers.onEnd()
@@ -89,7 +89,21 @@ export class TtsStreamService {
     text: string,
     voiceId: string | undefined,
     signal: AbortSignal
-  ): AsyncGenerator<Buffer> {
+  ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
+    // 百炼 Qwen-TTS 支持 SSE 真流式（接口已按官方文档核实）：直接用它的分块
+    if (this.tts.providerIsBailian()) {
+      yield* this.tts.synthesizeBailianStream(text, voiceId, signal)
+      return
+    }
+    // 其余情况（火山流式协议未核对）：整段合成 → 解码 → 按真实速率切片，管线仍是流式的
+    yield* this.chunkedFallback(text, voiceId, signal)
+  }
+
+  private async *chunkedFallback(
+    text: string,
+    voiceId: string | undefined,
+    signal: AbortSignal
+  ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     let tempFile = ''
     try {
       // 一次合成到缓存（将来这里换成服务商流式读取循环，下游不变）
@@ -98,7 +112,7 @@ export class TtsStreamService {
       const pcm = await decodeToPcm(tempFile)
       for (let offset = 0; offset < pcm.length; offset += CHUNK_BYTES) {
         if (signal.aborted) return
-        yield pcm.subarray(offset, Math.min(offset + CHUNK_BYTES, pcm.length))
+        yield { pcm: pcm.subarray(offset, Math.min(offset + CHUNK_BYTES, pcm.length)), sampleRate: SAMPLE_RATE }
         // 按真实播放速率节拍吐块：消费方一边收一边播，队列水位不会被灌满
         await sleep(CHUNK_MS)
       }

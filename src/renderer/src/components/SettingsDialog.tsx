@@ -291,7 +291,7 @@ function StreamSection() {
       <div className="mt-3">
         <DocLinks
           items={[
-            { label: '下载抖音直播伴侣', url: 'https://www.douyin.com/falcon/live_pc/download' },
+            { label: '下载抖音直播伴侣', url: 'https://streamingtool.douyin.com/' },
             { label: '抖音开播页（复制推流地址）', url: 'https://creator.douyin.com/' }
           ]}
         />
@@ -583,7 +583,8 @@ function TtsSection() {
         <div>
           <p className="text-[13px]">实时合成（流式播报）</p>
           <p className="text-xs text-muted-foreground">
-            话术不再整段合成完才播，而是边合成边播，首包延迟最低；适合评论回复这类要快的场景
+            话术不再整段合成完才播，而是边合成边播，首包延迟最低。
+            百炼（Qwen-TTS）走官方 SSE 真流式；火山暂为「整段合成后按实时速率分块」的等效回退
           </p>
         </div>
         <Switch

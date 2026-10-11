@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Cable, Monitor, Moon, Palette, Sun } from 'lucide-react'
+import { AudioLines, Brain, Cable, MessageSquareText, Monitor, Moon, Palette, Sun } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -24,11 +24,14 @@ import {
   type TtsProvider
 } from '../../../shared/types'
 
-type Pane = 'appearance' | 'access'
+type Pane = 'appearance' | 'llm' | 'tts' | 'stream' | 'comment'
 
 const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
-  { id: 'access', label: '接入', icon: Cable }
+  { id: 'llm', label: '语言模型', icon: Brain },
+  { id: 'tts', label: '语音合成', icon: AudioLines },
+  { id: 'stream', label: '推流', icon: Cable },
+  { id: 'comment', label: '评论接入', icon: MessageSquareText }
 ]
 
 const THEME_OPTIONS: { id: AppTheme; label: string; icon: typeof Sun }[] = [
@@ -69,7 +72,11 @@ export function SettingsDialog() {
             ))}
           </nav>
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
-            {pane === 'appearance' ? <AppearancePane /> : <AccessPane />}
+            {pane === 'appearance' && <AppearancePane />}
+            {pane === 'llm' && <div className="max-w-xl"><LlmSection /></div>}
+            {pane === 'tts' && <div className="max-w-xl"><TtsSection /></div>}
+            {pane === 'stream' && <div className="max-w-xl"><StreamSection /></div>}
+            {pane === 'comment' && <div className="max-w-xl"><CommentGatewayCard /></div>}
           </div>
         </div>
       </DialogContent>
@@ -114,23 +121,6 @@ function AppearancePane() {
             )
           })}
         </ToggleGroup>
-      </div>
-    </section>
-  )
-}
-
-function AccessPane() {
-  return (
-    <section className="max-w-xl">
-      <LlmSection />
-      <div className="mt-3">
-        <TtsSection />
-      </div>
-      <div className="mt-3">
-        <StreamSection />
-      </div>
-      <div className="mt-3">
-        <CommentGatewayCard />
       </div>
     </section>
   )

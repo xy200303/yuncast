@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
@@ -64,6 +65,16 @@ export function LivePage() {
   const levels = useAppStore((s) => s.levels)
   const loopRunning = useAppStore((s) => s.loopRunning)
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
+  const [leftTab, setLeftTab] = useState<'pool' | 'comments'>('pool')
+  const [comments, setComments] = useState<LiveComment[]>([])
+
+  // 评论订阅提到页面层（标签上要显示条数），保持最近 100 条
+  useEffect(() => {
+    if (!('api' in window)) return
+    return window.api.comment.onComment((comment) => {
+      setComments((prev) => [...prev.slice(-99), comment])
+    })
+  }, [])
 
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const queued = pool.items.filter((item) => item.status !== 'playing')
@@ -118,43 +129,54 @@ export function LivePage() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* 左栏：上评论流，下话术池队列 */}
+        {/* 左栏：话术池队列 / 评论流，选项卡切换 */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <CommentFeed />
-          <div className="flex h-8 shrink-0 items-center border-y px-4 text-xs text-muted-foreground">
-            话术池队列 · {pool.items.length} 条
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-3">
-            {groups.length === 0 && pool.failed.length === 0 ? (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                <Radio className="size-10" strokeWidth={1.25} />
-                <p className="text-sm">话术池是空的，从右侧操作面板发起人工播报</p>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {groups.map((group) => (
-                  <TurnGroup key={group.key} group={group.items} />
-                ))}
-                {pool.failed.length > 0 && (
-                  <div className="mt-2 flex flex-col gap-1">
-                    <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
-                    {pool.failed.map((item) => (
-                      <div
-                        key={item.id}
-                        className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2"
-                      >
-                        <Badge variant="destructive">失败</Badge>
-                        <span className="min-w-0 flex-1 truncate text-[13px]">{item.text}</span>
-                        <span className="shrink-0 text-xs text-muted-foreground" title={item.error}>
-                          {item.error}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
+            <div className="shrink-0 border-b px-4 pt-2">
+              <TabsList variant="line">
+                <TabsTrigger value="pool" className="px-3 text-xs">
+                  话术池队列 · {pool.items.length}
+                </TabsTrigger>
+                <TabsTrigger value="comments" className="px-3 text-xs">
+                  评论流 · {comments.length}
+                </TabsTrigger>
+              </TabsList>
+            </div>
+            <TabsContent value="pool" className="min-h-0 overflow-y-auto p-3">
+              {groups.length === 0 && pool.failed.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                  <Radio className="size-10" strokeWidth={1.25} />
+                  <p className="text-sm">话术池是空的，从右侧操作面板发起人工播报</p>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {groups.map((group) => (
+                    <TurnGroup key={group.key} group={group.items} />
+                  ))}
+                  {pool.failed.length > 0 && (
+                    <div className="mt-2 flex flex-col gap-1">
+                      <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
+                      {pool.failed.map((item) => (
+                        <div
+                          key={item.id}
+                          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2"
+                        >
+                          <Badge variant="destructive">失败</Badge>
+                          <span className="min-w-0 flex-1 truncate text-[13px]">{item.text}</span>
+                          <span className="shrink-0 text-xs text-muted-foreground" title={item.error}>
+                            {item.error}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </TabsContent>
+            <TabsContent value="comments" className="min-h-0 overflow-y-auto px-4 pb-2">
+              <CommentList comments={comments} />
+            </TabsContent>
+          </Tabs>
         </section>
 
         {/* 右侧面板：提词器 + 操作面板 */}
@@ -192,48 +214,34 @@ export function LivePage() {
   )
 }
 
-/** 评论流：实时滚动，最新在下，自动滚到底，保持最近 100 条 */
-function CommentFeed() {
-  const [comments, setComments] = useState<LiveComment[]>([])
+/** 评论列表（ LivePage 持有数据与订阅，这里只渲染） */
+function CommentList({ comments }: { comments: LiveComment[] }) {
   const listRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!('api' in window)) return
-    return window.api.comment.onComment((comment) => {
-      setComments((prev) => [...prev.slice(-99), comment])
-    })
-  }, [])
 
   useEffect(() => {
     const el = listRef.current
     if (el) el.scrollTop = el.scrollHeight
   }, [comments])
 
+  if (comments.length === 0) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+        <MessageSquareText className="size-8" strokeWidth={1.25} />
+        <p className="text-sm">还没有评论，开「模拟评论」试试</p>
+      </div>
+    )
+  }
   return (
-    <div className="flex h-[40%] shrink-0 flex-col">
-      <div className="flex h-8 shrink-0 items-center px-4 text-xs text-muted-foreground">
-        评论流 · {comments.length} 条
-      </div>
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-2">
-        {comments.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-            <MessageSquareText className="size-8" strokeWidth={1.25} />
-            <p className="text-sm">还没有评论，开「模拟评论」试试</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-1">
-            {comments.map((comment) => (
-              <div key={comment.id} className="flex items-baseline gap-2 text-[13px]">
-                <span className="shrink-0 text-xs text-muted-foreground">
-                  {new Date(comment.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                </span>
-                <span className="shrink-0 font-medium text-primary">{comment.author}</span>
-                <span className="min-w-0">{comment.content}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+    <div ref={listRef} className="flex flex-col gap-1 pt-2">
+      {comments.map((comment) => (
+        <div key={comment.id} className="flex items-baseline gap-2 text-[13px]">
+          <span className="shrink-0 text-xs text-muted-foreground">
+            {new Date(comment.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+          </span>
+          <span className="shrink-0 font-medium text-primary">{comment.author}</span>
+          <span className="min-w-0">{comment.content}</span>
+        </div>
+      ))}
     </div>
   )
 }

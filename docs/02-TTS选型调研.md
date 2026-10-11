@@ -81,22 +81,22 @@
 | 档位 | 协议 | 备注 |
 |---|---|---|
 | 非实时·非流式 | HTTP，返回音频 URL（24h 有效） | 我们用于预合成 |
-| 非实时·流式 | 同端点 + ，SSE 逐段返回音频 | 我们用于动态内容（已实现） |
+| 非实时·流式 | 同端点 + `X-DashScope-SSE: enable`，SSE 逐段返回音频 | 我们用于动态内容（已实现） |
 | 实时 | WebSocket 双向，文本可流式喂入 | 仅连麦/双向对话需要，通道已留但协议待核对 |
 
 **端点按模型系列分（不可混用）**：
 
 | 模型系列 | 端点 |
 |---|---|
-| Qwen-TTS（） |  |
-| Qwen-Audio-TTS / CosyVoice |  |
-| MiniMax |  |
+| Qwen-TTS（`qwen3-tts-flash`） | `https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation` |
+| Qwen-Audio-TTS / CosyVoice | `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer` |
+| MiniMax | `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation` |
 
-后两类只在北京地域可用，且需要业务空间 ID（已加入配置）。音色与模型不通用： 用 Cherry 等，
- 用 longanhuan_v3.6 等， 用 longanyang/longanhuan_v3 等。
+后两类只在北京地域可用，且需要业务空间 ID（已加入配置）。音色与模型不通用：`qwen3-tts-flash` 用 Cherry 等，
+`qwen-audio-3.0-tts-flash` 用 longanhuan_v3.6 等，`cosyvoice-v3-flash` 用 longanyang/longanhuan_v3 等。
 
 **可用于直播的表达力能力**（值得后续用起来）：
 
--  语气指令（≤100 字，如「语速稍快，语气热情」）——已进配置
-- 情感/拟声标签（仅 qwen-audio-3.x）：文本里写 、、 直接改变语气
+- `instruction` 语气指令（≤100 字，如「语速稍快，语气热情」）——已进配置
+- 情感/拟声标签（仅 qwen-audio-3.x）：文本里写 `[excited]`、`[laughing]`、`[sighing]` 直接改变语气
 - 方言：部分系统音色原生支持；复刻音色可用 instruction 指定（如「请用河南话表达」）

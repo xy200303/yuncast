@@ -308,3 +308,68 @@ export interface SimulatorStatus {
   running: boolean
   count: number
 }
+
+// ---------- 知识库（docs/01 §4） ----------
+
+export interface Product {
+  id: string
+  name: string
+  /** 价格（元）。价格护栏的数据源：主播报价只能出自这里 */
+  price: number
+  sellingPoints: string
+  faq: string
+  createdAt: number
+}
+
+export type ProductInput = Omit<Product, 'id' | 'createdAt'>
+
+export const KNOWLEDGE_KINDS = ['text', 'doc', 'pdf', 'image'] as const
+export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number]
+
+export interface KnowledgeFile {
+  id: string
+  name: string
+  kind: KnowledgeKind
+  /** 解析出的文本；image 类型是用户填的一句话描述 */
+  content: string
+  filePath: string
+  createdAt: number
+}
+
+/** search_knowledge 的命中结果 */
+export interface KnowledgeHit {
+  source: 'product' | 'file'
+  id: string
+  name: string
+  /** 命中片段（截断） */
+  snippet: string
+  /** 商品命中时带价格 */
+  price?: number
+}
+
+// ---------- 记忆（docs/01 §3.6 三层） ----------
+
+/** 长期记忆：老粉画像 */
+export interface ViewerProfile {
+  name: string
+  /** 互动次数（评论 + remember 调用） */
+  interactions: number
+  /** 问过的问题（最近 20 条） */
+  asks: string[]
+  /** 偏好/特征标签 */
+  tags: string[]
+  /** 主播记的笔记（最近 20 条） */
+  notes: string[]
+  firstSeenAt: number
+  lastSeenAt: number
+}
+
+/** 本场记忆：下播总结 */
+export interface EpisodeSummary {
+  id: string
+  startedAt: number
+  endedAt: number
+  /** 主播自我复盘：亮点 / 翻车 / 高频问题 */
+  summary: string
+  createdAt: number
+}

@@ -6,12 +6,16 @@ import {
   DEFAULT_CONFIG,
   parseAppConfig,
   type AppConfig,
+  type EpisodeSummary,
+  type KnowledgeFile,
   type PartialDeep,
   type Persona,
+  type Product,
   type SpeechItem,
   type SpeechLane,
   type SpeechReplyTo,
-  type SpeechStatus
+  type SpeechStatus,
+  type ViewerProfile
 } from '../../shared/types'
 
 /**
@@ -178,6 +182,48 @@ export class StorageService {
         taboos TEXT NOT NULL DEFAULT '',
         voice_id TEXT NOT NULL DEFAULT '',
         updated_at INTEGER NOT NULL
+      )
+    `)
+    // 知识库：商品（价格护栏数据源）+ 资料文件
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS products (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        price REAL NOT NULL DEFAULT 0,
+        selling_points TEXT NOT NULL DEFAULT '',
+        faq TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS knowledge_files (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '',
+        file_path TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
+      )
+    `)
+    // 记忆：老粉画像 + 场次摘要
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS viewer_profiles (
+        name TEXT PRIMARY KEY,
+        interactions INTEGER NOT NULL DEFAULT 0,
+        asks TEXT NOT NULL DEFAULT '[]',
+        tags TEXT NOT NULL DEFAULT '[]',
+        notes TEXT NOT NULL DEFAULT '[]',
+        first_seen_at INTEGER NOT NULL,
+        last_seen_at INTEGER NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS episode_summaries (
+        id TEXT PRIMARY KEY,
+        started_at INTEGER NOT NULL,
+        ended_at INTEGER NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        created_at INTEGER NOT NULL
       )
     `)
   }
@@ -395,7 +441,149 @@ export class StorageService {
       )
   }
 
+  // ---------- 知识库 ----------
+
+  productList(): Product[] {
+    return this.db
+      .prepare('SELECT * FROM products ORDER BY created_at ASC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          id: str(r.id),
+          name: str(r.name),
+          price: num(r.price) ?? 0,
+          sellingPoints: str(r.selling_points),
+          faq: str(r.faq),
+          createdAt: num(r.created_at) ?? 0
+        }
+      })
+  }
+
+  productSave(product: Product): void {
+    this.db
+      .prepare(
+        `INSERT INTO products (id, name, price, selling_points, faq, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, price = excluded.price,
+           selling_points = excluded.selling_points, faq = excluded.faq`
+      )
+      .run(product.id, product.name, product.price, product.sellingPoints, product.faq, product.createdAt)
+  }
+
+  productDelete(id: string): void {
+    this.db.prepare('DELETE FROM products WHERE id = ?').run(id)
+  }
+
+  knowledgeFileList(): KnowledgeFile[] {
+    return this.db
+      .prepare('SELECT * FROM knowledge_files ORDER BY created_at DESC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          id: str(r.id),
+          name: str(r.name),
+          kind: (str(r.kind) || 'text') as KnowledgeFile['kind'],
+          content: str(r.content),
+          filePath: str(r.file_path),
+          createdAt: num(r.created_at) ?? 0
+        }
+      })
+  }
+
+  knowledgeFileInsert(file: KnowledgeFile): void {
+    this.db
+      .prepare(
+        'INSERT INTO knowledge_files (id, name, kind, content, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run(file.id, file.name, file.kind, file.content, file.filePath, file.createdAt)
+  }
+
+  knowledgeFileDelete(id: string): void {
+    this.db.prepare('DELETE FROM knowledge_files WHERE id = ?').run(id)
+  }
+
+  // ---------- 记忆 ----------
+
+  viewerGet(name: string): ViewerProfile | null {
+    const row = this.db.prepare('SELECT * FROM viewer_profiles WHERE name = ?').get(name)
+    return row ? rowToViewer(row as Record<string, unknown>) : null
+  }
+
+  viewerSave(profile: ViewerProfile): void {
+    this.db
+      .prepare(
+        `INSERT INTO viewer_profiles (name, interactions, asks, tags, notes, first_seen_at, last_seen_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(name) DO UPDATE SET
+           interactions = excluded.interactions, asks = excluded.asks, tags = excluded.tags,
+           notes = excluded.notes, last_seen_at = excluded.last_seen_at`
+      )
+      .run(
+        profile.name,
+        profile.interactions,
+        JSON.stringify(profile.asks),
+        JSON.stringify(profile.tags),
+        JSON.stringify(profile.notes),
+        profile.firstSeenAt,
+        profile.lastSeenAt
+      )
+  }
+
+  viewerList(): ViewerProfile[] {
+    return this.db
+      .prepare('SELECT * FROM viewer_profiles ORDER BY last_seen_at DESC')
+      .all()
+      .map((row) => rowToViewer(row as Record<string, unknown>))
+  }
+
+  episodeInsert(episode: EpisodeSummary): void {
+    this.db
+      .prepare(
+        'INSERT INTO episode_summaries (id, started_at, ended_at, summary, created_at) VALUES (?, ?, ?, ?, ?)'
+      )
+      .run(episode.id, episode.startedAt, episode.endedAt, episode.summary, episode.createdAt)
+  }
+
+  episodeList(): EpisodeSummary[] {
+    return this.db
+      .prepare('SELECT * FROM episode_summaries ORDER BY created_at DESC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          id: str(r.id),
+          startedAt: num(r.started_at) ?? 0,
+          endedAt: num(r.ended_at) ?? 0,
+          summary: str(r.summary),
+          createdAt: num(r.created_at) ?? 0
+        }
+      })
+  }
+
   close(): void {
     this.db.close()
+  }
+}
+
+function rowToViewer(r: Record<string, unknown>): ViewerProfile {
+  const jsonArray = (value: unknown): string[] => {
+    try {
+      const parsed = JSON.parse(str(value) || '[]')
+      return Array.isArray(parsed) ? parsed.map(String) : []
+    } catch {
+      return []
+    }
+  }
+  return {
+    name: str(r.name),
+    interactions: num(r.interactions) ?? 0,
+    asks: jsonArray(r.asks),
+    tags: jsonArray(r.tags),
+    notes: jsonArray(r.notes),
+    firstSeenAt: num(r.first_seen_at) ?? 0,
+    lastSeenAt: num(r.last_seen_at) ?? 0
   }
 }

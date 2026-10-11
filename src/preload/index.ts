@@ -4,6 +4,8 @@ import type {
   AgentStatus,
   AppConfig,
   AppInfo,
+  EpisodeSummary,
+  KnowledgeFile,
   LiveComment,
   PartialDeep,
   Persona,
@@ -11,9 +13,12 @@ import type {
   PoolSayInput,
   PoolSnapshot,
   PoolStatus,
+  Product,
+  ProductInput,
   SimulatorStatus,
   SpeechItem,
-  SpeechLane
+  SpeechLane,
+  ViewerProfile
 } from '../shared/types'
 
 /**
@@ -91,6 +96,28 @@ const api = {
         ipcRenderer.removeListener(IPC.commentEvent, listener)
       }
     }
+  },
+  knowledge: {
+    listProducts: () => ipcRenderer.invoke(IPC.knowledgeProductList) as Promise<Product[]>,
+    saveProduct: (input: ProductInput, id?: string) =>
+      ipcRenderer.invoke(IPC.knowledgeProductSave, input, id) as Promise<PoolResult<Product>>,
+    deleteProduct: (id: string) => ipcRenderer.invoke(IPC.knowledgeProductDelete, id) as Promise<PoolResult>,
+    listFiles: () => ipcRenderer.invoke(IPC.knowledgeFileList) as Promise<KnowledgeFile[]>,
+    /** 上传并解析资料文件；图片需带一句话描述 */
+    uploadFile: (filePath: string, description?: string) =>
+      ipcRenderer.invoke(IPC.knowledgeFileUpload, filePath, description) as Promise<
+        { ok: true; file: KnowledgeFile } | { ok: false; error: string }
+      >,
+    deleteFile: (id: string) => ipcRenderer.invoke(IPC.knowledgeFileDelete, id) as Promise<PoolResult>
+  },
+  memory: {
+    viewers: () => ipcRenderer.invoke(IPC.memoryViewers) as Promise<ViewerProfile[]>,
+    episodes: () => ipcRenderer.invoke(IPC.memoryEpisodes) as Promise<EpisodeSummary[]>
+  },
+  dialog: {
+    /** 弹出文件选择框，取消返回 null */
+    pickFile: (filtersName: string, extensions: string[]) =>
+      ipcRenderer.invoke(IPC.dialogPickFile, filtersName, extensions) as Promise<string | null>
   }
 }
 

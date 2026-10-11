@@ -41,5 +41,21 @@ export const IPC = {
   simStop: 'sim:stop',
   simStatus: 'sim:status',
   /** main → renderer：模拟评论事件（toast 展示用） */
-  commentEvent: 'comment:event'
+  commentEvent: 'comment:event',
+
+  // 知识库
+  knowledgeProductList: 'knowledge:product-list',
+  knowledgeProductSave: 'knowledge:product-save',
+  knowledgeProductDelete: 'knowledge:product-delete',
+  knowledgeFileList: 'knowledge:file-list',
+  /** 选文件 → 解析 → 入库，一步完成 */
+  knowledgeFileUpload: 'knowledge:file-upload',
+  knowledgeFileDelete: 'knowledge:file-delete',
+
+  // 记忆
+  memoryViewers: 'memory:viewers',
+  memoryEpisodes: 'memory:episodes',
+
+  // 系统对话框
+  dialogPickFile: 'dialog:pick-file'
 } as const

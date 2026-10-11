@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -13,6 +13,7 @@ import {
   type PoolResult,
   type PoolSayInput,
   type PoolSnapshot,
+  type ProductInput,
   type SpeechItem,
   type SpeechLane
 } from '../shared/types'
@@ -22,6 +23,8 @@ import { SpeechPool } from './services/SpeechPool'
 import { PersonaService } from './services/PersonaService'
 import { AgentService } from './services/AgentService'
 import { CommentSimulator } from './services/CommentSimulator'
+import { KnowledgeService } from './services/KnowledgeService'
+import { MemoryService } from './services/MemoryService'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -171,12 +174,12 @@ function broadcastComment(comment: LiveComment): void {
 let agent: AgentService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
-function guard(fn: () => SpeechItem): PoolResult<SpeechItem>
+function guard<T>(fn: () => T): { ok: true; item: T } | { ok: false; error: string }
 function guard(fn: () => void): PoolResult
-function guard(fn: () => SpeechItem | void): PoolResult<SpeechItem> | PoolResult {
+function guard(fn: () => unknown): { ok: true; item?: unknown } | { ok: false; error: string } {
   try {
     const result = fn()
-    return result ? { ok: true, item: result } : { ok: true }
+    return result !== undefined ? { ok: true, item: result } : { ok: true }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   }
@@ -188,7 +191,9 @@ function registerIpc(
   pool: SpeechPool,
   agent: AgentService,
   persona: PersonaService,
-  sim: CommentSimulator
+  sim: CommentSimulator,
+  knowledge: KnowledgeService,
+  memory: MemoryService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -252,6 +257,37 @@ function registerIpc(
     return sim.status()
   })
   ipcMain.handle(IPC.simStatus, () => sim.status())
+
+  // ---------- 知识库 ----------
+  ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listProducts())
+  ipcMain.handle(IPC.knowledgeProductSave, (_e, input: ProductInput, id?: string) =>
+    guard(() => knowledge.saveProduct(input, id))
+  )
+  ipcMain.handle(IPC.knowledgeProductDelete, (_e, id: string) => guard(() => knowledge.deleteProduct(id)))
+  ipcMain.handle(IPC.knowledgeFileList, () => knowledge.listFiles())
+  ipcMain.handle(IPC.knowledgeFileUpload, async (_e, filePath: string, description?: string) => {
+    try {
+      return { ok: true, file: await knowledge.uploadFile(String(filePath), description) }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC.knowledgeFileDelete, (_e, id: string) => guard(() => knowledge.deleteFile(id)))
+
+  // ---------- 记忆 ----------
+  ipcMain.handle(IPC.memoryViewers, () => memory.listViewers())
+  ipcMain.handle(IPC.memoryEpisodes, () => memory.listEpisodes())
+
+  // ---------- 系统对话框 ----------
+  ipcMain.handle(IPC.dialogPickFile, async (_e, filtersName: string, extensions: string[]) => {
+    const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+    if (!win) return null
+    const result = await dialog.showOpenDialog(win, {
+      properties: ['openFile'],
+      filters: [{ name: String(filtersName ?? '文件'), extensions: Array.isArray(extensions) ? extensions.map(String) : ['*'] }]
+    })
+    return result.canceled ? null : (result.filePaths[0] ?? null)
+  })
 }
 
 const single = app.requestSingleInstanceLock()
@@ -276,7 +312,9 @@ if (!single) {
     const tts = new TtsService(storage)
     pool = new SpeechPool(storage, tts, broadcastPool)
     const persona = new PersonaService(storage)
-    agent = new AgentService(storage, pool, persona, broadcastAgent)
+    const knowledge = new KnowledgeService(storage)
+    const memory = new MemoryService(storage)
+    agent = new AgentService(storage, pool, persona, knowledge, memory, broadcastAgent)
     const sim = new CommentSimulator((comment) => {
       // 评论进主播（主播自己决定回不回），同时广播给渲染进程弹 toast
       agent?.onComment(comment)
@@ -295,7 +333,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, sim)
+    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory)
     createWindow(storage)
 
     app.on('activate', () => {

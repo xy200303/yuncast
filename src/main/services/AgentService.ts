@@ -24,6 +24,8 @@ import {
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { PersonaService } from './PersonaService'
+import type { KnowledgeService } from './KnowledgeService'
+import type { MemoryService } from './MemoryService'
 
 /**
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
@@ -57,11 +59,17 @@ export class AgentService {
   private lastSteerAt = 0
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
   private lastComment: LiveComment | null = null
+  /** 本场开播时间（下播总结用） */
+  private startedAt = 0
+  /** 本场发生过几轮对话（没对话就不写总结） */
+  private exchanges = 0
 
   constructor(
     private readonly storage: StorageService,
     private readonly pool: SpeechPool,
     private readonly persona: PersonaService,
+    private readonly knowledge: KnowledgeService,
+    private readonly memory: MemoryService,
     private readonly broadcast: (status: AgentStatus) => void
   ) {}
 
@@ -90,6 +98,8 @@ export class AgentService {
       throw error
     }
     this.setState('running')
+    this.startedAt = Date.now()
+    this.exchanges = 0
     // 开场：让主播自己说开场白
     void this.ask(
       '直播开始了。用 say 工具来一段开场白，跟大家打个招呼、说说今天在播什么，然后按自己的节奏补 1-2 句常规话术。'
@@ -102,6 +112,10 @@ export class AgentService {
     this.draft = ''
     this.lastComment = null
     if (session) {
+      // 下播总结：本场有过对话就让主播自我复盘，写进场次摘要（本场记忆）
+      if (this.exchanges > 0 && this.state === 'running') {
+        await this.summarizeEpisode(session).catch(() => undefined)
+      }
       try {
         await session.abort()
       } catch {
@@ -117,13 +131,21 @@ export class AgentService {
     await this.start()
   }
 
-  /** 评论入口（模拟器 / 后续 PipeSDK）：主播自己决定回不回、怎么回 */
+  /** 评论入口（模拟器 / 后续 PipeSDK）：主播自己决定回不回、怎么回。老粉画像随评论注入。 */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    // 先查画像（老粉识别），再记一次互动
+    const known = this.memory.lookupViewer(comment.author)
+    const isQuestion = /[?？]$/.test(comment.content.trim())
+    this.memory.touchViewer(comment.author, isQuestion ? comment.content : undefined)
     this.lastComment = comment
+    const profileHint = known
+      ? `\n[老粉画像] ${comment.author}：${this.memory.describeViewer(known)}`
+      : '\n[新观众] 没见过这位观众'
     void this.ask(
-      `[观众评论] ${comment.author} 说：「${comment.content}」\n` +
-        '值得回应就用 insert_next 回一句（口语、简短）；不值得回应就忽略它，继续你的节奏。'
+      `[观众评论] ${comment.author} 说：「${comment.content}」${profileHint}\n` +
+        '值得回应就用 insert_next 回一句（口语、简短）；答不上来的商品信息先用 search_knowledge / check_price 查；' +
+        '聊出值得记住的偏好就顺手 remember_viewer 记一笔；不值得回应就忽略它，继续你的节奏。'
     )
   }
 
@@ -165,6 +187,7 @@ export class AgentService {
         return
       }
       this.busy = true
+      this.exchanges += 1
       await session.prompt(text)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -174,6 +197,22 @@ export class AgentService {
     } finally {
       this.busy = false
     }
+  }
+
+  /** 下播总结：让主播自我复盘本场亮点/高频问题，写入 episode_summaries。失败静默，不挡下播。 */
+  private async summarizeEpisode(session: AgentSession): Promise<void> {
+    const endedAt = Date.now()
+    await Promise.race([
+      (async () => {
+        await session.waitForIdle()
+        await session.prompt(
+          '直播结束了。不要用任何工具，直接用一段话复盘本场：亮点、翻车、观众高频问题，120 字以内。'
+        )
+      })(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('总结超时')), 30_000))
+    ])
+    const summary = session.getLastAssistantText()?.trim()
+    if (summary) this.memory.saveEpisodeSummary(this.startedAt, endedAt, summary)
   }
 
   private async createSession(llm: LlmConfig): Promise<AgentSession> {
@@ -242,9 +281,18 @@ export class AgentService {
       thinkingLevel: 'off',
       modelRuntime,
       resourceLoader,
-      // 只启用池操作工具（allowlist 逐项点名，内置编码工具一个不留）
+      // 只启用主播工具（allowlist 逐项点名——M3 踩过坑：tools: [] 会连 customTools 一起清掉）
       customTools: this.buildTools(),
-      tools: ['say', 'insert_next', 'get_pool_status', 'get_recent_played'],
+      tools: [
+        'say',
+        'insert_next',
+        'get_pool_status',
+        'get_recent_played',
+        'search_knowledge',
+        'check_price',
+        'lookup_viewer',
+        'remember_viewer'
+      ],
       sessionManager: SessionManager.inMemory(agentDir),
       settingsManager: SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2 } })
     })
@@ -287,7 +335,7 @@ export class AgentService {
     return session
   }
 
-  /** 池操作工具（docs/01 §3.3 的 M3 子集）：say / insert_next / get_pool_status / get_recent_played */
+  /** 主播工具（docs/01 §3.3）：池操作 + 知识库/价格护栏 + 观众记忆 */
   private buildTools(): ToolDefinition[] {
     const pool = this.pool
     const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
@@ -370,6 +418,70 @@ export class AgentService {
             const played = pool.getRecentPlayed(params.n ?? 5)
             if (played.length === 0) return '还没有播过任何话术'
             return played.map((item, i) => `${i + 1}. ${item.text}`).join('\n')
+          })
+      }),
+      defineTool({
+        name: 'search_knowledge',
+        label: '查知识库',
+        description: '检索商品资料和上传的知识文件（卖点/FAQ/资料描述）。观众问到商品细节先查再答，不要凭印象编。',
+        parameters: Type.Object({
+          query: Type.String({ description: '检索关键词，比如商品名、材质、功效' }),
+          limit: Type.Optional(Type.Number({ description: '返回条数，默认 3', default: 3 }))
+        }),
+        execute: async (_id, params) =>
+          guardTool(() => {
+            const hits = this.knowledge.searchKnowledge(params.query, params.limit ?? 3)
+            if (hits.length === 0) return '知识库里没有相关内容，别编，含糊带过或引导观众看小黄车'
+            return hits
+              .map(
+                (hit, i) =>
+                  `${i + 1}. [${hit.source === 'product' ? '商品' : '资料'}] ${hit.name}` +
+                  `${hit.price !== undefined ? `（¥${hit.price}）` : ''}\n${hit.snippet}`
+              )
+              .join('\n')
+          })
+      }),
+      defineTool({
+        name: 'check_price',
+        label: '查价格（护栏）',
+        description:
+          '查商品价格。硬性规则：直播里报的任何价格/优惠数字必须来自这个工具的返回，查不到就说不确定，绝不许编造。',
+        parameters: Type.Object({
+          product: Type.Optional(Type.String({ description: '商品名（模糊匹配），不传返回全部商品价格表' }))
+        }),
+        execute: async (_id, params) =>
+          guardTool(() => {
+            const rows = this.knowledge.checkPrice(params.product)
+            if (rows.length === 0) return '没查到这个商品，价格不确定，不要在直播里报价'
+            return rows.map((row) => `${row.name}：¥${row.price}`).join('\n')
+          })
+      }),
+      defineTool({
+        name: 'lookup_viewer',
+        label: '查观众画像',
+        description: '查一位观众的画像：互动次数、问过什么、你记过的偏好。用来认出老粉。',
+        parameters: Type.Object({
+          name: Type.String({ description: '观众昵称' })
+        }),
+        execute: async (_id, params) =>
+          guardTool(() => {
+            const profile = this.memory.lookupViewer(params.name)
+            if (!profile) return `${params.name} 是新观众，没有画像`
+            return `${profile.name}：${this.memory.describeViewer(profile)}`
+          })
+      }),
+      defineTool({
+        name: 'remember_viewer',
+        label: '记住观众',
+        description: '给观众记一笔偏好/特征（比如「家里有小孩」「预算 200 以内」），下次他来直播你能认出他。',
+        parameters: Type.Object({
+          name: Type.String({ description: '观众昵称' }),
+          note: Type.String({ description: '要记住的内容，一句话' })
+        }),
+        execute: async (_id, params) =>
+          guardTool(() => {
+            this.memory.rememberViewer(params.name, params.note)
+            return `已记住 ${params.name}：${params.note}`
           })
       })
     ]

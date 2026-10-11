@@ -27,7 +27,7 @@ export function StatusBar() {
   const gatewayBadge = (() => {
     if (connector.state === 'connected') return { variant: 'secondary' as const, text: '连接器已连接' }
     if (connector.state === 'connecting') return { variant: 'outline' as const, text: '连接器连接中…' }
-    return { variant: 'outline' as const, text: '评论未接入' }
+    return { variant: 'outline' as const, text: '连接器未接入' }
   })()
 
   return (

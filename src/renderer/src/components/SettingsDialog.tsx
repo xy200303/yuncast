@@ -31,7 +31,7 @@ const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'llm', label: '语言模型', icon: Brain },
   { id: 'tts', label: '语音合成', icon: AudioLines },
   { id: 'stream', label: '推流', icon: Cable },
-  { id: 'comment', label: '评论接入', icon: MessageSquareText }
+  { id: 'comment', label: '连接器', icon: MessageSquareText }
 ]
 
 const THEME_OPTIONS: { id: AppTheme; label: string; icon: typeof Sun }[] = [
@@ -234,7 +234,7 @@ function CommentGatewayCard() {
     <div className="rounded-lg border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-[13px] font-medium">评论接入（平台连接器）</p>
+          <p className="text-[13px] font-medium">平台连接器</p>
           <p className="text-xs text-muted-foreground">
             主应用不内置平台 SDK：连接器是独立 MCP server，事件经 notifications/live_event 推进来，出站动作走同一连接
           </p>

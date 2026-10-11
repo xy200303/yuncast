@@ -596,20 +596,27 @@ function TtsSection() {
       .finally(() => setSaving(false))
   }
 
-  const test = () => {
+  const test = async () => {
     if (testing) return
     setTesting(true)
-    void window.api.tts
-      .test('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
-      .then(async (result) => {
-        if (result.ok && result.audioPath) {
-          toast.success('合成成功，正在播放')
-          await audioEngine.playTts(result.audioPath)
-        } else {
-          toast.error('合成失败', { description: result.error })
-        }
-      })
-      .finally(() => setTesting(false))
+    try {
+      // 测试用的是已保存的配置：表格有改动先自动保存，避免"填了音色却报 voiceId 为空"
+      if (dirty) {
+        await saveConfig({ tts: form })
+        toast.message('配置已顺带保存')
+      }
+      const result = await window.api.tts.test('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
+      if (result.ok && result.audioPath) {
+        toast.success('合成成功，正在播放')
+        await audioEngine.playTts(result.audioPath)
+      } else {
+        toast.error('合成失败', { description: result.error })
+      }
+    } catch (error) {
+      toast.error('测试失败', { description: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setTesting(false)
+    }
   }
 
   return (

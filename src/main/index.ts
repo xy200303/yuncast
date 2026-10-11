@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { IPC } from '../shared/ipc-channels'
 import {
@@ -18,6 +18,7 @@ import {
   type LivePlanInput,
   type SpeechItem,
   type SpeechLane,
+  type StreamStats,
   type TriggerInput
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
@@ -31,6 +32,14 @@ import { MemoryService } from './services/MemoryService'
 import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
+import { StreamService } from './services/stream/StreamService'
+import { CommentGateway } from './services/comment/CommentGateway'
+import { getDouyinLaunchContext, updateDouyinLaunchContext } from './services/comment/launchContext'
+
+// 直播伴侣 PipeSDK 经命名管道与本进程通信，Chromium 沙箱会挡，按旧版做法关掉（仅 pipe 启动时）
+if (process.platform === 'win32' && getDouyinLaunchContext()?.mode === 'pipe') {
+  app.commandLine.appendSwitch('no-sandbox')
+}
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -179,10 +188,19 @@ function broadcastComment(comment: LiveComment): void {
   }
 }
 
+/** 推流状态广播 */
+function broadcastStream(stats: StreamStats): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.streamStatsEvent, stats)
+  }
+}
+
 let agent: AgentService | null = null
 let bus: EventBus | null = null
 let triggers: TriggerRuntime | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
+let gateway: CommentGateway | null = null
+let streamSvc: StreamService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
 function guard<T>(fn: () => T): { ok: true; item: T } | { ok: false; error: string }
@@ -207,7 +225,9 @@ function registerIpc(
   memory: MemoryService,
   bus: EventBus,
   triggers: TriggerRuntime,
-  script: ScriptService
+  script: ScriptService,
+  stream: StreamService,
+  gateway: CommentGateway
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -358,6 +378,24 @@ function registerIpc(
     })
     return result.canceled ? null : (result.filePaths[0] ?? null)
   })
+
+  // ---------- 推流 ----------
+  ipcMain.handle(IPC.streamStart, () => stream.start())
+  ipcMain.handle(IPC.streamStop, () => stream.stop())
+  ipcMain.handle(IPC.streamStats, () => stream.getStats())
+  ipcMain.handle(IPC.streamPushTts, (_e, filePath: string) => stream.pushTts(String(filePath)))
+  ipcMain.handle(IPC.streamSetBgm, (_e, action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number) =>
+    stream.setBgm(action, filePath, volume)
+  )
+  ipcMain.on(IPC.streamMicPcm, (_e, pcm: Uint8Array) => stream.pushMicPcm(pcm))
+
+  // ---------- 评论网关 ----------
+  ipcMain.handle(IPC.commentGatewayStart, () => gateway.start())
+  ipcMain.handle(IPC.commentGatewayStop, () => {
+    gateway.stop()
+    return gateway.status()
+  })
+  ipcMain.handle(IPC.commentGatewayStatus, () => gateway.status())
 }
 
 const single = app.requestSingleInstanceLock()
@@ -366,7 +404,12 @@ if (!single) {
 } else {
   // 开发期开 CDP 端口，便于外部检查渲染层 DOM/布局（打包版不开）
   if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9222')
-  app.on('second-instance', () => {
+  app.on('second-instance', (_event, commandLine) => {
+    // 伴侣从互动工具入口再次拉起本软件时：更新启动参数，网关重连
+    if (updateDouyinLaunchContext(commandLine)) {
+      gateway?.stop()
+      void gateway?.start()
+    }
     const win = mainWindow
     if (!win || win.isDestroyed()) return
     if (win.isMinimized()) win.restore()
@@ -388,24 +431,46 @@ if (!single) {
     bus = new EventBus(storage)
     agent = new AgentService(storage, pool, persona, knowledge, memory, script, broadcastAgent)
     triggers = new TriggerRuntime(storage, bus, pool, agent)
+    streamSvc = new StreamService(storage, broadcastStream)
+
+    // 评论统一入口：PipeSDK / 模拟器都走这里——喂主播 + 广播评论流 + comment.new 进事件总线
+    const ingestComment = (comment: LiveComment, source: 'pipe' | 'simulator') => {
+      agent?.onComment(comment)
+      broadcastComment(comment)
+      bus?.emit('comment.new', { author: comment.author, content: comment.content }, source === 'pipe' ? 'pipe' : 'system')
+    }
     const sim = new CommentSimulator((event) => {
-      // 模拟器产出统一进事件总线；评论额外喂主播 + 广播给评论流
       if (event.type === 'comment.new') {
-        agent?.onComment(event.comment)
-        broadcastComment(event.comment)
-        bus?.emit('comment.new', { author: event.comment.author, content: event.comment.content }, 'pipe')
+        ingestComment(event.comment, 'simulator')
       } else {
         bus?.emit(event.type, event.payload, 'pipe')
       }
     })
+    gateway = new CommentGateway(sim, ingestComment)
+    // 被直播伴侣带着启动参数拉起来时自动接评论
+    if (getDouyinLaunchContext()?.mode === 'pipe') void gateway.start()
+
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
     timerInterval.unref?.()
 
-    // media:// 只服务 audio-cache 目录里的 basename，拒绝任何路径穿越
+    // media:// 只服务两类资源：audio-cache 里的合成音频（basename）；config.bgm.path 指向的 BGM 文件
     protocol.handle('media', (request) => {
       const url = new URL(request.url)
-      const requestedName = decodeURIComponent(url.pathname).replace(/^\//, '')
+      const pathname = decodeURIComponent(url.pathname)
+      if (url.hostname === 'local') {
+        const requestedPath = pathname.replace(/^\//, '')
+        const allowedPath = storage.getConfig().bgm.path
+        const normalize = (value: string): string => {
+          const normalized = resolve(value)
+          return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+        }
+        if (!allowedPath || normalize(requestedPath) !== normalize(allowedPath)) {
+          return new Response('Forbidden', { status: 403 })
+        }
+        return net.fetch(pathToFileURL(requestedPath).toString())
+      }
+      const requestedName = pathname.replace(/^\//, '')
       if (!requestedName || requestedName !== basename(requestedName)) {
         return new Response('Forbidden', { status: 403 })
       }
@@ -414,7 +479,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers, script)
+    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers, script, streamSvc, gateway)
     createWindow(storage)
 
     app.on('activate', () => {
@@ -425,6 +490,8 @@ if (!single) {
 
 app.on('window-all-closed', () => {
   if (timerInterval) clearInterval(timerInterval)
+  gateway?.stop()
+  void streamSvc?.stop()
   triggers?.dispose()
   pool?.dispose()
   void agent?.stop()

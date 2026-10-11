@@ -4,3 +4,13 @@ release/
 dist/
 *.log
 .DS_Store
+
+# node-gyp 编译中间产物（pipe_sdk.node 预编译产物保留入库）
+native/**/build/Release/obj/
+native/**/*.pdb
+native/**/*.exp
+native/**/*.iobj
+native/**/*.ipdb
+native/**/*.lib
+native/**/binding.sln
+native/**/config.gypi

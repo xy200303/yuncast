@@ -4,6 +4,7 @@ import type {
   AgentStatus,
   AppConfig,
   AppInfo,
+  CommentGatewayStatus,
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
@@ -23,6 +24,7 @@ import type {
   SimulatorStatus,
   SpeechItem,
   SpeechLane,
+  StreamStats,
   Trigger,
   TriggerInput,
   ViewerProfile
@@ -150,6 +152,29 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke(IPC.planDelete, id) as Promise<PoolResult>,
     /** 设为当前场次，返回生效的 activePlanId */
     setActive: (id: string) => ipcRenderer.invoke(IPC.planSetActive, id) as Promise<string>
+  },
+  stream: {
+    start: () => ipcRenderer.invoke(IPC.streamStart) as Promise<{ ok: boolean; error?: string }>,
+    stop: () => ipcRenderer.invoke(IPC.streamStop) as Promise<void>,
+    stats: () => ipcRenderer.invoke(IPC.streamStats) as Promise<StreamStats>,
+    /** 直推混音器：TTS 音频入队（没在推流时主进程丢弃） */
+    pushTts: (filePath: string) => ipcRenderer.invoke(IPC.streamPushTts, filePath) as Promise<void>,
+    setBgm: (action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number) =>
+      ipcRenderer.invoke(IPC.streamSetBgm, action, filePath, volume) as Promise<void>,
+    /** 麦克风 PCM 帧（s16le 48k stereo）进混音器 */
+    pushMicPcm: (pcm: Uint8Array) => ipcRenderer.send(IPC.streamMicPcm, pcm),
+    onStats: (cb: (stats: StreamStats) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, stats: StreamStats) => cb(stats)
+      ipcRenderer.on(IPC.streamStatsEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.streamStatsEvent, listener)
+      }
+    }
+  },
+  commentGateway: {
+    start: () => ipcRenderer.invoke(IPC.commentGatewayStart) as Promise<{ ok: boolean; error?: string }>,
+    stop: () => ipcRenderer.invoke(IPC.commentGatewayStop) as Promise<CommentGatewayStatus>,
+    status: () => ipcRenderer.invoke(IPC.commentGatewayStatus) as Promise<CommentGatewayStatus>
   }
 }
 

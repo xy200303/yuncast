@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Cable, Monitor, Moon, Palette, Sun } from 'lucide-react'
 import { toast } from 'sonner'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
@@ -17,6 +18,8 @@ import {
   type AppTheme,
   type LlmConfig,
   type LlmProvider,
+  type StreamConfig,
+  type StreamMode,
   type TtsConfig,
   type TtsProvider
 } from '../../../shared/types'
@@ -123,19 +126,136 @@ function AccessPane() {
       <div className="mt-3">
         <TtsSection />
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        {['推流', '评论接入'].map((name) => (
-          <div
-            key={name}
-            className="rounded-lg border border-dashed px-3 py-5 text-center text-xs text-muted-foreground"
-          >
-            {name}
-            <br />
-            后续里程碑开放
-          </div>
-        ))}
+      <div className="mt-3">
+        <StreamSection />
+      </div>
+      <div className="mt-3">
+        <CommentGatewayCard />
       </div>
     </section>
+  )
+}
+
+/** 推流表单：伴侣模式（推荐）或 FFmpeg 直推 RTMP */
+function StreamSection() {
+  const config = useAppStore((s) => s.config)
+  const saveConfig = useAppStore((s) => s.saveConfig)
+  const stream = useAppStore((s) => s.stream)
+  const [form, setForm] = useState<StreamConfig>({ ...config.stream })
+  const [saving, setSaving] = useState(false)
+
+  const dirty = JSON.stringify(form) !== JSON.stringify(config.stream)
+  const patch = (part: Partial<StreamConfig>) => setForm((prev) => ({ ...prev, ...part }))
+
+  const save = () => {
+    setSaving(true)
+    saveConfig({ stream: form })
+      .then(() => toast.success('推流配置已保存'))
+      .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
+      .finally(() => setSaving(false))
+  }
+
+  const toggleStream = () => {
+    void (stream.state === 'live' ? window.api.stream.stop() : window.api.stream.start()).then((result) => {
+      if (result && 'ok' in result && !result.ok) {
+        toast.error('开播失败', { description: result.error })
+      }
+    })
+  }
+
+  return (
+    <div className="rounded-lg border bg-card px-4 py-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[13px] font-medium">推流</p>
+          <p className="text-xs text-muted-foreground">伴侣模式只出声（推荐）；直推模式 FFmpeg 静态帧 + 混音推 RTMP</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {stream.state === 'live' && (
+            <Badge variant="secondary">推流中 · {stream.bitrateKbps} kbps</Badge>
+          )}
+          <Button variant={stream.state === 'live' ? 'secondary' : 'default'} size="sm" onClick={toggleStream}>
+            {stream.state === 'live' ? '停止推流' : '开始推流'}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!dirty || saving} onClick={save}>
+            {saving ? '保存中…' : dirty ? '保存' : '已保存'}
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="col-span-2">
+          <Label className="mb-1">模式</Label>
+          <ToggleGroup
+            type="single"
+            value={form.mode}
+            onValueChange={(v) => v && patch({ mode: v as StreamMode })}
+            className="rounded-lg bg-muted p-0.5"
+          >
+            <ToggleGroupItem value="companion" className="h-7 px-3 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
+              伴侣模式（只出声）
+            </ToggleGroupItem>
+            <ToggleGroupItem value="direct" className="h-7 px-3 text-xs data-[state=on]:bg-background data-[state=on]:shadow-sm">
+              直推 RTMP
+            </ToggleGroupItem>
+          </ToggleGroup>
+        </div>
+        {form.mode === 'direct' && (
+          <>
+            <Field label="服务器地址" value={form.serverUrl} onChange={(v) => patch({ serverUrl: v })} placeholder="rtmp://…" />
+            <Field label="推流密钥" value={form.streamKey} onChange={(v) => patch({ streamKey: v })} type="password" />
+          </>
+        )}
+      </div>
+      {form.mode === 'direct' && (!form.serverUrl || !form.streamKey) && (
+        <p className="mt-3 text-xs text-muted-foreground">直推模式需要服务器地址和推流密钥（抖音开播页可复制）</p>
+      )}
+    </div>
+  )
+}
+
+/** 评论接入状态卡：PipeSDK（直播伴侣） */
+function CommentGatewayCard() {
+  const gateway = useAppStore((s) => s.gateway)
+  const setGateway = useAppStore((s) => s.setGateway)
+  const simRunning = useAppStore((s) => s.simRunning)
+
+  const refresh = () => void window.api.commentGateway.status().then(setGateway)
+  const start = () => {
+    void window.api.commentGateway.start().then((result) => {
+      refresh()
+      if (!result.ok) toast.error('评论接入失败', { description: result.error })
+      else toast.success('评论已接入（PipeSDK）')
+    })
+  }
+
+  return (
+    <div className="rounded-lg border bg-card px-4 py-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-[13px] font-medium">评论接入</p>
+          <p className="text-xs text-muted-foreground">
+            抖音直播伴侣 PipeSDK 本地直连，评论进事件总线由触发器接管
+          </p>
+        </div>
+        <Badge
+          variant={gateway.running ? 'secondary' : 'outline'}
+          title={gateway.lastError ?? undefined}
+        >
+          {gateway.running ? `已接入 · 收 ${gateway.receivedCount} 条` : simRunning ? '模拟器中' : '未接入'}
+        </Badge>
+      </div>
+      {!gateway.running && (
+        <div className="mt-3 flex items-center justify-between gap-2">
+          <p className="text-xs text-muted-foreground">
+            {gateway.lastError ?? '从直播伴侣的「互动工具」入口启动本软件即可自动接入；开发调试用直播台的「模拟评论」。'}
+          </p>
+          <Button variant="outline" size="sm" onClick={start}>
+            手动接入
+          </Button>
+        </div>
+      )}
+    </div>
   )
 }
 

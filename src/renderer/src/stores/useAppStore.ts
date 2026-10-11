@@ -2,13 +2,16 @@ import { create } from 'zustand'
 import {
   APP_THEMES,
   DEFAULT_CONFIG,
+  INITIAL_STREAM_STATS,
   llmConfigured,
   ttsConfigured,
   type AgentStatus,
   type AppConfig,
   type AppTheme,
+  type CommentGatewayStatus,
   type PartialDeep,
-  type PoolSnapshot
+  type PoolSnapshot,
+  type StreamStats
 } from '../../../shared/types'
 import { applyAppearance, readCachedTheme, resolveAppTheme, type ResolvedAppTheme } from '../theme/applyAppearance'
 
@@ -55,6 +58,14 @@ interface AppState {
   /** 评论模拟器开关 */
   simRunning: boolean
   setSimRunning: (running: boolean) => void
+
+  /** 推流状态（主进程广播驱动） */
+  stream: StreamStats
+  setStream: (stats: StreamStats) => void
+
+  /** 评论网关状态 */
+  gateway: CommentGatewayStatus
+  setGateway: (status: CommentGatewayStatus) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -113,7 +124,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setAgent: (agent) => set({ agent }),
 
   simRunning: false,
-  setSimRunning: (simRunning) => set({ simRunning })
+  setSimRunning: (simRunning) => set({ simRunning }),
+
+  stream: INITIAL_STREAM_STATS,
+  setStream: (stream) => set({ stream }),
+
+  gateway: { running: false, source: 'none', lastError: null, receivedCount: 0 },
+  setGateway: (gateway) => set({ gateway })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */

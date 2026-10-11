@@ -34,6 +34,8 @@ export default function App() {
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
   const setAgent = useAppStore((s) => s.setAgent)
   const setSimRunning = useAppStore((s) => s.setSimRunning)
+  const setStream = useAppStore((s) => s.setStream)
+  const setGateway = useAppStore((s) => s.setGateway)
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
@@ -47,7 +49,7 @@ export default function App() {
   // 音频引擎 + 话术池订阅 + 播放循环（应用级单例，挂载即运行）
   useEffect(() => {
     if (!('api' in window)) return
-    audioEngine.init({ onLevels: setLevels })
+    audioEngine.init({ onLevels: setLevels, onHumanSpeaking: () => {} })
     const offSnapshot = window.api.pool.onSnapshot((snapshot) => {
       const prevFailed = new Set(useAppStore.getState().pool.failed.map((item) => item.id))
       for (const item of snapshot.failed) {
@@ -68,20 +70,29 @@ export default function App() {
     }
   }, [setPool, setLevels, setLoopRunning])
 
-  // 主播 Agent 状态 + 评论事件订阅
+  // 主播 Agent 状态 + 评论事件 + 推流状态订阅
   useEffect(() => {
     if (!('api' in window)) return
     const offAgent = window.api.agent.onStatus(setAgent)
     void window.api.agent.status().then(setAgent)
     void window.api.sim.status().then((s) => setSimRunning(s.running))
+    void window.api.stream.stats().then(setStream)
+    void window.api.commentGateway.status().then(setGateway)
+    const offStream = window.api.stream.onStats((stats) => {
+      setStream(stats)
+      if (stats.state === 'error' && stats.error) {
+        toast.error('推流出错', { description: stats.error })
+      }
+    })
     const offComment = window.api.comment.onComment((comment) => {
       toast.message(`💬 ${comment.author}`, { description: comment.content })
     })
     return () => {
       offAgent()
+      offStream()
       offComment()
     }
-  }, [setAgent, setSimRunning])
+  }, [setAgent, setSimRunning, setStream, setGateway])
 
   return (
     <TooltipProvider>

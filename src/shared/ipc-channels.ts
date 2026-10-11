@@ -77,5 +77,21 @@ export const IPC = {
   planSetActive: 'plan:set-active',
 
   // 系统对话框
-  dialogPickFile: 'dialog:pick-file'
+  dialogPickFile: 'dialog:pick-file',
+
+  // 推流
+  streamStart: 'stream:start',
+  streamStop: 'stream:stop',
+  streamStats: 'stream:stats',
+  /** main → renderer：推流状态/码率 */
+  streamStatsEvent: 'stream:stats-event',
+  /** 直推混音器：TTS 音频入队 / BGM 控制 / 麦克风 PCM 帧 */
+  streamPushTts: 'stream:push-tts',
+  streamSetBgm: 'stream:set-bgm',
+  streamMicPcm: 'stream:mic-pcm',
+
+  // 评论网关
+  commentGatewayStart: 'comment-gateway:start',
+  commentGatewayStop: 'comment-gateway:stop',
+  commentGatewayStatus: 'comment-gateway:status'
 } as const

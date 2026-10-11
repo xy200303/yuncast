@@ -3,16 +3,12 @@ import { Clapperboard, Megaphone, MessageSquareText, OctagonAlert, Pause, Play, 
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle
-} from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Slider } from '@/components/ui/slider'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
@@ -91,6 +87,7 @@ export function LivePage() {
         <h1 className="text-sm font-medium">直播台</h1>
         <p className="text-xs text-muted-foreground">话术池 · 提词器</p>
         <div className="ml-auto flex items-center gap-3">
+          <StreamIndicator />
           {/* 主输出电平 */}
           <div className="flex items-center gap-1.5" title="输出电平">
             <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
@@ -354,7 +351,27 @@ function SceneLine() {
   )
 }
 
-/** AI 正在组织语言：text_delta 实时预览（品牌色），入池即消失 */function AgentDraft() {
+/** 推流状态指示（直播台 header）：开播/码率/时长/重连 */
+function StreamIndicator() {
+  const stream = useAppStore((s) => s.stream)
+  if (stream.state === 'idle') return null
+  if (stream.state === 'error') return <Badge variant="destructive">推流出错</Badge>
+  if (stream.state === 'starting') return <Badge variant="outline">推流启动中…</Badge>
+  if (stream.state !== 'live') return null
+  const duration = `${Math.floor(stream.durationSec / 60)}:${String(stream.durationSec % 60).padStart(2, '0')}`
+  return (
+    <Badge variant="secondary" title={stream.reconnecting ? `第 ${stream.reconnectAttempt} 次重连中` : undefined}>
+      {stream.reconnecting
+        ? `重连中(${stream.reconnectAttempt})`
+        : stream.mode === 'direct'
+          ? `推流中 · ${stream.bitrateKbps}kbps · ${duration}`
+          : `伴侣模式 · ${duration}`}
+    </Badge>
+  )
+}
+
+/** AI 正在组织语言：text_delta 实时预览（品牌色），入池即消失 */
+function AgentDraft() {
   const draft = useAppStore((s) => s.agent.draft)
   if (!draft) return null
   return (
@@ -373,6 +390,7 @@ function SceneLine() {
 function ControlPanel() {
   const [broadcastOpen, setBroadcastOpen] = useState(false)
   const [panicOpen, setPanicOpen] = useState(false)
+  const [volumeOpen, setVolumeOpen] = useState(false)
   const simRunning = useAppStore((s) => s.simRunning)
   const setSimRunning = useAppStore((s) => s.setSimRunning)
   const agentState = useAppStore((s) => s.agent.state)
@@ -428,12 +446,13 @@ function ControlPanel() {
           <RadioTower />
           场控指令
         </Button>
-        <Button variant="outline" size="sm" disabled title="音频控制上线后可用">
+        <Button variant="outline" size="sm" onClick={() => setVolumeOpen(true)}>
           <SlidersHorizontal />
           调音量
         </Button>
       </div>
       <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
+      <VolumeDialog open={volumeOpen} onOpenChange={setVolumeOpen} />
       <Dialog open={panicOpen} onOpenChange={setPanicOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -547,6 +566,113 @@ function ManualBroadcastDialog({
             丢进池里
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 调音量弹窗：BGM（选择/播放/音量）+ 麦克风接管 + 主音量 */
+function VolumeDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const config = useAppStore((s) => s.config)
+  const saveConfig = useAppStore((s) => s.saveConfig)
+  const streamMode = useAppStore((s) => s.stream.mode)
+  const [bgmPlaying, setBgmPlaying] = useState(audioEngine.bgmPlaying)
+  const [bgmVolume, setBgmVolume] = useState(Math.round(config.bgm.volume * 100))
+  const [micOn, setMicOn] = useState(audioEngine.micActive)
+  const [masterVolume, setMasterVolume] = useState(100)
+
+  const pickBgm = async () => {
+    const filePath = await window.api.dialog.pickFile('音频文件', ['mp3', 'wav', 'm4a', 'ogg', 'flac'])
+    if (!filePath) return
+    audioEngine.startBgm(filePath, bgmVolume / 100)
+    void window.api.stream.setBgm('start', filePath, bgmVolume / 100)
+    void saveConfig({ bgm: { path: filePath, volume: bgmVolume / 100 } })
+    setBgmPlaying(true)
+    toast.success('BGM 已开始播放', { description: filePath.split(/[\/]/).pop() })
+  }
+
+  const stopBgm = () => {
+    audioEngine.stopBgm()
+    void window.api.stream.setBgm('stop')
+    setBgmPlaying(false)
+  }
+
+  const changeBgmVolume = (value: number) => {
+    setBgmVolume(value)
+    audioEngine.setBgmVolume(value / 100)
+    void window.api.stream.setBgm('volume', undefined, value / 100)
+  }
+
+  const toggleMic = async (on: boolean) => {
+    if (on) {
+      try {
+        // 直推模式把 PCM 帧转发进主进程混音器；伴侣模式只进本地总线（伴侣采集系统声音）
+        await audioEngine.startMic('', { autoYield: true, forwardPcm: streamMode === 'direct' })
+        setMicOn(true)
+        toast.success('麦克风已接管', { description: '说话时自动压低 AI 播报' })
+      } catch (e) {
+        toast.error('麦克风打开失败', { description: e instanceof Error ? e.message : String(e) })
+      }
+    } else {
+      audioEngine.stopMic()
+      setMicOn(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>调音量</DialogTitle>
+        </DialogHeader>
+        <div className="flex flex-col gap-4">
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <Label>BGM</Label>
+              <div className="flex items-center gap-1.5">
+                {bgmPlaying ? (
+                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={stopBgm}>
+                    停止
+                  </Button>
+                ) : null}
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => void pickBgm()}>
+                  {config.bgm.path ? '换一首' : '选择音频文件'}
+                </Button>
+              </div>
+            </div>
+            <p className="mb-1.5 truncate text-xs text-muted-foreground">
+              {config.bgm.path ? config.bgm.path.split(/[\/]/).pop() : '未选择（TTS 播报时自动压低）'}
+            </p>
+            <Slider
+              value={[bgmVolume]}
+              min={0}
+              max={100}
+              step={1}
+              onValueChange={([v]) => changeBgmVolume(v)}
+              onValueCommit={([v]) => void saveConfig({ bgm: { path: config.bgm.path, volume: v / 100 } })}
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border px-3 py-2">
+            <div>
+              <p className="text-[13px]">麦克风接管</p>
+              <p className="text-xs text-muted-foreground">真人说话时自动压低 AI 播报{streamMode === 'direct' ? '，声音进推流' : ''}</p>
+            </div>
+            <Switch checked={micOn} onCheckedChange={(v) => void toggleMic(v)} aria-label="麦克风接管" />
+          </div>
+          <div>
+            <Label className="mb-1.5">主音量</Label>
+            <Slider
+              value={[masterVolume]}
+              min={0}
+              max={100}
+              step={1}
+              onValueChange={([v]) => {
+                setMasterVolume(v)
+                audioEngine.setMasterVolume(v / 100)
+              }}
+            />
+          </div>
+        </div>
       </DialogContent>
     </Dialog>
   )

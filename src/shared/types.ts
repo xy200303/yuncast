@@ -104,6 +104,27 @@ export interface LiveStateConfig {
 
 export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activePlanId: '' }
 
+export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUrl: '', streamKey: '' }
+
+export const DEFAULT_BGM_CONFIG: BgmConfig = { path: '', volume: 0.3 }
+
+function parseStream(input: unknown): StreamConfig {
+  const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  return {
+    mode: row.mode === 'direct' ? 'direct' : 'companion',
+    serverUrl: typeof row.serverUrl === 'string' ? row.serverUrl : '',
+    streamKey: typeof row.streamKey === 'string' ? row.streamKey : ''
+  }
+}
+
+function parseBgm(input: unknown): BgmConfig {
+  const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  return {
+    path: typeof row.path === 'string' ? row.path : '',
+    volume: typeof row.volume === 'number' && row.volume >= 0 && row.volume <= 1 ? row.volume : 0.3
+  }
+}
+
 /** 持久化到 userData/config.json 的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
@@ -111,6 +132,8 @@ export interface AppConfig {
   llm: LlmConfig
   trigger: TriggerConfig
   live: LiveStateConfig
+  stream: StreamConfig
+  bgm: BgmConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -118,7 +141,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   tts: DEFAULT_TTS_CONFIG,
   llm: DEFAULT_LLM_CONFIG,
   trigger: DEFAULT_TRIGGER_CONFIG,
-  live: DEFAULT_LIVE_CONFIG
+  live: DEFAULT_LIVE_CONFIG,
+  stream: DEFAULT_STREAM_CONFIG,
+  bgm: DEFAULT_BGM_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -167,7 +192,9 @@ export function parseAppConfig(input: unknown): AppConfig {
     tts,
     llm,
     trigger,
-    live: { activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '' }
+    live: { activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '' },
+    stream: parseStream(row.stream),
+    bgm: parseBgm(row.bgm)
   }
 }
 
@@ -515,4 +542,57 @@ export interface PersonaRole {
   voiceId: string
   /** 口吻提示（写进 system prompt，告诉主播怎么写这个角色的台词） */
   style: string
+}
+
+// ---------- 推流（M7，FFmpeg 静态帧 + PCM 混音直推 RTMP / 伴侣模式只出声） ----------
+
+export type StreamMode = 'direct' | 'companion'
+
+export interface StreamConfig {
+  /** direct=FFmpeg 直推 RTMP；companion=直播伴侣采集系统声音（需从伴侣互动工具入口启动） */
+  mode: StreamMode
+  serverUrl: string
+  /** 推流密钥（敏感字段，safeStorage 加密落盘） */
+  streamKey: string
+}
+
+
+export interface BgmConfig {
+  path: string
+  /** 0 - 1 */
+  volume: number
+}
+
+
+export type StreamState = 'idle' | 'starting' | 'live' | 'stopping' | 'error'
+
+export interface StreamStats {
+  state: StreamState
+  mode: StreamMode
+  streaming: boolean
+  reconnecting: boolean
+  reconnectAttempt: number
+  bitrateKbps: number
+  durationSec: number
+  error?: string
+}
+
+export const INITIAL_STREAM_STATS: StreamStats = {
+  state: 'idle',
+  mode: 'companion',
+  streaming: false,
+  reconnecting: false,
+  reconnectAttempt: 0,
+  bitrateKbps: 0,
+  durationSec: 0
+}
+
+// ---------- 评论网关（M7：PipeSDK 真接入 + 模拟器） ----------
+
+export interface CommentGatewayStatus {
+  running: boolean
+  /** pipe=直播伴侣 PipeSDK；simulator=开发模拟器；none=未接入 */
+  source: 'pipe' | 'simulator' | 'none'
+  lastError: string | null
+  receivedCount: number
 }

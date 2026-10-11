@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { ArrowDown, ArrowUp, BookOpen, Clapperboard, FileImage, FileText, Loader2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -36,6 +37,7 @@ export function KnowledgePage() {
   const [deletingScript, setDeletingScript] = useState<Script | null>(null)
   const [uploading, setUploading] = useState(false)
   const [imageDraft, setImageDraft] = useState<string | null>(null) // 待填描述的图片路径
+  const [tab, setTab] = useState<'products' | 'files' | 'scripts'>('products')
 
   const reload = useCallback(async () => {
     const [p, f, s] = await Promise.all([
@@ -86,137 +88,152 @@ export function KnowledgePage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <BookOpen className="size-4 text-primary" />
         <h1 className="text-sm font-medium">知识库</h1>
-        <p className="text-xs text-muted-foreground">商品资料 · 文件资料包（主播答题的弹药库）</p>
+        <p className="text-xs text-muted-foreground">商品资料 · 文件资料包 · 剧本（主播答题的弹药库）</p>
         <div className="ml-auto flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => setEditing({})}>
-            <Plus />
-            新建商品
-          </Button>
-          <Button size="sm" disabled={uploading} onClick={() => void upload()}>
-            {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
-            {uploading ? '解析中…' : '上传资料'}
-          </Button>
+          {tab === 'products' && (
+            <Button variant="outline" size="sm" onClick={() => setEditing({})}>
+              <Plus />
+              新建商品
+            </Button>
+          )}
+          {tab === 'files' && (
+            <Button size="sm" disabled={uploading} onClick={() => void upload()}>
+              {uploading ? <Loader2 className="animate-spin" /> : <Upload />}
+              {uploading ? '解析中…' : '上传资料'}
+            </Button>
+          )}
+          {tab === 'scripts' && (
+            <Button variant="outline" size="sm" onClick={() => setEditingScript({})}>
+              <Plus />
+              新建剧本
+            </Button>
+          )}
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        <p className="mb-2 text-xs text-muted-foreground">商品 · {products.length}</p>
-        {products.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
-            <BookOpen className="size-8" strokeWidth={1.25} />
-            <p className="text-sm">还没有商品。主播报价只认这里的价格，先建一个</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
-            {products.map((product) => (
-              <Card key={product.id} className="group/card gap-2 py-3">
-                <CardHeader className="px-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <CardTitle className="min-w-0 truncate text-sm">{product.name}</CardTitle>
-                    <span className="shrink-0 text-sm font-semibold text-primary">¥{product.price}</span>
-                  </div>
-                </CardHeader>
-                <CardContent className="px-4">
-                  <p className="line-clamp-3 min-h-9 text-xs text-muted-foreground">
-                    {product.sellingPoints || '（还没写卖点）'}
-                  </p>
-                  <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
-                    <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditing({ product })}>
-                      <Pencil />
-                    </Button>
-                    <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeleting(product)}>
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-
-        <p className="mt-6 mb-2 text-xs text-muted-foreground">资料文件 · {files.length}</p>
-        {files.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
-            <FileText className="size-8" strokeWidth={1.25} />
-            <p className="text-sm">上传商品文档/质检报告/FAQ，解析后主播就能查到</p>
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2">
-            {files.map((file) => (
-              <div key={file.id} className="group/row flex items-center gap-2 rounded-lg border bg-card px-3 py-2">
-                {file.kind === 'image' ? (
-                  <FileImage className="size-4 shrink-0 text-muted-foreground" />
-                ) : (
-                  <FileText className="size-4 shrink-0 text-muted-foreground" />
-                )}
-                <Badge variant="outline">{KIND_LABEL[file.kind]}</Badge>
-                <span className="shrink-0 text-[13px]">{file.name}</span>
-                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={file.content}>
-                  {file.content.slice(0, 80)}
-                </span>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="opacity-0 group-hover/row:opacity-100"
-                  title="删除"
-                  onClick={() => {
-                    void window.api.knowledge.deleteFile(file.id).then(async (result) => {
-                      if (result.ok) {
-                        toast.success('已删除')
-                        await reload()
-                      } else toast.error('删除失败', { description: result.error })
-                    })
-                  }}
-                >
-                  <Trash2 />
-                </Button>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="mt-6 mb-2 flex items-center gap-2">
-          <p className="text-xs text-muted-foreground">剧本 · {scripts.length}</p>
-          <Button variant="outline" size="sm" className="ml-auto h-6 text-xs" onClick={() => setEditingScript({})}>
-            <Plus className="size-3.5" />
-            新建剧本
-          </Button>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
+        <div className="shrink-0 border-b px-4 pt-2">
+          <TabsList variant="line">
+            <TabsTrigger value="products" className="px-3">商品 · {products.length}</TabsTrigger>
+            <TabsTrigger value="files" className="px-3">资料文件 · {files.length}</TabsTrigger>
+            <TabsTrigger value="scripts" className="px-3">剧本 · {scripts.length}</TabsTrigger>
+          </TabsList>
         </div>
-        {scripts.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
-            <Clapperboard className="size-8" strokeWidth={1.25} />
-            <p className="text-sm">剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾），场次页绑定后主播按场推进</p>
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
-            {scripts.map((script) => (
-              <Card key={script.id} className="group/card gap-2 py-3">
-                <CardHeader className="px-4">
-                  <CardTitle className="min-w-0 truncate text-sm">{script.title}</CardTitle>
-                </CardHeader>
-                <CardContent className="px-4">
-                  <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">{script.theme || '（没写主题）'}</p>
-                  <div className="mt-1 flex flex-wrap gap-1">
-                    {script.scenes.map((scene, i) => (
-                      <Badge key={scene.id} variant="outline" className="text-[11px]">
-                        {i + 1}.{scene.title}
-                      </Badge>
-                    ))}
-                  </div>
-                  <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
-                    <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditingScript({ script })}>
-                      <Pencil />
-                    </Button>
-                    <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeletingScript(script)}>
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
+
+        <TabsContent value="products" className="overflow-auto p-4">
+          {products.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
+              <BookOpen className="size-8" strokeWidth={1.25} />
+              <p className="text-sm">还没有商品。主播报价只认这里的价格，先建一个</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+              {products.map((product) => (
+                <Card key={product.id} className="group/card gap-2 py-3">
+                  <CardHeader className="px-4">
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle className="min-w-0 truncate text-sm">{product.name}</CardTitle>
+                      <span className="shrink-0 text-sm font-semibold text-primary">¥{product.price}</span>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="px-4">
+                    <p className="line-clamp-3 min-h-9 text-xs text-muted-foreground">
+                      {product.sellingPoints || '（还没写卖点）'}
+                    </p>
+                    <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
+                      <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditing({ product })}>
+                        <Pencil />
+                      </Button>
+                      <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeleting(product)}>
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="files" className="overflow-auto p-4">
+          {files.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
+              <FileText className="size-8" strokeWidth={1.25} />
+              <p className="text-sm">上传商品文档/质检报告/FAQ，解析后主播就能查到</p>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {files.map((file) => (
+                <div key={file.id} className="group/row flex items-center gap-2 rounded-lg border bg-card px-3 py-2">
+                  {file.kind === 'image' ? (
+                    <FileImage className="size-4 shrink-0 text-muted-foreground" />
+                  ) : (
+                    <FileText className="size-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <Badge variant="outline">{KIND_LABEL[file.kind]}</Badge>
+                  <span className="shrink-0 text-[13px]">{file.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={file.content}>
+                    {file.content.slice(0, 80)}
+                  </span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="opacity-0 group-hover/row:opacity-100"
+                    title="删除"
+                    onClick={() => {
+                      void window.api.knowledge.deleteFile(file.id).then(async (result) => {
+                        if (result.ok) {
+                          toast.success('已删除')
+                          await reload()
+                        } else toast.error('删除失败', { description: result.error })
+                      })
+                    }}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+
+        <TabsContent value="scripts" className="overflow-auto p-4">
+          {scripts.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
+              <Clapperboard className="size-8" strokeWidth={1.25} />
+              <p className="text-sm">剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾），场次页绑定后主播按场推进</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+              {scripts.map((script) => (
+                <Card key={script.id} className="group/card gap-2 py-3">
+                  <CardHeader className="px-4">
+                    <CardTitle className="min-w-0 truncate text-sm">{script.title}</CardTitle>
+                  </CardHeader>
+                  <CardContent className="px-4">
+                    <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">{script.theme || '（没写主题）'}</p>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {script.scenes.map((scene, i) => (
+                        <Badge key={scene.id} variant="outline" className="text-[11px]">
+                          {i + 1}.{scene.title}
+                        </Badge>
+                      ))}
+                    </div>
+                    <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
+                      <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditingScript({ script })}>
+                        <Pencil />
+                      </Button>
+                      <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeletingScript(script)}>
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </TabsContent>
+      </Tabs>
 
       <ProductDialog
         key={editing?.product?.id ?? 'new'}

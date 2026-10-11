@@ -69,6 +69,8 @@ class PlaybackLoop {
         await this.wait(IDLE_WAIT_MS)
         continue
       }
+      // 直推模式下音频还要进主进程混音器（没在推流时主进程直接丢弃）
+      void window.api.stream.pushTts(item.audioPath)
       await audioEngine.playTts(item.audioPath)
       if (!this.running) break
       await window.api.pool.markDone(item.id)

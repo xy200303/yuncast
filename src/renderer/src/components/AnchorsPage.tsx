@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
@@ -33,12 +34,13 @@ const MODE_BADGE_VARIANT: Record<TriggerMode, 'outline' | 'secondary' | 'default
 
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
-/** 主播团：人设卡编辑 + 主播 Agent 开关。M3 单主播，多张卡后续里程碑再做。 */
+/** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。M3 单主播，多张卡后续里程碑再做。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
   const llmReady = useAppStore((s) => s.config.llm.apiKey !== '')
   const [persona, setPersona] = useState<PersonaForm | null>(null)
   const [busy, setBusy] = useState(false)
+  const [tab, setTab] = useState<'persona' | 'triggers'>('persona')
 
   useEffect(() => {
     void window.api.persona.get().then((p) => {
@@ -89,7 +91,7 @@ export function AnchorsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <Bot className="size-4 text-primary" />
         <h1 className="text-sm font-medium">主播团</h1>
-        <p className="text-xs text-muted-foreground">人设卡 · 主播开关</p>
+        <p className="text-xs text-muted-foreground">人设卡 · 触发器 · 主播开关</p>
         <div className="ml-auto flex items-center gap-2">
           <Badge variant={agent.state === 'running' ? 'secondary' : agent.state === 'error' ? 'destructive' : 'outline'}>
             {AGENT_STATE_LABEL[agent.state]}
@@ -114,16 +116,24 @@ export function AnchorsPage() {
         </div>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto p-4">
-        {agent.state === 'error' && agent.error && (
-          <div className="mb-3 max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-            {agent.error}
-            {!llmReady && ' — 去「设置 → 接入」配置 LLM 后再启动'}
-          </div>
-        )}
-        {!persona ? (
-          <p className="text-sm text-muted-foreground">加载人设卡…</p>
-        ) : (
+      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
+        <div className="shrink-0 border-b px-4 pt-2">
+          <TabsList variant="line">
+            <TabsTrigger value="persona" className="px-3">人设卡</TabsTrigger>
+            <TabsTrigger value="triggers" className="px-3">触发器</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="persona" className="overflow-auto p-4">
+          {agent.state === 'error' && agent.error && (
+            <div className="mb-3 max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+              {agent.error}
+              {!llmReady && ' — 去「设置 → 接入」配置 LLM 后再启动'}
+            </div>
+          )}
+          {!persona ? (
+            <p className="text-sm text-muted-foreground">加载人设卡…</p>
+          ) : (
           <Card className="max-w-2xl">
             <CardHeader>
               <CardTitle className="text-sm">人设卡</CardTitle>
@@ -240,10 +250,13 @@ export function AnchorsPage() {
               </div>
             </CardContent>
           </Card>
-        )}
+          )}
+        </TabsContent>
 
-        <TriggerSection />
-      </div>
+        <TabsContent value="triggers" className="overflow-auto p-4">
+          <TriggerSection />
+        </TabsContent>
+      </Tabs>
     </div>
   )
 }
@@ -262,7 +275,7 @@ function TriggerSection() {
   }
 
   return (
-    <section className="mt-4 max-w-2xl">
+    <section className="max-w-2xl">
       <div className="mb-2 flex items-center gap-2">
         <Zap className="size-4 text-primary" />
         <h2 className="text-sm font-medium">触发器</h2>

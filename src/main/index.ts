@@ -43,7 +43,8 @@ if (process.platform === 'win32' && getDouyinLaunchContext()?.mode === 'pipe') {
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
-app.setPath('userData', join(app.getPath('appData'), 'AgentAnchor'))
+// 测试/并行实例可用 AGENT_ANCHOR_USER_DATA 指向别的目录。
+app.setPath('userData', process.env['AGENT_ANCHOR_USER_DATA'] ?? join(app.getPath('appData'), 'AgentAnchor'))
 
 // 自定义媒体协议：渲染进程经 WebAudio 播放 audio-cache 内的合成音频（火山 mp3 / 百炼 wav）。
 // dev 环境页面是 http://，无法直接引用 file:// 资源。

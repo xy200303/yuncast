@@ -155,7 +155,14 @@ export class SpeechPool {
       throw new Error('这条已经在播或播完了，不能改')
     }
     this.cancelSynth(id)
-    this.storage.speechUpdate(id, { text, status: 'pending', audioPath: undefined, error: undefined })
+    const isStreamItem = item.stream && !item.audioPath
+    this.storage.speechUpdate(id, {
+      text,
+      status: isStreamItem ? 'ready' : 'pending',
+      audioPath: undefined,
+      error: undefined
+    })
+    // 流式条目文本即声音，改完就是新的；预合成条目回 pending，由合成窗口重新合成
     this.refresh()
     return this.mustGet(id)
   }
@@ -297,18 +304,28 @@ export class SpeechPool {
     // - 文本已知的剧情/暖场话术 → 照常预合成成文件（提前备好，播出零延迟）
     // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时流式合成（首包延迟最低）
     if (this.storage.getConfig().tts.realtime && !PRE_SYNTH_KINDS.includes(item.source.kind)) {
+      // 修订后的条目同样走这里：无需合成，只要文本已是新的（revise 已改），标 ready 即可
       this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
       this.broadcast(this.snapshot())
       return
     }
     const controller = new AbortController()
     this.synthJobs.set(item.id, controller)
+    // 合成期间的文本版本：完成时若已被 revise 改动，这份音频作废重来
+    const textAtStart = item.text
     this.storage.speechUpdate(item.id, { status: 'synthesizing' })
     this.broadcast(this.snapshot())
     try {
-      const audioPath = await this.tts.synthesize(item.id, item.text, item.voiceId || undefined, controller.signal)
+      const audioPath = await this.tts.synthesize(item.id, textAtStart, item.voiceId || undefined, controller.signal)
       if (controller.signal.aborted) return
-      this.storage.speechUpdate(item.id, { status: 'ready', audioPath })
+      const current = this.storage.speechGet(item.id)
+      if (!current || current.text !== textAtStart) {
+        // 文本在合成期间被修订：丢弃旧音频，回 pending 让窗口重合成
+        this.storage.speechUpdate(item.id, { status: 'pending', audioPath: undefined, stream: false })
+        this.refresh()
+        return
+      }
+      this.storage.speechUpdate(item.id, { status: 'ready', audioPath, stream: false })
     } catch (error) {
       if (controller.signal.aborted) {
         // 被挤出窗口：回 pending 等下次进窗口再合成

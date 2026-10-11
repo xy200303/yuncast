@@ -56,17 +56,27 @@ function errorMessage(error: unknown): string {
  * 实时合成开启后仍然预合成的话术类型：文本在入池时就已确定（剧本/暖场），
  * 提前合成好则播出零延迟；动态生成的回复类内容才值得为"最快首包"牺牲预合成。
  */
+/** 实时语音通道的最小探针接口（避免与 TtsRealtimeService 强耦合，便于测试替身） */
+export interface RealtimeChannelProbe {
+  available(): boolean
+  unavailableReason(): string
+}
+
 const PRE_SYNTH_KINDS: SpeechItem['source']['kind'][] = ['scene', 'filler']
 
 export class SpeechPool {
   /** 预合成任务的取消令牌（被挤出窗口时 abort） */
   private synthJobs = new Map<string, AbortController>()
+  /** 最近一次实时通道降级原因（诊断用） */
+  private lastRealtimeFallback = '' 
   private sweepTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(
     private readonly storage: StorageService,
     private readonly tts: TtsService,
-    private readonly broadcast: (snapshot: PoolSnapshot) => void
+    private readonly broadcast: (snapshot: PoolSnapshot) => void,
+    /** 实时语音通道（双向 WS）；不可用时动态内容降级到流式合成 */
+    private readonly realtime: RealtimeChannelProbe = { available: () => false, unavailableReason: () => '实时语音未接入' }
   ) {
     // 重启后上次留下的未播完条目全部作废——音频可能还在但播放上下文没了
     for (const item of this.storage.speechActive()) {
@@ -303,7 +313,15 @@ export class SpeechPool {
     // 混合策略（tts.realtime 开启时）：
     // - 文本已知的剧情/暖场话术 → 照常预合成成文件（提前备好，播出零延迟）
     // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时流式合成（首包延迟最低）
-    if (this.storage.getConfig().tts.realtime && !PRE_SYNTH_KINDS.includes(item.source.kind)) {
+    const cfg = this.storage.getConfig()
+    if (cfg.ttsRealtime.enabled && !this.realtime.available()) {
+      // 实时语音通道不可用：记一次原因，动态内容降级到「语音合成」的流式
+      this.lastRealtimeFallback = this.realtime.unavailableReason()
+    }
+    if (
+      !PRE_SYNTH_KINDS.includes(item.source.kind) &&
+      (this.realtime.available() || cfg.tts.realtime)
+    ) {
       // 修订后的条目同样走这里：无需合成，只要文本已是新的（revise 已改），标 ready 即可
       this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
       this.broadcast(this.snapshot())

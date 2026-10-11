@@ -37,6 +37,7 @@ import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
 import { VoiceService } from './services/VoiceService'
 import { TtsStreamService } from './services/TtsStreamService'
+import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -234,6 +235,7 @@ let timerInterval: ReturnType<typeof setInterval> | null = null
 let connector: ConnectorService | null = null
 let voiceSvc: VoiceService | null = null
 let ttsStream: TtsStreamService | null = null
+let ttsRealtime: TtsRealtimeService | null = null
 let streamSvc: StreamService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
@@ -497,7 +499,8 @@ if (!single) {
 
     const storage = new StorageService()
     const tts = new TtsService(storage)
-    pool = new SpeechPool(storage, tts, broadcastPool)
+    ttsRealtime = new TtsRealtimeService(storage)
+    pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime)
     const persona = new PersonaService(storage)
     const knowledge = new KnowledgeService(storage)
     const memory = new MemoryService(storage)

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import { Clapperboard, Megaphone, MessageSquareText, OctagonAlert, Pause, Play, Radio, RadioTower, SlidersHorizontal, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -19,7 +19,7 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { playbackLoop } from '../audio/playbackLoop'
-import type { SpeechItem, SpeechLane, SpeechSourceKind, SpeechStatus } from '../../../shared/types'
+import type { LiveComment, SpeechItem, SpeechLane, SpeechSourceKind, SpeechStatus } from '../../../shared/types'
 
 const LANE_LABEL: Record<SpeechLane, string> = {
   interrupt: '打断',
@@ -121,9 +121,10 @@ export function LivePage() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* 话术池队列 */}
+        {/* 左栏：上评论流，下话术池队列 */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <div className="flex h-8 shrink-0 items-center border-b px-4 text-xs text-muted-foreground">
+          <CommentFeed />
+          <div className="flex h-8 shrink-0 items-center border-y px-4 text-xs text-muted-foreground">
             话术池队列 · {pool.items.length} 条
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-3">
@@ -188,6 +189,52 @@ export function LivePage() {
           </div>
           <ControlPanel />
         </aside>
+      </div>
+    </div>
+  )
+}
+
+/** 评论流：实时滚动，最新在下，自动滚到底，保持最近 100 条 */
+function CommentFeed() {
+  const [comments, setComments] = useState<LiveComment[]>([])
+  const listRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!('api' in window)) return
+    return window.api.comment.onComment((comment) => {
+      setComments((prev) => [...prev.slice(-99), comment])
+    })
+  }, [])
+
+  useEffect(() => {
+    const el = listRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [comments])
+
+  return (
+    <div className="flex h-[40%] shrink-0 flex-col">
+      <div className="flex h-8 shrink-0 items-center px-4 text-xs text-muted-foreground">
+        评论流 · {comments.length} 条
+      </div>
+      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-2">
+        {comments.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+            <MessageSquareText className="size-8" strokeWidth={1.25} />
+            <p className="text-sm">还没有评论，开「模拟评论」试试</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {comments.map((comment) => (
+              <div key={comment.id} className="flex items-baseline gap-2 text-[13px]">
+                <span className="shrink-0 text-xs text-muted-foreground">
+                  {new Date(comment.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+                <span className="shrink-0 font-medium text-primary">{comment.author}</span>
+                <span className="min-w-0">{comment.content}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

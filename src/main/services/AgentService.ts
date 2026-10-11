@@ -18,8 +18,7 @@ import {
   llmConfigured,
   type AgentStatus,
   type LiveComment,
-  type LlmConfig,
-  type PoolSnapshot
+  type LlmConfig
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
@@ -42,10 +41,6 @@ const BUILTIN_PROVIDERS: Partial<Record<LlmConfig['provider'], string>> = {
   zai: 'zai'
 }
 
-/** 池水位低于这个数就催主播补货（normal+filler 道未播条目） */
-const LOW_WATER = 2
-/** 补货/评论转发的最小间隔，避免把 LLM 打爆 */
-const STEER_COOLDOWN_MS = 20_000
 /** 主播的来源 id（话术池限流按来源算） */
 const AGENT_SOURCE_ID = 'anchor'
 
@@ -56,7 +51,6 @@ export class AgentService {
   private modelLabel: string | undefined
   private draft = ''
   private busy = false
-  private lastSteerAt = 0
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
   private lastComment: LiveComment | null = null
   /** 本场开播时间（下播总结用） */
@@ -100,10 +94,7 @@ export class AgentService {
     this.setState('running')
     this.startedAt = Date.now()
     this.exchanges = 0
-    // 开场：让主播自己说开场白
-    void this.ask(
-      '直播开始了。用 say 工具来一段开场白，跟大家打个招呼、说说今天在播什么，然后按自己的节奏补 1-2 句常规话术。'
-    )
+    // 开场白由「开场白」触发器（stream.started → task）负责，见 TriggerRuntime
   }
 
   async stop(): Promise<void> {
@@ -149,18 +140,18 @@ export class AgentService {
     )
   }
 
-  /** 池快照驱动（M3 简化版节奏）：normal+filler 道未播存货不足时催主播补货 */
-  onPoolSnapshot(snapshot: PoolSnapshot): void {
+  /** 触发器入口（docs/01 §3.5）：steer=生成中插一句，task=派一个任务。主播没在跑就丢弃。 */
+  inject(text: string, mode: 'steer' | 'task'): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
-    const stock = snapshot.items.filter(
-      (item) => (item.lane === 'normal' || item.lane === 'filler') && item.status !== 'playing'
-    ).length
-    if (stock >= LOW_WATER) return
-    if (Date.now() - this.lastSteerAt < STEER_COOLDOWN_MS) return
-    this.lastSteerAt = Date.now()
-    void this.ask(
-      '话术池里存货不多了。用 say 工具补 1-2 句常规话术（讲讲产品、聊聊日常、做做互动都行），别和最近播过的重复。'
-    )
+    if (mode === 'steer' && this.busy) {
+      try {
+        this.session.steer(text)
+      } catch (error) {
+        console.error('[AgentAnchor] steer 失败:', error)
+      }
+      return
+    }
+    void this.ask(text)
   }
 
   /** 急停（配合 renderer 停播放 + 清池）：停会话即可，池由调用方清 */

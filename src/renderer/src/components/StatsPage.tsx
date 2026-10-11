@@ -1,7 +1,21 @@
 import { useEffect, useState } from 'react'
-import { BarChart3, NotebookText, Users } from 'lucide-react'
+import { Activity, BarChart3, NotebookText, Users } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
-import type { EpisodeSummary, ViewerProfile } from '../../../shared/types'
+import type { EpisodeSummary, LiveEvent, ViewerProfile } from '../../../shared/types'
+
+/** 事件类型中文名（主进程 EventRegistry 的展示副本） */
+const EVENT_LABEL: Record<string, string> = {
+  'comment.new': '评论',
+  'viewer.join': '进场',
+  'gift.received': '礼物',
+  'like.burst': '点赞',
+  'pool.empty': '池空',
+  'timer.interval': '节拍',
+  'stream.started': '开播',
+  'stream.ended': '下播',
+  'trigger.fired': '触发',
+  'trigger.dropped': '拦截'
+}
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', {
@@ -12,14 +26,19 @@ function formatTime(ts: number): string {
   })
 }
 
-/** 数据页（M4 简单版）：观众画像 + 场次摘要。评论/回复统计和事件时间线留给 M5+。 */
+/** 数据页（M4 简单版 + M5 事件时间线）。评论/回复统计留给后续。 */
 export function StatsPage() {
   const [viewers, setViewers] = useState<ViewerProfile[]>([])
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([])
+  const [events, setEvents] = useState<LiveEvent[]>([])
 
   useEffect(() => {
     void window.api.memory.viewers().then(setViewers)
     void window.api.memory.episodes().then(setEpisodes)
+    void window.api.event.recent(100).then(setEvents)
+    // 事件时间线 5s 轮询刷新（事件经由 EventBus 落库，量小直查即可）
+    const timer = setInterval(() => void window.api.event.recent(100).then(setEvents), 5000)
+    return () => clearInterval(timer)
   }, [])
 
   return (
@@ -90,6 +109,33 @@ export function StatsPage() {
                   {formatTime(episode.startedAt)} 开播 · 播了 {Math.max(1, Math.round((episode.endedAt - episode.startedAt) / 60000))} 分钟
                 </p>
                 <p className="mt-1 text-[13px] leading-6">{episode.summary}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <p className="mt-6 mb-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Activity className="size-3.5" />
+          事件时间线 · 最近 {events.length} 条
+        </p>
+        {events.length === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
+            <Activity className="size-8" strokeWidth={1.25} />
+            <p className="text-sm">还没有事件。开播或开模拟评论后这里会滚起来</p>
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {events.map((event) => (
+              <div key={event.id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5">
+                <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
+                  {new Date(event.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+                <Badge variant={event.type.startsWith('trigger.') ? 'secondary' : 'outline'}>
+                  {EVENT_LABEL[event.type] ?? event.type}
+                </Badge>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={JSON.stringify(event.payload)}>
+                  {JSON.stringify(event.payload).slice(0, 60)}
+                </span>
               </div>
             ))}
           </div>

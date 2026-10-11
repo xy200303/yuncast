@@ -7,6 +7,7 @@ import type {
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
+  LiveEvent,
   PartialDeep,
   Persona,
   PoolResult,
@@ -18,6 +19,8 @@ import type {
   SimulatorStatus,
   SpeechItem,
   SpeechLane,
+  Trigger,
+  TriggerInput,
   ViewerProfile
 } from '../shared/types'
 
@@ -118,6 +121,17 @@ const api = {
     /** 弹出文件选择框，取消返回 null */
     pickFile: (filtersName: string, extensions: string[]) =>
       ipcRenderer.invoke(IPC.dialogPickFile, filtersName, extensions) as Promise<string | null>
+  },
+  trigger: {
+    list: () => ipcRenderer.invoke(IPC.triggerList) as Promise<Trigger[]>,
+    save: (input: TriggerInput) => ipcRenderer.invoke(IPC.triggerSave, input) as Promise<Trigger[]>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.triggerDelete, id) as Promise<Trigger[]>,
+    toggle: (id: string, enabled: boolean) =>
+      ipcRenderer.invoke(IPC.triggerToggle, id, enabled) as Promise<Trigger[]>
+  },
+  event: {
+    /** 最近 n 条事件（数据页时间线） */
+    recent: (n: number) => ipcRenderer.invoke(IPC.eventRecent, n) as Promise<LiveEvent[]>
   }
 }
 

@@ -86,17 +86,29 @@ export function llmConfigured(llm: LlmConfig): boolean {
 
 // ---------- 应用配置 ----------
 
+/** 触发器全局配置（AppConfig.trigger 段） */
+export interface TriggerConfig {
+  /** 全局 LLM 速率帽：每分钟最多触发 LLM 的次数（steer/task 合计），超出降级丢弃 */
+  maxLlmPerMinute: number
+}
+
+export const DEFAULT_TRIGGER_CONFIG: TriggerConfig = {
+  maxLlmPerMinute: 6
+}
+
 /** 持久化到 userData/config.json 的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
   tts: TtsConfig
   llm: LlmConfig
+  trigger: TriggerConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
   tts: DEFAULT_TTS_CONFIG,
-  llm: DEFAULT_LLM_CONFIG
+  llm: DEFAULT_LLM_CONFIG,
+  trigger: DEFAULT_TRIGGER_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -131,10 +143,19 @@ export function parseAppConfig(input: unknown): AppConfig {
     apiKey: typeof llmRow.apiKey === 'string' ? llmRow.apiKey : '',
     baseUrl: typeof llmRow.baseUrl === 'string' ? llmRow.baseUrl : ''
   }
+  const triggerRow =
+    row.trigger && typeof row.trigger === 'object' ? (row.trigger as Record<string, unknown>) : {}
+  const trigger: TriggerConfig = {
+    maxLlmPerMinute:
+      typeof triggerRow.maxLlmPerMinute === 'number' && triggerRow.maxLlmPerMinute > 0
+        ? triggerRow.maxLlmPerMinute
+        : DEFAULT_TRIGGER_CONFIG.maxLlmPerMinute
+  }
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     tts,
-    llm
+    llm,
+    trigger
   }
 }
 
@@ -373,3 +394,58 @@ export interface EpisodeSummary {
   summary: string
   createdAt: number
 }
+
+// ---------- 事件驱动与触发体系（docs/01 §3.5） ----------
+
+export type EventSource = 'pipe' | 'pool' | 'timer' | 'agent' | 'human' | 'system'
+
+export interface LiveEvent {
+  id: string
+  /** domain.action：viewer.join / gift.received / pool.empty / timer.interval / … */
+  type: string
+  source: EventSource
+  payload: Record<string, unknown>
+  ts: number
+}
+
+export type TriggerMode = 'tool' | 'steer' | 'task'
+export type AggregateAs = 'list' | 'count' | 'latest'
+
+export interface TriggerThrottle {
+  /** 聚合窗口：攒一批再触发（毫秒） */
+  aggregateMs?: number
+  /** 聚合形态：list=名单列表 / count=计数 / latest=只留最新一条 */
+  aggregateAs?: AggregateAs
+  /** 冷却：两次触发最小间隔（毫秒） */
+  cooldownMs?: number
+  /** 单场触发预算（防刷），stream.started 时重置 */
+  maxPerSession?: number
+}
+
+/** mode=tool 时：模板话术直连话术池（不过 LLM） */
+export interface TriggerToolAction {
+  /** 支持 {{payload.xxx}} / {{aggregated.xxx}} 插值 */
+  template: string
+  lane?: SpeechLane
+}
+
+export interface Trigger {
+  id: string
+  name: string
+  enabled: boolean
+  on: {
+    event: string
+    /** 条件过滤：键值相等命中；键以 Min 结尾表示数值下限（如 giftValueMin: 99） */
+    filter?: Record<string, unknown>
+  }
+  target: {
+    agentId: string
+    mode: TriggerMode
+    toolAction?: TriggerToolAction
+    /** mode=steer/task 时给主播的提示模板，支持插值 */
+    promptTemplate?: string
+  }
+  throttle?: TriggerThrottle
+}
+
+export type TriggerInput = Omit<Trigger, 'id'> & { id?: string }

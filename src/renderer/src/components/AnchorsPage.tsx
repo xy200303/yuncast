@@ -1,20 +1,34 @@
 import { useEffect, useState } from 'react'
-import { Bot, Loader2, Play, Square } from 'lucide-react'
+import { Bot, ChevronRight, Loader2, Play, Square, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
-import type { Persona } from '../../../shared/types'
+import type { Persona, Trigger, TriggerMode } from '../../../shared/types'
 
 const AGENT_STATE_LABEL: Record<string, string> = {
   stopped: '未启动',
   starting: '启动中',
   running: '运行中',
   error: '出错'
+}
+
+const MODE_LABEL: Record<TriggerMode, string> = {
+  tool: '模板直连',
+  steer: '引导',
+  task: '任务'
+}
+
+const MODE_BADGE_VARIANT: Record<TriggerMode, 'outline' | 'secondary' | 'default'> = {
+  tool: 'outline',
+  steer: 'secondary',
+  task: 'default'
 }
 
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
@@ -168,7 +182,153 @@ export function AnchorsPage() {
             </CardContent>
           </Card>
         )}
+
+        <TriggerSection />
       </div>
+    </div>
+  )
+}
+
+/** 触发器：事件驱动的自动反应规则（docs/01 §3.5）。开关即存，点卡片展开编辑。 */
+function TriggerSection() {
+  const [triggers, setTriggers] = useState<Trigger[]>([])
+  const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  useEffect(() => {
+    void window.api.trigger.list().then(setTriggers)
+  }, [])
+
+  const toggle = (trigger: Trigger, enabled: boolean) => {
+    void window.api.trigger.toggle(trigger.id, enabled).then(setTriggers)
+  }
+
+  return (
+    <section className="mt-4 max-w-2xl">
+      <div className="mb-2 flex items-center gap-2">
+        <Zap className="size-4 text-primary" />
+        <h2 className="text-sm font-medium">触发器</h2>
+        <span className="text-xs text-muted-foreground">现场事件发生时的自动反应</span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {triggers.map((trigger) => (
+          <TriggerCard
+            key={trigger.id}
+            trigger={trigger}
+            expanded={expandedId === trigger.id}
+            onExpand={() => setExpandedId(expandedId === trigger.id ? null : trigger.id)}
+            onToggle={(enabled) => toggle(trigger, enabled)}
+            onSaved={setTriggers}
+          />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+function TriggerCard({
+  trigger,
+  expanded,
+  onExpand,
+  onToggle,
+  onSaved
+}: {
+  trigger: Trigger
+  expanded: boolean
+  onExpand: () => void
+  onToggle: (enabled: boolean) => void
+  onSaved: (triggers: Trigger[]) => void
+}) {
+  const [cooldownSec, setCooldownSec] = useState(String((trigger.throttle?.cooldownMs ?? 0) / 1000))
+  const [maxPerSession, setMaxPerSession] = useState(String(trigger.throttle?.maxPerSession ?? ''))
+  const [template, setTemplate] = useState(
+    trigger.target.mode === 'tool'
+      ? (trigger.target.toolAction?.template ?? '')
+      : (trigger.target.promptTemplate ?? '')
+  )
+
+  useEffect(() => {
+    setCooldownSec(String((trigger.throttle?.cooldownMs ?? 0) / 1000))
+    setMaxPerSession(String(trigger.throttle?.maxPerSession ?? ''))
+    setTemplate(
+      trigger.target.mode === 'tool'
+        ? (trigger.target.toolAction?.template ?? '')
+        : (trigger.target.promptTemplate ?? '')
+    )
+  }, [trigger])
+
+  const save = () => {
+    const cooldownMs = Math.max(0, Number(cooldownSec) * 1000 || 0)
+    const budget = Number(maxPerSession) || undefined
+    const next: Trigger = {
+      ...trigger,
+      throttle: {
+        ...trigger.throttle,
+        cooldownMs: cooldownMs || undefined,
+        maxPerSession: budget
+      },
+      target:
+        trigger.target.mode === 'tool'
+          ? { ...trigger.target, toolAction: { ...trigger.target.toolAction, template } }
+          : { ...trigger.target, promptTemplate: template }
+    }
+    void window.api.trigger.save(next).then((list) => {
+      onSaved(list)
+      toast.success(`「${trigger.name}」已保存`)
+    })
+  }
+
+  return (
+    <div className={cn('rounded-lg border bg-card', !trigger.enabled && 'opacity-60')}>
+      <div className="flex items-center gap-2 px-3 py-2">
+        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onExpand}>
+          <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', expanded && 'rotate-90')} />
+          <span className="truncate text-[13px] font-medium">{trigger.name}</span>
+          <Badge variant="outline">{trigger.on.event}</Badge>
+          <Badge variant={MODE_BADGE_VARIANT[trigger.target.mode]}>{MODE_LABEL[trigger.target.mode]}</Badge>
+        </button>
+        <Switch checked={trigger.enabled} onCheckedChange={(v) => onToggle(v)} aria-label={`开关 ${trigger.name}`} />
+      </div>
+      {expanded && (
+        <div className="flex flex-col gap-2 border-t px-3 py-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="mb-1 text-xs">冷却（秒）</Label>
+              <Input
+                type="number"
+                min={0}
+                value={cooldownSec}
+                onChange={(e) => setCooldownSec(e.target.value)}
+                className="h-7 text-xs"
+              />
+            </div>
+            <div>
+              <Label className="mb-1 text-xs">单场预算（次，留空不限）</Label>
+              <Input
+                type="number"
+                min={0}
+                value={maxPerSession}
+                onChange={(e) => setMaxPerSession(e.target.value)}
+                className="h-7 text-xs"
+              />
+            </div>
+          </div>
+          <div>
+            <Label className="mb-1 text-xs">
+              {trigger.target.mode === 'tool' ? '话术模板（直接播出，支持 {{payload.xxx}} 插值）' : '提示模板（发给主播，支持 {{payload.xxx}} / {{aggregated.list}} 插值）'}
+            </Label>
+            <Textarea
+              value={template}
+              onChange={(e) => setTemplate(e.target.value)}
+              className="min-h-16 resize-none text-xs"
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button size="sm" onClick={save}>
+              保存
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

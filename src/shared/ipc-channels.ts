@@ -56,6 +56,15 @@ export const IPC = {
   memoryViewers: 'memory:viewers',
   memoryEpisodes: 'memory:episodes',
 
+  // 触发器
+  triggerList: 'trigger:list',
+  triggerSave: 'trigger:save',
+  triggerDelete: 'trigger:delete',
+  triggerToggle: 'trigger:toggle',
+
+  // 事件时间线
+  eventRecent: 'event:recent',
+
   // 系统对话框
   dialogPickFile: 'dialog:pick-file'
 } as const

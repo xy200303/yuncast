@@ -15,6 +15,8 @@ import {
   type SpeechLane,
   type SpeechReplyTo,
   type SpeechStatus,
+  type Trigger,
+  type LiveEvent,
   type ViewerProfile
 } from '../../shared/types'
 
@@ -226,6 +228,29 @@ export class StorageService {
         created_at INTEGER NOT NULL
       )
     `)
+    // 触发器 + 事件日志（M5 事件驱动体系）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS triggers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        on_event TEXT NOT NULL,
+        on_filter TEXT,
+        target TEXT NOT NULL,
+        throttle TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS event_log (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        source TEXT NOT NULL,
+        payload TEXT NOT NULL DEFAULT '{}',
+        ts INTEGER NOT NULL
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS event_log_ts ON event_log(ts)')
   }
 
   // ---------- 应用配置 ----------
@@ -563,8 +588,95 @@ export class StorageService {
       })
   }
 
+  // ---------- 触发器 ----------
+
+  triggerList(): Trigger[] {
+    return this.db
+      .prepare('SELECT * FROM triggers ORDER BY created_at ASC')
+      .all()
+      .map((row) => rowToTrigger(row as Record<string, unknown>))
+  }
+
+  triggerSave(trigger: Trigger): void {
+    this.db
+      .prepare(
+        `INSERT INTO triggers (id, name, enabled, on_event, on_filter, target, throttle, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, enabled = excluded.enabled, on_event = excluded.on_event,
+           on_filter = excluded.on_filter, target = excluded.target, throttle = excluded.throttle`
+      )
+      .run(
+        trigger.id,
+        trigger.name,
+        trigger.enabled ? 1 : 0,
+        trigger.on.event,
+        trigger.on.filter ? JSON.stringify(trigger.on.filter) : null,
+        JSON.stringify(trigger.target),
+        trigger.throttle ? JSON.stringify(trigger.throttle) : null,
+        Date.now()
+      )
+  }
+
+  triggerDelete(id: string): void {
+    this.db.prepare('DELETE FROM triggers WHERE id = ?').run(id)
+  }
+
+  // ---------- 事件日志 ----------
+
+  eventLogInsert(event: LiveEvent): void {
+    this.db
+      .prepare('INSERT INTO event_log (id, type, source, payload, ts) VALUES (?, ?, ?, ?, ?)')
+      .run(event.id, event.type, event.source, JSON.stringify(event.payload), event.ts)
+    // 容量滚动清理：只留最近 5000 条
+    this.db.exec(
+      `DELETE FROM event_log WHERE id NOT IN (SELECT id FROM event_log ORDER BY ts DESC LIMIT 5000)`
+    )
+  }
+
+  eventLogRecent(n: number): LiveEvent[] {
+    return this.db
+      .prepare('SELECT * FROM event_log ORDER BY ts DESC LIMIT ?')
+      .all(Math.max(1, Math.min(n, 500)))
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        let payload: Record<string, unknown> = {}
+        try {
+          payload = JSON.parse(str(r.payload) || '{}')
+        } catch {
+          payload = {}
+        }
+        return {
+          id: str(r.id),
+          type: str(r.type),
+          source: (str(r.source) || 'system') as LiveEvent['source'],
+          payload,
+          ts: num(r.ts) ?? 0
+        }
+      })
+  }
+
   close(): void {
     this.db.close()
+  }
+}
+
+function rowToTrigger(r: Record<string, unknown>): Trigger {
+  const json = (value: unknown): Record<string, unknown> | undefined => {
+    try {
+      const parsed = JSON.parse(str(value) || '')
+      return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : undefined
+    } catch {
+      return undefined
+    }
+  }
+  return {
+    id: str(r.id),
+    name: str(r.name),
+    enabled: num(r.enabled) !== 0,
+    on: { event: str(r.on_event), filter: json(r.on_filter) },
+    target: (json(r.target) ?? { agentId: 'anchor', mode: 'task' }) as Trigger['target'],
+    throttle: json(r.throttle) as Trigger['throttle']
   }
 }
 

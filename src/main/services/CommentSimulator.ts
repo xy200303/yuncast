@@ -29,16 +29,32 @@ const CORPUS: { author: string; content: string }[] = [
   { author: '礼物侠', content: '送了个小心心，主播加油' }
 ]
 
+const JOINERS = ['新来的朋友', '潜水员小蓝', '隔壁老王', '爱逛直播的桃', '深夜党阿飞', '种草机本机']
+const GIFTS = [
+  { giftName: '小心心', giftValue: 1 },
+  { giftName: '棒棒糖', giftValue: 5 },
+  { giftName: '人气票', giftValue: 10 },
+  { giftName: '保时捷', giftValue: 99 }
+]
+
+/** 模拟器产出的事件（评论带结构化 comment，其余只是事件载荷） */
+export type SimulatedEvent =
+  | { type: 'comment.new'; comment: LiveComment }
+  | { type: 'viewer.join'; payload: { author: string; returning: boolean } }
+  | { type: 'gift.received'; payload: { author: string; giftName: string; giftValue: number } }
+  | { type: 'like.burst'; payload: { count: number } }
+
 /**
- * 评论模拟器（PipeSDK 真接入前的评论来源）。
- * 开启后按 3-8 秒随机间隔从语料里抽评论，喂给主播 Agent 并广播给渲染进程。
+ * 评论/事件模拟器（PipeSDK 真接入前的事件源）。
+ * 开启后按 3-8 秒随机间隔产出事件：约 70% 评论，15% 进场，8% 礼物，7% 点赞里程碑。
  */
 export class CommentSimulator {
   private timer: ReturnType<typeof setTimeout> | null = null
   private count = 0
   private lastIndex = -1
+  private likes = 0
 
-  constructor(private readonly onComment: (comment: LiveComment) => void) {}
+  constructor(private readonly onEvent: (event: SimulatedEvent) => void) {}
 
   get running(): boolean {
     return this.timer !== null
@@ -58,9 +74,9 @@ export class CommentSimulator {
     this.timer = null
   }
 
-  /** 手动注入一条（测试用） */
+  /** 手动注入一条评论（测试用） */
   inject(content: string, author = '测试观众'): void {
-    this.emit(author, content)
+    this.emitComment(author, content)
   }
 
   private scheduleNext(): void {
@@ -72,20 +88,46 @@ export class CommentSimulator {
   }
 
   private emitRandom(): void {
-    // 不连续重复同一条
-    let index = Math.floor(Math.random() * CORPUS.length)
-    if (index === this.lastIndex) index = (index + 1) % CORPUS.length
-    this.lastIndex = index
-    this.emit(CORPUS[index].author, CORPUS[index].content)
+    const roll = Math.random()
+    if (roll < 0.7) {
+      // 不连续重复同一条
+      let index = Math.floor(Math.random() * CORPUS.length)
+      if (index === this.lastIndex) index = (index + 1) % CORPUS.length
+      this.lastIndex = index
+      this.emitComment(CORPUS[index].author, CORPUS[index].content)
+    } else if (roll < 0.85) {
+      this.count += 1
+      this.onEvent({
+        type: 'viewer.join',
+        payload: {
+          author: JOINERS[Math.floor(Math.random() * JOINERS.length)],
+          returning: Math.random() < 0.3
+        }
+      })
+    } else if (roll < 0.93) {
+      this.count += 1
+      const gift = GIFTS[Math.floor(Math.random() * GIFTS.length)]
+      this.onEvent({
+        type: 'gift.received',
+        payload: { author: '礼物侠', ...gift }
+      })
+    } else {
+      this.count += 1
+      this.likes += 500 + Math.floor(Math.random() * 1500)
+      this.onEvent({ type: 'like.burst', payload: { count: this.likes } })
+    }
   }
 
-  private emit(author: string, content: string): void {
+  private emitComment(author: string, content: string): void {
     this.count += 1
-    this.onComment({
-      id: `cm-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
-      author,
-      content,
-      ts: Date.now()
+    this.onEvent({
+      type: 'comment.new',
+      comment: {
+        id: `cm-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
+        author,
+        content,
+        ts: Date.now()
+      }
     })
   }
 }

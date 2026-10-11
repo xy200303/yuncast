@@ -15,7 +15,8 @@ import {
   type PoolSnapshot,
   type ProductInput,
   type SpeechItem,
-  type SpeechLane
+  type SpeechLane,
+  type TriggerInput
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
 import { TtsService } from './services/TtsService'
@@ -25,6 +26,8 @@ import { AgentService } from './services/AgentService'
 import { CommentSimulator } from './services/CommentSimulator'
 import { KnowledgeService } from './services/KnowledgeService'
 import { MemoryService } from './services/MemoryService'
+import { EventBus } from './services/EventBus'
+import { TriggerRuntime } from './services/TriggerRuntime'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -148,13 +151,15 @@ function createWindow(storage: StorageService): void {
   }
 }
 
-/** 池快照广播给所有窗口 */
+/** 池快照广播给所有窗口；顺带探测 pool.empty（空了一次只发一次，恢复后再次为空可再发） */
+let poolWasEmpty = true
 function broadcastPool(snapshot: PoolSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.poolSnapshotEvent, snapshot)
   }
-  // 主播节奏驱动：池水位低时催主播补货
-  agent?.onPoolSnapshot(snapshot)
+  const empty = snapshot.items.length === 0
+  if (empty && !poolWasEmpty) bus?.emit('pool.empty', {}, 'pool')
+  poolWasEmpty = empty
 }
 
 /** Agent 状态（含生成中预览）广播给所有窗口 */
@@ -172,6 +177,9 @@ function broadcastComment(comment: LiveComment): void {
 }
 
 let agent: AgentService | null = null
+let bus: EventBus | null = null
+let triggers: TriggerRuntime | null = null
+let timerInterval: ReturnType<typeof setInterval> | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
 function guard<T>(fn: () => T): { ok: true; item: T } | { ok: false; error: string }
@@ -193,7 +201,9 @@ function registerIpc(
   persona: PersonaService,
   sim: CommentSimulator,
   knowledge: KnowledgeService,
-  memory: MemoryService
+  memory: MemoryService,
+  bus: EventBus,
+  triggers: TriggerRuntime
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -227,15 +237,23 @@ function registerIpc(
   ipcMain.handle(IPC.agentStart, async () => {
     try {
       await agent.start()
+      bus.emit('stream.started', {}, 'human')
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
-  ipcMain.handle(IPC.agentStop, () => agent.stop())
+  ipcMain.handle(IPC.agentStop, async () => {
+    const wasRunning = agent.status().state !== 'stopped'
+    await agent.stop()
+    if (wasRunning) bus.emit('stream.ended', {}, 'human')
+  })
   ipcMain.handle(IPC.agentRestart, async () => {
     try {
-      await agent.restart()
+      await agent.stop()
+      bus.emit('stream.ended', {}, 'human')
+      await agent.start()
+      bus.emit('stream.started', {}, 'human')
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -278,6 +296,24 @@ function registerIpc(
   ipcMain.handle(IPC.memoryViewers, () => memory.listViewers())
   ipcMain.handle(IPC.memoryEpisodes, () => memory.listEpisodes())
 
+  // ---------- 触发器 ----------
+  ipcMain.handle(IPC.triggerList, () => triggers.list())
+  ipcMain.handle(IPC.triggerSave, (_e, input: TriggerInput) => {
+    triggers.save(input)
+    return triggers.list()
+  })
+  ipcMain.handle(IPC.triggerDelete, (_e, id: string) => {
+    triggers.remove(id)
+    return triggers.list()
+  })
+  ipcMain.handle(IPC.triggerToggle, (_e, id: string, enabled: boolean) => {
+    triggers.toggle(id, Boolean(enabled))
+    return triggers.list()
+  })
+
+  // ---------- 事件时间线 ----------
+  ipcMain.handle(IPC.eventRecent, (_e, n: number) => bus.recent(n))
+
   // ---------- 系统对话框 ----------
   ipcMain.handle(IPC.dialogPickFile, async (_e, filtersName: string, extensions: string[]) => {
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow
@@ -314,12 +350,22 @@ if (!single) {
     const persona = new PersonaService(storage)
     const knowledge = new KnowledgeService(storage)
     const memory = new MemoryService(storage)
+    bus = new EventBus(storage)
     agent = new AgentService(storage, pool, persona, knowledge, memory, broadcastAgent)
-    const sim = new CommentSimulator((comment) => {
-      // 评论进主播（主播自己决定回不回），同时广播给渲染进程弹 toast
-      agent?.onComment(comment)
-      broadcastComment(comment)
+    triggers = new TriggerRuntime(storage, bus, pool, agent)
+    const sim = new CommentSimulator((event) => {
+      // 模拟器产出统一进事件总线；评论额外喂主播 + 广播给评论流
+      if (event.type === 'comment.new') {
+        agent?.onComment(event.comment)
+        broadcastComment(event.comment)
+        bus?.emit('comment.new', { author: event.comment.author, content: event.comment.content }, 'pipe')
+      } else {
+        bus?.emit(event.type, event.payload, 'pipe')
+      }
     })
+    // 定时节拍：5 分钟一跳
+    timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
+    timerInterval.unref?.()
 
     // media:// 只服务 audio-cache 目录里的 basename，拒绝任何路径穿越
     protocol.handle('media', (request) => {
@@ -333,7 +379,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory)
+    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers)
     createWindow(storage)
 
     app.on('activate', () => {
@@ -343,6 +389,8 @@ if (!single) {
 }
 
 app.on('window-all-closed', () => {
+  if (timerInterval) clearInterval(timerInterval)
+  triggers?.dispose()
   pool?.dispose()
   void agent?.stop()
   if (process.platform !== 'darwin') app.quit()

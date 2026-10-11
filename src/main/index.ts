@@ -398,6 +398,13 @@ function registerIpc(
     connector.restart()
     return connector.status()
   })
+  ipcMain.handle(IPC.connectorCallTool, async (_e, name: string, args: Record<string, unknown>) => {
+    try {
+      return { ok: true, text: await connector.callTool(String(name), args ?? {}) }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
 }
 
 const single = app.requestSingleInstanceLock()

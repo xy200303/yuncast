@@ -174,6 +174,11 @@ const api = {
   connector: {
     status: () => ipcRenderer.invoke(IPC.connectorStatus) as Promise<ConnectorStatus>,
     restart: () => ipcRenderer.invoke(IPC.connectorRestart) as Promise<ConnectorStatus>,
+    /** 出站动作口：调连接器工具（比如 get_room_stats） */
+    callTool: (name: string, args: Record<string, unknown> = {}) =>
+      ipcRenderer.invoke(IPC.connectorCallTool, name, args) as Promise<
+        { ok: true; text: string } | { ok: false; error: string }
+      >,
     /** 订阅连接器状态，返回取消订阅函数 */
     onStatus: (cb: (status: ConnectorStatus) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, status: ConnectorStatus) => cb(status)

@@ -94,5 +94,7 @@ export const IPC = {
   connectorStatus: 'connector:status',
   connectorRestart: 'connector:restart',
   /** main → renderer：连接器状态 */
-  connectorStatusEvent: 'connector:status-event'
+  connectorStatusEvent: 'connector:status-event',
+  /** 出站动作口：调连接器工具（CompanionBridge 并入） */
+  connectorCallTool: 'connector:call-tool'
 } as const

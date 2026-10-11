@@ -31,7 +31,7 @@ import {
 type StoredValue = string | { __enc: string }
 
 /** 以 dot path 标记的敏感字段，写入前加密、读出后解密 */
-const SECRET_KEYS = ['tts.accessToken', 'tts.apiKey', 'llm.apiKey', 'stream.streamKey'] as const
+const SECRET_KEYS = ['tts.accessToken', 'tts.apiKey', 'llm.apiKey', 'stream.streamKey', 'comment.connectorToken'] as const
 
 function getPath(obj: Record<string, unknown>, path: string): unknown {
   return path.split('.').reduce<unknown>((acc, key) => {

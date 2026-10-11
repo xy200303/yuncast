@@ -108,7 +108,7 @@ export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUr
 
 export const DEFAULT_BGM_CONFIG: BgmConfig = { path: '', volume: 0.3 }
 
-export const DEFAULT_COMMENT_CONFIG: CommentConfig = { connectorPort: 8101 }
+export const DEFAULT_COMMENT_CONFIG: CommentConfig = { connectorPort: 8102, connectorToken: '' }
 
 function parseStream(input: unknown): StreamConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
@@ -121,8 +121,12 @@ function parseStream(input: unknown): StreamConfig {
 
 function parseComment(input: unknown): CommentConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
-  const port = Number(row.connectorPort)
-  return { connectorPort: Number.isInteger(port) && port > 0 && port < 65536 ? port : 8101 }
+  let port = Number(row.connectorPort)
+  if (port === 8101) port = 8102 // v1（WS 事件面）→ v2（MCP）端口迁移
+  return {
+    connectorPort: Number.isInteger(port) && port > 0 && port < 65536 ? port : 8102,
+    connectorToken: typeof row.connectorToken === 'string' ? row.connectorToken : ''
+  }
 }
 
 function parseBgm(input: unknown): BgmConfig {
@@ -612,7 +616,9 @@ export interface ConnectorStatus {
 // ---------- 评论接入（docs/04 解耦：连接器 + 内置模拟器） ----------
 
 export interface CommentConfig {
-  /** 本地连接器 WS 端口（连接器绑 127.0.0.1） */
+  /** 本地连接器 MCP 端口（v2 单一协议：事件推送 + 工具调用都走它） */
   connectorPort: number
+  /** 连接器 MCP Bearer Token（在连接器设置页复制；敏感字段 safeStorage 加密落盘） */
+  connectorToken: string
 }
 

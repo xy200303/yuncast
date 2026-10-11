@@ -47,13 +47,13 @@ export function AppSidebar() {
     >
       {/* 顶行：和 DragStrip 同高（h-10），整行可拖 */}
       <div
-        className={cn('flex h-10 shrink-0 items-center gap-2 border-b', collapsed ? 'justify-center' : 'px-2')}
+        className={cn('flex h-10 shrink-0 items-center gap-2 border-b', collapsed ? 'justify-center' : 'px-3')}
         style={drag}
       >
         {!collapsed && (
           <>
-            <Anchor className="size-4 shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">Agent Anchor</span>
+            <Anchor className="size-5 shrink-0 text-primary" />
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">Agent Anchor</span>
           </>
         )}
         <Button
@@ -68,7 +68,7 @@ export function AppSidebar() {
       </div>
 
       {/* 图标导航 */}
-      <nav className={cn('flex min-h-0 flex-1 flex-col gap-0.5 py-2', collapsed ? 'items-center px-1' : 'px-2')}>
+      <nav className={cn('flex min-h-0 flex-1 flex-col gap-1 py-3', collapsed ? 'items-center px-1' : 'px-2.5')}>
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon
           const active = page === item.id
@@ -76,11 +76,15 @@ export function AppSidebar() {
             <Button
               key={item.id}
               variant={active ? 'secondary' : 'ghost'}
-              size={collapsed ? 'icon-sm' : 'sm'}
-              className={cn(!collapsed && 'w-full justify-start gap-2', active && 'text-primary')}
+              size={collapsed ? 'icon' : 'default'}
+              className={cn(
+                !collapsed && 'h-10 w-full justify-start gap-2.5 px-3 text-sm',
+                collapsed && 'h-10 w-10',
+                active && 'text-primary'
+              )}
               onClick={() => setPage(item.id)}
             >
-              <Icon />
+              <Icon className={collapsed ? 'size-5' : 'size-[18px]'} />
               {!collapsed && <span className="truncate">{item.label}</span>}
             </Button>
           )
@@ -95,16 +99,16 @@ export function AppSidebar() {
       </nav>
 
       {/* 底部：设置入口（弹窗，不占页面流） */}
-      <div className={cn('shrink-0 border-t p-2', collapsed && 'flex justify-center px-1')}>
+      <div className={cn('shrink-0 border-t p-2.5', collapsed && 'flex justify-center px-1')}>
         {(() => {
           const button = (
             <Button
               variant="ghost"
-              size={collapsed ? 'icon-sm' : 'sm'}
-              className={cn(!collapsed && 'w-full justify-start gap-2')}
+              size={collapsed ? 'icon' : 'default'}
+              className={cn(!collapsed && 'h-10 w-full justify-start gap-2.5 px-3 text-sm', collapsed && 'h-10 w-10')}
               onClick={() => useAppStore.getState().setSettingsOpen(true)}
             >
-              <Settings />
+              <Settings className={collapsed ? 'size-5' : 'size-[18px]'} />
               {!collapsed && <span>设置</span>}
             </Button>
           )

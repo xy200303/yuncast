@@ -17,7 +17,10 @@ const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
       theme={theme}
-      position="bottom-right"
+      // 顶部居中：弹窗（Dialog）打开时右下角的提示会被遮住，顶部不会被覆盖
+      position="top-center"
+      offset={16}
+      // 抬到 Dialog（z-50）之上，保证任何弹窗下都可见
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,
@@ -32,6 +35,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
           "--border-radius": "var(--radius)",
+          zIndex: 10000,
         } as React.CSSProperties
       }
       {...props}

@@ -11,12 +11,13 @@ import {
   type ConnectorStatus,
   type PartialDeep,
   type PoolSnapshot,
+  type VoiceRecord,
   type StreamStats
 } from '../../../shared/types'
 import { applyAppearance, readCachedTheme, resolveAppTheme, type ResolvedAppTheme } from '../theme/applyAppearance'
 
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'anchors', 'knowledge', 'sessions', 'stats'] as const
+export const NAV_PAGES = ['live', 'anchors', 'knowledge', 'voices', 'sessions', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 
 // 启动时先用 localStorage 缓存的主题，避免等 IPC 回来闪一下白/黑
@@ -62,6 +63,10 @@ interface AppState {
   /** 平台连接器状态 */
   connector: ConnectorStatus
   setConnector: (status: ConnectorStatus) => void
+
+  /** 音色库（主进程广播驱动，训练状态实时更新） */
+  voices: VoiceRecord[]
+  setVoices: (voices: VoiceRecord[]) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -122,8 +127,11 @@ export const useAppStore = create<AppState>()((set, get) => ({
   stream: INITIAL_STREAM_STATS,
   setStream: (stream) => set({ stream }),
 
-  connector: { state: 'idle', port: 8101, receivedCount: 0 },
-  setConnector: (connector) => set({ connector })
+  connector: { state: 'idle', port: 8102, receivedCount: 0 },
+  setConnector: (connector) => set({ connector }),
+
+  voices: [],
+  setVoices: (voices) => set({ voices })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */

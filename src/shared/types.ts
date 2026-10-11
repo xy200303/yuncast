@@ -384,6 +384,29 @@ export interface LiveComment {
   ts: number
 }
 
+// ---------- 音色库（M8 声音克隆） ----------
+
+export type VoiceProvider = 'volcano' | 'bailian'
+export type VoiceStatus = 'training' | 'ready' | 'failed'
+
+export interface VoiceRecord {
+  id: string
+  name: string
+  provider: VoiceProvider
+  /** 克隆完成后的音色标识（火山 S_xxx / 百炼 voice 名），训练完成前为空 */
+  voiceType: string
+  /** 样本音频文件路径（userData/voices/） */
+  samplePath: string
+  status: VoiceStatus
+  /** 失败原因（中文） */
+  error: string
+  /** 授权确认（合规底线：克隆向导必须勾选并留痕） */
+  authorized: boolean
+  authorizedAt: number | null
+  createdAt: number
+  updatedAt: number
+}
+
 // ---------- 知识库（docs/01 §4） ----------
 
 export interface Product {

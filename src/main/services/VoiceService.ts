@@ -1,0 +1,271 @@
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { basename, extname, join } from 'node:path'
+import { app } from 'electron'
+import { randomUUID } from 'node:crypto'
+import type { StorageService } from './StorageService'
+import type { VoiceRecord } from '../../shared/types'
+
+/**
+ * 音色库 / 声音克隆（M8）。
+ *
+ * 火山引擎「声音复刻」：上传样本 → 异步训练 → 轮询状态 → 得到 speaker_id（voice_type，S_ 前缀）。
+ * ⚠ 下面的端点、字段与状态码按火山历史文档（mega_tts 一系）实现，**尚未对照当前官方文档逐字核对**（
+ *   见 docs/06-TTS克隆接口核对.md 的核对清单）。核对时只需要改本文件顶部的常量与 parseVolcanoResponse。
+ *
+ * 合规：克隆必须由调用方确认「已获得录音人授权」（docs/02-TTS选型调研 §合规），授权时间入库留痕。
+ */
+
+const VOLCANO_UPLOAD_URL = 'https://openspeech.bytedance.com/api/v1/mega_tts/audio/upload'
+const VOLCANO_STATUS_URL = 'https://openspeech.bytedance.com/api/v1/mega_tts/status'
+/** 复刻集群名（与合成用的 volcano_tts 不同） */
+const VOLCANO_CLONE_CLUSTER = 'volc_mega_tts'
+/** 新版接口要求带 Resource-Id；缺失时服务端会拒绝，保留常量便于核对时调整 */
+const VOLCANO_RESOURCE_ID = 'volc.megatts.voiceclone'
+
+const POLL_INTERVAL_MS = 5000
+/** 最多轮询 5 分钟（官方称秒级完成，留足异步余量） */
+const POLL_MAX_TRIES = 60
+const REQUEST_TIMEOUT_MS = 30000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+export class VoiceService {
+  private timers = new Map<string, NodeJS.Timeout>()
+
+  constructor(
+    private readonly storage: StorageService,
+    private readonly onChanged: (voices: VoiceRecord[]) => void
+  ) {}
+
+  list(): VoiceRecord[] {
+    return this.storage.listVoices()
+  }
+
+  sampleDir(): string {
+    const dir = join(app.getPath('userData'), 'voices')
+    void mkdir(dir, { recursive: true }).catch(() => undefined)
+    return dir
+  }
+
+  /** 录制/上传的样本落盘（渲染进程传来的音频字节流） */
+  async saveSample(bytes: Uint8Array, ext = 'webm'): Promise<string> {
+    const file = join(this.sampleDir(), `sample-${Date.now()}-${randomUUID().slice(0, 6)}.${ext}`)
+    await writeFile(file, Buffer.from(bytes))
+    return file
+  }
+
+  /** 提交克隆。authorized 必须为 true（合规底线）。 */
+  async clone(input: {
+    name: string
+    samplePath: string
+    authorized: boolean
+  }): Promise<{ ok: true; voice: VoiceRecord } | { ok: false; error: string }> {
+    const name = input.name.trim()
+    if (!name) return { ok: false, error: '请填写音色名称' }
+    if (!input.authorized) return { ok: false, error: '请先勾选「已获得录音人授权」' }
+    if (!input.samplePath || !existsSync(input.samplePath)) {
+      return { ok: false, error: '样本文件不存在，请重新上传或录制' }
+    }
+
+    const tts = this.storage.getConfig().tts
+    if (tts.provider === 'bailian') {
+      // TODO(核对后实现)：百炼 CosyVoice 音色复刻（enrollment）——需确认是否支持本地音频直传
+      return { ok: false, error: '百炼音色复刻尚未接入，当前请使用火山引擎（设置 → 语音合成）' }
+    }
+    if (!tts.appId || !tts.accessToken) {
+      return { ok: false, error: '请先在「设置 → 语音合成」配置火山 AppId / Access Token' }
+    }
+
+    // 样本统一复制进音色目录，避免用户原始文件被移动/删除
+    const samplePath = join(this.sampleDir(), basename(input.samplePath))
+    try {
+      if (input.samplePath !== samplePath) await copyFile(input.samplePath, samplePath)
+    } catch (error) {
+      return { ok: false, error: `样本归档失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+
+    const now = Date.now()
+    const voice: VoiceRecord = {
+      id: randomUUID(),
+      name,
+      provider: 'volcano',
+      voiceType: '',
+      samplePath,
+      status: 'training',
+      error: '',
+      authorized: true,
+      authorizedAt: now,
+      createdAt: now,
+      updatedAt: now
+    }
+    this.storage.saveVoice(voice)
+    this.emitChanged()
+
+    try {
+      await this.submitVolcanoClone(voice, tts.appId, tts.accessToken)
+    } catch (error) {
+      this.fail(voice.id, error instanceof Error ? error.message : String(error))
+      return { ok: false, error: '克隆任务提交失败，详见音色卡片' }
+    }
+
+    this.startPolling(voice.id, tts.appId, tts.accessToken)
+    return { ok: true, voice }
+  }
+
+  /** 轮询训练状态，直到 ready / failed / 超时 */
+  private startPolling(id: string, appId: string, accessToken: string): void {
+    let tries = 0
+    const timer = setInterval(() => {
+      tries += 1
+      void this.pollOnce(id, appId, accessToken).then((done) => {
+        if (done || tries >= POLL_MAX_TRIES) {
+          clearInterval(timer)
+          this.timers.delete(id)
+          if (!done) this.fail(id, '训练超时未完成，请到火山控制台查看复刻任务状态')
+        }
+      })
+    }, POLL_INTERVAL_MS)
+    this.timers.set(id, timer)
+  }
+
+  /** 返回 true 表示已到终态（ready/failed） */
+  private async pollOnce(id: string, appId: string, accessToken: string): Promise<boolean> {
+    const voice = this.storage.listVoices().find((v) => v.id === id)
+    if (!voice || voice.status !== 'training') return true
+    try {
+      const res = await this.requestVolcano(VOLCANO_STATUS_URL, accessToken, {
+        app: { appid: appId, token: accessToken, cluster: VOLCANO_CLONE_CLUSTER },
+        speaker_id: voice.voiceType || id
+      })
+      const state = parseVolcanoState(res)
+      if (state === 'ready') {
+        this.storage.saveVoice({ ...voice, status: 'ready', voiceType: res.speaker_id ?? voice.voiceType, updatedAt: Date.now() })
+        this.emitChanged()
+        return true
+      }
+      if (state === 'failed') {
+        this.fail(id, '平台侧训练失败，请检查样本质量或到火山控制台查看原因')
+        return true
+      }
+      return false
+    } catch {
+      // 单次查询失败不判死，等下一轮
+      return false
+    }
+  }
+
+  /** 提交复刻训练（具体字段见文件头注释：待与官方文档逐字核对） */
+  private async submitVolcanoClone(voice: VoiceRecord, appId: string, accessToken: string): Promise<void> {
+    const { readFile } = await import('node:fs/promises')
+    const audio = await readFile(voice.samplePath)
+    const format = extname(voice.samplePath).replace('.', '') || 'wav'
+    const payload = {
+      app: { appid: appId, token: accessToken, cluster: VOLCANO_CLONE_CLUSTER },
+      speaker_id: voice.id,
+      audios: [{ audio_bytes: audio.toString('base64'), audio_format: format }],
+      source: 2
+    }
+    const res = await this.requestVolcano(VOLCANO_UPLOAD_URL, accessToken, payload)
+    const state = parseVolcanoState(res)
+    if (state === 'failed') {
+      throw new Error(res.BaseResp?.StatusMessage ?? res.message ?? '平台拒绝复刻请求')
+    }
+    // 平台返回的 speaker_id 可能与提交不同，以返回为准
+    if (res.speaker_id && res.speaker_id !== voice.id) {
+      this.storage.saveVoice({ ...voice, voiceType: res.speaker_id, updatedAt: Date.now() })
+    } else {
+      this.storage.saveVoice({ ...voice, voiceType: voice.id, updatedAt: Date.now() })
+    }
+    this.emitChanged()
+  }
+
+  private async requestVolcano(
+    url: string,
+    accessToken: string,
+    body: Record<string, unknown>
+  ): Promise<VolcanoResponse> {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer;${accessToken}`,
+        'Resource-Id': VOLCANO_RESOURCE_ID
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+    if (res.status === 401 || res.status === 403) {
+      throw new Error('火山鉴权失败：请检查 Access Token，或该账号未开通「声音复刻」权限')
+    }
+    if (!res.ok) throw new Error(`火山接口返回 ${res.status}`)
+    const data = (await res.json()) as VolcanoResponse
+    const code = data.BaseResp?.StatusCode
+    // 0 表示成功；其余按业务状态处理（不同版本号段可能不同，核对时确认）
+    if (code !== undefined && code !== 0 && code !== 3000) {
+      throw new Error(data.BaseResp?.StatusMessage ?? `火山接口错误码 ${code}`)
+    }
+    return data
+  }
+
+  async remove(id: string): Promise<{ ok: boolean; error?: string }> {
+    const voice = this.storage.listVoices().find((v) => v.id === id)
+    if (!voice) return { ok: false, error: '音色不存在' }
+    const timer = this.timers.get(id)
+    if (timer) {
+      clearInterval(timer)
+      this.timers.delete(id)
+    }
+    this.storage.deleteVoice(id)
+    if (voice.samplePath) await rm(voice.samplePath, { force: true }).catch(() => undefined)
+    // 删掉的是当前默认音色就清空，避免指向不存在的音色
+    if (this.storage.getConfig().tts.voiceId === voice.voiceType) {
+      this.storage.setConfig({ tts: { voiceId: '' } })
+    }
+    this.emitChanged()
+    return { ok: true }
+  }
+
+  /** 设为默认音色（写 config.tts.voiceId，人设卡留空时即用它） */
+  setDefault(id: string): { ok: boolean; error?: string } {
+    const voice = this.storage.listVoices().find((v) => v.id === id)
+    if (!voice) return { ok: false, error: '音色不存在' }
+    if (voice.status !== 'ready' || !voice.voiceType) {
+      return { ok: false, error: '该音色还没训练完成' }
+    }
+    this.storage.setConfig({ tts: { voiceId: voice.voiceType } })
+    this.emitChanged()
+    return { ok: true }
+  }
+
+  private fail(id: string, error: string): void {
+    const voice = this.storage.listVoices().find((v) => v.id === id)
+    if (!voice) return
+    this.storage.saveVoice({ ...voice, status: 'failed', error, updatedAt: Date.now() })
+    this.emitChanged()
+  }
+
+  private emitChanged(): void {
+    this.onChanged(this.list())
+  }
+}
+
+interface VolcanoResponse {
+  speaker_id?: string
+  status?: number
+  message?: string
+  BaseResp?: { StatusCode?: number; StatusMessage?: string }
+}
+
+/**
+ * 训练状态映射（火山历史文档口径，核对时确认）：
+ * 0 不存在 / 1 训练中 / 2 训练成功 / 3 训练失败 / 4 已激活
+ */
+function parseVolcanoState(res: VolcanoResponse): 'training' | 'ready' | 'failed' {
+  const status = res.status
+  if (status === 2 || status === 4) return 'ready'
+  if (status === 3) return 'failed'
+  return 'training'
+}

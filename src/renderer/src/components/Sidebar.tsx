@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import {
   Anchor,
+  AudioLines,
   BarChart3,
   BookOpen,
   Bot,
@@ -23,6 +24,7 @@ export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon }[] = [
   { id: 'live', label: '直播台', icon: Radio },
   { id: 'anchors', label: '主播团', icon: Bot },
   { id: 'knowledge', label: '知识库', icon: BookOpen },
+  { id: 'voices', label: '音色库', icon: AudioLines },
   { id: 'sessions', label: '场次', icon: CalendarDays },
   { id: 'stats', label: '数据', icon: BarChart3 }
 ]

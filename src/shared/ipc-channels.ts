@@ -36,6 +36,15 @@ export const IPC = {
   personaGet: 'persona:get',
   personaSave: 'persona:save',
 
+  // 音色库（M8 声音克隆）
+  voiceList: 'voice:list',
+  voiceClone: 'voice:clone',
+  voiceRemove: 'voice:remove',
+  voiceSetDefault: 'voice:set-default',
+  voiceUploadSample: 'voice:upload-sample',
+  /** main → renderer：音色列表变化（训练状态更新） */
+  voiceChanged: 'voice:changed',
+
   /** main → renderer：评论事件（toast 展示用） */
   commentEvent: 'comment:event',
 

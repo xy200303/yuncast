@@ -23,6 +23,7 @@ import type {
   ScriptInput,
   SpeechItem,
   SpeechLane,
+  VoiceRecord,
   StreamStats,
   Trigger,
   TriggerInput,
@@ -89,6 +90,27 @@ const api = {
     get: () => ipcRenderer.invoke(IPC.personaGet) as Promise<Persona>,
     save: (input: Omit<Persona, 'id' | 'updatedAt'>) =>
       ipcRenderer.invoke(IPC.personaSave, input) as Promise<Persona>
+  },
+  voice: {
+    list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,
+    clone: (input: { name: string; samplePath: string; authorized: boolean }) =>
+      ipcRenderer.invoke(IPC.voiceClone, input) as Promise<{ ok: boolean; error?: string }>,
+    remove: (id: string) =>
+      ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,
+    setDefault: (id: string) =>
+      ipcRenderer.invoke(IPC.voiceSetDefault, id) as Promise<{ ok: boolean; error?: string }>,
+    uploadSample: (bytes: Uint8Array, ext: string) =>
+      ipcRenderer.invoke(IPC.voiceUploadSample, bytes, ext) as Promise<
+        { ok: true; path: string } | { ok: false; error: string }
+      >,
+    /** 音色列表变化（训练完成/失败等），返回取消订阅函数 */
+    onChanged: (cb: (voices: VoiceRecord[]) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, voices: VoiceRecord[]) => cb(voices)
+      ipcRenderer.on(IPC.voiceChanged, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.voiceChanged, listener)
+      }
+    }
   },
   comment: {
     /** 订阅评论事件（来自连接器），返回取消订阅函数 */

@@ -20,7 +20,8 @@ import {
   type SpeechItem,
   type SpeechLane,
   type StreamStats,
-  type TriggerInput
+  type TriggerInput,
+  type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
 import { TtsService } from './services/TtsService'
@@ -34,6 +35,7 @@ import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
 import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
+import { VoiceService } from './services/VoiceService'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -197,11 +199,19 @@ function broadcastConnector(status: ConnectorStatus): void {
   }
 }
 
+/** 音色库变化广播（训练状态更新/新增/删除） */
+function broadcastVoices(voices: VoiceRecord[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.voiceChanged, voices)
+  }
+}
+
 let agent: AgentService | null = null
 let bus: EventBus | null = null
 let triggers: TriggerRuntime | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
 let connector: ConnectorService | null = null
+let voiceSvc: VoiceService | null = null
 let streamSvc: StreamService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
@@ -289,6 +299,21 @@ function registerIpc(
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
   ipcMain.handle(IPC.personaSave, (_e, input: Omit<Persona, 'id' | 'updatedAt'>) => persona.save(input))
+
+  // ---------- 音色库（M8 声音克隆） ----------
+  ipcMain.handle(IPC.voiceList, () => voiceSvc?.list() ?? [])
+  ipcMain.handle(
+    IPC.voiceClone,
+    (_e, input: { name: string; samplePath: string; authorized: boolean }) =>
+      voiceSvc?.clone(input) ?? { ok: false, error: '音色服务未初始化' }
+  )
+  ipcMain.handle(IPC.voiceRemove, (_e, id: string) => voiceSvc?.remove(id) ?? { ok: false, error: '音色服务未初始化' })
+  ipcMain.handle(IPC.voiceSetDefault, (_e, id: string) => voiceSvc?.setDefault(id) ?? { ok: false, error: '音色服务未初始化' })
+  ipcMain.handle(IPC.voiceUploadSample, async (_e, bytes: Uint8Array, ext: string) => {
+    if (!voiceSvc) return { ok: false, error: '音色服务未初始化' }
+    const path = await voiceSvc.saveSample(bytes, ext)
+    return { ok: true, path }
+  })
 
   // ---------- 知识库 ----------
   ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listProducts())
@@ -443,6 +468,9 @@ if (!single) {
     connector.start()
     // 端口改了重连
     storage.onConfigChange(() => connector?.restart())
+
+    // 音色库（M8 声音克隆）：训练状态变化推给渲染进程
+    voiceSvc = new VoiceService(storage, broadcastVoices)
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)

@@ -10,6 +10,7 @@ import { StatusBar } from './components/StatusBar'
 import { LivePage } from './components/LivePage'
 import { AnchorsPage } from './components/AnchorsPage'
 import { KnowledgePage } from './components/KnowledgePage'
+import { VoicesPage } from './components/VoicesPage'
 import { SessionsPage } from './components/SessionsPage'
 import { StatsPage } from './components/StatsPage'
 import { SettingsDialog } from './components/SettingsDialog'
@@ -21,6 +22,7 @@ const PAGES: Record<NavPage, ComponentType> = {
   live: LivePage,
   anchors: AnchorsPage,
   knowledge: KnowledgePage,
+  voices: VoicesPage,
   sessions: SessionsPage,
   stats: StatsPage
 }
@@ -35,6 +37,7 @@ export default function App() {
   const setAgent = useAppStore((s) => s.setAgent)
   const setStream = useAppStore((s) => s.setStream)
   const setConnector = useAppStore((s) => s.setConnector)
+  const setVoices = useAppStore((s) => s.setVoices)
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
@@ -83,6 +86,8 @@ export default function App() {
       }
     })
     const offConnector = window.api.connector.onStatus(setConnector)
+    const offVoices = window.api.voice.onChanged(setVoices)
+    void window.api.voice.list().then(setVoices)
     const offComment = window.api.comment.onComment((comment) => {
       toast.message(`💬 ${comment.author}`, { description: comment.content })
     })
@@ -91,8 +96,9 @@ export default function App() {
       offStream()
       offConnector()
       offComment()
+      offVoices()
     }
-  }, [setAgent, setStream, setConnector])
+  }, [setAgent, setStream, setConnector, setVoices, setConnector])
 
   return (
     <TooltipProvider>

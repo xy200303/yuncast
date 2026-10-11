@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
@@ -41,6 +42,7 @@ export function AnchorsPage() {
   const [persona, setPersona] = useState<PersonaForm | null>(null)
   const [busy, setBusy] = useState(false)
   const [tab, setTab] = useState<'persona' | 'triggers'>('persona')
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false)
 
   useEffect(() => {
     void window.api.persona.get().then((p) => {
@@ -148,7 +150,17 @@ export function AnchorsPage() {
                   <Input value={persona.name} onChange={(e) => patch({ name: e.target.value })} />
                 </div>
                 <div>
-                  <Label className="mb-1">默认音色（留空用 TTS 默认）</Label>
+                  <div className="mb-1 flex items-center justify-between">
+                    <Label>默认音色（留空用 TTS 默认）</Label>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => setVoicePickerOpen(true)}
+                    >
+                      从音色库选择
+                    </Button>
+                  </div>
                   <Input
                     value={persona.voiceId}
                     onChange={(e) => patch({ voiceId: e.target.value })}
@@ -257,7 +269,64 @@ export function AnchorsPage() {
           <TriggerSection />
         </TabsContent>
       </Tabs>
+      <VoicePickerDialog
+        open={voicePickerOpen}
+        onOpenChange={setVoicePickerOpen}
+        onPick={(voiceType) => {
+          patch({ voiceId: voiceType })
+          setVoicePickerOpen(false)
+          toast.success('已填入音色标识', { description: '保存人设后生效' })
+        }}
+      />
     </div>
+  )
+}
+
+/** 从音色库挑选（只列训练完成的音色） */
+function VoicePickerDialog({
+  open,
+  onOpenChange,
+  onPick
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  onPick: (voiceType: string) => void
+}) {
+  const voices = useAppStore((s) => s.voices)
+  const ready = voices.filter((v) => v.status === 'ready' && v.voiceType)
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>从音色库选择</DialogTitle>
+        </DialogHeader>
+        {ready.length === 0 ? (
+          <p className="text-sm text-muted-foreground">
+            音色库还没有就绪的克隆音色。到「音色库」新建一个（训练完成后即可选）。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-1">
+            {ready.map((voice) => (
+              <button
+                key={voice.id}
+                type="button"
+                className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent"
+                onClick={() => onPick(voice.voiceType)}
+              >
+                <span className="min-w-0 truncate">{voice.name}</span>
+                <Badge variant="outline">{voice.voiceType.slice(0, 12)}…</Badge>
+              </button>
+            ))}
+          </div>
+        )}
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            关闭
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

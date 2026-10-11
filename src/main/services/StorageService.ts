@@ -19,7 +19,8 @@ import {
   type SpeechStatus,
   type Trigger,
   type LiveEvent,
-  type ViewerProfile
+  type ViewerProfile,
+  type VoiceRecord
 } from '../../shared/types'
 
 /**
@@ -276,6 +277,65 @@ export class StorageService {
       )
     `)
     this.ensureColumn('agents', 'roles', "TEXT NOT NULL DEFAULT '[]'")
+    // 音色库（M8 声音克隆）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS voices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider TEXT NOT NULL DEFAULT 'volcano',
+        voice_type TEXT NOT NULL DEFAULT '',
+        sample_path TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'training',
+        error TEXT NOT NULL DEFAULT '',
+        authorized INTEGER NOT NULL DEFAULT 0,
+        authorized_at INTEGER,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
+  }
+
+  // ---------- 音色库（M8） ----------
+
+  listVoices(): VoiceRecord[] {
+    return this.db
+      .prepare('SELECT * FROM voices ORDER BY created_at DESC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          id: String(r.id),
+          name: String(r.name),
+          provider: r.provider as VoiceRecord['provider'],
+          voiceType: String(r.voice_type ?? ''),
+          samplePath: String(r.sample_path ?? ''),
+          status: r.status as VoiceRecord['status'],
+          error: String(r.error ?? ''),
+          authorized: Number(r.authorized) === 1,
+          authorizedAt: (r.authorized_at as number | null) ?? null,
+          createdAt: Number(r.created_at),
+          updatedAt: Number(r.updated_at)
+        }
+      })
+  }
+
+  saveVoice(voice: VoiceRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO voices (id, name, provider, voice_type, sample_path, status, error, authorized, authorized_at, created_at, updated_at)
+         VALUES (@id, @name, @provider, @voiceType, @samplePath, @status, @error, @authorized, @authorizedAt, @createdAt, @updatedAt)
+         ON CONFLICT(id) DO UPDATE SET
+           name=@name, provider=@provider, voice_type=@voiceType, sample_path=@samplePath,
+           status=@status, error=@error, authorized=@authorized, authorized_at=@authorizedAt, updated_at=@updatedAt`
+      )
+      .run({
+        ...voice,
+        authorized: voice.authorized ? 1 : 0
+      })
+  }
+
+  deleteVoice(id: string): void {
+    this.db.prepare('DELETE FROM voices WHERE id = ?').run(id)
   }
 
   /** 兼容老库的加列 */

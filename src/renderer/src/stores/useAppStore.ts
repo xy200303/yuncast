@@ -1,11 +1,13 @@
 import { create } from 'zustand'
 import {
+  APP_ACCENTS,
   APP_THEMES,
   DEFAULT_CONFIG,
   INITIAL_STREAM_STATS,
   llmConfigured,
   ttsConfigured,
   type AgentStatus,
+  type AppAccent,
   type AppConfig,
   type AppTheme,
   type ConnectorStatus,
@@ -14,7 +16,13 @@ import {
   type VoiceRecord,
   type StreamStats
 } from '../../../shared/types'
-import { applyAppearance, readCachedTheme, resolveAppTheme, type ResolvedAppTheme } from '../theme/applyAppearance'
+import {
+  applyAppearance,
+  readCachedAccent,
+  readCachedTheme,
+  resolveAppTheme,
+  type ResolvedAppTheme
+} from '../theme/applyAppearance'
 
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
 export const NAV_PAGES = ['live', 'anchors', 'knowledge', 'voices', 'sessions', 'stats'] as const
@@ -22,6 +30,7 @@ export type NavPage = (typeof NAV_PAGES)[number]
 
 // 启动时先用 localStorage 缓存的主题，避免等 IPC 回来闪一下白/黑
 const bootTheme = readCachedTheme()
+const bootAccent = readCachedAccent()
 
 interface AppState {
   page: NavPage
@@ -32,8 +41,10 @@ interface AppState {
   setSettingsOpen: (open: boolean) => void
 
   theme: AppTheme
+  accent: AppAccent
   resolvedApp: ResolvedAppTheme
   setTheme: (theme: AppTheme) => Promise<void>
+  setAccent: (accent: AppAccent) => Promise<void>
   syncSystemTheme: () => void
 
   config: AppConfig
@@ -77,30 +88,47 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
 
   theme: bootTheme,
+  accent: bootAccent,
   resolvedApp: resolveAppTheme(bootTheme),
 
   setTheme: async (theme) => {
     const prev = get().theme
-    set({ theme, resolvedApp: applyAppearance(theme) })
+    set({ theme, resolvedApp: applyAppearance(theme, get().accent) })
     try {
       const saved = await window.api.config.set({ theme })
-      set({ theme: saved.theme, resolvedApp: applyAppearance(saved.theme) })
+      set({ theme: saved.theme, resolvedApp: applyAppearance(saved.theme, saved.accent) })
     } catch (error) {
-      set({ theme: prev, resolvedApp: applyAppearance(prev) })
+      set({ theme: prev, resolvedApp: applyAppearance(prev, get().accent) })
+      throw error
+    }
+  },
+
+  setAccent: async (accent) => {
+    const prev = get().accent
+    set({ accent })
+    applyAppearance(get().theme, accent)
+    try {
+      const saved = await window.api.config.set({ accent })
+      set({ accent: saved.accent })
+      applyAppearance(saved.theme, saved.accent)
+    } catch (error) {
+      set({ accent: prev })
+      applyAppearance(get().theme, prev)
       throw error
     }
   },
 
   syncSystemTheme: () => {
     if (get().theme !== 'system') return
-    set({ resolvedApp: applyAppearance(get().theme, false) })
+    set({ resolvedApp: applyAppearance(get().theme, get().accent, false) })
   },
 
   config: DEFAULT_CONFIG,
   loadConfig: async () => {
     const config = await window.api.config.get()
     const theme = APP_THEMES.find((id) => id === config.theme) ?? DEFAULT_CONFIG.theme
-    set({ config, theme, resolvedApp: applyAppearance(theme) })
+    const accent = APP_ACCENTS.find((id) => id === config.accent) ?? DEFAULT_CONFIG.accent
+    set({ config, theme, accent, resolvedApp: applyAppearance(theme, accent) })
   },
 
   saveConfig: async (patch) => {

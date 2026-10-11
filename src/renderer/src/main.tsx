@@ -4,7 +4,7 @@ import App from './App'
 import './index.css'
 import { applyAppearance, readCachedTheme } from './theme/applyAppearance'
 
-applyAppearance(readCachedTheme(), false)
+applyAppearance(readCachedTheme(), undefined, false)
 
 createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

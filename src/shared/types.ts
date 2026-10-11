@@ -4,6 +4,18 @@
 export const APP_THEMES = ['light', 'dark', 'system'] as const
 export type AppTheme = (typeof APP_THEMES)[number]
 
+/** 配色主题（点缀色）。每个配色在明/暗两套底色下各有一个色值。 */
+export const APP_ACCENTS = ['clay', 'forest', 'ocean', 'rose', 'graphite'] as const
+export type AppAccent = (typeof APP_ACCENTS)[number]
+
+export const APP_ACCENT_META: Record<AppAccent, { label: string; light: string; dark: string }> = {
+  clay: { label: '陶土（默认）', light: 'oklch(0.63 0.124 49.3)', dark: 'oklch(0.69 0.115 49.3)' },
+  forest: { label: '松林', light: 'oklch(0.58 0.105 152)', dark: 'oklch(0.72 0.105 152)' },
+  ocean: { label: '海蓝', light: 'oklch(0.56 0.11 250)', dark: 'oklch(0.72 0.1 250)' },
+  rose: { label: '玫瑰', light: 'oklch(0.6 0.13 12)', dark: 'oklch(0.73 0.11 12)' },
+  graphite: { label: '石墨（中性）', light: 'oklch(0.42 0.008 260)', dark: 'oklch(0.78 0.008 260)' }
+}
+
 // ---------- TTS 配置（双通道：火山引擎 / 阿里云百炼） ----------
 
 export const TTS_PROVIDERS = ['volcano', 'bailian'] as const
@@ -140,6 +152,8 @@ function parseBgm(input: unknown): BgmConfig {
 /** 持久化到 userData/config.json 的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
+  /** 配色主题（点缀色） */
+  accent: AppAccent
   tts: TtsConfig
   llm: LlmConfig
   trigger: TriggerConfig
@@ -151,6 +165,7 @@ export interface AppConfig {
 
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
+  accent: 'clay',
   tts: DEFAULT_TTS_CONFIG,
   llm: DEFAULT_LLM_CONFIG,
   trigger: DEFAULT_TRIGGER_CONFIG,
@@ -203,6 +218,7 @@ export function parseAppConfig(input: unknown): AppConfig {
   const liveRow = row.live && typeof row.live === 'object' ? (row.live as Record<string, unknown>) : {}
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
+    accent: APP_ACCENTS.find((id) => id === row.accent) ?? DEFAULT_CONFIG.accent,
     tts,
     llm,
     trigger,

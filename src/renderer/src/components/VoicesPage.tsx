@@ -12,7 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
+import { Checkbox } from '@/components/ui/checkbox'
 import { useAppStore } from '../stores/useAppStore'
 import type { VoiceRecord } from '../../../shared/types'
 
@@ -297,15 +297,18 @@ function NewVoiceDialog({
             </div>
           </div>
 
-          <div className="flex items-start gap-2 rounded-lg border bg-muted/40 px-3 py-2">
-            <Switch checked={authorized} onCheckedChange={setAuthorized} aria-label="授权确认" />
-            <div className="text-xs">
-              <p className="text-[13px]">我确认已获得录音人的明确授权</p>
-              <p className="mt-0.5 text-muted-foreground">
-                克隆音色需本人授权（合规要求）。本应用的克隆流程要求此确认，并记录授权时间。
-              </p>
-            </div>
-          </div>
+          <label className="flex cursor-pointer items-start gap-2 text-xs">
+            <Checkbox
+              checked={authorized}
+              onCheckedChange={(v) => setAuthorized(v === true)}
+              className="mt-0.5"
+              aria-label="授权确认"
+            />
+            <span>
+              <span className="text-[13px]">我确认已获得录音人的明确授权</span>
+              <span className="ml-1 text-muted-foreground">（克隆音色需本人授权，提交时间将留痕）</span>
+            </span>
+          </label>
 
           <p className="text-xs text-muted-foreground">
             提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」权限。

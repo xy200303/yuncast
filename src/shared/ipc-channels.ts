@@ -39,6 +39,14 @@ export const IPC = {
   personaSetActive: 'persona:set-active',
   personaRemove: 'persona:remove',
 
+  // 实时 TTS 流式合成
+  ttsStreamStart: 'tts:stream-start',
+  ttsStreamStop: 'tts:stream-stop',
+  /** main → renderer：流式 PCM 块 */
+  ttsStreamChunk: 'tts:stream-chunk',
+  /** main → renderer：流式结束/出错 */
+  ttsStreamEnd: 'tts:stream-end',
+
   // 音色库（M8 声音克隆）
   voiceList: 'voice:list',
   voiceClone: 'voice:clone',

@@ -39,3 +39,18 @@
 1. 打开火山引擎语音技术控制台 → 声音复刻文档，对照上表逐条修正 VoiceService.ts
 2. 用真实账号跑一次「新建音色」，观察日志与卡片状态流转
 3. 成功后到「设置 → 语音合成」把默认音色设为该克隆音色，测发音验证
+
+
+## 附：实时 TTS（流式合成）待核对项 · 2026-10-11
+
+M9 实现了"边合成边播"的**完整管线**（PCM 分块 → 渲染进程 WebAudio 无缝排播 → 混音器直通），
+但**取数方式仍是"整段合成后按真实速率切片"**（`TtsStreamService.streamChunks`），并非服务商真流式。
+替换为真流式时需要核对：
+
+- [ ] 火山大模型语音合成流式接口：WS 二进制协议（`wss://openspeech.bytedance.com/api/v1/tts/ws_binary`）
+      的握手头、事件号（StartConnection/StartSession/TaskRequest/FinishSession）、返回 PCM 格式与采样率
+- [ ] 或 HTTP 分块流式端点（若存在，优先——比 WS 二进制简单得多）
+- [ ] 百炼 Qwen-TTS 的 stream 参数与 SSE 音频块格式
+- [ ] 流式返回的音频采样率/声道是否与混音器口径（48k mono s16le）一致；不一致要在 `TtsStreamService` 里重采样
+
+替换点只有一处：`TtsStreamService.streamChunks()` 的取数方式，下游（渲染进程 streamPlayer、混音器 pushTtsPcm）不用改。

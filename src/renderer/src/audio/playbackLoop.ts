@@ -1,4 +1,5 @@
 import { audioEngine } from './engine'
+import { streamPlayer } from './streamPlayer'
 
 /**
  * 播放循环（渲染进程，话术池的唯一消费者）。
@@ -30,7 +31,36 @@ class PlaybackLoop {
   stop(): void {
     this.running = false
     audioEngine.stopCurrentTts()
+    streamPlayer.stop()
     this.kick()
+  }
+
+  /** 流式播放一条话术：主进程按真实速率推 PCM，首块到达即出声 */
+  private async playStream(itemId: string, text: string, voiceId?: string): Promise<void> {
+    const sessionId = `stream-${itemId}`
+    await new Promise<void>((resolve) => {
+      let settled = false
+      const finish = (): void => {
+        if (settled) return
+        settled = true
+        offChunk()
+        offEnd()
+        // 等已排队的音频播完（若被 stop 打断则立即返回）
+        const remainMs = streamPlayer.end()
+        if (!this.running || remainMs <= 0) resolve()
+        else setTimeout(resolve, remainMs)
+      }
+      const offChunk = window.api.ttsStream.onChunk((payload) => {
+        if (payload.sessionId !== sessionId) return
+        streamPlayer.push(new Int16Array(payload.pcm.buffer, payload.pcm.byteOffset, payload.pcm.byteLength / 2))
+      })
+      const offEnd = window.api.ttsStream.onEnd((payload) => {
+        if (payload.sessionId !== sessionId) return
+        if (payload.error) console.warn('流式合成失败:', payload.error)
+        finish()
+      })
+      void window.api.ttsStream.start(sessionId, text, voiceId)
+    })
   }
 
   /** 池快照更新时叫醒循环，不用等满一个睡眠周期 */
@@ -65,7 +95,20 @@ class PlaybackLoop {
         // 停了但刚取出条目：还回去不至于——标 done 会骗人，让它留在 playing 由下次重启清理
         break
       }
-      if (!item?.audioPath) {
+      if (!item) {
+        await this.wait(IDLE_WAIT_MS)
+        continue
+      }
+
+      // 实时合成条目：不读文件，由主进程流式推 PCM，这里边收边排播
+      if (item.stream && !item.audioPath) {
+        await this.playStream(item.id, item.text, item.voiceId || undefined)
+        if (!this.running) break
+        await window.api.pool.markDone(item.id)
+        continue
+      }
+
+      if (!item.audioPath) {
         await this.wait(IDLE_WAIT_MS)
         continue
       }

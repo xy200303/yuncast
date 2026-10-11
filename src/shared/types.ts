@@ -41,6 +41,8 @@ export interface TtsConfig {
   voiceId: string
   /** 语速倍率（仅火山生效） */
   speed: number
+  /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
+  realtime: boolean
 }
 
 export const DEFAULT_TTS_CONFIG: TtsConfig = {
@@ -53,7 +55,8 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   languageType: 'Chinese',
   voiceId: '',
-  speed: 1.0
+  speed: 1.0,
+  realtime: false
 }
 
 /** 该服务商是否已具备合成所需的最小凭据 */
@@ -194,7 +197,8 @@ export function parseAppConfig(input: unknown): AppConfig {
     languageType:
       typeof ttsRow.languageType === 'string' ? ttsRow.languageType : DEFAULT_TTS_CONFIG.languageType,
     voiceId: typeof ttsRow.voiceId === 'string' ? ttsRow.voiceId : '',
-    speed: typeof ttsRow.speed === 'number' && ttsRow.speed > 0 ? ttsRow.speed : 1.0
+    speed: typeof ttsRow.speed === 'number' && ttsRow.speed > 0 ? ttsRow.speed : 1.0,
+    realtime: ttsRow.realtime === true
   }
   const llmRow = row.llm && typeof row.llm === 'object' ? (row.llm as Record<string, unknown>) : {}
   const llmProvider = LLM_PROVIDERS.find((id) => id === llmRow.provider) ?? DEFAULT_LLM_CONFIG.provider
@@ -288,6 +292,8 @@ export interface SpeechItem {
   status: SpeechStatus
   /** TTS 合成完成的音频文件绝对路径（合成前为空） */
   audioPath?: string
+  /** 实时合成条目：不预合成文件，播出时由渲染进程流式合成播放（tts.realtime 开启时） */
+  stream?: boolean
   /** 合成/播放失败原因 */
   error?: string
   /** reorder 手动指定的顺序（优先级高于 createdAt） */

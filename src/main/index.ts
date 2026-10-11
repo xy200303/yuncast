@@ -36,6 +36,8 @@ import { ScriptService } from './services/ScriptService'
 import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
 import { VoiceService } from './services/VoiceService'
+import { TtsStreamService } from './services/TtsStreamService'
+import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -212,6 +214,7 @@ let triggers: TriggerRuntime | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
 let connector: ConnectorService | null = null
 let voiceSvc: VoiceService | null = null
+let ttsStream: TtsStreamService | null = null
 let streamSvc: StreamService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
@@ -305,6 +308,34 @@ function registerIpc(
   )
   ipcMain.handle(IPC.personaSetActive, (_e, id: string) => persona.setActive(id))
   ipcMain.handle(IPC.personaRemove, (_e, id: string) => persona.remove(id))
+
+  // ---------- 实时 TTS 流式合成 ----------
+  ipcMain.handle(IPC.ttsStreamStart, async (_e, sessionId: string, text: string, voiceId?: string) => {
+    void ttsStream?.start(sessionId, text, voiceId, {
+      onChunk: (pcm) => {
+        // 直推模式：PCM 同时进混音器；两种模式都推给渲染进程播放
+        if (storage.getConfig().stream.mode === 'direct') audioMixer.pushTtsPcm(pcm)
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamChunk, { sessionId, pcm })
+        }
+      },
+      onEnd: () => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamEnd, { sessionId })
+        }
+      },
+      onError: (error) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamEnd, { sessionId, error })
+        }
+      }
+    })
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.ttsStreamStop, (_e, sessionId: string) => {
+    ttsStream?.stop(sessionId)
+    return { ok: true }
+  })
 
   // ---------- 音色库（M8 声音克隆） ----------
   ipcMain.handle(IPC.voiceList, () => voiceSvc?.list() ?? [])
@@ -477,6 +508,9 @@ if (!single) {
 
     // 音色库（M8 声音克隆）：训练状态变化推给渲染进程
     voiceSvc = new VoiceService(storage, broadcastVoices)
+
+    // 实时 TTS：流式合成（当前=整段合成后按真实速率分块吐，管线真流式；供应商流式接口见 docs/06）
+    ttsStream = new TtsStreamService(tts)
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)

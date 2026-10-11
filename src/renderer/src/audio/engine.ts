@@ -60,6 +60,17 @@ class AudioEngine {
     this.events = events
   }
 
+  /** 对外暴露音频图入口（实时流式播放要挂进同一条 tts 总线，才能走 ducking/静音/电平） */
+  ensureContext(): AudioContext {
+    return this.ensureGraph()
+  }
+
+  /** TTS 总线输入节点（外部音源接这里） */
+  ttsInput(): GainNode {
+    this.ensureGraph()
+    return this.ttsGain!
+  }
+
   private ensureGraph(): AudioContext {
     if (this.ctx) return this.ctx
     this.ctx = new AudioContext()

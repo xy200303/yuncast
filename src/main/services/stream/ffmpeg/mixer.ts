@@ -19,7 +19,7 @@ const FRAME_BYTES = (SAMPLE_RATE * FRAME_MS * CHANNELS * BYTES_PER_SAMPLE) / 100
 const DUCK_RATIO = 10 ** (-14 / 20) // 默认下压 14dB
 
 /** 把任意音频文件解码为 PCM Buffer（s16le 48k stereo） */
-function decodeToPcm(filePath: string): Promise<Buffer> {
+export function decodeToPcm(filePath: string): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const proc = spawn(getFfmpegPath(), [
       '-v', 'error',
@@ -66,6 +66,11 @@ export class AudioMixer {
     this.clock = null
     this.ttsQueue = []
     this.ttsCurrent = null
+  }
+
+  /** 实时 TTS 的 PCM 块直接入播报队列（与整段合成的解码结果同一条消费链） */
+  pushTtsPcm(pcm: Buffer): void {
+    if (pcm.length > 0) this.ttsQueue.push(pcm)
   }
 
   /** 合成完成的 TTS 音频文件入队播报 */

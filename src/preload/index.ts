@@ -94,6 +94,25 @@ const api = {
     setActive: (id: string) => ipcRenderer.invoke(IPC.personaSetActive, id) as Promise<Persona | null>,
     remove: (id: string) => ipcRenderer.invoke(IPC.personaRemove, id) as Promise<void>
   },
+  ttsStream: {
+    start: (sessionId: string, text: string, voiceId?: string) =>
+      ipcRenderer.invoke(IPC.ttsStreamStart, sessionId, text, voiceId) as Promise<{ ok: boolean }>,
+    stop: (sessionId: string) =>
+      ipcRenderer.invoke(IPC.ttsStreamStop, sessionId) as Promise<{ ok: boolean }>,
+    /** 订阅 PCM 块与结束事件，返回取消订阅函数 */
+    onChunk: (cb: (payload: { sessionId: string; pcm: Uint8Array }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { sessionId: string; pcm: Uint8Array }) =>
+        cb(payload)
+      ipcRenderer.on(IPC.ttsStreamChunk, listener)
+      return () => ipcRenderer.removeListener(IPC.ttsStreamChunk, listener)
+    },
+    onEnd: (cb: (payload: { sessionId: string; error?: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { sessionId: string; error?: string }) =>
+        cb(payload)
+      ipcRenderer.on(IPC.ttsStreamEnd, listener)
+      return () => ipcRenderer.removeListener(IPC.ttsStreamEnd, listener)
+    }
+  },
   voice: {
     list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,
     clone: (input: { name: string; samplePath: string; authorized: boolean }) =>

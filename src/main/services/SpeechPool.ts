@@ -287,6 +287,12 @@ export class SpeechPool {
   }
 
   private async synthesize(item: SpeechItem): Promise<void> {
+    // 实时合成模式：不预合成文件，直接标 ready+stream，播出时由渲染进程流式合成（首包延迟最低）
+    if (this.storage.getConfig().tts.realtime) {
+      this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
+      this.broadcast(this.snapshot())
+      return
+    }
     const controller = new AbortController()
     this.synthJobs.set(item.id, controller)
     this.storage.speechUpdate(item.id, { status: 'synthesizing' })

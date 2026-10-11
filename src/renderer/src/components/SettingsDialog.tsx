@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
@@ -576,6 +577,20 @@ function TtsSection() {
             placeholder={form.provider === 'volcano' ? '火山 voice_type，例如 zh_female_…' : '百炼 voice，例如 Cherry'}
           />
         </div>
+      </div>
+
+      <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
+        <div>
+          <p className="text-[13px]">实时合成（流式播报）</p>
+          <p className="text-xs text-muted-foreground">
+            话术不再整段合成完才播，而是边合成边播，首包延迟最低；适合评论回复这类要快的场景
+          </p>
+        </div>
+        <Switch
+          checked={form.realtime}
+          onCheckedChange={(v) => patch({ realtime: v })}
+          aria-label="实时合成开关"
+        />
       </div>
 
       {!ttsConfigured(form) && (

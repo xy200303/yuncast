@@ -1,4 +1,5 @@
 import { useEffect, type ComponentType } from 'react'
+import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -120,7 +121,8 @@ export default function App() {
           <StatusBar />
         </SidebarInset>
         <SettingsDialog />
-        <Toaster />
+        {/* Toaster 提到 body 层：否则会被布局树的堆叠上下文困住，弹窗遮罩会盖住提示 */}
+        {createPortal(<Toaster />, document.body)}
       </SidebarProvider>
     </TooltipProvider>
   )

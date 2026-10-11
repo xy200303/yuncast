@@ -14,6 +14,8 @@ const EVENT_REGISTRY = new Map<string, string>([
   ['viewer.join', '观众进场'],
   ['gift.received', '收到礼物'],
   ['like.burst', '点赞里程碑'],
+  ['viewer.follow', '关注主播'],
+  ['viewer.share', '分享直播间'],
   ['pool.empty', '话术池空了'],
   ['timer.interval', '定时节拍（5 分钟）'],
   ['stream.started', '开播'],

@@ -35,7 +35,7 @@ export default function App() {
   const setAgent = useAppStore((s) => s.setAgent)
   const setSimRunning = useAppStore((s) => s.setSimRunning)
   const setStream = useAppStore((s) => s.setStream)
-  const setGateway = useAppStore((s) => s.setGateway)
+  const setConnector = useAppStore((s) => s.setConnector)
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
@@ -77,22 +77,24 @@ export default function App() {
     void window.api.agent.status().then(setAgent)
     void window.api.sim.status().then((s) => setSimRunning(s.running))
     void window.api.stream.stats().then(setStream)
-    void window.api.commentGateway.status().then(setGateway)
+    void window.api.connector.status().then(setConnector)
     const offStream = window.api.stream.onStats((stats) => {
       setStream(stats)
       if (stats.state === 'error' && stats.error) {
         toast.error('推流出错', { description: stats.error })
       }
     })
+    const offConnector = window.api.connector.onStatus(setConnector)
     const offComment = window.api.comment.onComment((comment) => {
       toast.message(`💬 ${comment.author}`, { description: comment.content })
     })
     return () => {
       offAgent()
       offStream()
+      offConnector()
       offComment()
     }
-  }, [setAgent, setSimRunning, setStream, setGateway])
+  }, [setAgent, setSimRunning, setStream, setConnector])
 
   return (
     <TooltipProvider>

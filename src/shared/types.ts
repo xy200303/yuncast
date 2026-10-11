@@ -108,6 +108,8 @@ export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUr
 
 export const DEFAULT_BGM_CONFIG: BgmConfig = { path: '', volume: 0.3 }
 
+export const DEFAULT_COMMENT_CONFIG: CommentConfig = { connectorPort: 8101 }
+
 function parseStream(input: unknown): StreamConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   return {
@@ -115,6 +117,12 @@ function parseStream(input: unknown): StreamConfig {
     serverUrl: typeof row.serverUrl === 'string' ? row.serverUrl : '',
     streamKey: typeof row.streamKey === 'string' ? row.streamKey : ''
   }
+}
+
+function parseComment(input: unknown): CommentConfig {
+  const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  const port = Number(row.connectorPort)
+  return { connectorPort: Number.isInteger(port) && port > 0 && port < 65536 ? port : 8101 }
 }
 
 function parseBgm(input: unknown): BgmConfig {
@@ -134,6 +142,7 @@ export interface AppConfig {
   live: LiveStateConfig
   stream: StreamConfig
   bgm: BgmConfig
+  comment: CommentConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -143,7 +152,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   trigger: DEFAULT_TRIGGER_CONFIG,
   live: DEFAULT_LIVE_CONFIG,
   stream: DEFAULT_STREAM_CONFIG,
-  bgm: DEFAULT_BGM_CONFIG
+  bgm: DEFAULT_BGM_CONFIG,
+  comment: DEFAULT_COMMENT_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -194,7 +204,8 @@ export function parseAppConfig(input: unknown): AppConfig {
     trigger,
     live: { activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '' },
     stream: parseStream(row.stream),
-    bgm: parseBgm(row.bgm)
+    bgm: parseBgm(row.bgm),
+    comment: parseComment(row.comment)
   }
 }
 
@@ -587,12 +598,21 @@ export const INITIAL_STREAM_STATS: StreamStats = {
   durationSec: 0
 }
 
-// ---------- 评论网关（M7：PipeSDK 真接入 + 模拟器） ----------
+// ---------- 评论接入（docs/04 解耦：本地连接器 WS 事件流 + 内置模拟器） ----------
 
-export interface CommentGatewayStatus {
-  running: boolean
-  /** pipe=直播伴侣 PipeSDK；simulator=开发模拟器；none=未接入 */
-  source: 'pipe' | 'simulator' | 'none'
-  lastError: string | null
+export type ConnectorState = 'idle' | 'connecting' | 'connected' | 'error'
+
+export interface ConnectorStatus {
+  state: ConnectorState
+  port: number
+  error?: string
   receivedCount: number
 }
+
+// ---------- 评论接入（docs/04 解耦：连接器 + 内置模拟器） ----------
+
+export interface CommentConfig {
+  /** 本地连接器 WS 端口（连接器绑 127.0.0.1） */
+  connectorPort: number
+}
+

@@ -4,7 +4,7 @@ import type {
   AgentStatus,
   AppConfig,
   AppInfo,
-  CommentGatewayStatus,
+  ConnectorStatus,
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
@@ -171,10 +171,17 @@ const api = {
       }
     }
   },
-  commentGateway: {
-    start: () => ipcRenderer.invoke(IPC.commentGatewayStart) as Promise<{ ok: boolean; error?: string }>,
-    stop: () => ipcRenderer.invoke(IPC.commentGatewayStop) as Promise<CommentGatewayStatus>,
-    status: () => ipcRenderer.invoke(IPC.commentGatewayStatus) as Promise<CommentGatewayStatus>
+  connector: {
+    status: () => ipcRenderer.invoke(IPC.connectorStatus) as Promise<ConnectorStatus>,
+    restart: () => ipcRenderer.invoke(IPC.connectorRestart) as Promise<ConnectorStatus>,
+    /** 订阅连接器状态，返回取消订阅函数 */
+    onStatus: (cb: (status: ConnectorStatus) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, status: ConnectorStatus) => cb(status)
+      ipcRenderer.on(IPC.connectorStatusEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.connectorStatusEvent, listener)
+      }
+    }
   }
 }
 

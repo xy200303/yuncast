@@ -2,7 +2,7 @@
 
 基于智能体的 AI 直播助播：AI 主播有人设、有知识、有记忆、有感知，像真人一样直播带货。
 
-纯桌面端应用（Electron），无服务端。评论经抖音直播伴侣 PipeSDK 本地接入，LLM/TTS 直连云 API。
+纯桌面端应用（Electron），无服务端。LLM/TTS 直连云 API。**主应用不内置任何平台 SDK**：评论/互动由独立的「平台连接器」小程序经本地 WS 事件流（NDJSON）喂进来（见 `docs/04-平台连接器架构.md`）；开发期用内置模拟器（假连接器）。
 
 ## 功能清单（M1–M7 完成）
 
@@ -12,17 +12,13 @@
 - **知识库**：商品（价格护栏——主播报价只能出自 check_price）+ 资料文件（txt/md/docx/pdf 解析，图片收描述）
 - **剧本场次**：场景序列剧本 + 场次绑定，advance_scene 逐场推进，进度落库断播能续
 - **记忆**：老粉画像（互动/问过什么/偏好笔记）随评论注入，主播可主动 remember_viewer
-- **播放链路**：TTS 双通道（火山引擎/阿里云百炼）→ WebAudio（ducking/电平/麦克风接管）→ FFmpeg 混音直推 RTMP 或伴侣模式只出声
-- **评论接入**：PipeSDK 原生模块本地直连直播伴侣（互动工具入口启动自动接入），开发期有内置模拟器（评论/进场/礼物/点赞）
+- **播放链路**：TTS 双通道（火山引擎/阿里云百炼）→ WebAudio（ducking/电平/麦克风接管）→ 伴侣模式只出声
+- **评论接入**：平台连接器解耦（本地 WS + NDJSON LiveEvent，断线退避重连 1s→30s）；内置模拟器作为假连接器开发用
+- **推流**：FFmpeg 静态帧 + PCM 三路混音（TTS/BGM/麦克风）直推 RTMP，断流指数退避自动重推
 
 ## 合规状态
 
-对照 `docs/03-合规清单` 自查：
-
-- 仅直播伴侣 EXE 互动工具形态，评论只走 PipeSDK `OPEN_LIVE_DATA`，无任何抓包/逆向/自动发评论能力
-- AI 输出只有语音播报（不代主播发文字），每条话术可撤销/修订/紧急停止
-- 价格/库存数字有 check_price 护栏，主播无知识库依据不得报价
-- 打包提审前需在开放平台按实际能力申请「互动数据」权限
+对照 `docs/03-合规清单` 自查：AI 助播定位——真人在场运营，AI 只出声不代发评论；平台数据经独立连接器（单独送审/分发），主应用不碰平台接口、数据不出本机。价格/库存有 check_price 护栏；每条话术可撤销/修订/紧急停止。
 
 ## 开发
 
@@ -31,8 +27,7 @@ npm install          # 装依赖（Electron 二进制慢就设 ELECTRON_MIRROR=h
 npm run dev          # 开发（窗口 1440x900，CDP 9222 供 scripts/cdp.mjs 调试）
 npm run typecheck    # tsc --noEmit
 npm run build        # electron-vite build
-npm run dist         # 出 Windows 安装包（release/）
-npm run native:build # 重编译 PipeSDK 原生模块（node-gyp，pipe_sdk.node 已预编译入库，一般不用跑）
+npm run dist         # 出 Windows 安装包（release/；builder 下载也吃 ELECTRON_MIRROR）
 npm run icon         # 重新生成应用图标（scripts/gen-icon.mjs，纯 Node 手写 PNG）
 ```
 
@@ -41,6 +36,8 @@ npm run icon         # 重新生成应用图标（scripts/gen-icon.mjs，纯 Nod
 - `docs/01-总体设计.md` — 架构总案（单脑架构 + 话术池 + 事件触发）
 - `docs/02-TTS选型调研.md` — 火山/百炼双通道选型
 - `docs/03-合规清单.md` — 抖音直播互动工具合规要求
+- `docs/04-平台连接器架构.md` — 连接器解耦（WS 事件流 + MCP 动作面，主应用不内置平台 SDK）
+- `docs/05-平台接入方案与审核调研.md` — 解耦决策依据与各平台接入对比
 
 ## 技术栈
 

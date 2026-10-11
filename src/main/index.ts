@@ -7,6 +7,7 @@ import {
   type AgentStatus,
   type AppConfig,
   type AppInfo,
+  type ConnectorStatus,
   type LiveComment,
   type PartialDeep,
   type Persona,
@@ -33,13 +34,7 @@ import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
 import { StreamService } from './services/stream/StreamService'
-import { CommentGateway } from './services/comment/CommentGateway'
-import { getDouyinLaunchContext, updateDouyinLaunchContext } from './services/comment/launchContext'
-
-// 直播伴侣 PipeSDK 经命名管道与本进程通信，Chromium 沙箱会挡，按旧版做法关掉（仅 pipe 启动时）
-if (process.platform === 'win32' && getDouyinLaunchContext()?.mode === 'pipe') {
-  app.commandLine.appendSwitch('no-sandbox')
-}
+import { ConnectorService } from './services/ConnectorService'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
@@ -196,11 +191,18 @@ function broadcastStream(stats: StreamStats): void {
   }
 }
 
+/** 连接器状态广播 */
+function broadcastConnector(status: ConnectorStatus): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.connectorStatusEvent, status)
+  }
+}
+
 let agent: AgentService | null = null
 let bus: EventBus | null = null
 let triggers: TriggerRuntime | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
-let gateway: CommentGateway | null = null
+let connector: ConnectorService | null = null
 let streamSvc: StreamService | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
@@ -228,7 +230,7 @@ function registerIpc(
   triggers: TriggerRuntime,
   script: ScriptService,
   stream: StreamService,
-  gateway: CommentGateway
+  connector: ConnectorService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -390,13 +392,12 @@ function registerIpc(
   )
   ipcMain.on(IPC.streamMicPcm, (_e, pcm: Uint8Array) => stream.pushMicPcm(pcm))
 
-  // ---------- 评论网关 ----------
-  ipcMain.handle(IPC.commentGatewayStart, () => gateway.start())
-  ipcMain.handle(IPC.commentGatewayStop, () => {
-    gateway.stop()
-    return gateway.status()
+  // ---------- 平台连接器 ----------
+  ipcMain.handle(IPC.connectorStatus, () => connector.status())
+  ipcMain.handle(IPC.connectorRestart, () => {
+    connector.restart()
+    return connector.status()
   })
-  ipcMain.handle(IPC.commentGatewayStatus, () => gateway.status())
 }
 
 const single = app.requestSingleInstanceLock()
@@ -405,12 +406,7 @@ if (!single) {
 } else {
   // 开发期开 CDP 端口，便于外部检查渲染层 DOM/布局（打包版不开）
   if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9222')
-  app.on('second-instance', (_event, commandLine) => {
-    // 伴侣从互动工具入口再次拉起本软件时：更新启动参数，网关重连
-    if (updateDouyinLaunchContext(commandLine)) {
-      gateway?.stop()
-      void gateway?.start()
-    }
+  app.on('second-instance', () => {
     const win = mainWindow
     if (!win || win.isDestroyed()) return
     if (win.isMinimized()) win.restore()
@@ -434,22 +430,38 @@ if (!single) {
     triggers = new TriggerRuntime(storage, bus, pool, agent)
     streamSvc = new StreamService(storage, broadcastStream)
 
-    // 评论统一入口：PipeSDK / 模拟器都走这里——喂主播 + 广播评论流 + comment.new 进事件总线
-    const ingestComment = (comment: LiveComment, source: 'pipe' | 'simulator') => {
+    // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（连接器/模拟器下游无感知）
+    bus.subscribe((event) => {
+      if (event.type !== 'comment.new') return
+      const comment: LiveComment = {
+        id: String(event.payload.id ?? event.id),
+        author: String(event.payload.author ?? '匿名'),
+        content: String(event.payload.content ?? ''),
+        ts: typeof event.payload.ts === 'number' ? event.payload.ts : event.ts
+      }
+      if (!comment.content) return
       agent?.onComment(comment)
       broadcastComment(comment)
-      bus?.emit('comment.new', { author: comment.author, content: comment.content }, source === 'pipe' ? 'pipe' : 'system')
-    }
+    })
+
+    // 模拟器 = 内置假连接器（docs/04）：产出只进事件总线
     const sim = new CommentSimulator((event) => {
       if (event.type === 'comment.new') {
-        ingestComment(event.comment, 'simulator')
+        bus?.emit(
+          'comment.new',
+          { id: event.comment.id, author: event.comment.author, content: event.comment.content, ts: event.comment.ts, simulated: true },
+          'system'
+        )
       } else {
-        bus?.emit(event.type, event.payload, 'pipe')
+        bus?.emit(event.type, event.payload, 'system')
       }
     })
-    gateway = new CommentGateway(sim, ingestComment)
-    // 被直播伴侣带着启动参数拉起来时自动接评论
-    if (getDouyinLaunchContext()?.mode === 'pipe') void gateway.start()
+
+    // 平台连接器：订阅本地连接器 WS 事件流，断线退避重连
+    connector = new ConnectorService(storage, bus, broadcastConnector)
+    connector.start()
+    // 端口改了重连
+    storage.onConfigChange(() => connector?.restart())
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
@@ -480,7 +492,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers, script, streamSvc, gateway)
+    registerIpc(storage, tts, pool, agent, persona, sim, knowledge, memory, bus, triggers, script, streamSvc, connector)
     createWindow(storage)
 
     app.on('activate', () => {
@@ -491,7 +503,7 @@ if (!single) {
 
 app.on('window-all-closed', () => {
   if (timerInterval) clearInterval(timerInterval)
-  gateway?.stop()
+  connector?.stop()
   void streamSvc?.stop()
   triggers?.dispose()
   pool?.dispose()

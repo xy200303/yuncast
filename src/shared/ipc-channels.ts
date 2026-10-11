@@ -90,8 +90,9 @@ export const IPC = {
   streamSetBgm: 'stream:set-bgm',
   streamMicPcm: 'stream:mic-pcm',
 
-  // 评论网关
-  commentGatewayStart: 'comment-gateway:start',
-  commentGatewayStop: 'comment-gateway:stop',
-  commentGatewayStatus: 'comment-gateway:status'
+  // 平台连接器
+  connectorStatus: 'connector:status',
+  connectorRestart: 'connector:restart',
+  /** main → renderer：连接器状态 */
+  connectorStatusEvent: 'connector:status-event'
 } as const

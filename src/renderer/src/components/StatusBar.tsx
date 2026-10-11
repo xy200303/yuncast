@@ -9,7 +9,8 @@ export function StatusBar() {
   const pool = useAppStore((s) => s.pool)
   const agentState = useAppStore((s) => s.agent.state)
   const stream = useAppStore((s) => s.stream)
-  const gateway = useAppStore((s) => s.gateway)
+  const connector = useAppStore((s) => s.connector)
+  const simRunning = useAppStore((s) => s.simRunning)
   const current = NAV_ITEMS.find((item) => item.id === page)
   const playing = pool.items.find((item) => item.status === 'playing')
   const ttsReady = selectTtsReady(config)
@@ -24,9 +25,12 @@ export function StatusBar() {
           ? { variant: 'outline' as const, text: '推流未配置' }
           : { variant: 'outline' as const, text: '未开播' }
 
-  const gatewayBadge = gateway.running
-    ? { variant: 'secondary' as const, text: '评论已接入' }
-    : { variant: 'outline' as const, text: '评论未接入' }
+  const gatewayBadge = (() => {
+    if (connector.state === 'connected') return { variant: 'secondary' as const, text: '连接器已连接' }
+    if (simRunning) return { variant: 'secondary' as const, text: '评论模拟器中' }
+    if (connector.state === 'connecting') return { variant: 'outline' as const, text: '连接器连接中…' }
+    return { variant: 'outline' as const, text: '评论未接入' }
+  })()
 
   return (
     <footer className="flex h-7 items-center gap-2 border-t bg-muted/40 px-3 text-xs text-muted-foreground">

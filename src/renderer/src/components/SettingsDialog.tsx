@@ -204,47 +204,63 @@ function StreamSection() {
   )
 }
 
-/** 评论接入状态卡：PipeSDK（直播伴侣） */
+/** 评论接入状态卡：本地平台连接器（docs/04 解耦架构，主应用不内置平台 SDK） */
 function CommentGatewayCard() {
-  const gateway = useAppStore((s) => s.gateway)
-  const setGateway = useAppStore((s) => s.setGateway)
+  const connector = useAppStore((s) => s.connector)
+  const config = useAppStore((s) => s.config)
+  const saveConfig = useAppStore((s) => s.saveConfig)
   const simRunning = useAppStore((s) => s.simRunning)
+  const [port, setPort] = useState(String(config.comment.connectorPort))
 
-  const refresh = () => void window.api.commentGateway.status().then(setGateway)
-  const start = () => {
-    void window.api.commentGateway.start().then((result) => {
-      refresh()
-      if (!result.ok) toast.error('评论接入失败', { description: result.error })
-      else toast.success('评论已接入（PipeSDK）')
-    })
+  const STATE_LABEL: Record<string, string> = {
+    idle: '未连接',
+    connecting: '连接中…',
+    connected: `已连接 · 收 ${connector.receivedCount} 条`,
+    error: '连接失败（自动重试中）'
+  }
+
+  const savePort = () => {
+    const next = Number(port)
+    if (!Number.isInteger(next) || next <= 0 || next >= 65536) {
+      toast.error('端口无效', { description: '填 1-65535 的整数' })
+      return
+    }
+    void saveConfig({ comment: { connectorPort: next } }).then(() =>
+      toast.success('连接器端口已保存并重连')
+    )
   }
 
   return (
     <div className="rounded-lg border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="text-[13px] font-medium">评论接入</p>
+          <p className="text-[13px] font-medium">评论接入（平台连接器）</p>
           <p className="text-xs text-muted-foreground">
-            抖音直播伴侣 PipeSDK 本地直连，评论进事件总线由触发器接管
+            主应用不内置平台 SDK：连接器是独立小程序，经本地 WS 事件流（NDJSON）把评论/进场/礼物推进来
           </p>
         </div>
         <Badge
-          variant={gateway.running ? 'secondary' : 'outline'}
-          title={gateway.lastError ?? undefined}
+          variant={connector.state === 'connected' ? 'secondary' : connector.state === 'error' ? 'destructive' : 'outline'}
+          title={connector.error}
         >
-          {gateway.running ? `已接入 · 收 ${gateway.receivedCount} 条` : simRunning ? '模拟器中' : '未接入'}
+          {simRunning && connector.state !== 'connected' ? '模拟器中' : STATE_LABEL[connector.state]}
         </Badge>
       </div>
-      {!gateway.running && (
-        <div className="mt-3 flex items-center justify-between gap-2">
-          <p className="text-xs text-muted-foreground">
-            {gateway.lastError ?? '从直播伴侣的「互动工具」入口启动本软件即可自动接入；开发调试用直播台的「模拟评论」。'}
-          </p>
-          <Button variant="outline" size="sm" onClick={start}>
-            手动接入
-          </Button>
+      <div className="mt-3 flex items-end gap-2">
+        <div className="w-36">
+          <Label className="mb-1">连接器端口</Label>
+          <Input value={port} onChange={(e) => setPort(e.target.value)} placeholder="8101" />
         </div>
-      )}
+        <Button variant="outline" size="sm" disabled={port === String(config.comment.connectorPort)} onClick={savePort}>
+          保存并重连
+        </Button>
+        <Button variant="ghost" size="sm" onClick={() => void window.api.connector.restart()}>
+          立即重连
+        </Button>
+      </div>
+      <p className="mt-2 text-xs text-muted-foreground">
+        连接器没开时会自动退避重试；开发调试可用直播台的「模拟评论」（内置假连接器，走同一条事件总线）。
+      </p>
     </div>
   )
 }

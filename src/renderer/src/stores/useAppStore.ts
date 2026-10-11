@@ -8,7 +8,7 @@ import {
   type AgentStatus,
   type AppConfig,
   type AppTheme,
-  type CommentGatewayStatus,
+  type ConnectorStatus,
   type PartialDeep,
   type PoolSnapshot,
   type StreamStats
@@ -63,9 +63,9 @@ interface AppState {
   stream: StreamStats
   setStream: (stats: StreamStats) => void
 
-  /** 评论网关状态 */
-  gateway: CommentGatewayStatus
-  setGateway: (status: CommentGatewayStatus) => void
+  /** 平台连接器状态 */
+  connector: ConnectorStatus
+  setConnector: (status: ConnectorStatus) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -129,8 +129,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   stream: INITIAL_STREAM_STATS,
   setStream: (stream) => set({ stream }),
 
-  gateway: { running: false, source: 'none', lastError: null, receivedCount: 0 },
-  setGateway: (gateway) => set({ gateway })
+  connector: { state: 'idle', port: 8101, receivedCount: 0 },
+  setConnector: (connector) => set({ connector })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */

@@ -43,10 +43,11 @@ export type SimulatedEvent =
   | { type: 'viewer.join'; payload: { author: string; returning: boolean } }
   | { type: 'gift.received'; payload: { author: string; giftName: string; giftValue: number } }
   | { type: 'like.burst'; payload: { count: number } }
+  | { type: 'viewer.follow'; payload: { author: string } }
 
 /**
- * 评论/事件模拟器（PipeSDK 真接入前的事件源）。
- * 开启后按 3-8 秒随机间隔产出事件：约 70% 评论，15% 进场，8% 礼物，7% 点赞里程碑。
+ * 内置假连接器（docs/04）：开发/演示/无连接器时的事件源。
+ * 开启后按 3-8 秒随机间隔产出事件：约 70% 评论，15% 进场，5% 礼物，5% 关注，5% 点赞里程碑。
  */
 export class CommentSimulator {
   private timer: ReturnType<typeof setTimeout> | null = null
@@ -104,12 +105,18 @@ export class CommentSimulator {
           returning: Math.random() < 0.3
         }
       })
-    } else if (roll < 0.93) {
+    } else if (roll < 0.9) {
       this.count += 1
       const gift = GIFTS[Math.floor(Math.random() * GIFTS.length)]
       this.onEvent({
         type: 'gift.received',
         payload: { author: '礼物侠', ...gift }
+      })
+    } else if (roll < 0.95) {
+      this.count += 1
+      this.onEvent({
+        type: 'viewer.follow',
+        payload: { author: JOINERS[Math.floor(Math.random() * JOINERS.length)] }
       })
     } else {
       this.count += 1

@@ -9,7 +9,6 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "typecheck": "tsc --noEmit",
-    "native:build": "node-gyp rebuild --directory native/pipe-sdk --arch=x64",
     "icon": "node scripts/gen-icon.mjs",
     "dist": "electron-vite build && electron-builder --publish never",
     "dist:win": "electron-vite build && electron-builder --win --publish never"
@@ -41,7 +40,6 @@
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
-    "node-gyp": "^13.0.2",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^7.3.6"
@@ -60,19 +58,6 @@
     ],
     "npmRebuild": true,
     "icon": "resources/icon.png",
-    "extraResources": [
-      {
-        "from": "native/pipe-sdk/build/Release/pipe_sdk.node",
-        "to": "pipe-sdk/pipe_sdk.node"
-      },
-      {
-        "from": "native/pipe-sdk/sdk/bin/x64",
-        "to": "pipe-sdk",
-        "filter": [
-          "**/*"
-        ]
-      }
-    ],
     "asarUnpack": [
       "**/node_modules/ffmpeg-static/**",
       "**/node_modules/@napi-rs/canvas/**"

@@ -1,17 +1,15 @@
 import {
   INITIAL_STREAM_STATS,
-  type StreamStats,
-  type StreamState
+  type StreamStats
 } from '../../../shared/types'
 import type { StorageService } from '../StorageService'
 import { FFmpegPusher } from './ffmpeg/pusher'
 import { audioMixer } from './ffmpeg/mixer'
-import { getDouyinLaunchContext } from '../comment/launchContext'
 
 /**
- * 推流编排服务（搬迁自旧版 streamService）。
+ * 推流编排服务（搬迁自旧版 streamService，解耦改造后去掉伴侣启动参数探测）。
  * 直推模式：FFmpeg 静态帧 + PCM 混音（tts/bgm/mic 三路）→ RTMP；
- * 伴侣模式：不推流只出声，画面和采集由直播伴侣负责（伴侣启动参数优先于配置）。
+ * 伴侣模式：不推流只出声，画面和采集由直播伴侣负责。
  */
 
 const STATS_INTERVAL_MS = 1000
@@ -40,9 +38,7 @@ export class StreamService {
     if (this.stats.state === 'live' || this.stats.state === 'starting') return { ok: true }
 
     const config = this.storage.getConfig()
-    // 被直播伴侣带着启动参数拉起来时强制伴侣模式
-    const launchedByCompanion = getDouyinLaunchContext()?.mode === 'pipe'
-    const mode = launchedByCompanion ? 'companion' : config.stream.mode
+    const mode = config.stream.mode
     if (mode === 'direct' && (!config.stream.serverUrl || !config.stream.streamKey)) {
       this.patch({ state: 'error', error: '推流地址或密钥为空：请先在「设置 → 接入 → 推流」中填写' })
       return { ok: false, error: this.stats.error }

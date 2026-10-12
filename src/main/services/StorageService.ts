@@ -1305,6 +1305,15 @@ export class StorageService {
   }
 
   /** 清理过期终态：done 只留最近 200 条，其余终态 1 小时后删除 */
+  /** 仍被话术条目引用的音频路径（缓存清理时跳过这些文件） */
+  speechReferencedAudioPaths(): string[] {
+    return this.db
+      .prepare("SELECT DISTINCT audio_path AS path FROM speech_items WHERE audio_path IS NOT NULL AND audio_path != ''")
+      .all()
+      .map((row) => str((row as Record<string, unknown>).path))
+      .filter(Boolean)
+  }
+
   speechPrune(): void {
     this.db.exec(
       `DELETE FROM speech_items WHERE status IN ('skipped', 'failed', 'expired') AND created_at < ${Date.now() - 3600_000}`

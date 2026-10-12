@@ -1,6 +1,6 @@
-import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { mkdir, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
 import { app } from 'electron'
 import type { StorageService } from './StorageService'
 import {
@@ -92,8 +92,78 @@ function asNumber(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
+/** 音频缓存上限（超出按最久未用清理，被话术条目引用的文件不删）；可用 AGENT_ANCHOR_AUDIO_CACHE_MB 覆盖，便于运维与自测 */
+const AUDIO_CACHE_MAX_BYTES = Math.max(0, Number(process.env.AGENT_ANCHOR_AUDIO_CACHE_MB ?? 500)) * 1024 * 1024
+
 export class TtsService {
+  /** 内容寻址缓存的命中/未命中计数（诊断用） */
+  private cacheHits = 0
+  private cacheMisses = 0
+
   constructor(private readonly storage: StorageService) {}
+
+  /**
+   * 缓存键：把"会影响音频的一切"（服务商 / 接入 / 模型 / 音色 / 参数 / 文本）哈希成一个短串。
+   * 同一句话换个话术条目再合成（催单、问候、报名这类高频重复）就能直接复用，不再打接口。
+   * 反过来说：只要有一个参数变了（语速、情感、instruction…）就是另一个键，不会串味。
+   */
+  private cacheKey(text: string, route: TtsRoute): string {
+    const payload = JSON.stringify({
+      p: route.provider,
+      c: route.connection.id,
+      m: route.modelId,
+      v: route.voice,
+      a: route.params,
+      t: text
+    })
+    return `tts-${createHash('sha1').update(payload).digest('hex').slice(0, 20)}`
+  }
+
+  cacheStats(): { hits: number; misses: number } {
+    return { hits: this.cacheHits, misses: this.cacheMisses }
+  }
+
+  /**
+   * 缓存清理：按"最久没用"排，超出上限就删；**被话术条目引用的文件一律不删**
+   * （条目可能还没播完/还要重播），另外只清 1 小时前落盘的，避免误删正在合成的。
+   */
+  async sweepAudioCache(maxBytes = AUDIO_CACHE_MAX_BYTES): Promise<{ removed: number; bytes: number }> {
+    /**
+     * 路径统一归一化再比较：库里存过的路径可能是正斜杠（或大小写不同），
+     * 而这里用 join() 得到的是反斜杠——不归一化就会把"还有条目在引用"的文件当孤儿删掉，
+     * 表现就是还没播的音频被清走（"有字无声"那一类事故）。
+     */
+    const normalize = (value: string): string => resolve(value).toLowerCase()
+    const dir = this.audioCacheDir()
+    const referenced = new Set(this.storage.speechReferencedAudioPaths().map(normalize))
+    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
+    const files: { path: string; size: number; mtime: number }[] = []
+    for (const entry of entries) {
+      if (!entry.isFile()) continue
+      const path = join(dir, entry.name)
+      const info = await stat(path).catch(() => null)
+      if (!info) continue
+      files.push({ path, size: info.size, mtime: info.mtimeMs })
+    }
+    files.sort((a, b) => a.mtime - b.mtime)
+    let total = files.reduce((sum, file) => sum + file.size, 0)
+    let removed = 0
+    let bytes = 0
+    const now = Date.now()
+    for (const file of files) {
+      const keep = referenced.has(normalize(file.path)) || now - file.mtime < 3600_000
+      if (keep) continue
+      if (total <= maxBytes) break
+      await rm(file.path, { force: true }).catch(() => undefined)
+      total -= file.size
+      removed += 1
+      bytes += file.size
+    }
+    if (removed > 0) {
+      console.log(`[TTS] 缓存清理：删除 ${removed} 个文件（${(bytes / 1024 / 1024).toFixed(1)}MB），当前 ${(total / 1024 / 1024).toFixed(1)}MB`)
+    }
+    return { removed, bytes }
+  }
 
   /** 合成音频缓存目录：主进程音频管线从这里取文件解码成本机监听/推流用的 PCM */
   audioCacheDir(): string {
@@ -299,13 +369,29 @@ export class TtsService {
   ): Promise<string> {
     const format = String(route.params.format ?? 'mp3')
     const extension = format === 'pcm' ? 'pcm' : format === 'wav' ? 'wav' : format === 'ogg_opus' ? 'ogg' : 'mp3'
-    const outPath = join(this.audioCacheDir(), `${itemId}.${extension}`)
-    if (route.provider === 'bailian') {
-      await this.synthesizeBailian(text, outPath, route, signal)
-    } else {
-      await this.synthesizeVolcano(text, outPath, route, signal)
+    const cachePath = join(this.audioCacheDir(), `${this.cacheKey(text, route)}.${extension}`)
+    const cached = await stat(cachePath).catch(() => null)
+    if (cached && cached.size > 0) {
+      this.cacheHits += 1
+      console.log(`[TTS] 缓存命中（省一次合成）：${text.slice(0, 24)}${text.length > 24 ? '…' : ''}`)
+      return cachePath
     }
-    return outPath
+    this.cacheMisses += 1
+    // 先写临时文件（按条目 id 命名，便于排查），成功后再改名到内容寻址路径
+    const tempPath = join(this.audioCacheDir(), `${itemId}.${extension}`)
+    if (route.provider === 'bailian') {
+      await this.synthesizeBailian(text, tempPath, route, signal)
+    } else {
+      await this.synthesizeVolcano(text, tempPath, route, signal)
+    }
+    try {
+      await rename(tempPath, cachePath)
+      return cachePath
+    } catch {
+      // 并发合成同一句时目标已存在（Windows 上 rename 会失败）：保留缓存里那份，丢掉临时文件
+      await rm(tempPath, { force: true }).catch(() => undefined)
+      return cachePath
+    }
   }
 
   /**

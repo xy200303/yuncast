@@ -297,6 +297,7 @@ let agent: AgentService | null = null
 let bus: EventBus | null = null
 let triggers: TriggerRuntime | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
+let audioCacheSweep: ReturnType<typeof setInterval> | null = null
 let connector: ConnectorService | null = null
 let voiceSvc: VoiceService | null = null
 let ttsStream: TtsStreamService | null = null
@@ -801,6 +802,11 @@ if (!single) {
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
+
+    // 音频缓存：启动扫一次、之后每 30 分钟一次（按最久未用+容量上限清理；被话术条目引用的文件不删）
+    void tts.sweepAudioCache()
+    audioCacheSweep = setInterval(() => void tts.sweepAudioCache(), 30 * 60_000)
+    audioCacheSweep.unref?.()
     timerInterval.unref?.()
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）

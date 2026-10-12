@@ -88,7 +88,13 @@ export default function App() {
   // 主播 Agent 状态 + 评论事件 + 推流状态订阅
   useEffect(() => {
     if (!('api' in window)) return
-    const offAgent = window.api.agent.onStatus(setAgent)
+    const refreshPersona = useAppStore.getState().refreshPersona
+    const offAgent = window.api.agent.onStatus((status) => {
+      const prev = useAppStore.getState().agent.state
+      setAgent(status)
+      // 场次开播会按场次把人设卡切成当前主播，徽章要跟着新的卡走
+      if (status.state !== prev) void refreshPersona()
+    })
     void window.api.agent.status().then(setAgent)
     void window.api.stream.stats().then(setStream)
     void window.api.connector.status().then(setConnector)

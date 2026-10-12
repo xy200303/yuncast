@@ -96,11 +96,6 @@ const api = {
       >,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.modelRemove, id) as Promise<{ ok: true; connections: ModelConnectionSafe[] }>,
-    setDefault: (id: string) =>
-      ipcRenderer.invoke(IPC.modelSetDefault, id) as Promise<{
-        ok: true
-        connections: ModelConnectionSafe[]
-      }>,
     /** 连通性测试；不传 model 就测该接入的默认模型 */
     test: (id: string, model?: string) =>
       ipcRenderer.invoke(IPC.modelTest, id, model) as Promise<{

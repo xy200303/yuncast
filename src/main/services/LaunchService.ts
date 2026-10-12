@@ -56,25 +56,55 @@ export class LaunchService {
       items.push({ level: 'ok', label: `人设：${persona.name}${roles}` })
     }
 
-    // ② 大脑与声音的凭据（模型按主播卡 → 默认接入 → 旧配置解析，和开播时用的完全是同一处逻辑）
-    try {
-      const resolved = resolveModelForPersona(this.storage, persona)
-      const name = resolved.connectionId
-        ? (this.storage.connectionGet(resolved.connectionId)?.name ?? resolved.providerId)
-        : (getLlmProvider(resolved.providerId)?.label ?? resolved.providerId)
-      items.push({ level: 'ok', label: `语言模型：${name} · ${resolved.model}` })
-      if (resolved.fallback) {
-        items.push({
-          level: 'warn',
-          label: `指定模型 ${resolved.fallback.requested} 不在接入「${resolved.fallback.connectionName}」的模型列表里，已回落用 ${resolved.fallback.used}`
-        })
-      }
-    } catch (error) {
+    // ② 大脑与声音的凭据（模型解析和开播时用的完全是同一处逻辑）
+    const brain = persona?.modelConnectionId
+      ? this.storage.connectionGet(persona.modelConnectionId)
+      : null
+    if (persona && persona.modelConnectionId && !brain) {
       items.push({
         level: 'block',
-        label: '没有可用的语言模型',
-        detail: error instanceof Error ? error.message : String(error)
+        label: `主播卡「${persona.name}」选的接入已被删除：到主播团里重选一个接入和模型`
       })
+    } else if (persona && !(persona.modelConnectionId && persona.model.trim())) {
+      items.push({
+        level: 'block',
+        label: `主播卡「${persona.name}」还没选模型：到主播团里选一个`
+      })
+    } else {
+      try {
+        const resolved = resolveModelForPersona(this.storage, persona)
+        const name = resolved.connectionId
+          ? (this.storage.connectionGet(resolved.connectionId)?.name ?? resolved.providerId)
+          : (getLlmProvider(resolved.providerId)?.label ?? resolved.providerId)
+        items.push({
+          level: 'ok',
+          label:
+            resolved.connectionId && persona
+              ? `语言模型：${name} · ${resolved.model}（来自主播卡「${persona.name}」）`
+              : `语言模型：${name} · ${resolved.model}（临时用旧的全局配置）`
+        })
+        const fallback = resolved.fallback
+        if (fallback?.kind === 'model') {
+          items.push({
+            level: 'warn',
+            label: `指定模型 ${fallback.requested} 不在接入「${fallback.connectionName}」的模型列表里，已回落用 ${fallback.used}`
+          })
+        } else if (fallback?.kind === 'legacy') {
+          items.push({
+            level: 'warn',
+            label:
+              fallback.reason === 'unusable'
+                ? `主播卡「${fallback.personaName}」选的接入「${fallback.connectionName}」还没配齐，临时用旧的全局配置`
+                : `主播卡「${fallback.personaName}」还没选模型，临时用旧的全局配置`
+          })
+        }
+      } catch (error) {
+        items.push({
+          level: 'block',
+          label: '没有可用的语言模型',
+          detail: error instanceof Error ? error.message : String(error)
+        })
+      }
     }
     const ttsOk = ttsConfigured(cfg.tts)
     items.push(

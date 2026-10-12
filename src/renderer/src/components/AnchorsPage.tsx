@@ -14,7 +14,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import {
-  defaultConnection,
   effectiveModel,
   selectLlmReady,
   useAppStore,
@@ -22,8 +21,6 @@ import {
 } from '../stores/useAppStore'
 import type { ModelConnectionSafe, Persona, Trigger, TriggerMode } from '../../../shared/types'
 
-/** 「大脑」下拉里表示「不指定、跟随全局默认」的哨兵值（Select 不接受空串 value） */
-const DEFAULT_MODEL_VALUE = '__default__'
 /** 下拉里「接入 + 模型」两级值的分隔符（接入 id 里不会有冒号） */
 const MODEL_VALUE_SEP = '::'
 
@@ -31,31 +28,22 @@ function brainValue(connectionId: string, model: string): string {
   return `${connectionId}${MODEL_VALUE_SEP}${model}`
 }
 
-function parseBrainValue(value: string): { connectionId: string | null; model: string } {
-  if (value === DEFAULT_MODEL_VALUE) return { connectionId: null, model: '' }
+function parseBrainValue(value: string): { modelConnectionId: string; model: string } {
   const index = value.indexOf(MODEL_VALUE_SEP)
-  if (index < 0) return { connectionId: null, model: '' }
-  return { connectionId: value.slice(0, index), model: value.slice(index + MODEL_VALUE_SEP.length) }
+  if (index < 0) return { modelConnectionId: '', model: '' }
+  return {
+    modelConnectionId: value.slice(0, index),
+    model: value.slice(index + MODEL_VALUE_SEP.length)
+  }
 }
 
-/** 卡片摘要里的「大脑」：接入名 · 模型；没绑定（或绑定已删）就说跟随默认 */
-function brainLabelOf(
-  connections: ModelConnectionSafe[],
-  providers: LlmProviderManifest[],
-  persona: Persona
-): string {
+/** 卡片摘要里的「大脑」：接入名 · 模型；没选或接入已删就明说，不再有「默认（…）」的包装 */
+function brainLabelOf(connections: ModelConnectionSafe[], persona: Persona): string {
   const bound = persona.modelConnectionId
     ? connections.find((item) => item.id === persona.modelConnectionId)
     : undefined
-  if (bound) {
-    const model = persona.model && bound.models.includes(persona.model)
-      ? persona.model
-      : effectiveModel(bound, providers)
-    return `${bound.name} · ${model || '未选模型'}`
-  }
-  const fallback = defaultConnection(connections)
-  if (!fallback) return '未配置'
-  return `默认（${fallback.name} · ${effectiveModel(fallback, providers) || '未选模型'}）`
+  if (!bound) return persona.modelConnectionId ? '接入已删除' : '未选（点开这张卡选一个）'
+  return `${bound.name} · ${persona.model || '未选模型'}`
 }
 
 const AGENT_STATE_LABEL: Record<string, string> = {
@@ -82,10 +70,10 @@ type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 /** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由场次带着切换）。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
-  const config = useAppStore((s) => s.config)
   const connections = useAppStore((s) => s.connections)
-  const providers = useAppStore((s) => s.llmProviders)
-  const llmReady = selectLlmReady(connections, config)
+  const persona = useAppStore((s) => s.persona)
+  const setPersona = useAppStore((s) => s.setPersona)
+  const llmReady = selectLlmReady(connections, persona)
   const [personas, setPersonas] = useState<Persona[]>([])
   const [activeId, setActiveId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -100,7 +88,8 @@ export function AnchorsPage() {
     ])
     setPersonas(list)
     setActiveId(current?.id ?? '')
-  }, [])
+    setPersona(current)
+  }, [setPersona])
 
   useEffect(() => {
     void reload()
@@ -152,7 +141,7 @@ export function AnchorsPage() {
             size="sm"
             disabled={busy}
             onClick={() => void toggleAgent()}
-            title={llmReady ? undefined : '先到「设置 → 语言模型」添加一个供应商接入'}
+            title={llmReady ? undefined : '当前主播卡还没选好大脑：点开卡片选一个接入和模型'}
           >
             {busy ? (
               <Loader2 className="animate-spin" />
@@ -178,7 +167,7 @@ export function AnchorsPage() {
           {agent.state === 'error' && agent.error && (
             <div className="mb-3 max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {agent.error}
-              {!llmReady && ' — 去「设置 → 语言模型」配置 LLM 后再启动'}
+              {!llmReady && ' — 先点开这张人设卡，给它选一个接入和模型'}
             </div>
           )}
 
@@ -214,7 +203,7 @@ export function AnchorsPage() {
                     {item.personality || '（还没写性格）'}
                   </p>
                   <p className="truncate text-[11px] text-muted-foreground">
-                    大脑：{brainLabelOf(connections, providers, item)} · 嗓子：
+                    大脑：{brainLabelOf(connections, item)} · 嗓子：
                     {item.voiceId || 'TTS 默认'}
                   </p>
                   <div className="flex flex-wrap gap-1">
@@ -277,7 +266,6 @@ function PersonaEditorDialog({
   const source = editing?.persona
   const connections = useAppStore((s) => s.connections)
   const providers = useAppStore((s) => s.llmProviders)
-  const fallbackConnection = defaultConnection(connections)
   const [form, setForm] = useState<PersonaForm>(() => ({
     name: source?.name ?? '',
     personality: source?.personality ?? '',
@@ -293,10 +281,12 @@ function PersonaEditorDialog({
   const [voicePickerOpen, setVoicePickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
 
-  // 绑定的接入被删掉时按「跟随全局默认」显示，别让下拉停在无值的空态
+  // 绑定的接入可能已被删掉：那时按「没选」显示，让用户重新挑一条
   const boundConnection = form.modelConnectionId
     ? connections.find((item) => item.id === form.modelConnectionId)
     : undefined
+  const selectedBrain =
+    boundConnection && form.model ? brainValue(boundConnection.id, form.model) : ''
 
   const patch = (part: Partial<PersonaForm>) => setForm((prev) => ({ ...prev, ...part }))
 
@@ -304,6 +294,10 @@ function PersonaEditorDialog({
     if (busy) return
     if (!form.name.trim()) {
       toast.warning('请填写主播名字')
+      return
+    }
+    if (!boundConnection || !form.model.trim()) {
+      toast.warning('给这张卡选个大脑：选一个接入和模型')
       return
     }
     setBusy(true)
@@ -351,31 +345,11 @@ function PersonaEditorDialog({
                 还没有供应商接入，去「设置 → 语言模型」加一条（选服务商、填一次密钥、把那家能用的模型放进列表）。
               </p>
             ) : (
-              <Select
-                value={
-                  boundConnection
-                    ? brainValue(
-                        boundConnection.id,
-                        boundConnection.models.includes(form.model)
-                          ? form.model
-                          : effectiveModel(boundConnection, providers)
-                      )
-                    : DEFAULT_MODEL_VALUE
-                }
-                onValueChange={(value) => patch(parseBrainValue(value))}
-              >
+              <Select value={selectedBrain} onValueChange={(value) => patch(parseBrainValue(value))}>
                 <SelectTrigger className="w-full">
-                  <SelectValue />
+                  <SelectValue placeholder="选择一个模型" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={DEFAULT_MODEL_VALUE}>
-                    <span className="flex items-center gap-2">
-                      <ProviderIcon providerId={fallbackConnection?.providerId ?? ''} size="sm" />
-                      {fallbackConnection
-                        ? `跟随全局默认（${fallbackConnection.name} · ${effectiveModel(fallbackConnection, providers) || '未选模型'}）`
-                        : '跟随全局默认（还没有默认接入）'}
-                    </span>
-                  </SelectItem>
                   {connections.map((item) => (
                     <SelectGroup key={item.id}>
                       <SelectLabel className="flex items-center gap-2">
@@ -403,12 +377,6 @@ function PersonaEditorDialog({
                       )}
                     </SelectGroup>
                   ))}
-                  {/* 绑定的这条接入一个模型都没有（老数据兜底）：给它一个可选中的项，别让下拉停在空态 */}
-                  {boundConnection && boundConnection.models.length === 0 && (
-                    <SelectItem value={brainValue(boundConnection.id, '')}>
-                      {boundConnection.name}（还没有模型，去设置里加）
-                    </SelectItem>
-                  )}
                 </SelectContent>
               </Select>
             )}

@@ -18,7 +18,14 @@ const BUILTIN_PROVIDERS: Record<string, string> = {
   zai: 'zai'
 }
 
-const MODEL_MISSING_HINT = '没有可用的模型：到设置 → 语言模型添加一个供应商接入'
+const MODEL_MISSING_HINT = '还没有可用的语言模型：到主播团里给主播卡选一个接入和模型'
+
+/** 人设卡没给可用模型时的报错（开播与底稿生成共用同一句，用户照着去主播团选） */
+function missingBrainHint(personaName: string): string {
+  return personaName
+    ? `主播卡「${personaName}」还没选模型：到主播团里给它选一个接入和模型`
+    : MODEL_MISSING_HINT
+}
 
 /** 连通性测试的超时（本地服务拉不起来时不要让 UI 一直转） */
 const TEST_TIMEOUT_MS = 10_000
@@ -53,55 +60,87 @@ export async function listProviderModels(providerId: string): Promise<string[]> 
 }
 
 /**
- * 解析一个人设卡该用哪个模型（业务口径）：这张卡的接入与模型 → 全局默认接入 → 旧的 config.llm。
- * 接入没配齐就往下跳，全都没有就抛中文错误，调用方直接把 message 给 UI。
+ * 解析一个人设卡该用哪个模型（开播路径）：这张卡选的接入与模型 → 旧的 config.llm 临时兜底。
+ * 卡上没选全（或选的接入没配齐）时不再有「全局默认接入」这一档，只能靠旧配置顶着并带 fallback 说明；
+ * 旧配置也没有就抛中文错误，调用方直接把 message 给 UI（预检会把它列成阻断项）。
  */
 export function resolveModelForPersona(
   storage: StorageService,
   persona: Persona | null | undefined
 ): ResolvedModel {
-  const bound = persona?.modelConnectionId ? storage.connectionGet(persona.modelConnectionId) : null
-  if (bound && isModelConnectionReady(bound, getLlmProvider(bound.providerId))) {
-    const def = getLlmProvider(bound.providerId)
-    const requested = (persona?.model ?? '').trim()
-    const listed = requested.length > 0 && bound.models.includes(requested)
-    const model = listed ? requested : connectionModel(bound, def)
-    return {
-      connectionId: bound.id,
-      providerId: bound.providerId,
-      params: bound.params,
-      model,
-      fallback:
-        requested && !listed
-          ? { requested, used: model, connectionName: bound.name }
-          : undefined
-    }
-  }
-
-  // 默认接入排在库的最前面（StorageService 的排序），这一档同时覆盖「全局默认接入」与默认接入失效时的兜底
-  const fromLibrary = storage
-    .connectionList()
-    .find((connection) => isModelConnectionReady(connection, getLlmProvider(connection.providerId)))
-  if (fromLibrary) return toResolved(fromLibrary)
+  const bound = boundConnectionOf(storage, persona)
+  const selected = selectedModelOf(bound, persona)
+  if (selected) return selected
 
   const legacy = storage.getConfig().llm
   if (legacyLlmConfigured(legacy)) {
+    // 接入存在但没配齐（缺密钥/没模型）与「压根没选」在提示里要分开说
+    const unusable = bound !== null && !isModelConnectionReady(bound, getLlmProvider(bound.providerId))
     return {
       connectionId: null,
       providerId: legacy.provider,
       params: { apiKey: legacy.apiKey, baseUrl: legacy.baseUrl },
-      model: legacy.model
+      model: legacy.model,
+      fallback: {
+        kind: 'legacy',
+        personaName: persona?.name ?? '',
+        reason: unusable ? 'unusable' : 'missing',
+        connectionName: unusable ? (bound?.name ?? '') : undefined
+      }
     }
   }
-  throw new Error(MODEL_MISSING_HINT)
+  throw new Error(missingBrainHint(persona?.name ?? ''))
 }
 
-function toResolved(connection: ModelConnection): ResolvedModel {
+/**
+ * 必须由人设卡显式指定模型时用（底稿生成这类路径）：没绑卡、没选齐、接入不可用都直接抛。
+ * 不走旧 config.llm 的临时兜底——生成出来的底稿不能猜是用哪个大脑写的。
+ */
+export function requireModelForPersona(
+  storage: StorageService,
+  persona: Persona | null | undefined
+): ResolvedModel {
+  const bound = boundConnectionOf(storage, persona)
+  if (!bound) {
+    if (!persona) throw new Error('场次还没绑主播卡：先给它选一张卡，卡上要有接入和模型')
+    throw new Error(missingBrainHint(persona.name))
+  }
+  if (!isModelConnectionReady(bound, getLlmProvider(bound.providerId))) {
+    throw new Error(
+      `主播卡「${persona?.name ?? ''}」选的接入「${bound.name}」还没配齐：到设置 → 语言模型补齐密钥和模型列表`
+    )
+  }
+  const selected = selectedModelOf(bound, persona)
+  if (!selected) throw new Error(missingBrainHint(persona?.name ?? ''))
+  return selected
+}
+
+function boundConnectionOf(
+  storage: StorageService,
+  persona: Persona | null | undefined
+): ModelConnection | null {
+  return persona?.modelConnectionId ? storage.connectionGet(persona.modelConnectionId) : null
+}
+
+/** 卡上接入与模型都选好且接入可用时的结果；否则 null（交给调用方决定兜底还是报错） */
+function selectedModelOf(
+  bound: ModelConnection | null,
+  persona: Persona | null | undefined
+): ResolvedModel | null {
+  if (!bound) return null
+  const requested = (persona?.model ?? '').trim()
+  if (!requested) return null
+  if (!isModelConnectionReady(bound, getLlmProvider(bound.providerId))) return null
+  const listed = bound.models.includes(requested)
+  const model = listed ? requested : connectionModel(bound, getLlmProvider(bound.providerId))
   return {
-    connectionId: connection.id,
-    providerId: connection.providerId,
-    params: connection.params,
-    model: connectionModel(connection, getLlmProvider(connection.providerId))
+    connectionId: bound.id,
+    providerId: bound.providerId,
+    params: bound.params,
+    model,
+    fallback: listed
+      ? undefined
+      : { kind: 'model', requested, used: model, connectionName: bound.name }
   }
 }
 

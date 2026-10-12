@@ -362,8 +362,7 @@ function registerIpc(
         providerId,
         params: input?.params ?? {},
         models,
-        defaultModel: String(input?.defaultModel ?? ''),
-        isDefault: Boolean(input?.isDefault)
+        defaultModel: String(input?.defaultModel ?? '')
       })
       return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {
@@ -372,10 +371,6 @@ function registerIpc(
   })
   ipcMain.handle(IPC.modelRemove, (_e, id: string) => {
     storage.connectionDelete(String(id ?? ''))
-    return { ok: true, connections: storage.connectionListSafe() }
-  })
-  ipcMain.handle(IPC.modelSetDefault, (_e, id: string) => {
-    storage.setDefaultConnection(String(id ?? ''))
     return { ok: true, connections: storage.connectionListSafe() }
   })
   ipcMain.handle(IPC.modelTest, async (_e, id: string, model?: string) => {

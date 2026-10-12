@@ -131,7 +131,6 @@ export interface ModelConnection {
   models: string[]
   /** 默认模型，必须是 models 里的一员；空串 = 用 provider 的 defaultModel */
   defaultModel: string
-  isDefault: boolean
   createdAt: number
   updatedAt: number
 }
@@ -152,12 +151,21 @@ export interface ModelConnectionInput {
   params: Record<string, string | number | boolean>
   models: string[]
   defaultModel: string
-  isDefault?: boolean
 }
 
-/** 是否有可用的语言模型（UI 徽章用）：库里有一条可用接入，或旧的 config.llm 还兜底着 */
-export function llmReady(connections: ModelConnectionSafe[], llm: LlmConfig): boolean {
-  return connections.some((connection) => connection.ready) || legacyLlmConfigured(llm)
+/**
+ * 当前主播卡的语言模型是否就绪（状态栏徽章用）：卡上显式选了接入和模型，
+ * 且那条接入的密钥齐备、模型还在列表里——没选模型就等于没配置。
+ */
+export function llmReady(
+  connections: ModelConnectionSafe[],
+  persona: Persona | null | undefined
+): boolean {
+  const connection = persona?.modelConnectionId
+    ? connections.find((item) => item.id === persona.modelConnectionId)
+    : undefined
+  if (!connection?.ready) return false
+  return connection.models.includes(persona?.model ?? '')
 }
 
 // ---------- 应用配置 ----------
@@ -495,12 +503,9 @@ export interface Persona {
   taboos: string
   /** 默认音色（对应 config.tts 的 voiceId 体系） */
   voiceId: string
-  /**
-   * 大脑：绑定的供应商接入 id（ModelConnection.id）。
-   * null = 不指定，按「全局默认接入 → 旧的 config.llm」回退
-   */
+  /** 大脑：绑定的供应商接入 id（ModelConnection.id）；要和 model 一起选好，开播才确定用哪个模型 */
   modelConnectionId: string | null
-  /** 指定用接入里的哪个模型；空 = 用该接入的默认模型 */
+  /** 指定用接入里的哪个模型（必选）；已不在该接入的模型列表里时回落到接入默认模型 */
   model: string
   /** 编剧模式角色：主播一个脑子写多个角色的台词，按 voiceId 路由音色 */
   roles: PersonaRole[]

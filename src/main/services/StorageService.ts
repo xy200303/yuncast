@@ -32,7 +32,7 @@ import {
   type ViewerProfile,
   type VoiceRecord
 } from '../../shared/types'
-import { getLlmProvider, isModelConnectionReady, secretFieldKeys } from './providers/registry'
+import { connectionModel, getLlmProvider, isModelConnectionReady, secretFieldKeys } from './providers/registry'
 
 /**
  * 持久化层：
@@ -363,6 +363,7 @@ export class StorageService {
       )
     `)
     // 供应商接入（设置 → 语言模型）：一条 = 一个服务商 + 一份凭据 + 一串可用模型
+    // is_default 是「全局默认接入」时代的遗留列，已不再读写（保留列，老库不迁移表结构）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS model_connections (
         id TEXT PRIMARY KEY,
@@ -376,11 +377,12 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    // 人设卡的「大脑」：引用一条接入与其中一个模型，空 = 用全局默认接入
+    // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     this.ensureColumn('agents', 'model_connection_id', 'TEXT')
     this.ensureColumn('agents', 'model', "TEXT NOT NULL DEFAULT ''")
     this.migrateModelProfiles()
     this.migrateLegacyLlm()
+    this.migratePersonaBrains()
   }
 
   // ---------- 音色库（M8） ----------
@@ -428,10 +430,10 @@ export class StorageService {
 
   // ---------- 供应商接入（设置 → 语言模型） ----------
 
-  /** 读出全部接入（密钥字段已解密），默认接入排最前 */
+  /** 读出全部接入（密钥字段已解密），按创建顺序 */
   connectionList(): ModelConnection[] {
     return this.db
-      .prepare('SELECT * FROM model_connections ORDER BY is_default DESC, created_at ASC')
+      .prepare('SELECT * FROM model_connections ORDER BY created_at ASC')
       .all()
       .map((row) => this.toModelConnection(row as Record<string, unknown>))
   }
@@ -441,10 +443,7 @@ export class StorageService {
     return row ? this.toModelConnection(row as Record<string, unknown>) : null
   }
 
-  /**
-   * 新建/更新接入。密钥字段留空表示不修改（沿用已保存的那个）；
-   * 库里的第一条自动成为默认，保证「默认接入」不会空着。
-   */
+  /** 新建/更新接入。密钥字段留空表示不修改（沿用已保存的那个） */
   connectionSave(input: ModelConnectionInput): ModelConnection {
     const now = Date.now()
     const id = input.id || `model-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`
@@ -461,7 +460,6 @@ export class StorageService {
     for (const key of secrets) {
       if (!(key in params)) params[key] = existing?.params[key] ?? ''
     }
-    const isDefault = input.isDefault ?? existing?.isDefault ?? false
     const models = [...new Set((input.models ?? []).map((model) => model.trim()).filter(Boolean))]
     // 默认模型必须在列表里：填了列表外的（或没填）就取第一个
     const defaultModel = models.includes(input.defaultModel.trim())
@@ -470,12 +468,11 @@ export class StorageService {
 
     this.db
       .prepare(
-        `INSERT INTO model_connections (id, name, provider_id, params, models, default_model, is_default, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @models, @defaultModel, @isDefault, @createdAt, @updatedAt)
+        `INSERT INTO model_connections (id, name, provider_id, params, models, default_model, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @defaultModel, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, default_model = @defaultModel,
-           is_default = @isDefault, updated_at = @updatedAt`
+           models = @models, default_model = @defaultModel, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -484,32 +481,15 @@ export class StorageService {
         params: JSON.stringify(this.encryptParams(params, input.providerId)),
         models: JSON.stringify(models),
         defaultModel,
-        isDefault: isDefault ? 1 : 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
 
-    const total = Number(
-      (this.db.prepare('SELECT COUNT(*) AS n FROM model_connections').get() as { n?: unknown } | undefined)?.n ?? 0
-    )
-    if (isDefault || total === 1) this.setDefaultConnection(id)
     return this.connectionGet(id) as ModelConnection
   }
 
   connectionDelete(id: string): void {
-    const wasDefault = this.connectionGet(id)?.isDefault ?? false
     this.db.prepare('DELETE FROM model_connections WHERE id = ?').run(id)
-    // 删掉的正好是默认接入：让剩下最早的一个接手，别把库留在「没有默认」的中间态
-    if (wasDefault) {
-      const next = this.connectionList()[0]
-      if (next) this.setDefaultConnection(next.id)
-    }
-  }
-
-  /** 设为默认（互斥：全表先清零再置一） */
-  setDefaultConnection(id: string): void {
-    this.db.prepare('UPDATE model_connections SET is_default = 0').run()
-    this.db.prepare('UPDATE model_connections SET is_default = 1 WHERE id = ?').run(id)
   }
 
   /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
@@ -541,7 +521,6 @@ export class StorageService {
       params: this.decryptParams(r.params, providerId),
       models,
       defaultModel: str(r.default_model),
-      isDefault: num(r.is_default) === 1,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -628,8 +607,7 @@ export class StorageService {
         providerId,
         params: this.decryptParams(head.params, providerId),
         models,
-        defaultModel: str(defaultRow?.model) || (models[0] ?? ''),
-        isDefault: group.some((row) => num(row.is_default) === 1)
+        defaultModel: str(defaultRow?.model) || (models[0] ?? '')
       })
     }
 
@@ -654,7 +632,7 @@ export class StorageService {
       const old = str(row.model_profile_id)
       if (!old) continue
       const mapped = remap.get(old) ?? old
-      // 指向的接入已不存在就留空：解析时按「跟随全局默认」处理
+      // 指向的接入已不存在就留空：后面 migratePersonaBrains 会挑一条能用的补上
       this.db
         .prepare('UPDATE agents SET model_connection_id = ? WHERE id = ?')
         .run(this.connectionGet(mapped) ? mapped : null, str(row.id))
@@ -662,8 +640,9 @@ export class StorageService {
   }
 
   /**
-   * 旧配置迁移：接入库为空且旧的 config.llm 填过密钥时，用它建一个默认接入。
-   * 旧的 config.llm 保留不动，仍作为解析链的最后一档兜底。
+   * 旧配置迁移：接入库为空且旧的 config.llm 填过密钥时，用它建一条接入
+   * （否则老库没有接入可挑，下面的人设卡迁移会无从下手）。
+   * 旧的 config.llm 保留不动，仍是主播卡没选模型时的临时兜底。
    */
   private migrateLegacyLlm(): void {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM model_connections').get() as { n?: unknown } | undefined
@@ -675,9 +654,41 @@ export class StorageService {
       providerId: llm.provider,
       params: { apiKey: llm.apiKey, baseUrl: llm.baseUrl },
       models: [llm.model],
-      defaultModel: llm.model,
-      isDefault: true
+      defaultModel: llm.model
     })
+  }
+
+  /**
+   * 人设卡的大脑迁移：老库里没选过接入的卡，挑一条能用的接入补上（模型用该接入的默认模型）。
+   * 开播必须每张卡都有明确的大脑，不能让升级上来的用户一开播就发现没得选。
+   */
+  private migratePersonaBrains(): void {
+    const rows = this.db
+      .prepare('SELECT id, model_connection_id, model FROM agents')
+      .all()
+      .map((row) => row as Record<string, unknown>)
+    if (rows.length === 0) return
+
+    const usable = this.connectionList().find((connection) =>
+      isModelConnectionReady(connection, getLlmProvider(connection.providerId))
+    )
+
+    for (const row of rows) {
+      const currentId = str(row.model_connection_id)
+      if (currentId) {
+        // 已选过接入的卡只补空的模型；接入被删（悬空引用）留给用户重选，不悄悄换一条
+        const current = this.connectionGet(currentId)
+        if (!current || str(row.model)) continue
+        this.db
+          .prepare('UPDATE agents SET model = ? WHERE id = ?')
+          .run(connectionModel(current, getLlmProvider(current.providerId)), str(row.id))
+        continue
+      }
+      if (!usable) continue
+      this.db
+        .prepare('UPDATE agents SET model_connection_id = ?, model = ? WHERE id = ?')
+        .run(usable.id, connectionModel(usable, getLlmProvider(usable.providerId)), str(row.id))
+    }
   }
 
   /** 兼容老库的加列 */

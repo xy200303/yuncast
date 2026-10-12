@@ -30,7 +30,6 @@ export const IPC = {
   modelList: 'model:list',
   modelSave: 'model:save',
   modelRemove: 'model:remove',
-  modelSetDefault: 'model:set-default',
   /** 连通性测试：用该接入的默认模型发一个最小请求 */
   modelTest: 'model:test',
   /** 服务商能力与配置字段清单（设置页据此动态渲染表单） */

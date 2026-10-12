@@ -11,7 +11,6 @@ import {
   Pencil,
   Plus,
   Radio,
-  Star,
   Sun,
   Trash2
 } from 'lucide-react'
@@ -402,7 +401,7 @@ function CommentGatewayCard() {
 }
 
 /**
- * 语言模型：供应商接入库（设置 = 库和默认值）。
+ * 语言模型：供应商接入库（设置 = 库，用哪条由主播卡决定）。
  * 一条接入 = 一个服务商 + 一份凭据（只填一次）+ 一串这家能用的模型；
  * 字段由 provider 的 configFields 动态渲染，加一家服务商不用改这里。
  * 密钥字段只在落盘时加密，渲染层只看得到「填没填过」。
@@ -411,6 +410,7 @@ function LlmSection() {
   const connections = useAppStore((s) => s.connections)
   const providers = useAppStore((s) => s.llmProviders)
   const setConnections = useAppStore((s) => s.setConnections)
+  const refreshPersona = useAppStore((s) => s.refreshPersona)
   const [editing, setEditing] = useState<{ connection?: ModelConnectionSafe } | null>(null)
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
   /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
@@ -418,13 +418,6 @@ function LlmSection() {
   const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
 
   const test = (connection: ModelConnectionSafe) => setTesting(connection)
-
-  const setDefault = (connection: ModelConnectionSafe) => {
-    void window.api.model.setDefault(connection.id).then((result) => {
-      setConnections(result.connections)
-      toast.success(`「${connection.name}」已设为默认接入`)
-    })
-  }
 
   const askDelete = async (connection: ModelConnectionSafe) => {
     const personas = await window.api.persona.list()
@@ -438,6 +431,7 @@ function LlmSection() {
     setDeleting(null)
     void window.api.model.remove(connection.id).then((result) => {
       setConnections(result.connections)
+      void refreshPersona()
       toast.success(`已删除「${connection.name}」`)
     })
   }
@@ -472,11 +466,6 @@ function LlmSection() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="truncate text-[13px] font-medium">{connection.name}</span>
-                  {connection.isDefault && (
-                    <Badge variant="secondary" className="shrink-0">
-                      默认
-                    </Badge>
-                  )}
                   {!connection.ready && (
                     <Badge variant="outline" className="shrink-0 text-muted-foreground">
                       未配齐
@@ -505,16 +494,6 @@ function LlmSection() {
                 >
                   <Pencil />
                 </Button>
-                {!connection.isDefault && (
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    title="设为默认"
-                    onClick={() => setDefault(connection)}
-                  >
-                    <Star />
-                  </Button>
-                )}
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -530,7 +509,7 @@ function LlmSection() {
       </div>
 
       <p className="mt-3 text-xs text-muted-foreground">
-        密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；没被主播卡指定的接入就是全站默认。
+        密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；主播卡各自指定用哪家的哪个模型。
       </p>
 
       {editing && (
@@ -551,7 +530,7 @@ function LlmSection() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             {usedBy > 0
-              ? `「${deleting?.name}」正被 ${usedBy} 张主播卡使用，删掉后它们会回落到默认接入。`
+              ? `「${deleting?.name}」正被 ${usedBy} 张主播卡使用，删掉后这些卡得重新选一个接入和模型。`
               : `确认删除「${deleting?.name}」？`}
           </p>
           <DialogFooter>
@@ -680,6 +659,7 @@ function ConnectionEditorDialog({
   onClose: () => void
 }) {
   const setConnections = useAppStore((s) => s.setConnections)
+  const refreshPersona = useAppStore((s) => s.refreshPersona)
   const initialProviderId = connection?.providerId ?? providers[0]?.id ?? 'deepseek'
   const [providerId, setProviderId] = useState(initialProviderId)
   // 接入名默认就用服务商 label（一条接入 = 一家，改不改随你）
@@ -688,7 +668,6 @@ function ConnectionEditorDialog({
   )
   const [models, setModels] = useState<string[]>(connection?.models ?? [])
   const [defaultModel, setDefaultModel] = useState(connection?.defaultModel ?? '')
-  const [isDefault, setIsDefault] = useState(connection?.isDefault ?? false)
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
@@ -763,14 +742,14 @@ function ConnectionEditorDialog({
         providerId,
         params,
         models,
-        defaultModel,
-        isDefault
+        defaultModel
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
         return
       }
       setConnections(result.connections)
+      void refreshPersona()
       toast.success(connection ? '接入已保存' : '接入已新建', {
         description: '已启动的主播重启后使用新模型'
       })
@@ -884,14 +863,6 @@ function ConnectionEditorDialog({
                 ))}
               </div>
             )}
-          </div>
-
-          <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
-            <div>
-              <p className="text-[13px]">设为默认接入</p>
-              <p className="text-xs text-muted-foreground">没指定大脑的场景与主播卡都用它</p>
-            </div>
-            <Switch checked={isDefault} onCheckedChange={setIsDefault} aria-label="设为默认接入" />
           </div>
 
           {links && (

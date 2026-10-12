@@ -13,6 +13,7 @@ import {
   type ConnectorStatus,
   type ModelConnectionSafe,
   type PartialDeep,
+  type Persona,
   type PoolSnapshot,
   type VoiceRecord,
   type StreamStats
@@ -86,8 +87,13 @@ interface AppState {
   /** 供应商接入 + 服务商清单（设置 → 语言模型；状态栏徽章与主播卡的「大脑」下拉都读它） */
   connections: ModelConnectionSafe[]
   llmProviders: LlmProviderManifest[]
+  /** 当前主播卡（状态栏的 LLM 徽章按它选的接入与模型判定） */
+  persona: Persona | null
   loadModelLibrary: () => Promise<void>
+  /** 接入库变了就调它：当前主播卡引用的接入可能已失效，徽章要跟着变 */
+  refreshPersona: () => Promise<void>
   setConnections: (connections: ModelConnectionSafe[]) => void
+  setPersona: (persona: Persona | null) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -173,15 +179,22 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   connections: [],
   llmProviders: [],
+  persona: null,
   loadModelLibrary: async () => {
     if (!('api' in window)) return
-    const [connections, llmProviders] = await Promise.all([
+    const [connections, llmProviders, persona] = await Promise.all([
       window.api.model.list(),
-      window.api.providers.llmList()
+      window.api.providers.llmList(),
+      window.api.persona.get()
     ])
-    set({ connections, llmProviders })
+    set({ connections, llmProviders, persona })
   },
-  setConnections: (connections) => set({ connections })
+  refreshPersona: async () => {
+    if (!('api' in window)) return
+    set({ persona: await window.api.persona.get() })
+  },
+  setConnections: (connections) => set({ connections }),
+  setPersona: (persona) => set({ persona })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */
@@ -189,21 +202,17 @@ export function selectTtsReady(config: AppConfig): boolean {
   return ttsConfigured(config.tts)
 }
 
-/** 是否有可用的语言模型（状态栏徽章用）：库里有一条可用接入，或旧的 config.llm 还兜底着 */
-export function selectLlmReady(connections: ModelConnectionSafe[], config: AppConfig): boolean {
-  return llmReady(connections, config.llm)
+/** 当前主播卡的语言模型是否就绪（状态栏徽章用）：卡上选的接入与模型都可用才算 */
+export function selectLlmReady(
+  connections: ModelConnectionSafe[],
+  persona: Persona | null | undefined
+): boolean {
+  return llmReady(connections, persona)
 }
 
 /** 服务商显示名（拿不到 manifest 就退回 id） */
 export function providerLabel(providers: LlmProviderManifest[], providerId: string): string {
   return providers.find((item) => item.id === providerId)?.label ?? providerId
-}
-
-/** 全局默认接入（没有标记默认时取库里的第一条） */
-export function defaultConnection(
-  connections: ModelConnectionSafe[]
-): ModelConnectionSafe | undefined {
-  return connections.find((item) => item.isDefault) ?? connections[0]
 }
 
 /** 接入实际用的模型（默认模型 → 列表第一个 → 服务商默认模型），与主进程的取用口径一致 */

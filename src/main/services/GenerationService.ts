@@ -21,7 +21,7 @@ import type { UtteranceService } from './UtteranceService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
 import { GENERATION_TOOL_NAMES, buildGenerationTools } from './generationTools'
-import { prepareLlmModel, resolveModelForPersona } from './llmModel'
+import { prepareLlmModel, requireModelForPersona } from './llmModel'
 import type { ResolvedModel } from './providers/registry'
 
 /** 生成进度（main → renderer 广播，驱动场次页生成状态） */
@@ -69,9 +69,9 @@ export class GenerationService {
     if (!script || script.scenes.length === 0) {
       throw new Error('先给场次绑定剧本——生成按场景逐场产出')
     }
-    // 模型：场次绑了主播卡就用那张卡的，没绑就用全局默认接入
+    // 模型：场次绑的主播卡选了什么就用什么；没绑卡或卡上没选齐直接报错（生成必须先有明确的大脑）
     const bound = plan.personaId ? (this.persona.list().find((p) => p.id === plan.personaId) ?? null) : null
-    const resolved = resolveModelForPersona(this.storage, bound)
+    const resolved = requireModelForPersona(this.storage, bound)
     void this.run(plan, script, resolved)
   }
 

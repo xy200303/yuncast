@@ -58,14 +58,21 @@ export type LlmProviderManifest = Omit<LlmProviderDef, 'toModelConfig'>
 
 /** 解析出来的模型来源（喂给 prepareLlmModel） */
 export interface ResolvedModel {
-  /** 命中的接入 id；走旧的 config.llm 兜底时为 null */
+  /** 命中的接入 id；临时用旧的 config.llm 时为 null */
   connectionId: string | null
   providerId: string
   params: Record<string, string | number | boolean>
   model: string
-  /** 人物指定的模型已不在接入列表里时的回落信息（预检提示用） */
-  fallback?: { requested: string; used: string; connectionName: string }
+  /** 没按人设卡指定的模型跑时的兜底说明（预检据此给 warn） */
+  fallback?: ResolvedFallback
 }
+
+/** 兜底说明的两种来源（条目文案由 LaunchService 拼） */
+export type ResolvedFallback =
+  /** 人设卡指定的模型已不在该接入的模型列表里，回落用了接入的默认模型 */
+  | { kind: 'model'; requested: string; used: string; connectionName: string }
+  /** 人设卡没给出可用的接入与模型（没选 / 选了但没配齐），临时用了旧的 config.llm */
+  | { kind: 'legacy'; personaName: string; reason: 'missing' | 'unusable'; connectionName?: string }
 
 const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, localOpenAiProvider]
 

@@ -25,6 +25,7 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { flattenModelCatalog, type CatalogModel } from '@/lib/voice'
+import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import {
   providerLabel,
@@ -1302,9 +1303,6 @@ function TtsTestDialog({
   connection: TtsConnectionSafe
   onClose: () => void
 }) {
-  const providers = useAppStore((s) => s.ttsProviders)
-  const voices = useAppStore((s) => s.voices)
-  const catalog = flattenModelCatalog(providers)
   const [modelId, setModelId] = useState(connection.models[0]?.id ?? '')
   const [voice, setVoice] = useState('')
   const [text, setText] = useState('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
@@ -1317,25 +1315,6 @@ function TtsTestDialog({
     /** 合成完由主进程直接出声：true = 真的播出来了 */
     playing?: boolean
   } | null>(null)
-
-  const entry = catalog.find(
-    (item) => item.provider === connection.providerId && item.model.id === modelId
-  )
-  const voiceGroups = entry?.model.voices ?? []
-  const clones = voices.filter(
-    (item) =>
-      item.status === 'ready' &&
-      Boolean(item.voiceType) &&
-      item.model === modelId &&
-      item.connectionId === connection.id
-  )
-  const firstCatalogVoice = voiceGroups[0]?.voices[0]?.id ?? ''
-
-  useEffect(() => {
-    setVoice(firstCatalogVoice || clones[0]?.voiceType || '')
-    setResult(null)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelId])
 
   const run = async () => {
     if (busy) return
@@ -1369,74 +1348,14 @@ function TtsTestDialog({
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
           <div>
-            <Label className="mb-1 text-xs">模型（这条接入已启用的）</Label>
-            <Select value={modelId} onValueChange={setModelId}>
-              <SelectTrigger className="h-8 w-full text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {connection.models.map((item) => (
-                  <SelectItem key={item.id} value={item.id}>
-                    {ttsModelLabel(catalog, connection.providerId, item.id)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div>
-            <Label className="mb-1 text-xs">音色（留空用该模型目录第一个）</Label>
-            <Input
-              className="h-8 text-xs"
-              value={voice}
-              onChange={(e) => setVoice(e.target.value)}
-              placeholder="音色 id"
+            <Label className="mb-1 text-xs">模型与音色</Label>
+            <VoiceCascadePicker
+              voiceId={voice}
+              onPick={setVoice}
+              onModelChange={setModelId}
+              connections={[connection]}
             />
-            {clones.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {clones.map((item) => (
-                  <Button
-                    key={item.id}
-                    variant={voice === item.voiceType ? 'secondary' : 'outline'}
-                    size="sm"
-                    className="h-6 text-xs"
-                    onClick={() => setVoice(item.voiceType)}
-                  >
-                    {item.name}
-                  </Button>
-                ))}
-              </div>
-            )}
-            {voiceGroups.length > 0 && (
-              <div className="mt-2 flex max-h-44 flex-col gap-2 overflow-y-auto rounded-lg border px-2 py-2">
-                {voiceGroups.map((group) => (
-                  <div key={group.label} className="flex flex-col gap-1">
-                    <span className="text-[13px] text-muted-foreground">{group.label}</span>
-                    <div className="flex flex-wrap gap-1">
-                      {group.voices.map((spec) => (
-                        <Button
-                          key={spec.id}
-                          variant={voice === spec.id ? 'secondary' : 'ghost'}
-                          size="sm"
-                          className="h-6 text-xs"
-                          title={spec.id}
-                          onClick={() => setVoice(spec.id)}
-                        >
-                          {spec.name}
-                        </Button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-            {voiceGroups.length === 0 && clones.length === 0 && (
-              <p className="mt-1 text-xs text-muted-foreground">
-                这个模型没有内置音色目录：复刻模型用音色库里绑它的克隆音色，或在上面手填音色 id。
-              </p>
-            )}
           </div>
-
           <div>
             <Label className="mb-1 text-xs">测试文本</Label>
             <Input className="h-8 text-xs" value={text} onChange={(e) => setText(e.target.value)} />

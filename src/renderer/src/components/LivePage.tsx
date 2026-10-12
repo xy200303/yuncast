@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Bot,
@@ -17,6 +17,7 @@ import {
   SendHorizontal,
   SlidersHorizontal,
   Square,
+  Wrench,
   X,
   XCircle
 } from 'lucide-react'
@@ -34,6 +35,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
+import { MiniMarkdown } from '@/components/MiniMarkdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
@@ -94,7 +96,7 @@ export function LivePage() {
   const [comments, setComments] = useState<LiveComment[]>([])
   /** 右栏选项卡：对话是主区（铺满高度），操作切过去才显示 */
   const [rightTab, setRightTab] = useState<'chat' | 'control'>('chat')
-  /** 导演对话未读数（切走时有新汇报/请示在选项卡上亮红点） */
+  /** 对话未读数（切走时有新条目在选项卡上亮红点） */
   const [chatUnread, setChatUnread] = useState(0)
 
   // 评论订阅提到页面层（标签上要显示条数），保持最近 100 条
@@ -567,52 +569,7 @@ function clock(ts: number): string {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }
 
-/**
- * 工具调用行：汇报和请示本质上都是工具调用，按日志行呈现——
- * 一个点 + 等宽工具名 + 正文；连续同一个工具只在第一行标一次名字。不用消息气泡、不用卡片外框。
- */
-function ToolLine({
-  label,
-  text,
-  ts,
-  showLabel,
-  accent
-}: {
-  label: string
-  text: string
-  ts: number
-  showLabel?: boolean
-  accent?: boolean
-}) {
-  return (
-    <div className="flex gap-2">
-      <span
-        className={cn(
-          'mt-[7px] size-1.5 shrink-0 rounded-full',
-          accent ? 'bg-primary' : 'bg-muted-foreground/40'
-        )}
-      />
-      <div className="min-w-0 flex-1">
-        {showLabel && (
-          <div className="mb-0.5 flex items-center gap-1.5">
-            <span
-              className={cn(
-                'font-mono text-[10px]',
-                accent ? 'text-primary/80' : 'text-muted-foreground/70'
-              )}
-            >
-              {label}
-            </span>
-            <span className="font-mono text-[10px] text-muted-foreground/40">{clock(ts)}</span>
-          </div>
-        )}
-        <p className="text-[12px] leading-[18px] text-muted-foreground">{text}</p>
-      </div>
-    </div>
-  )
-}
-
-/** 请示（ask_director）：同一个日志骨架，多了倒计时、默认策略与一键选项 */
+/** 请示（ask_director）：带倒计时、默认策略与一键选项的卡片，不阻塞直播（docs/07 §8.8.6 ④） */
 function AskCard({
   message,
   now,
@@ -628,60 +585,111 @@ function AskCard({
   const expired = remain === 0
   const dim = expired || Boolean(message.answered)
   return (
-    <div className="flex gap-2">
-      <span
-        className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', dim ? 'bg-muted-foreground/40' : 'bg-primary')}
-      />
-      <div className="min-w-0 flex-1">
-        <div className="mb-0.5 flex items-center gap-1.5">
-          <span className={cn('font-mono text-[10px]', dim ? 'text-muted-foreground/70' : 'text-primary/80')}>
-            ask_director
-          </span>
-          {remain !== null && !dim && (
-            <span className="font-mono text-[10px] text-muted-foreground/60">剩 {remain}s</span>
-          )}
-          <span className="ml-auto font-mono text-[10px] text-muted-foreground/40">{clock(message.ts)}</span>
+    <div
+      className={cn(
+        'rounded-2xl rounded-tl-sm border px-3 py-2',
+        dim ? 'border-border bg-muted/60' : 'border-primary/30 bg-primary/5'
+      )}
+    >
+      <MiniMarkdown text={message.text} />
+      {message.defaultAction && (
+        <p className="mt-1 text-[12px] text-muted-foreground">没答就按这个走：{message.defaultAction}</p>
+      )}
+      {remain !== null && !dim && (
+        <p className="mt-1 font-mono text-[11px] text-muted-foreground">剩 {remain}s 未答就按默认策略继续</p>
+      )}
+      {message.answered ? (
+        <p className="mt-1.5 text-[12px] text-muted-foreground">已答复：{message.answered}</p>
+      ) : expired ? (
+        <p className="mt-1.5 text-[12px] text-muted-foreground">
+          已过期（超过 {message.timeoutSec}s 未答，按默认策略继续）
+        </p>
+      ) : (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {(message.options ?? []).map((option) => (
+            <Button
+              key={option}
+              variant="outline"
+              size="sm"
+              className="h-7 bg-background px-2.5 text-xs"
+              onClick={() => onAnswer(message, option)}
+            >
+              {option}
+            </Button>
+          ))}
         </div>
-        <p className="text-[12px] leading-[18px]">{message.text}</p>
-        {message.defaultAction && (
-          <p className="mt-0.5 text-[11px] text-muted-foreground">没答就按这个走：{message.defaultAction}</p>
+      )}
+    </div>
+  )
+}
+
+/** 对话时间线的一条：导演指令（右）/ 主播文本（左，中间文本或最终回复）/ 工具卡片 / 请示卡片 */
+type ChatEntry =
+  | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
+  | { type: 'text'; id: string; ts: number; text: string; final: boolean }
+  | {
+      type: 'tool'
+      id: string
+      ts: number
+      name: string
+      args?: string
+      status: 'running' | 'ok' | 'error'
+      result?: string
+      durationMs?: number
+    }
+  | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
+
+/** 工具卡片：工具名 + 参数一行 + 状态（运行中转圈 / 成功 / 失败）+ 结果摘要 */
+function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
+  return (
+    <div className="rounded-lg border bg-muted/40 px-2.5 py-1.5">
+      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+        <Wrench className="size-3 shrink-0 text-muted-foreground" />
+        <span className="shrink-0 text-foreground/80">{entry.name}</span>
+        {entry.args && (
+          <span className="min-w-0 truncate text-muted-foreground" title={entry.args}>
+            {entry.args}
+          </span>
         )}
-        {message.answered ? (
-          <p className="mt-1 font-mono text-[10px] text-muted-foreground/70">已答复：{message.answered}</p>
-        ) : expired ? (
-          <p className="mt-1 font-mono text-[10px] text-muted-foreground/50">
-            已过期（超过 {message.timeoutSec}s 未答，按默认策略继续）
-          </p>
-        ) : (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {(message.options ?? []).map((option) => (
-              <Button
-                key={option}
-                variant="outline"
-                size="sm"
-                className="h-6 px-2 text-xs"
-                onClick={() => onAnswer(message, option)}
-              >
-                {option}
-              </Button>
-            ))}
-          </div>
-        )}
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {entry.durationMs !== undefined && (
+            <span className="text-[10px] text-muted-foreground/60">{Math.round(entry.durationMs)}ms</span>
+          )}
+          {entry.status === 'running' ? (
+            <Loader2 className="size-3 animate-spin text-muted-foreground" />
+          ) : entry.status === 'ok' ? (
+            <CheckCircle2 className="size-3 text-emerald-600" />
+          ) : (
+            <XCircle className="size-3 text-destructive" />
+          )}
+        </span>
       </div>
+      {entry.result && (
+        <p
+          className={cn(
+            'mt-0.5 truncate pl-[18px] text-[11px]',
+            entry.status === 'error' ? 'text-destructive/80' : 'text-muted-foreground'
+          )}
+          title={entry.result}
+        >
+          {entry.result}
+        </p>
+      )}
     </div>
   )
 }
 
 /**
- * 导演对话（docs/07 §8.8）：导演 ↔ 主播的实时文字通道，右栏主区（铺满整栏高度）。
- * 消息三类分流：导演指令（右侧气泡）/ 主播汇报（灰字，report_to_director 工具）/ 主播请示（高亮卡片 + 一键选项）。
+ * 主播对话（docs/07 §8.8 / docs/09 §11）：导演 ↔ 主播的实时通道，右栏主区（铺满整栏高度）。
+ * 时间线照 pi 事件流原样渲染：导演指令（右侧气泡）/ 中间文本（左侧淡色流式）/ 工具卡片 /
+ * 最终回复（独立气泡）/ 请示卡片（一键作答）。不做二次抽文本，也没有单独的"汇报"通道。
  * 快速指令（暂停/跳过/恢复）本地解析直接执行，不过 LLM；其余文本 steer 插队给主播。
  * composer 对齐 Codex 桌面版：圆角盒内 附件（回形针）+ 发送；附件以路径形式随指令发给主播。
  */
 function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
-  const [messages, setMessages] = useState<DirectorMessage[]>([])
+  const [entries, setEntries] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
   /** 请示倒计时用（有未答且有 timeoutSec 的卡片时每秒走一次） */
@@ -691,60 +699,107 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   activeRef.current = active
   const onUnreadRef = useRef(onUnread)
   onUnreadRef.current = onUnread
+  /** 见过的条目 id：只有首见的那次算未读（流式更新同一 id 不算新消息） */
+  const seenRef = useRef(new Set<string>())
 
-  // 订阅主播汇报/请示（主进程广播）；切走时在「对话」选项卡上累未读
+  /** 时间线顺序追加/按 id 覆盖（text 覆盖全文、tool 更新状态）；时间戳沿用首次那条，避免排序跳动 */
+  const upsert = (entry: ChatEntry): void => {
+    setEntries((prev) => {
+      const index = prev.findIndex((item) => item.id === entry.id)
+      if (index < 0) return [...prev.slice(-199), entry]
+      const next = prev.slice()
+      next[index] = { ...entry, ts: prev[index].ts } as ChatEntry
+      return next
+    })
+  }
+
+  /** 新条目（首见 id）落地；切走时在「对话」选项卡上累未读 */
+  const landed = (id: string): void => {
+    const first = !seenRef.current.has(id)
+    seenRef.current.add(id)
+    if (first && !activeRef.current) onUnreadRef.current()
+  }
+
+  // 订阅对话时间线（文本流式 + 工具卡片）与请示卡片
   useEffect(() => {
     if (!('api' in window)) return
-    return window.api.director.onEvent((message) => {
-      setMessages((prev) => [...prev.slice(-99), message])
-      if (!activeRef.current) onUnreadRef.current()
+    const offTimeline = window.api.director.onTimeline((event) => {
+      const entry = event.entry
+      if (entry.type === 'text') {
+        upsert({ type: 'text', id: entry.id, ts: Date.now(), text: entry.text, final: entry.final === true })
+      } else {
+        upsert({
+          type: 'tool',
+          id: entry.id,
+          ts: Date.now(),
+          name: entry.name,
+          args: entry.args,
+          status: entry.status,
+          result: entry.result,
+          durationMs: entry.durationMs
+        })
+      }
+      landed(entry.id)
     })
+    const offAsk = window.api.director.onEvent((message) => {
+      upsert({ type: 'ask', id: message.id, ts: message.ts, message })
+      landed(message.id)
+    })
+    return () => {
+      offTimeline()
+      offAsk()
+    }
   }, [])
 
   // 请示超时倒计时：到点卡片标过期（主播那边本来就不阻塞，docs/07 §8.8.6 ④）
-  const hasPendingAsk = messages.some((m) => m.kind === 'ask' && !m.answered && m.timeoutSec)
+  const hasPendingAsk = entries.some(
+    (entry) => entry.type === 'ask' && !entry.message.answered && entry.message.timeoutSec
+  )
   useEffect(() => {
     if (!hasPendingAsk) return
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [hasPendingAsk])
 
-  // 开发演示：?demo 时塞一组样例消息看布局（仅 dev，不进生产包行为）
+  // 开发演示：?demo 时塞一组样例条目看布局（仅 dev，不进生产包行为）
   useEffect(() => {
     if (!import.meta.env.DEV) return
     if (!new URLSearchParams(window.location.search).has('demo')) return
-    const now = Date.now()
-    setMessages([
-      { id: 'demo-1', ts: now - 120000, kind: 'report', text: '开场白播完了，在线 23 人，正在讲 1 号链接的保温杯' },
+    const t0 = Date.now()
+    setEntries([
       {
-        id: 'demo-2',
-        ts: now - 90000,
-        kind: 'director',
+        type: 'director',
+        id: 'demo-1',
+        ts: t0 - 120000,
         text: '语速放慢一点，多强调 316 不锈钢内胆',
         attachments: [{ name: '保温杯卖点.pdf', path: 'D:/docs/保温杯卖点.pdf' }]
       },
-      { id: 'demo-3', ts: now - 60000, kind: 'report', text: '收到，已把「316 不锈钢内胆」编进当前话术，语速调慢了 10%' },
+      { type: 'tool', id: 'demo-t1', ts: t0 - 118000, name: 'search_knowledge', args: '保温杯 内胆', status: 'ok', result: '商品「316 保温杯」：内胆 316 不锈钢，容量 500ml', durationMs: 240 },
+      { type: 'text', id: 'demo-2', ts: t0 - 117000, text: '先查一下内胆材质的话术，再调下面几条。', final: false },
+      { type: 'tool', id: 'demo-t2', ts: t0 - 116000, name: 'revise_next', args: 'count=2', status: 'ok', result: '已改写 2 条未播话术', durationMs: 88 },
+      { type: 'text', id: 'demo-3', ts: t0 - 60000, text: '收到：接下来两条改成强调 316 不锈钢内胆，语速提示调慢了 10%，预计 30 秒后生效。', final: true },
       {
+        type: 'ask',
         id: 'demo-4',
-        ts: now - 15000,
-        kind: 'ask',
-        text: '有观众问能不能刻字，知识库里没有这一条。可以承诺免费刻字吗？',
-        options: ['可以承诺', '别承诺，引导私信', '我确认下再回']
+        ts: t0 - 15000,
+        message: {
+          id: 'demo-4',
+          ts: t0 - 15000,
+          kind: 'ask',
+          text: '有观众问能不能刻字，知识库里没有这一条。可以承诺免费刻字吗？',
+          options: ['可以承诺', '别承诺，引导私信', '我确认下再回']
+        }
       }
     ])
   }, [])
 
-  // 新消息：贴底状态时自动滚到底（导演往上翻时不抢滚动条）；初始视为贴底
+  // 新条目/流式更新：贴底状态时自动滚到底（导演往上翻时不抢滚动条）；初始视为贴底
   const stickRef = useRef(true)
   useEffect(() => {
     const el = listRef.current
     if (!el || !active) return
     if (stickRef.current) el.scrollTop = el.scrollHeight
-  }, [messages, active])
-
-  const append = (message: DirectorMessage): void => {
-    setMessages((prev) => [...prev.slice(-99), message])
-  }
+  }, [entries, active])
 
   /** 快速指令本地解析（不过 LLM）。命中返回 true。 */
   const runQuickCommand = (text: string): boolean => {
@@ -779,13 +834,15 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     if (!text && files.length === 0) return
     setInput('')
     setAttachments([])
-    append({
-      id: `dm-local-${Date.now()}`,
+    const id = `dm-local-${Date.now()}`
+    upsert({
+      type: 'director',
+      id,
       ts: Date.now(),
-      kind: 'director',
       text,
       attachments: files.length > 0 ? files : undefined
     })
+    landed(id)
     if (text && runQuickCommand(text)) return
     const payload =
       files.length > 0 ? `${text}\n${files.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
@@ -795,7 +852,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   }
 
   const answerAsk = (message: DirectorMessage, answer: string): void => {
-    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, answered: answer } : m)))
+    upsert({ type: 'ask', id: message.id, ts: message.ts, message: { ...message, answered: answer } })
     send(answer)
   }
 
@@ -811,46 +868,94 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
         }}
       >
-        {messages.length === 0 ? (
+        {entries.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
             <Bot className="size-8" strokeWidth={1.25} />
             <p className="px-6 text-center text-xs leading-5">
-              和主播直接对话：下指令、收汇报、答请示。
+              这里能看到主播的想法、工具调用和最终回复。
               <br />
               消息只进对话，不会被播出去。
             </p>
           </div>
         ) : (
-          messages.map((message, index) =>
-            message.kind === 'director' ? (
-              <div
-                key={message.id}
-                className="ml-auto max-w-[85%] rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground"
+          entries.map((entry, index) => {
+            const prev = entries[index - 1]
+            const dayBreak = prev ? new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString() : false
+            // 主播连着一串产出（文本/工具/请示）只在第一条显示头像
+            const aiRun = entry.type !== 'director' && prev?.type === 'director'
+            const avatar = (
+              <span
+                className={cn(
+                  'mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary',
+                  aiRun ? '' : 'opacity-0'
+                )}
+                aria-hidden={!aiRun}
               >
-                {message.text}
-                {message.attachments?.map((file) => (
-                  <div
-                    key={file.path}
-                    className="mt-1 flex items-center gap-1 rounded bg-primary-foreground/15 px-1.5 py-0.5 text-xs"
-                    title={file.path}
-                  >
-                    <Paperclip className="size-3 shrink-0" />
-                    <span className="truncate">{file.name}</span>
-                  </div>
-                ))}
-              </div>
-            ) : message.kind === 'report' ? (
-              <ToolLine
-                key={message.id}
-                label="report_to_director"
-                text={message.text}
-                ts={message.ts}
-                showLabel={index === 0 || messages[index - 1].kind !== 'report'}
-              />
-            ) : (
-              <AskCard key={message.id} message={message} now={now} onAnswer={answerAsk} />
+                <Bot className="size-3.5" />
+              </span>
             )
-          )
+            return (
+              <Fragment key={entry.id}>
+                {dayBreak && (
+                  <div className="my-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+                    <span className="h-px flex-1 bg-border" />
+                    {new Date(entry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}
+                    <span className="h-px flex-1 bg-border" />
+                  </div>
+                )}
+                {entry.type === 'director' ? (
+                  <div className="flex max-w-[86%] flex-col items-end gap-1 self-end">
+                    <div className="rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-[13px] leading-[20px] text-primary-foreground">
+                      {entry.text}
+                      {entry.attachments?.map((file) => (
+                        <div
+                          key={file.path}
+                          className="mt-1 flex items-center gap-1 rounded-md bg-primary-foreground/15 px-1.5 py-0.5 text-xs"
+                          title={file.path}
+                        >
+                          <Paperclip className="size-3 shrink-0" />
+                          <span className="truncate">{file.name}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <span className="px-1 font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
+                  </div>
+                ) : (
+                  <div className="flex max-w-[92%] gap-2">
+                    {avatar}
+                    <div className="min-w-0 flex-1">
+                      {entry.type === 'text' && !entry.final ? (
+                        // 中间文本：不套气泡，淡色小字就行（流式追加时不会跳成多块）
+                        <p className="whitespace-pre-wrap px-1 text-[13px] leading-[21px] text-muted-foreground">
+                          {entry.text}
+                          {agent.state === 'running' && index === entries.length - 1 && (
+                            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
+                          )}
+                        </p>
+                      ) : entry.type === 'text' ? (
+                        <div>
+                          <div className="mb-1 flex items-center gap-2">
+                            <span className="text-[12px] font-medium">主播</span>
+                            <span className="rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground">
+                              最终回复
+                            </span>
+                            <span className="font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
+                          </div>
+                          <div className="rounded-2xl rounded-tl-sm bg-muted px-3 py-2">
+                            <MiniMarkdown text={entry.text} />
+                          </div>
+                        </div>
+                      ) : entry.type === 'tool' ? (
+                        <ToolCard entry={entry} />
+                      ) : (
+                        <AskCard message={entry.message} now={now} onAnswer={answerAsk} />
+                      )}
+                    </div>
+                  </div>
+                )}
+              </Fragment>
+            )
+          })
         )}
       </div>
 

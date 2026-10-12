@@ -11,6 +11,7 @@ import type {
   AudioPcmPayload,
   ConnectorStatus,
   DirectorMessage,
+  DirectorTimelineEvent,
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
@@ -161,12 +162,20 @@ const api = {
     /** 导演指令 → 主播（最高优先级，steer 插队） */
     send: (text: string) =>
       ipcRenderer.invoke(IPC.directorSend, text) as Promise<{ ok: boolean; error?: string }>,
-    /** 订阅主播汇报/请示消息，返回取消订阅函数 */
+    /** 订阅主播请示（ask_director）卡片，返回取消订阅函数 */
     onEvent: (cb: (message: DirectorMessage) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, message: DirectorMessage) => cb(message)
       ipcRenderer.on(IPC.directorEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.directorEvent, listener)
+      }
+    },
+    /** 订阅对话时间线（文本流式 / 工具调用；同一 entry.id 会重复推更新，渲染层按 id upsert） */
+    onTimeline: (cb: (event: DirectorTimelineEvent) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: DirectorTimelineEvent) => cb(event)
+      ipcRenderer.on(IPC.directorTimeline, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.directorTimeline, listener)
       }
     }
   },

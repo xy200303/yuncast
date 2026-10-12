@@ -605,7 +605,7 @@ export interface AgentStatus {
   /** provider/model 展示用 */
   model?: string
   personaName?: string
-  /** 生成中预览：text_delta 累积的文本，入池即清空 */
+  /** 生成中预览：text_delta 累积的文本，入池即清空（提词器用） */
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
   scene?: { title: string; index: number; total: number }
@@ -624,12 +624,12 @@ export interface LiveComment {
 
 // ---------- 导演对话（docs/07 §8.8） ----------
 
-export type DirectorMessageKind = 'director' | 'report' | 'ask'
+/** director=导演指令（右侧气泡）；ask=主播请示（高亮卡片+一键选项） */
+export type DirectorMessageKind = 'director' | 'ask'
 
 export interface DirectorMessage {
   id: string
   ts: number
-  /** director=导演指令（右侧气泡）；report=主播汇报（灰字）；ask=主播请示（高亮卡片+一键选项） */
   kind: DirectorMessageKind
   text: string
   /** ask 的一键选项 */
@@ -642,6 +642,34 @@ export interface DirectorMessage {
   defaultAction?: string
   /** 导演指令附带的文件（名称 + 本机路径，随指令一起发给主播） */
   attachments?: { name: string; path: string }[]
+}
+
+// ---------- 对话时间线（main → renderer，docs/07 §8.8 / docs/09 §11） ----------
+
+/**
+ * 时间线条目：照 pi-agent 事件流原样渲染，不做二次解释。
+ * - text：assistant 消息的正文。中间文本（还在调工具/还会继续说）final 为空，前端渲染成淡色流式行；
+ *   本轮最后一条 assistant 消息带 final=true，渲染成独立气泡。
+ * - tool：一次工具执行（toolCallId 就是 id），start 时 running，end 时同 id 更新为结果。
+ *   请示 ask_director 不走这里（它有自己的卡片通道）。
+ */
+export type DirectorTimelineEntry =
+  | { type: 'text'; id: string; text: string; final?: boolean }
+  | {
+      type: 'tool'
+      id: string
+      name: string
+      args?: string
+      status: 'running' | 'ok' | 'error'
+      result?: string
+      durationMs?: number
+      isError?: boolean
+    }
+
+/** 一条时间线事件：turnId = 本轮（一次派给主播的任务）内所有条目的分组键；渲染层按 entry.id upsert */
+export interface DirectorTimelineEvent {
+  turnId: string
+  entry: DirectorTimelineEntry
 }
 
 /** 播报控制（主播工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */

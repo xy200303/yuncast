@@ -10,6 +10,7 @@ import {
 } from '@earendil-works/pi-coding-agent'
 import {
   type AgentStatus,
+  type DirectorTimelineEvent,
   type LiveComment,
   type PlaybackControlAction
 } from '../../shared/types'
@@ -28,9 +29,29 @@ import type { ResolvedModel } from './providers/registry'
  * - pi-agent SDK 路线：createAgentSession，资源目录全部重定向到 userData/pi（不碰 ~/.pi）
  * - 关掉全部内置编码工具，只挂主播工具（anchorTools，一切声音走话术池）
  * - 凭据运行时注入 ModelRuntime，不落 pi 的盘；我们的 config 里 safeStorage 加密
- * - text_delta 累积成"AI 正在组织语言"预览广播给渲染进程，入池（工具执行）即清
- * - 当前场次的主题/剧本场景随 system prompt 注入；每次对话带当前场景上下文
+ * - text_delta 既累积成"AI 正在组织语言"预览（提词器），也推给对话时间线（docs/09 §11）
+ * - 对话时间线照 pi 事件流原样渲染：文本流式 / 工具卡片 / 最终回复，不做二次解释
+ *   （thinking_delta 不渲染；ask_director 的工具卡片跳过——它走请示卡片那条通道）
  */
+
+/** 中间文本的节流间隔：text_delta 又密又碎，攒够这个间隔再推一次全文快照 */
+const TEXT_THROTTLE_MS = 60
+/** 工具卡片里参数压成一行后的长度上限 */
+const TOOL_ARGS_MAX = 120
+/** 工具卡片里结果压成一行后的长度上限 */
+const TOOL_RESULT_MAX = 200
+
+/** 一条 assistant 消息在时间线上的文本状态（按 messageId 更新，不重复追加条目） */
+interface TimelineText {
+  turnId: string
+  text: string
+  /** 上次推出去的快照（相同就不推，减少 IPC） */
+  sent: string
+  /** 已经标过最终回复 */
+  finalSent: boolean
+  /** 节流挂起的补推定时器 */
+  timer?: NodeJS.Timeout
+}
 
 export class AgentService {
   private session: AgentSession | null = null
@@ -58,6 +79,22 @@ export class AgentService {
   /** 播报控制（pause/resume/skip）→ 广播到渲染进程执行 */
   onPlaybackControl: ((action: PlaybackControlAction) => void) | null = null
 
+  /** 本轮序号（agent_start 自增，一次派活 = 一轮，形如 turn-3） */
+  private turnSeq = 0
+  /** 本轮里的 assistant 消息序号（message_start 自增，形如 turn-3-msg-1） */
+  private msgSeq = 0
+  private turnId = 'turn-0'
+  /** 当前正在流式的 assistant 消息（text_delta 都累加到它） */
+  private currentMessageId: string | null = null
+  /** 本轮各消息的文本快照（本轮开始时清空） */
+  private texts = new Map<string, TimelineText>()
+  /** 最近一次文本广播时间（全局节流，避免一条满屏 delta） */
+  private lastTextEmitAt = 0
+  /** 本轮最后一条有正文的 assistant 消息 = 最终回复（装得下工具轮次里的中间文本） */
+  private lastTextMessageId: string | null = null
+  /** 本轮是否已标过最终回复（agent_end / agent_settled 兜底时不重复推） */
+  private turnFinalized = false
+
   constructor(
     private readonly storage: StorageService,
     private readonly pool: SpeechPool,
@@ -66,7 +103,7 @@ export class AgentService {
     private readonly memory: MemoryService,
     private readonly script: ScriptService,
     private readonly broadcast: (status: AgentStatus) => void,
-    private readonly onDirectorReport?: (text: string) => void
+    private readonly onDirectorTimeline?: (event: DirectorTimelineEvent) => void
   ) {}
 
   /** 设置本场音色（开播装载时写入场次音色；运行中热切换音色也走这里） */
@@ -175,6 +212,12 @@ export class AgentService {
       }
       session.dispose()
     }
+    // 停了就不再收尾当前这一轮（abort 后可能还有 agent_settled 飘过来）
+    this.clearTextTimers()
+    this.texts.clear()
+    this.currentMessageId = null
+    this.lastTextMessageId = null
+    this.turnFinalized = true
     this.setState('stopped')
   }
 
@@ -225,14 +268,14 @@ export class AgentService {
 
   /**
    * 导演指令入口（docs/07 §8.8）：最高优先级，生成中就 steer 插队，空闲直接派。
-   * 暂停期间照常送达（不然喊不出「继续」）；主播用 report_to_director 回报执行结果。
+   * 暂停期间照常送达（不然喊不出「继续」）；执行过程与结果由对话时间线按 pi 事件流原样呈现。
    */
   directorSay(text: string): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
       throw new Error('主播没在跑：先在直播台启动场次')
     }
     this.deliver(
-      `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完用 report_to_director 简要汇报执行情况。`,
+      `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完直接说一句执行情况（你说的话会出现在导演对话面板，不会被播报）。`,
       'steer'
     )
   }
@@ -245,6 +288,140 @@ export class AgentService {
   /** 场景推进后广播状态（提词器「当前场景」刷新） */
   notifySceneChanged(): void {
     this.broadcast(this.status())
+  }
+
+  // ---------- 对话时间线（docs/09 §11：照 pi 事件流原样渲染，不做二次解释） ----------
+
+  /**
+   * 新一轮（agent_start）：一次派给主播的任务 = 一轮，含中间文本 + 多轮工具调用 + 最终回复。
+   * turnId 形如 turn-3，本轮内每条 assistant 消息形如 turn-3-msg-1。
+   */
+  private beginTurn(): void {
+    this.clearTextTimers()
+    this.texts.clear()
+    this.turnSeq += 1
+    this.msgSeq = 0
+    this.turnId = `turn-${this.turnSeq}`
+    this.currentMessageId = null
+    this.lastTextMessageId = null
+    this.turnFinalized = false
+  }
+
+  /** 一条 assistant 消息开始：给它一个 id，后续 text_delta 都累加到它名下 */
+  private beginMessage(): void {
+    this.msgSeq += 1
+    const id = `${this.turnId}-msg-${this.msgSeq}`
+    this.currentMessageId = id
+    this.texts.set(id, { turnId: this.turnId, text: '', sent: '', finalSent: false })
+  }
+
+  /** 累积 text_delta。节流推全文快照——渲染层按 id 覆盖，所以中间文本不会跳成多条 */
+  private appendText(delta: string): void {
+    const id = this.currentMessageId
+    const state = id ? this.texts.get(id) : undefined
+    if (!id || !state) return
+    state.text += delta
+    if (state.text.trim()) this.lastTextMessageId = id
+    this.emitText(id)
+  }
+
+  /**
+   * 推一条文本条目（同一 id 反复推，渲染层按 id upsert）。
+   * 节流 ≥60ms；final 与 force 绕过节流，保证收尾那次一定送出去。
+   */
+  private emitText(id: string, final = false, force = false): void {
+    const state = this.texts.get(id)
+    if (!state) return
+    if (state.finalSent) return
+    if (!final && state.sent === state.text) return
+    const elapsed = Date.now() - this.lastTextEmitAt
+    if (!final && !force && elapsed < TEXT_THROTTLE_MS) {
+      if (!state.timer) {
+        const timer = setTimeout(() => {
+          state.timer = undefined
+          this.emitText(id, false, true)
+        }, TEXT_THROTTLE_MS - elapsed)
+        timer.unref?.()
+        state.timer = timer
+      }
+      return
+    }
+    if (state.timer) {
+      clearTimeout(state.timer)
+      state.timer = undefined
+    }
+    this.lastTextEmitAt = Date.now()
+    state.sent = state.text
+    if (final) state.finalSent = true
+    this.onDirectorTimeline?.({
+      turnId: state.turnId,
+      entry: { type: 'text', id, text: state.text, ...(final ? { final: true } : {}) }
+    })
+  }
+
+  /** 一轮结束前把没推完的最后一段文本补上（节流可能还压着一段） */
+  private flushText(): void {
+    const id = this.currentMessageId
+    if (id) this.emitText(id, false, true)
+  }
+
+  /**
+   * 本轮收尾：最后一条有正文的 assistant 消息就是最终回复。
+   * 标在 agent_end（整轮真正结束）而不是 turn_end——带工具调用的一轮里有好几个 turn_end，
+   * 那样会把每个工具轮次的中间文本都标成"最终回复"，出好几个气泡。
+   */
+  private finalizeTurn(): void {
+    const id = this.lastTextMessageId
+    if (!id || this.turnFinalized) return
+    const state = this.texts.get(id)
+    if (!state?.text.trim()) return
+    this.turnFinalized = true
+    this.emitText(id, true, true)
+  }
+
+  /** 工具开始：发一张"运行中"的工具卡片（按 toolCallId 更新，不追加新条目） */
+  private startTool(toolCallId: string, toolName: string, args: unknown): void {
+    if (toolName === 'ask_director') return
+    this.onDirectorTimeline?.({
+      turnId: this.turnId,
+      entry: {
+        type: 'tool',
+        id: toolCallId,
+        name: toolName,
+        args: oneLine(args, TOOL_ARGS_MAX),
+        status: 'running'
+      }
+    })
+  }
+
+  /** 工具结束：同 id 更新状态与结果摘要 */
+  private endTool(
+    toolCallId: string,
+    toolName: string,
+    result: unknown,
+    isError: boolean,
+    durationMs?: number
+  ): void {
+    if (toolName === 'ask_director') return
+    this.onDirectorTimeline?.({
+      turnId: this.turnId,
+      entry: {
+        type: 'tool',
+        id: toolCallId,
+        name: toolName,
+        status: isError ? 'error' : 'ok',
+        result: oneLine(result, TOOL_RESULT_MAX),
+        isError,
+        ...(durationMs === undefined ? {} : { durationMs })
+      }
+    })
+  }
+
+  private clearTextTimers(): void {
+    for (const state of this.texts.values()) {
+      if (state.timer) clearTimeout(state.timer)
+      state.timer = undefined
+    }
   }
 
   // ---------- 内部 ----------
@@ -346,7 +523,6 @@ export class AgentService {
         script: this.script,
         getLastComment: () => this.lastComment,
         onSceneChanged: () => this.notifySceneChanged(),
-        onDirectorReport: (text) => this.onDirectorReport?.(text),
         getPlanVoice: () => this.planVoiceId,
         onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
         onDirectorAsk: (ask) => this.onDirectorAsk?.(ask),
@@ -360,16 +536,27 @@ export class AgentService {
     })
 
     session.subscribe((event) => {
-      if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') {
-        // 生成中预览：累积 text_delta 广播给提词器
-        this.draft += event.assistantMessageEvent.delta
+      const assistantEvent = event.type === 'message_update' ? event.assistantMessageEvent : undefined
+      if (assistantEvent?.type === 'text_delta') {
+        // 生成中预览：累积 text_delta —— 既给提词器，也是对话时间线里"正在说话"的那一段
+        this.draft += assistantEvent.delta
+        this.appendText(assistantEvent.delta)
         this.broadcast(this.status())
+      } else if (event.type === 'agent_start') {
+        this.beginTurn()
+      } else if (event.type === 'message_start') {
+        // 只认 assistant 消息：同一个会话里还有工具结果/工具变更等合成消息，它们不该占消息 id
+        if (event.message.role === 'assistant') this.beginMessage()
       } else if (event.type === 'tool_execution_start') {
-        // 一句话说完入了池，清掉生成中预览
+        // 文本部分说完（接着要执行工具）：先把压着的最后一段推出去，再清提词器预览
+        this.flushText()
+        this.startTool(event.toolCallId, event.toolName, event.args)
         if (this.draft) {
           this.draft = ''
           this.broadcast(this.status())
         }
+      } else if (event.type === 'tool_execution_end') {
+        this.endTool(event.toolCallId, event.toolName, event.result, event.isError, event.durationMs)
       } else if (event.type === 'agent_end') {
         // prompt() 在 LLM 失败时也会正常 resolve——错误要看末条 assistant 消息的 stopReason
         const lastAssistant = [...event.messages].reverse().find((m) => m.role === 'assistant') as
@@ -386,11 +573,23 @@ export class AgentService {
           this.draft = ''
           this.broadcast(this.status())
         }
+        // 整轮结束：最后一条 assistant 消息的文本 = 最终回复
+        this.flushText()
+        this.finalizeTurn()
+      } else if (event.type === 'message_end') {
+        // 这条消息说完了：把节流压着的尾巴推出去（还接着调工具时，它仍是中间文本）
+        this.flushText()
+        if (this.draft) {
+          this.draft = ''
+          this.broadcast(this.status())
+        }
       } else if (event.type === 'agent_settled') {
         if (this.draft) {
           this.draft = ''
           this.broadcast(this.status())
         }
+        // 兜底：agent_end 没走到（异常/中断）也要把最终回复标出来
+        this.finalizeTurn()
       }
     })
 
@@ -403,4 +602,38 @@ function fingerprint(text: string): string {
   let hash = 5381
   for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0
   return (hash >>> 0).toString(16)
+}
+
+/**
+ * 把工具的入参/结果压成一行短摘要给工具卡片用（渲染层只展示一行，全文放 title）。
+ * pi 的工具结果是 `{ content: [{ type: 'text', text }] }`，直接抽文本比 JSON 好读得多。
+ */
+function oneLine(value: unknown, max: number): string {
+  let raw: string
+  if (typeof value === 'string') {
+    raw = value
+  } else if (Array.isArray(value)) {
+    raw = value.map((item) => oneLine(item, max)).join(' ')
+  } else if (value && typeof value === 'object') {
+    const content = (value as { content?: unknown }).content
+    if (Array.isArray(content)) {
+      raw = content
+        .map((part) => {
+          const text = (part as { text?: unknown })?.text
+          return typeof text === 'string' ? text : ''
+        })
+        .filter(Boolean)
+        .join(' ')
+    } else {
+      try {
+        raw = JSON.stringify(value) ?? String(value)
+      } catch {
+        raw = String(value)
+      }
+    }
+  } else {
+    raw = String(value)
+  }
+  const flat = raw.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
 }

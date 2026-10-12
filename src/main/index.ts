@@ -13,6 +13,7 @@ import {
   type AudioPcmPayload,
   type ConnectorStatus,
   type DirectorMessage,
+  type DirectorTimelineEvent,
   type LiveComment,
   type ModelConnectionInput,
   type PartialDeep,
@@ -200,12 +201,20 @@ function broadcastComment(comment: LiveComment): void {
   }
 }
 
-/** 导演对话消息广播（主播汇报/请示 → 导演对话面板） */
+/** 导演对话消息广播（主播请示 ask_director → 对话面板卡片） */
 function broadcastDirector(message: DirectorMessage): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.directorEvent, message)
   }
 }
+
+/** 对话时间线广播（文本流式 / 工具调用；同一 entry.id 会重复推更新，渲染层按 id upsert） */
+function broadcastDirectorTimeline(event: DirectorTimelineEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.directorTimeline, event)
+  }
+}
+
 
 /** 话术库单条状态变化广播（预合成进度） */
 function broadcastUtterance(utterance: Utterance): void {
@@ -703,13 +712,16 @@ if (!single) {
     const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
-    agent = new AgentService(storage, pool, persona, knowledge, memory, script, broadcastAgent, (text) =>
-      broadcastDirector({
-        id: `dm-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
-        ts: Date.now(),
-        kind: 'report',
-        text
-      })
+    agent = new AgentService(
+      storage,
+      pool,
+      persona,
+      knowledge,
+      memory,
+      script,
+      broadcastAgent,
+      // 对话时间线：文本流式 + 工具卡片，照 pi 事件流原样推到渲染层（docs/09 §11）
+      broadcastDirectorTimeline
     )
     triggers = new TriggerRuntime(storage, bus, pool, agent)
     streamSvc = new StreamService(storage, broadcastStream)

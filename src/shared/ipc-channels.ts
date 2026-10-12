@@ -53,8 +53,10 @@ export const IPC = {
 
   // 导演对话
   directorSend: 'director:send',
-  /** main → renderer：主播汇报/请示消息 */
+  /** main → renderer：主播请示（ask_director）卡片 */
   directorEvent: 'director:event',
+  /** main → renderer：对话时间线条目（文本流式 / 工具调用，按 entry.id upsert） */
+  directorTimeline: 'director:timeline',
   /** renderer → main：播报控制（暂停时连主播产出一起停） */
   playbackSetPaused: 'playback:set-paused',
   /** main → renderer：播报控制（主播工具 pause_broadcast/resume_broadcast/skip_current 触发） */

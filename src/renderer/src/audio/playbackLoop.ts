@@ -105,7 +105,7 @@ class PlaybackLoop {
 
       // 实时合成条目：不读文件，由主进程流式推 PCM，这里边收边排播
       if (item.stream && !item.audioPath) {
-        await this.playStream(item.id, item.text, item.voiceId || undefined)
+        await this.playStream(item.id, item.speechText || item.text, item.voiceId || undefined)
         if (!this.running) break
         await window.api.pool.markDone(item.id)
         continue

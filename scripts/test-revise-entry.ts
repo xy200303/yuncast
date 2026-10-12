@@ -103,7 +103,37 @@ export async function run(work: string): Promise<{ name: string; ok: boolean; de
     `status=${streamAfter?.status} text=${streamAfter?.text} calls=${afterStreamCalls}`
   )
 
-  // 4) 已播条目拒绝修订
+  // 4) 双稿分离：显示稿带 @，语音稿转成自然称呼
+  const reply = pool.insertNext({ text: '@桃子 一套 199，今天直播间专属价', sourceKind: 'reply' })
+  await sleep(80)
+  const replyItem = storage.speechGet(reply.id)
+  push(
+    '带 @ 的回复：显示稿保留 @，语音稿转自然称呼',
+    replyItem?.text.startsWith('@桃子') === true && replyItem?.speechText === '桃子朋友，一套 199，今天直播间专属价',
+    `text=${replyItem?.text} speech=${replyItem?.speechText}`
+  )
+
+  const odd = pool.insertNext({ text: '@用户123 在的', sourceKind: 'reply' })
+  await sleep(80)
+  const oddItem = storage.speechGet(odd.id)
+  push(
+    '数字/英文昵称用泛称',
+    oddItem?.speechText === '这位朋友，在的',
+    `speech=${oddItem?.speechText}`
+  )
+
+  const plain = pool.say({ text: '今天给大家带来一款不粘锅', sourceKind: 'scene' })
+  await sleep(80)
+  const plainItem = storage.speechGet(plain.id)
+  push('没有 @ 的话术不改动', plainItem?.speechText === undefined || plainItem?.speechText === plainItem?.text, `speech=${plainItem?.speechText}`)
+
+  // 5) 修订后语音稿同步重算
+  pool.revise(reply.id, '@桃子 一套 179')
+  await sleep(80)
+  const revised = storage.speechGet(reply.id)
+  push('修订后语音稿同步更新', revised?.speechText === '桃子朋友，一套 179', `speech=${revised?.speechText}`)
+
+  // 6) 已播条目拒绝修订
   storage.speechUpdate(streamItem.id, { status: 'playing' })
   let refused = false
   try {

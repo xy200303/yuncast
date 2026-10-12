@@ -288,7 +288,13 @@ function PoolRow({ item }: { item: SpeechItem }) {
             'min-w-0 flex-1 truncate text-[13px]',
             item.status === 'playing' && 'text-primary'
           )}
-          title={item.text}
+          title={
+            item.speechText && item.speechText !== item.text
+              ? `${item.text}
+
+实际念的是：${item.speechText}`
+              : item.text
+          }
         >
           {item.text}
         </span>

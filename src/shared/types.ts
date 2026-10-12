@@ -367,6 +367,8 @@ export interface SpeechItem {
   status: SpeechStatus
   /** TTS 合成完成的音频文件绝对路径（合成前为空） */
   audioPath?: string
+  /** 语音稿：真正送进 TTS 的文本（已把 @昵称 转成自然称呼）；空则用 text */
+  speechText?: string
   /** 实时合成条目：不预合成文件，播出时由渲染进程流式合成播放（tts.realtime 开启时） */
   stream?: boolean
   /** 合成/播放失败原因 */

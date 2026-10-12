@@ -93,6 +93,7 @@ interface SpeechRow {
   reply_to: unknown
   status: unknown
   audio_path: unknown
+  speech_text: unknown
   stream: unknown
   error: unknown
   sort_order: unknown
@@ -135,6 +136,7 @@ function rowToItem(row: SpeechRow): SpeechItem {
     replyTo,
     status: (str(row.status) || 'pending') as SpeechStatus,
     audioPath: str(row.audio_path) || undefined,
+    speechText: str(row.speech_text) || undefined,
     stream: num(row.stream) === 1,
     error: str(row.error) || undefined,
     sortOrder: num(row.sort_order),
@@ -290,6 +292,8 @@ export class StorageService {
     this.ensureColumn('agents', 'active', 'INTEGER NOT NULL DEFAULT 0')
     // 实时合成条目标记（M9）
     this.ensureColumn('speech_items', 'stream', 'INTEGER NOT NULL DEFAULT 0')
+    // 语音稿（显示稿与念法分离）
+    this.ensureColumn('speech_items', 'speech_text', 'TEXT')
     // 音色库（M8 声音克隆）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS voices (
@@ -424,8 +428,8 @@ export class StorageService {
       .prepare(
         `INSERT INTO speech_items
          (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
-          dedupe_key, expires_at, reply_to, status, audio_path, stream, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, stream, error, sort_order, created_at, played_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -442,6 +446,7 @@ export class StorageService {
         item.replyTo ? JSON.stringify(item.replyTo) : null,
         item.status,
         item.audioPath ?? null,
+        item.speechText ?? null,
         item.stream ? 1 : 0,
         item.error ?? null,
         item.sortOrder ?? null,
@@ -461,6 +466,7 @@ export class StorageService {
     if (patch.playedAt !== undefined) columns.played_at = patch.playedAt ?? null
     if (patch.voiceId !== undefined) columns.voice_id = patch.voiceId
     if (patch.stream !== undefined) columns.stream = patch.stream ? 1 : 0
+    if (patch.speechText !== undefined) columns.speech_text = patch.speechText ?? null
     const keys = Object.keys(columns)
     if (keys.length === 0) return
     const sql = `UPDATE speech_items SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`

@@ -11,6 +11,7 @@ import {
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
+import { toSpeechText } from './speechText'
 
 /**
  * 话术池（docs/01 §3.2/3.3）：任何声音进直播间的唯一入口。
@@ -96,6 +97,8 @@ export class SpeechPool {
   // ---------- 入池 ----------
 
   say(input: PoolSayInput): SpeechItem {
+    // 显示稿与语音稿分离：display 带 @昵称，送 TTS 的转成自然称呼（见 speechText.ts）
+    const speechText = toSpeechText(input.text)
     const text = input.text.trim()
     if (!text) throw new Error('话术内容为空')
     if (text.length > POOL_LIMITS.textMaxLength) {
@@ -141,6 +144,7 @@ export class SpeechPool {
       dedupeKey: input.dedupeKey,
       expiresAt: input.expiresAt,
       replyTo: input.replyTo,
+      speechText: speechText !== text ? speechText : undefined,
       status: 'pending',
       createdAt: Date.now()
     }
@@ -168,6 +172,7 @@ export class SpeechPool {
     const isStreamItem = item.stream && !item.audioPath
     this.storage.speechUpdate(id, {
       text,
+      speechText: toSpeechText(text),
       status: isStreamItem ? 'ready' : 'pending',
       audioPath: undefined,
       error: undefined
@@ -334,7 +339,12 @@ export class SpeechPool {
     this.storage.speechUpdate(item.id, { status: 'synthesizing' })
     this.broadcast(this.snapshot())
     try {
-      const audioPath = await this.tts.synthesize(item.id, textAtStart, item.voiceId || undefined, controller.signal)
+      const audioPath = await this.tts.synthesize(
+        item.id,
+        item.speechText || textAtStart,
+        item.voiceId || undefined,
+        controller.signal
+      )
       if (controller.signal.aborted) return
       const current = this.storage.speechGet(item.id)
       if (!current || current.text !== textAtStart) {

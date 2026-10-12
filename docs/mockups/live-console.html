@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>直播台 · 新版界面原型</title>
+<style>
+  :root {
+    --bg-base: #141311; --bg-surface: #1c1b18; --bg-elevated: #24221d;
+    --border: #34312a; --text-1: #edeae2; --text-2: #a8a29a; --text-3: #6e6a61;
+    --brand: #c4703f; --brand-soft: rgba(196,112,63,.14);
+    --live: #e23e32; --ok: #6fa287; --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-base); color: var(--text-1);
+         font: 13px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; height: 100vh; overflow: hidden; }
+  .win { display: flex; flex-direction: column; height: 100vh; }
+  .titlebar { height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 14px;
+              border-bottom: 1px solid var(--border); background: var(--bg-surface); flex-shrink: 0; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; }
+  .brand i { display: inline-flex; width: 22px; height: 22px; border-radius: 6px; background: var(--brand);
+             color: #fff; align-items: center; justify-content: center; font-size: 12px; font-style: normal; }
+  .body { flex: 1; display: flex; min-height: 0; }
+  .sidebar { width: 200px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg-surface); padding: 10px 8px; }
+  .nav-item { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--text-2); }
+  .nav-item.active { background: var(--bg-elevated); color: var(--brand); }
+  .nav-label { padding: 10px 10px 4px; font-size: 11px; color: var(--text-3); }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+
+  /* 顶部：场次 + 开播 */
+  .topbar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
+            border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .h1 { font-size: 15px; font-weight: 600; }
+  .select { height: 34px; min-width: 220px; display: flex; align-items: center; justify-content: space-between;
+            padding: 0 12px; border-radius: 8px; background: var(--bg-elevated); color: var(--text-1); }
+  .btn { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; border-radius: 8px;
+         border: 1px solid var(--border); background: transparent; color: var(--text-1); font-size: 13px; }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 500; }
+  .btn.danger { border-color: rgba(224,49,49,.45); color: #ef7d73; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px;
+          border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+  .pill.ok { color: var(--ok); border-color: rgba(111,162,135,.4); }
+  .pill.live { color: #ef7d73; border-color: rgba(226,62,50,.4); }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .spacer { flex: 1; }
+
+  /* 三栏 */
+  .grid { flex: 1; display: flex; gap: 12px; padding: 12px 16px; min-height: 0; }
+  .col { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .col.left { flex: 1; }
+  .col.right { width: 360px; flex-shrink: 0; gap: 12px; }
+  .card { border: 1px solid var(--border); border-radius: 10px; background: var(--bg-surface); display: flex;
+          flex-direction: column; min-height: 0; overflow: hidden; }
+  .card-head { height: 34px; display: flex; align-items: center; gap: 8px; padding: 0 12px;
+               border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-2); flex-shrink: 0; }
+  .tabs { display: flex; gap: 14px; padding: 8px 12px 0; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .tab { padding-bottom: 8px; color: var(--text-2); font-size: 12px; }
+  .tab.active { color: var(--text-1); border-bottom: 2px solid var(--brand); margin-bottom: -1px; }
+  .scroll { overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+  .row { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg-elevated); }
+  .row .meta { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 11px; color: var(--text-3); }
+  .tag { display: inline-flex; align-items: center; height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px; }
+  .tag.lane { background: var(--brand-soft); color: var(--brand); }
+  .tag.next { background: rgba(111,162,135,.16); color: var(--ok); }
+  .tag.src { border: 1px solid var(--border); color: var(--text-3); }
+  .tag.warn { background: rgba(217,164,65,.14); color: var(--warn); }
+  .row .text { color: var(--text-1); }
+  .row.dim { opacity: .55; }
+  .row.playing { border-color: rgba(196,112,63,.5); background: rgba(196,112,63,.06); }
+  .row.playing .text { color: var(--brand); font-weight: 500; }
+
+  /* 提词器 */
+  .tp-body { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .tp-now { border: 1px solid rgba(196,112,63,.35); background: rgba(196,112,63,.06); border-radius: 8px; padding: 10px; line-height: 1.9; }
+  .sent-done { color: var(--text-3); }
+  .sent-now { color: var(--brand); font-weight: 600; }
+  .tp-next { font-size: 12px; color: var(--text-2); display: flex; flex-direction: column; gap: 6px; }
+
+  /* 导演对话 */
+  .chat { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; overflow: auto; flex: 1; min-height: 0; }
+  .msg { font-size: 12px; }
+  .msg.me { align-self: flex-end; background: var(--brand-soft); color: var(--text-1); padding: 6px 10px; border-radius: 8px; max-width: 85%; }
+  .msg.report { color: var(--text-3); padding-left: 2px; }
+  .ask { border: 1px solid rgba(217,164,65,.45); background: rgba(217,164,65,.07); border-radius: 8px; padding: 10px; }
+  .ask .q { color: var(--warn); font-weight: 600; margin-bottom: 8px; }
+  .ask .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt { border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px; font-size: 12px; color: var(--text-1); background: var(--bg-elevated); }
+  .composer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
+  .composer input { flex: 1; height: 32px; border-radius: 8px; border: 1px solid transparent; background: var(--bg-elevated);
+                    color: var(--text-1); padding: 0 10px; font-size: 12px; }
+
+  /* 操作条 + 状态栏 */
+  .actions { display: flex; align-items: center; gap: 8px; padding: 0 16px 10px; flex-shrink: 0; }
+  .statusbar { height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-top: 1px solid var(--border);
+               background: var(--bg-surface); color: var(--text-3); font-size: 11px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="titlebar"><div class="brand"><i>⚓</i>Agent Anchor</div><div class="spacer"></div>
+    <span class="pill">—</span><span class="pill">▢</span><span class="pill">✕</span></div>
+
+  <div class="body">
+    <div class="sidebar">
+      <div class="nav-item active">◉ 直播台</div>
+      <div class="nav-item">📅 场次</div>
+      <div class="nav-label">资产库</div>
+      <div class="nav-item">🤖 主播团</div>
+      <div class="nav-item">📖 知识库</div>
+      <div class="nav-item">🎵 音色库</div>
+      <div class="nav-label">数据</div>
+      <div class="nav-item">📊 数据</div>
+    </div>
+
+    <div class="main">
+      <!-- 顶部：唯一开播入口 -->
+      <div class="topbar">
+        <span class="h1">直播台</span>
+        <div class="select">周五晚 · 锅具专场　▾</div>
+        <button class="btn primary">▶ 启动场次</button>
+        <span class="pill ok"><span class="dot"></span>推流中 2500 kbps</span>
+        <span class="pill">时长 00:12:34</span>
+        <div class="spacer"></div>
+        <span class="pill">场景 3/6 · 讲解 · 变体 2/4</span>
+        <button class="btn danger">紧急停止</button>
+      </div>
+
+      <div class="grid">
+        <!-- 左栏：池 + 评论 -->
+        <div class="col left">
+          <div class="card">
+            <div class="tabs"><div class="tab active">话术池队列 · 42</div><div class="tab">评论流 · 18</div></div>
+            <div class="scroll">
+              <div class="row playing">
+                <div class="meta"><span class="tag lane">骨架 · 讲解</span><span class="tag src">来源：商品卡 · 不粘锅</span><span class="spacer"></span>播报中</div>
+                <div class="text">这个涂层是瑞士进口的，煎蛋不放油都不粘，大家看这个效果——</div>
+              </div>
+              <div class="row">
+                <div class="meta"><span class="tag next">插播 · 回复 @桃子</span><span class="spacer"></span>就绪</div>
+                <div class="text">@桃子 一套 199，今天直播间专属价</div>
+              </div>
+              <div class="row">
+                <div class="meta"><span class="tag lane">骨架 · 讲解</span><span class="tag src">来源：商品卡 · 不粘锅</span><span class="spacer"></span>就绪</div>
+                <div class="text">锅身是三层复合底，电磁炉明火都能用，重量只有 1.2 公斤</div>
+              </div>
+              <div class="row">
+                <div class="meta"><span class="tag next">插播 · 礼物感谢</span><span class="spacer"></span>就绪</div>
+                <div class="text">感谢 挑剔大王 送的人气票！</div>
+              </div>
+              <div class="row dim">
+                <div class="meta"><span class="tag lane">骨架 · 催单</span><span class="tag src">来源：外部链接（待确认）</span><span class="spacer"></span>合成中</div>
+                <div class="text">库存只剩 30 多件了，要的家人抓紧</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右栏：提词器 + 导演对话 -->
+        <div class="col right">
+          <div class="card">
+            <div class="card-head">提词器<span class="spacer"></span>场景 3/6 · 讲解 · 变体 2/4</div>
+            <div class="tp-body">
+              <div class="tp-now">
+                <span class="sent-done">这个涂层是瑞士进口的，</span><span class="sent-now">煎蛋不放油都不粘，</span><span>大家看这个效果，真的是一擦就干净。</span>
+              </div>
+              <div class="tp-next">
+                <span>接下来要播</span>
+                <div class="row" style="padding:6px 8px"><div class="meta"><span class="tag next">插播 · 回复 @桃子</span></div><div class="text">@桃子 一套 199，今天直播间专属价</div></div>
+                <div class="row" style="padding:6px 8px"><div class="meta"><span class="tag lane">骨架 · 讲解</span></div><div class="text">锅身是三层复合底，电磁炉明火都能用…</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="flex:1.1; min-height:0">
+            <div class="card-head">导演对话<span class="spacer"></span><span class="tag warn">1 条待答</span></div>
+            <div class="chat">
+              <div class="msg me">接下来多互动，少推产品</div>
+              <div class="msg report">· 已插入两条互动话术，报价话术往后排了 3 分钟</div>
+              <div class="msg me">音色换成小助理</div>
+              <div class="msg report">· 已切换（角色「小助理」· longanhuan_v3.1）</div>
+              <div class="ask">
+                <div class="q">❓ 讲解场景播完了，接下来？</div>
+                <div class="opts"><span class="opt">推进到互动</span><span class="opt">循环讲解</span><span class="opt">再等 2 分钟</span></div>
+              </div>
+            </div>
+            <div class="composer"><input placeholder="输入指令…（如：节奏太快了 / 下一句别报价）" /><button class="btn">发送</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作条 + 状态栏 -->
+      <div class="actions">
+        <button class="btn">📣 人工播报</button>
+        <button class="btn">🎙 接管说话（按住）</button>
+        <button class="btn">💬 插话</button>
+        <button class="btn">🎬 切场景</button>
+        <button class="btn">🎛 场控指令</button>
+        <button class="btn">🔊 调音量</button>
+        <div class="spacer"></div>
+        <span class="pill">BGM 轻音乐 · 30%</span>
+      </div>
+      <div class="statusbar">
+        <span>播报中 · 涂层是瑞士进口的…</span><div class="spacer"></div>
+        <span>场景 3 讲解</span><span>·</span><span style="color:var(--ok)">推流已配置</span><span>·</span>
+        <span style="color:var(--ok)">LLM 已配置</span><span>·</span><span style="color:var(--ok)">TTS 已配置</span><span>·</span>
+        <span style="color:var(--ok)">连接器已连接</span><span>·</span><span>事件 1,204</span>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

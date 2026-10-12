@@ -1,59 +1,66 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Input } from '@/components/ui/input'
+import { Check, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { ProviderIcon } from '@/components/ProviderIcon'
+import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
 import { TTS_PROVIDER_SHORT, type TtsConnectionSafe } from '../../../shared/types'
 import { formatManualVoice, parseManualVoice } from '../../../shared/voiceProvider'
 
-const NONE = '__none__'
-
-interface VoiceOption {
+interface VoiceLeaf {
   id: string
   name: string
 }
 
+interface VoiceGroup {
+  key: string
+  label: string
+  voices: VoiceLeaf[]
+}
+
 /**
- * 音色选择：**先选模型，再选音色**（分组在音色下拉里以分组标题展开），需要时切手动输入。
+ * 音色选择：一个紧凑控件 + 级联子菜单（Radix DropdownMenu 的 SubMenu，成熟库，行为由它管）。
  *
- * 为什么不用自绘的级联面板：音色数量是几百个（火山 2.0 有 244 个），铺开占半屏，
- * 所以收进下拉；而 Radix Select 是项目里到处在用的成熟组件（键盘可达、分组、滚动都现成），
- * 自己画一个多列面板反而容易在状态同步上翻车。
+ * 形态：点开 → 模型列（每条接入启用的模型）→ 悬停展开「分组」列 → 再展开「音色」列。
+ * 每个子列自己滚动，所以 244 个音色也不会拉出一条长列表——这正是把长列表拆成级联的目的。
  *
- * - 音色下拉里：克隆音色、各场景分组用 SelectGroup 展开，一次只显示一列，滚动即可
- * - 官方没给音色目录的模型（qwen-audio-3.x / cosyvoice-v3.5）自动切到手动输入，
- *   产出 `接入::模型::音色`（合成路由按这个前缀找接入与模型）
- * - 接入只在有多条时出现；音色严格绑定模型，选了哪个模型的音色就走那条接入与该模型
+ * - 手动输入：菜单里选「手动输入…」切到输入框（产出 `接入::模型::音色`），再点「改从目录选」切回
+ * - 官方没给音色目录的模型在模型项后面标注，进去只有「手动输入…」可选
+ * - 接入有多条时，模型项前面缀上接入名（不再多开一层）
+ * - 音色严格绑定模型：选中叶子同时把模型回调出去（接入测试弹窗要用）
  */
 export function VoiceCascadePicker({
   voiceId,
   onPick,
   onModelChange,
   connections,
-  allowManual = true
+  allowManual = true,
+  placeholder = '选择音色'
 }: {
   voiceId: string
   onPick: (voiceId: string) => void
-  /** 受控方想同步知道当前选的模型（例如接入测试弹窗） */
   onModelChange?: (modelId: string) => void
   /** 可选范围（测试弹窗只给那一条接入）；默认全部有可用模型的接入 */
   connections?: TtsConnectionSafe[]
   allowManual?: boolean
+  placeholder?: string
 }) {
   const allConnections = useAppStore((s) => s.ttsConnections)
   const providers = useAppStore((s) => s.ttsProviders)
   const voices = useAppStore((s) => s.voices)
 
-  // 只按 id 组成判断范围（调用方常传内联数组，按引用算会在每次渲染时重算并把选择冲掉）
+  // 可选范围按「接入 id 串」记忆：调用方常传内联数组，按引用算会在每次渲染时重算
   const scoped = connections ?? allConnections.filter((item) => item.usableModels.length > 0)
   const scopeKey = scoped.map((item) => item.id).join('|')
   const scope = useMemo(
@@ -62,102 +69,110 @@ export function VoiceCascadePicker({
     [scopeKey]
   )
 
-  const [connectionId, setConnectionId] = useState('')
-  const [modelId, setModelId] = useState('')
-  /** 手动输入模式：模型没有音色目录时自动开，也可以手动切 */
   const [manual, setManual] = useState(false)
   const [manualDraft, setManualDraft] = useState('')
+  const [manualModel, setManualModel] = useState('')
 
-  const connection = scope.find((item) => item.id === connectionId) ?? scope[0]
-  const manifest = providers.find((item) => item.id === connection?.providerId)
-  const modelSpec = manifest?.models.find((spec) => spec.id === modelId)
-
-  const modelOptions = useMemo(
-    () =>
-      (connection?.models ?? [])
-        .map((item) => manifest?.models.find((spec) => spec.id === item.id))
-        .filter((spec): spec is NonNullable<typeof spec> => Boolean(spec)),
-    [connection, manifest]
-  )
-
-  /** 音色下拉里的分组：克隆音色 + 各场景分组（一次只列一列，滚动即可） */
-  const voiceGroups = useMemo(() => {
-    if (!connection || !modelId) return [] as { label: string; voices: VoiceOption[] }[]
-    const list: { label: string; voices: VoiceOption[] }[] = []
-    const clones = voices.filter(
-      (voice) =>
-        voice.status === 'ready' &&
-        Boolean(voice.voiceType) &&
-        voice.connectionId === connection.id &&
-        voice.model === modelId
-    )
-    if (clones.length > 0) {
-      list.push({
-        label: '克隆音色',
-        voices: clones.map((voice) => ({ id: voice.voiceType, name: voice.name }))
-      })
+  /** 每个模型一项：音色分组 + 这条接入里绑它的克隆音色 */
+  const modelEntries = useMemo(() => {
+    const entries: {
+      connection: TtsConnectionSafe
+      modelId: string
+      label: string
+      groups: VoiceGroup[]
+    }[] = []
+    for (const connection of scope) {
+      const manifest = providers.find((item) => item.id === connection.providerId)
+      for (const item of connection.models) {
+        const spec = manifest?.models.find((model) => model.id === item.id)
+        if (!spec) continue
+        const groups: VoiceGroup[] = []
+        const clones = voices.filter(
+          (voice) =>
+            voice.status === 'ready' &&
+            Boolean(voice.voiceType) &&
+            voice.connectionId === connection.id &&
+            voice.model === spec.id
+        )
+        if (clones.length > 0) {
+          groups.push({
+            key: 'clone',
+            label: `克隆音色（${clones.length}）`,
+            voices: clones.map((voice) => ({ id: voice.voiceType, name: voice.name }))
+          })
+        }
+        for (const group of spec.voices) {
+          if (group.voices.length > 0) {
+            groups.push({
+              key: group.label,
+              label: `${group.label}（${group.voices.length}）`,
+              voices: group.voices
+            })
+          }
+        }
+        entries.push({
+          connection,
+          modelId: spec.id,
+          label: spec.label,
+          groups
+        })
+      }
     }
-    for (const group of modelSpec?.voices ?? []) {
-      if (group.voices.length > 0) list.push({ label: group.label, voices: group.voices })
-    }
-    return list
-  }, [connection, modelId, modelSpec, voices])
+    return entries
+  }, [scope, providers, voices])
 
-  const hasCatalog = voiceGroups.length > 0
-
-  /** 外部 voiceId 落回「接入 + 模型 + 是否手动」；只在音色或范围变化时重算，不跟着每次渲染重置 */
+  /** 外部 voiceId 反查（克隆音色 / 目录音色 / 手动串三种都能对上） */
   useEffect(() => {
-    if (scope.length === 0) return
     const id = voiceId.trim()
     const clone = voices.find((voice) => voice.voiceType === id && voice.status === 'ready')
     if (clone) {
-      setConnectionId(clone.connectionId || scope[0].id)
-      setModelId(clone.model)
       setManual(false)
+      onModelChange?.(clone.model)
       return
     }
     const manualRef = parseManualVoice(id)
-    if (manualRef && scope.some((item) => item.id === manualRef.connectionId)) {
-      setConnectionId(manualRef.connectionId)
-      setModelId(manualRef.modelId)
+    if (manualRef) {
       setManual(true)
       setManualDraft(manualRef.voice)
+      setManualModel(manualRef.modelId)
+      onModelChange?.(manualRef.modelId)
       return
     }
-    for (const item of scope) {
-      const itemManifest = providers.find((entry) => entry.id === item.providerId)
-      for (const spec of itemManifest?.models ?? []) {
-        if (spec.voices.some((group) => group.voices.some((voice) => voice.id === id))) {
-          setConnectionId(item.id)
-          setModelId(spec.id)
+    if (!id) return
+    for (const entry of modelEntries) {
+      for (const group of entry.groups) {
+        if (group.voices.some((voice) => voice.id === id)) {
           setManual(false)
+          onModelChange?.(entry.modelId)
           return
         }
       }
     }
-    // 空值/认不出来的值：默认落在第一个「有音色目录」的模型上
-    setConnectionId((prev) => (scope.some((item) => item.id === prev) ? prev : scope[0].id))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [voiceId, scopeKey, voices, providers])
 
-  /** 模型级联变化上的对齐：当前模型不在范围里就换到第一个有目录的模型（没有目录的则进手动输入） */
-  useEffect(() => {
-    if (!connection) return
-    if (modelOptions.some((spec) => spec.id === modelId)) return
-    // 默认落在第一个「有音色目录」的模型上：一进来就撞上没有目录、只能手填的模型体验很差
-    const first = modelOptions.find((spec) => spec.voices.length > 0) ?? modelOptions[0]
-    setModelId(first?.id ?? '')
-    setManual(first ? first.voices.length === 0 : false)
+  const selectedName = useMemo(() => {
+    const id = voiceId.trim()
+    if (!id) return ''
+    const clone = voices.find((voice) => voice.voiceType === id && voice.status === 'ready')
+    if (clone) return clone.name
+    const manualRef = parseManualVoice(id)
+    if (manualRef) return manualRef.voice
+    for (const entry of modelEntries) {
+      for (const group of entry.groups) {
+        const hit = group.voices.find((voice) => voice.id === id)
+        if (hit) return hit.name
+      }
+    }
+    return id
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection?.id, modelOptions.map((spec) => spec.id).join('|')])
+  }, [voiceId, modelEntries])
 
-  /** 换模型：没有音色目录的直接进手动输入，别让用户撞一个空下拉 */
-  useEffect(() => {
-    if (!modelId) return
-    if (!hasCatalog && allowManual) setManual(true)
-    onModelChange?.(modelId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelId, hasCatalog])
+  /** 默认对手动输入用的模型：范围里第一个「有音色目录」的（没有就第一个） */
+  const fallbackEntry = useMemo(
+    () => modelEntries.find((entry) => entry.groups.length > 0) ?? modelEntries[0],
+    [modelEntries]
+  )
 
   if (scope.length === 0) {
     return (
@@ -167,60 +182,26 @@ export function VoiceCascadePicker({
     )
   }
 
+  const pickVoice = (entry: (typeof modelEntries)[number], id: string): void => {
+    setManual(false)
+    onModelChange?.(entry.modelId)
+    onPick(id)
+  }
+
+  const enterManual = (modelId: string): void => {
+    setManual(true)
+    setManualDraft('')
+    setManualModel(modelId)
+    onModelChange?.(modelId)
+    onPick('')
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap gap-2">
-        {scope.length > 1 && (
-          <Select
-            value={connection?.id ?? ''}
-            onValueChange={(value) => {
-              setConnectionId(value)
-              setModelId('')
-              setManual(false)
-            }}
-          >
-            <SelectTrigger className="h-8 min-w-40 flex-1 text-xs">
-              <SelectValue placeholder="接入" />
-            </SelectTrigger>
-            <SelectContent>
-              {scope.map((item) => (
-                <SelectItem key={item.id} value={item.id}>
-                  <span className="flex items-center gap-2">
-                    <ProviderIcon providerId={item.providerId} size="sm" />
-                    {TTS_PROVIDER_SHORT[item.providerId]} · {item.name}
-                  </span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-
-        <Select
-          value={modelId}
-          onValueChange={(value) => {
-            setModelId(value)
-            setManualDraft('')
-            if (allowManual && (modelOptions.find((spec) => spec.id === value)?.voices.length ?? 0) === 0) {
-              setManual(true)
-            }
-          }}
-        >
-          <SelectTrigger className="h-8 min-w-36 flex-1 text-xs">
-            <SelectValue placeholder="模型" />
-          </SelectTrigger>
-          <SelectContent>
-            {modelOptions.map((spec) => (
-              <SelectItem key={spec.id} value={spec.id}>
-                {spec.label}
-                {spec.voices.length === 0 ? '（无音色目录）' : ''}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-
-        {manual ? (
+      {manual ? (
+        <div className="flex flex-wrap items-center gap-2">
           <Input
-            className="h-8 min-w-40 flex-1 text-xs"
+            className="h-8 min-w-48 flex-1 text-xs"
             value={manualDraft}
             placeholder="音色 id，如 longanhuan_v3.6"
             onChange={(e) => {
@@ -228,61 +209,117 @@ export function VoiceCascadePicker({
               const value = e.target.value.trim()
               onPick(
                 value
-                  ? formatManualVoice({ connectionId: connection?.id ?? '', modelId, voice: value })
+                  ? formatManualVoice({
+                      connectionId:
+                        modelEntries.find((entry) => entry.modelId === manualModel)?.connection.id ?? '',
+                      modelId: manualModel,
+                      voice: value
+                    })
                   : ''
               )
             }}
           />
-        ) : (
-          <Select
-            value={voiceGroups.some((group) => group.voices.some((v) => v.id === voiceId)) ? voiceId : NONE}
-            onValueChange={(value) => onPick(value === NONE ? '' : value)}
-          >
-            <SelectTrigger className="h-8 min-w-36 flex-1 text-xs">
-              <SelectValue placeholder="音色" />
-            </SelectTrigger>
-            <SelectContent className="max-h-72">
-              <SelectItem value={NONE}>留空（用该模型第一个音色）</SelectItem>
-              {voiceGroups.map((group) => (
-                <SelectGroup key={group.label}>
-                  <SelectLabel>{group.label}</SelectLabel>
-                  {group.voices.map((voice) => (
-                    <SelectItem key={voice.id} value={voice.id}>
-                      {voice.name}
-                    </SelectItem>
-                  ))}
-                </SelectGroup>
-              ))}
-            </SelectContent>
-          </Select>
-        )}
-      </div>
-
-      {allowManual && (
-        <div className="flex items-center gap-2">
           <Button
             type="button"
             variant="ghost"
             size="sm"
-            className="h-6 px-1.5 text-xs text-muted-foreground"
+            className="h-7 text-xs text-muted-foreground"
             onClick={() => {
-              setManual((prev) => !prev)
-              if (manual) {
-                setManualDraft('')
-                onPick('')
-              }
+              setManual(false)
+              setManualDraft('')
+              onPick('')
             }}
           >
-            {manual ? '改从目录选' : '手动输入音色'}
+            改从目录选
           </Button>
-          {manual && (
-            <span className="text-xs text-muted-foreground">存成「接入::模型::音色」，合成时按它路由</span>
-          )}
-          {!manual && !hasCatalog && (
-            <span className="text-xs text-amber-600">这个模型没有内置音色目录，请用手动输入</span>
-          )}
         </div>
+      ) : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className={cn(
+                'flex h-8 w-full items-center justify-between gap-2 rounded-lg border bg-transparent px-2.5 text-xs',
+                'hover:bg-accent focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:outline-none'
+              )}
+            >
+              <span className="flex min-w-0 items-center gap-2">
+                {fallbackEntry && (
+                  <ProviderIcon providerId={fallbackEntry.connection.providerId} size="sm" />
+                )}
+                <span className={cn('truncate', !selectedName && 'text-muted-foreground')}>
+                  {selectedName || placeholder}
+                </span>
+              </span>
+              <ChevronRight className="size-3.5 shrink-0 rotate-90 text-muted-foreground" />
+            </button>
+          </DropdownMenuTrigger>
+
+          <DropdownMenuContent align="start" className="w-60">
+            <DropdownMenuItem onSelect={() => onPick('')}>留空（用该模型第一个音色）</DropdownMenuItem>
+            <DropdownMenuSeparator />
+
+            {modelEntries.map((entry) => (
+              <DropdownMenuSub key={`${entry.connection.id}-${entry.modelId}`}>
+                <DropdownMenuSubTrigger className="flex items-center gap-2">
+                  <span className="min-w-0 flex-1 truncate">
+                    {entry.label}
+                    {scope.length > 1 ? `（${entry.connection.name}）` : ''}
+                  </span>
+                </DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-80 w-60 overflow-y-auto">
+                  {entry.groups.length === 0 && (
+                    <DropdownMenuItem disabled>
+                      这个模型没有内置音色目录，请用手动输入
+                    </DropdownMenuItem>
+                  )}
+                  {entry.groups.map((group) => (
+                    <DropdownMenuSub key={group.key}>
+                      <DropdownMenuSubTrigger>{group.label}</DropdownMenuSubTrigger>
+                      <DropdownMenuSubContent className="max-h-80 w-56 overflow-y-auto">
+                        {group.voices.map((voice) => (
+                          <DropdownMenuItem
+                            key={voice.id}
+                            onSelect={() => pickVoice(entry, voice.id)}
+                          >
+                            <span className="min-w-0 flex-1 truncate">{voice.name}</span>
+                            {voice.id === voiceId && <Check className="size-3.5" />}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuSubContent>
+                    </DropdownMenuSub>
+                  ))}
+                  {allowManual && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onSelect={() => enterManual(entry.modelId)}>
+                        手动输入这个模型的音色…
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ))}
+
+            {allowManual && fallbackEntry && modelEntries.length === 0 && (
+              <DropdownMenuItem onSelect={() => enterManual(fallbackEntry.modelId)}>
+                手动输入…
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
+
+      {!manual && allowManual && (
+        <button
+          type="button"
+          className="self-start text-xs text-muted-foreground underline-offset-2 hover:underline"
+          onClick={() => enterManual(manualModel || fallbackEntry?.modelId || '')}
+        >
+          手动输入音色
+        </button>
+      )}
+      {manual && <p className="text-xs text-muted-foreground">存成「接入::模型::音色」，合成时按它路由</p>}
     </div>
   )
 }

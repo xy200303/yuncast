@@ -97,8 +97,8 @@ export function LivePage() {
   const levels = useAppStore((s) => s.levels)
   const [leftTab, setLeftTab] = useState<'pool' | 'comments'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
-  /** 右栏选项卡：对话是主区（铺满高度），提词器/操作切过去才显示 */
-  const [rightTab, setRightTab] = useState<'chat' | 'teleprompter' | 'control'>('chat')
+  /** 右栏选项卡：对话是主区（铺满高度），操作切过去才显示 */
+  const [rightTab, setRightTab] = useState<'chat' | 'control'>('chat')
   /** 导演对话未读数（切走时有新汇报/请示在选项卡上亮红点） */
   const [chatUnread, setChatUnread] = useState(0)
 
@@ -128,12 +128,13 @@ export function LivePage() {
   }, [])
 
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
-  const queued = pool.items.filter((item) => item.status !== 'playing')
 
-  // 按话轮分组（同 lane + turnId 的连续条目一组，原子播出不拆开）
+  // 队列 = 还没开始播的条目，按话轮分组（同 lane + turnId 一组，原子播出不拆开）。
+  // 正在播的那条由上方「播报中」条显示（句级高亮），队列里不再重复列一遍。
   const groups = useMemo(() => {
     const out: { key: string; items: SpeechItem[] }[] = []
     for (const item of pool.items) {
+      if (item.status === 'playing') continue
       const key = `${item.lane}:${item.turnId}`
       const last = out[out.length - 1]
       if (last && last.key === key) last.items.push(item)
@@ -164,8 +165,17 @@ export function LivePage() {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* 左栏：话术池队列 / 评论流，选项卡切换 */}
+        {/* 左栏 = 播报区：上面固定显示「正在播什么」（原提词器内容），下面切 队列 / 评论流 */}
         <section className="flex min-w-0 flex-1 flex-col">
+          <div className="shrink-0 border-b px-4 py-3">
+            <SceneLine />
+            <AgentDraft />
+            {playing ? (
+              <TeleprompterCurrent item={playing} />
+            ) : (
+              <p className="text-xs text-muted-foreground">当前没有在播的话术</p>
+            )}
+          </div>
           <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
             <div className="shrink-0 border-b px-4 pt-2">
               <TabsList variant="line">
@@ -181,7 +191,9 @@ export function LivePage() {
               {groups.length === 0 && pool.failed.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                   <Radio className="size-10" strokeWidth={1.25} />
-                  <p className="text-sm">话术池是空的，从右侧操作面板发起人工播报</p>
+                  <p className="text-sm">
+                    {playing ? '队列空了，正在播的就是上面这条' : '话术池是空的，从右侧操作面板发起人工播报'}
+                  </p>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
@@ -214,8 +226,8 @@ export function LivePage() {
           </Tabs>
         </section>
 
-        {/* 右侧面板：选项卡切换。对话是主区（铺满整栏）；提词器/操作切过去才显示。
-            forceMount 保持挂载——切走不丢消息状态和订阅。 */}
+        {/* 右侧面板：对话（主区，铺满整栏）/ 操作。forceMount 保持挂载——切走不丢消息状态和订阅。
+            「正在播什么」在左栏顶部，这里不再重复一遍。 */}
         <aside className="flex w-80 shrink-0 flex-col border-l">
           <Tabs
             value={rightTab}
@@ -231,9 +243,6 @@ export function LivePage() {
                   对话
                   {chatUnread > 0 && <Badge className="ml-1 h-4 px-1 text-[10px]">{chatUnread}</Badge>}
                 </TabsTrigger>
-                <TabsTrigger value="teleprompter" className="px-3 text-xs">
-                  提词器
-                </TabsTrigger>
                 <TabsTrigger value="control" className="px-3 text-xs">
                   操作
                 </TabsTrigger>
@@ -241,35 +250,6 @@ export function LivePage() {
             </div>
             <TabsContent value="chat" forceMount className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
               <DirectorConsole active={rightTab === 'chat'} onUnread={() => setChatUnread((n) => n + 1)} />
-            </TabsContent>
-            <TabsContent
-              value="teleprompter"
-              forceMount
-              className="min-h-0 flex-1 overflow-y-auto p-4 data-[state=inactive]:hidden"
-            >
-              <SceneLine />
-              <AgentDraft />
-              {playing ? (
-                <TeleprompterCurrent item={playing} />
-              ) : (
-                <p className="text-sm text-muted-foreground">当前没有在播的话术</p>
-              )}
-              <p className="mt-5 mb-2 text-xs text-muted-foreground">接下来要播</p>
-              {queued.length === 0 ? (
-                <p className="text-xs text-muted-foreground">队列空了</p>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {queued.slice(0, 3).map((item) => (
-                    <div key={item.id} className="rounded-lg border bg-card px-3 py-2">
-                      <div className="mb-1 flex items-center gap-1.5">
-                        <Badge variant={LANE_BADGE_VARIANT[item.lane]}>{LANE_LABEL[item.lane]}</Badge>
-                        <Badge variant="outline">{STATUS_LABEL[item.status]}</Badge>
-                      </div>
-                      <p className="line-clamp-2 text-[13px] text-muted-foreground">{item.text}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
             </TabsContent>
             <TabsContent value="control" forceMount className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
               <ControlPanel onOpenChat={() => setRightTab('chat')} />

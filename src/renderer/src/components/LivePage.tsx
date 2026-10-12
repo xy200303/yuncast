@@ -3,7 +3,6 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
-  CircleHelp,
   Clapperboard,
   Loader2,
   Megaphone,
@@ -144,29 +143,27 @@ export function LivePage() {
   }, [pool.items])
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Radio className="size-4 text-primary" />
-        <h1 className="text-sm font-medium">直播台</h1>
-        {/* 唯一开播入口：选场次 → 启动场次（docs/07 §8.5） */}
-        <PlanLauncher />
-        <div className="ml-auto flex items-center gap-3">
-          <StreamIndicator />
-          {/* 主输出电平 */}
-          <div className="flex items-center gap-1.5" title="输出电平">
-            <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-primary transition-[width] duration-150"
-                style={{ width: `${Math.round(levels.master * 100)}%` }}
-              />
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <div className="flex min-h-0 flex-1">
-        {/* 左栏 = 播报区：上面固定显示「正在播什么」（原提词器内容），下面切 队列 / 评论流 */}
+    <div className="flex min-h-0 flex-1">
+        {/* 左栏 = 播报区。header（场次 + 开播控制）只属于主区，右栏从窗口顶部铺到底，不留空带 */}
         <section className="flex min-w-0 flex-1 flex-col">
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+            <Radio className="size-4 text-primary" />
+            <h1 className="text-sm font-medium">直播台</h1>
+            {/* 唯一开播入口：选场次 → 启动场次（docs/07 §8.5） */}
+            <PlanLauncher />
+            <div className="ml-auto flex items-center gap-3">
+              <StreamIndicator />
+              {/* 主输出电平 */}
+              <div className="flex items-center gap-1.5" title="输出电平">
+                <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-[width] duration-150"
+                    style={{ width: `${Math.round(levels.master * 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+          </header>
           <div className="shrink-0 border-b px-4 py-3">
             <SceneLine />
             <AgentDraft />
@@ -256,7 +253,6 @@ export function LivePage() {
             </TabsContent>
           </Tabs>
         </aside>
-      </div>
     </div>
   )
 }
@@ -645,7 +641,57 @@ function AgentDraft() {
   )
 }
 
-/** 请示卡片（docs/07 §8.8.6）：高亮卡片 + 一键选项；带 timeoutSec 的到点标过期，主播按默认策略继续 */
+/** 时间戳（工具调用行里统一用等宽小字，不抢视线） */
+function clock(ts: number): string {
+  return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * 工具调用行：汇报和请示本质上都是工具调用，按日志行呈现——
+ * 一个点 + 等宽工具名 + 正文；连续同一个工具只在第一行标一次名字。不用消息气泡、不用卡片外框。
+ */
+function ToolLine({
+  label,
+  text,
+  ts,
+  showLabel,
+  accent
+}: {
+  label: string
+  text: string
+  ts: number
+  showLabel?: boolean
+  accent?: boolean
+}) {
+  return (
+    <div className="flex gap-2">
+      <span
+        className={cn(
+          'mt-[7px] size-1.5 shrink-0 rounded-full',
+          accent ? 'bg-primary' : 'bg-muted-foreground/40'
+        )}
+      />
+      <div className="min-w-0 flex-1">
+        {showLabel && (
+          <div className="mb-0.5 flex items-center gap-1.5">
+            <span
+              className={cn(
+                'font-mono text-[10px]',
+                accent ? 'text-primary/80' : 'text-muted-foreground/70'
+              )}
+            >
+              {label}
+            </span>
+            <span className="font-mono text-[10px] text-muted-foreground/40">{clock(ts)}</span>
+          </div>
+        )}
+        <p className="text-[12px] leading-[18px] text-muted-foreground">{text}</p>
+      </div>
+    </div>
+  )
+}
+
+/** 请示（ask_director）：同一个日志骨架，多了倒计时、默认策略与一键选项 */
 function AskCard({
   message,
   now,
@@ -659,48 +705,48 @@ function AskCard({
     ? Math.max(0, Math.ceil((message.ts + message.timeoutSec * 1000 - now) / 1000))
     : null
   const expired = remain === 0
+  const dim = expired || Boolean(message.answered)
   return (
-    <div
-      className={cn(
-        'rounded-lg border px-3 py-2.5',
-        expired ? 'border-border bg-muted/40' : 'border-primary/30 bg-primary/5'
-      )}
-    >
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <CircleHelp className={cn('size-3.5', expired ? 'text-muted-foreground' : 'text-primary')} />
-        <span className={cn('text-xs font-medium', expired ? 'text-muted-foreground' : 'text-primary')}>
-          主播请示
-        </span>
-        {remain !== null && !expired && !message.answered && (
-          <span className="text-[10px] text-muted-foreground">剩 {remain}s</span>
-        )}
-        <span className="ml-auto text-[10px] text-muted-foreground">
-          {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-        </span>
-      </div>
-      <p className="mb-2 text-[13px]">{message.text}</p>
-      {message.defaultAction && (
-        <p className="mb-1.5 text-[11px] text-muted-foreground">没答就按这个走：{message.defaultAction}</p>
-      )}
-      {message.answered ? (
-        <Badge variant="secondary">已答复：{message.answered}</Badge>
-      ) : expired ? (
-        <Badge variant="outline">已过期（超过 {message.timeoutSec}s 未答，主播按默认策略继续）</Badge>
-      ) : (
-        <div className="flex flex-wrap gap-1.5">
-          {(message.options ?? []).map((option) => (
-            <Button
-              key={option}
-              variant="outline"
-              size="sm"
-              className="h-6 px-2 text-xs"
-              onClick={() => onAnswer(message, option)}
-            >
-              {option}
-            </Button>
-          ))}
+    <div className="flex gap-2">
+      <span
+        className={cn('mt-[7px] size-1.5 shrink-0 rounded-full', dim ? 'bg-muted-foreground/40' : 'bg-primary')}
+      />
+      <div className="min-w-0 flex-1">
+        <div className="mb-0.5 flex items-center gap-1.5">
+          <span className={cn('font-mono text-[10px]', dim ? 'text-muted-foreground/70' : 'text-primary/80')}>
+            ask_director
+          </span>
+          {remain !== null && !dim && (
+            <span className="font-mono text-[10px] text-muted-foreground/60">剩 {remain}s</span>
+          )}
+          <span className="ml-auto font-mono text-[10px] text-muted-foreground/40">{clock(message.ts)}</span>
         </div>
-      )}
+        <p className="text-[12px] leading-[18px]">{message.text}</p>
+        {message.defaultAction && (
+          <p className="mt-0.5 text-[11px] text-muted-foreground">没答就按这个走：{message.defaultAction}</p>
+        )}
+        {message.answered ? (
+          <p className="mt-1 font-mono text-[10px] text-muted-foreground/70">已答复：{message.answered}</p>
+        ) : expired ? (
+          <p className="mt-1 font-mono text-[10px] text-muted-foreground/50">
+            已过期（超过 {message.timeoutSec}s 未答，按默认策略继续）
+          </p>
+        ) : (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {(message.options ?? []).map((option) => (
+              <Button
+                key={option}
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs"
+                onClick={() => onAnswer(message, option)}
+              >
+                {option}
+              </Button>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -854,7 +900,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             </p>
           </div>
         ) : (
-          messages.map((message) =>
+          messages.map((message, index) =>
             message.kind === 'director' ? (
               <div
                 key={message.id}
@@ -873,15 +919,13 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                 ))}
               </div>
             ) : message.kind === 'report' ? (
-              <div key={message.id} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                <Bot className="mt-0.5 size-3.5 shrink-0" />
-                <p className="min-w-0">
-                  {message.text}
-                  <span className="ml-1.5 text-[10px] opacity-60">
-                    {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </p>
-              </div>
+              <ToolLine
+                key={message.id}
+                label="report_to_director"
+                text={message.text}
+                ts={message.ts}
+                showLabel={index === 0 || messages[index - 1].kind !== 'report'}
+              />
             ) : (
               <AskCard key={message.id} message={message} now={now} onAnswer={answerAsk} />
             )

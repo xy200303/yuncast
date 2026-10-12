@@ -20,13 +20,19 @@ import { useAppStore, type NavPage } from '../stores/useAppStore'
 const drag = { WebkitAppRegion: 'drag' } as CSSProperties
 const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties
 
-export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon }[] = [
-  { id: 'live', label: '直播台', icon: Radio },
-  { id: 'anchors', label: '主播团', icon: Bot },
-  { id: 'knowledge', label: '知识库', icon: BookOpen },
-  { id: 'voices', label: '音色库', icon: AudioLines },
-  { id: 'sessions', label: '场次', icon: CalendarDays },
-  { id: 'stats', label: '数据', icon: BarChart3 }
+/**
+ * 导航分三个区：
+ *   直播    —— 开播相关（直播台、场次；场次是开播单元，紧跟直播台）
+ *   资产库  —— 跨场次复用的素材（主播人设、知识库、音色库、演出形式）
+ *   数据    —— 复盘与统计
+ */
+export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon; section: string }[] = [
+  { id: 'live', label: '直播台', icon: Radio, section: '直播' },
+  { id: 'sessions', label: '场次', icon: CalendarDays, section: '直播' },
+  { id: 'anchors', label: '主播团', icon: Bot, section: '资产库' },
+  { id: 'knowledge', label: '知识库', icon: BookOpen, section: '资产库' },
+  { id: 'voices', label: '音色库', icon: AudioLines, section: '资产库' },
+  { id: 'stats', label: '数据', icon: BarChart3, section: '数据' }
 ]
 
 /**
@@ -71,9 +77,10 @@ export function AppSidebar() {
 
       {/* 图标导航 */}
       <nav className={cn('flex min-h-0 flex-1 flex-col gap-1 py-3', collapsed ? 'items-center px-1' : 'px-2.5')}>
-        {NAV_ITEMS.map((item) => {
+        {NAV_ITEMS.map((item, index) => {
           const Icon = item.icon
           const active = page === item.id
+          const showSection = index === 0 || NAV_ITEMS[index - 1].section !== item.section
           const button = (
             <Button
               key={item.id}
@@ -90,12 +97,24 @@ export function AppSidebar() {
               {!collapsed && <span className="truncate">{item.label}</span>}
             </Button>
           )
-          if (!collapsed) return button
+          if (!collapsed) {
+            return (
+              <div key={item.id} className="flex flex-col gap-1">
+                {showSection && index > 0 && (
+                  <p className="mt-2 px-3 text-[11px] text-muted-foreground">{item.section}</p>
+                )}
+                {button}
+              </div>
+            )
+          }
           return (
-            <Tooltip key={item.id}>
-              <TooltipTrigger asChild>{button}</TooltipTrigger>
-              <TooltipContent side="right">{item.label}</TooltipContent>
-            </Tooltip>
+            <div key={item.id} className="flex flex-col items-center">
+              {showSection && index > 0 && <span className="my-1.5 h-px w-6 bg-border" />}
+              <Tooltip>
+                <TooltipTrigger asChild>{button}</TooltipTrigger>
+                <TooltipContent side="right">{item.label}</TooltipContent>
+              </Tooltip>
+            </div>
           )
         })}
       </nav>

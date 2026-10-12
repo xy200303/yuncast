@@ -25,7 +25,7 @@ import {
 } from '../theme/applyAppearance'
 
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'anchors', 'knowledge', 'voices', 'sessions', 'stats'] as const
+export const NAV_PAGES = ['live', 'sessions', 'anchors', 'knowledge', 'voices', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 
 // 启动时先用 localStorage 缓存的主题，避免等 IPC 回来闪一下白/黑

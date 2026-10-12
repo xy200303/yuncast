@@ -89,6 +89,15 @@ export function ttsConfigured(tts: TtsConfig): boolean {
   return Boolean(tts.appId && tts.accessToken && tts.voiceId)
 }
 
+/**
+ * 某家服务商在配置里有没有凭据——**与「当前选中哪家」无关**：
+ * TtsConfig 一家一套字段（火山 appId/accessToken、百炼 apiKey）长期并存，
+ * 音色库/预检要按「音色所属那家有没有凭据」判断，不能拿当前服务商当依据。
+ */
+export function ttsProviderHasCredentials(tts: TtsConfig, provider: TtsProvider): boolean {
+  return provider === 'bailian' ? Boolean(tts.apiKey) : Boolean(tts.appId && tts.accessToken)
+}
+
 // ---------- LLM 配置（主播 Agent 的大脑） ----------
 
 export const LLM_PROVIDERS = ['deepseek', 'qwen', 'doubao', 'kimi', 'zai'] as const

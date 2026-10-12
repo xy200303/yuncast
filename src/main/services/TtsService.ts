@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import type { StorageService } from './StorageService'
-import { cloneVoiceMismatchError, findCloneVoice, voiceMatchesProvider } from '../../shared/voiceProvider'
+import { findCloneVoice, voiceMatchesProvider, voiceUnavailableError } from '../../shared/voiceProvider'
 
 /**
  * TTS 双通道合成（搬迁自旧版 desktop/src/main/modules/tts/volcanoClient.ts）。
@@ -68,7 +68,7 @@ export class TtsService {
 
   /**
    * 平台绑定护栏：克隆音色只能用它所属的服务商合成（火山复刻的 speaker_id 拿去百炼必然失败）。
-   * 在这里拦下来给出中文原因，不让请求跑到服务商才报一个看不懂的错。
+   * 在这里拦下来给出中文原因（缺凭据就说缺凭据），不让请求跑到服务商才报一个看不懂的错。
    * 命中的是系统音色（音色库里没有记录）时无法判断归属，放行。
    */
   private assertVoiceProvider(voiceId?: string): void {
@@ -77,7 +77,7 @@ export class TtsService {
     if (!voice) return // 空音色由各合成分支报「未选择音色」
     const clone = findCloneVoice(this.storage.listVoices(), voice)
     if (clone && !voiceMatchesProvider(clone, tts.provider)) {
-      throw new Error(cloneVoiceMismatchError(clone, tts.provider))
+      throw new Error(voiceUnavailableError(clone, tts))
     }
   }
 

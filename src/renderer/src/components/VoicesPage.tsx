@@ -13,23 +13,35 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { audioEngine } from '../audio/engine'
-import { ttsProviderLabel, useAppStore } from '../stores/useAppStore'
-import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../../shared/types'
+import { useAppStore } from '../stores/useAppStore'
+import { missingCredentialHint } from '../../../shared/voiceProvider'
+import {
+  TTS_PROVIDERS,
+  TTS_PROVIDER_SHORT,
+  ttsProviderHasCredentials,
+  type TtsProvider,
+  type VoiceRecord,
+  type VoiceUsage
+} from '../../../shared/types'
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+/** 音色库筛选：全部 + 各服务商（带音色数量与凭据有无） */
+type VoiceFilter = 'all' | TtsProvider
+
 /** 音色库：克隆音色的管理、试听与引用关系。
  *  克隆在服务商侧异步训练，本页接收广播更新状态；「设为默认音色」写 config.tts.voiceId。
- *  跨平台约束：不属于当前 TTS 服务商的克隆音色合成不了，所以试听禁用、卡片注明归属。 */
+ *  各家音色都能看能选（主播 agent 声音无关，可以调度各家的音色），只按凭据有无提示。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
-  const defaultVoiceId = useAppStore((s) => s.config.tts.voiceId)
-  const currentProvider = useAppStore((s) => s.config.tts.provider)
-  const ttsProviders = useAppStore((s) => s.ttsProviders)
+  const tts = useAppStore((s) => s.config.tts)
+  const defaultVoiceId = tts.voiceId
+  const [filter, setFilter] = useState<VoiceFilter>('all')
   const [adding, setAdding] = useState(false)
   const [deleting, setDeleting] = useState<VoiceRecord | null>(null)
   const [renaming, setRenaming] = useState<VoiceRecord | null>(null)
@@ -54,8 +66,10 @@ export function VoicesPage() {
     }
   }, [voices])
 
-  const currentLabel = ttsProviderLabel(ttsProviders, currentProvider)
-  const canClone = ttsProviders.find((item) => item.id === currentProvider)?.capabilities.clone ?? false
+  const countOf = (id: VoiceFilter) =>
+    id === 'all' ? voices.length : voices.filter((voice) => voice.provider === id).length
+  const shown = voices.filter((voice) => filter === 'all' || voice.provider === filter)
+  const filters: VoiceFilter[] = ['all', ...TTS_PROVIDERS]
 
   const preview = (voice: VoiceRecord) => {
     if (previewing) return
@@ -77,30 +91,40 @@ export function VoicesPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <AudioLines className="size-4 text-primary" />
         <h1 className="text-sm font-medium">音色库</h1>
-        <p className="text-xs text-muted-foreground">
-          克隆音色管理 · 只能用它所属的服务商合成（当前：{currentLabel}）
-        </p>
+        <p className="text-xs text-muted-foreground">克隆音色管理 · 主播可以调度各家的音色</p>
+        <div className="ml-2 flex items-center gap-1">
+          {filters.map((id) => {
+            const label = id === 'all' ? '全部' : TTS_PROVIDER_SHORT[id]
+            const ready = id === 'all' || ttsProviderHasCredentials(tts, id)
+            return (
+              <Button
+                key={id}
+                variant={filter === id ? 'secondary' : 'ghost'}
+                size="sm"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => setFilter(id)}
+              >
+                {label}
+                <span className="text-muted-foreground">{countOf(id)}</span>
+                {id !== 'all' && (
+                  <span className={ready ? 'text-muted-foreground' : 'text-destructive'}>
+                    {ready ? '已配凭据' : '缺凭据'}
+                  </span>
+                )}
+              </Button>
+            )
+          })}
+        </div>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={reload}>
             刷新
           </Button>
-          <Button
-            size="sm"
-            disabled={!canClone}
-            title={canClone ? undefined : `${currentLabel}音色复刻还没实现（接口核对中）`}
-            onClick={() => setAdding(true)}
-          >
+          <Button size="sm" onClick={() => setAdding(true)}>
             <Mic />
             新建音色
           </Button>
         </div>
       </header>
-
-      {!canClone && (
-        <p className="shrink-0 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
-          {currentLabel}音色复刻还没实现（接口核对中）：要新建克隆音色，先到设置 → 语音合成切到火山引擎
-        </p>
-      )}
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
         {voices.length === 0 ? (
@@ -108,11 +132,15 @@ export function VoicesPage() {
             <AudioLines className="size-8" strokeWidth={1.25} />
             <p className="text-sm">还没有克隆音色。点右上角「新建音色」，上传或录制一段 10-30 秒清晰人声</p>
           </div>
+        ) : shown.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            这个服务商下还没有音色。点「新建音色」，在弹窗里选它作为服务商
+          </p>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            {voices.map((voice) => {
+            {shown.map((voice) => {
               const isDefault = voice.status === 'ready' && voice.voiceType === defaultVoiceId
-              const usable = voice.provider === currentProvider
+              const hasCredentials = ttsProviderHasCredentials(tts, voice.provider)
               const owner = TTS_PROVIDER_SHORT[voice.provider]
               const usage = usages[voice.id]
               return (
@@ -151,10 +179,8 @@ export function VoicesPage() {
                   <p className="text-xs text-muted-foreground">
                     {usage ? usageSummary(usage) : '统计引用关系…'}
                   </p>
-                  {!usable && (
-                    <p className="text-xs text-muted-foreground">
-                      属于{owner}，当前语音合成用的是{currentLabel}，合成不了
-                    </p>
+                  {!hasCredentials && (
+                    <p className="text-xs text-destructive">{missingCredentialHint(voice.provider, tts)}</p>
                   )}
 
                   <div className="mt-auto flex flex-wrap justify-end gap-1.5 pt-1">
@@ -162,8 +188,8 @@ export function VoicesPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={!usable || previewing !== ''}
-                        title={usable ? '用这个音色合成一句试听' : `属于${owner}，当前用不了`}
+                        disabled={previewing !== ''}
+                        title="用这个音色合成一句试听"
                         onClick={() => preview(voice)}
                       >
                         {previewing === voice.id ? <Loader2 className="animate-spin" /> : <Play />}
@@ -174,8 +200,6 @@ export function VoicesPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={!usable}
-                        title={usable ? undefined : `属于${owner}，切回${owner}再设成默认才合成得了`}
                         onClick={() => {
                           void window.api.voice.setDefault(voice.id).then((r) => {
                             if (r.ok) {
@@ -348,7 +372,7 @@ function RenameVoiceDialog({
   )
 }
 
-/** 新建音色：上传音频或现场录音 → 勾选授权 → 提交复刻 */
+/** 新建音色：先选服务商 → 上传音频或现场录音 → 勾选授权 → 提交复刻 */
 function NewVoiceDialog({
   open,
   onOpenChange,
@@ -358,6 +382,8 @@ function NewVoiceDialog({
   onOpenChange: (open: boolean) => void
   onDone: () => void
 }) {
+  const tts = useAppStore((s) => s.config.tts)
+  const [provider, setProvider] = useState<TtsProvider>('volcano')
   const [name, setName] = useState('')
   const [samplePath, setSamplePath] = useState('')
   const [authorized, setAuthorized] = useState(false)
@@ -371,6 +397,7 @@ function NewVoiceDialog({
 
   useEffect(() => {
     if (open) {
+      setProvider('volcano')
       setName('')
       setSamplePath('')
       setAuthorized(false)
@@ -439,7 +466,7 @@ function NewVoiceDialog({
     }
     setBusy(true)
     void window.api.voice
-      .clone({ name, samplePath, authorized })
+      .clone({ name, samplePath, authorized, provider })
       .then((result) => {
         if (result.ok) {
           toast.success('克隆任务已提交', { description: '训练完成后音色卡片会变为「就绪」' })
@@ -460,6 +487,34 @@ function NewVoiceDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-3">
+          <div>
+            <Label className="mb-1">服务商（复刻在它那边做，用它的凭据）</Label>
+            <Select value={provider} onValueChange={(v) => setProvider(v as TtsProvider)}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TTS_PROVIDERS.map((id) => (
+                  <SelectItem key={id} value={id}>
+                    <span className="flex items-center gap-2">
+                      <ProviderIcon providerId={id} size="sm" />
+                      {TTS_PROVIDER_SHORT[id]}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {provider === 'bailian' ? (
+              <p className="mt-1 text-xs text-destructive">
+                阿里云百炼音色复刻还没实现（接口核对中）：先选火山引擎
+              </p>
+            ) : (
+              !ttsProviderHasCredentials(tts, 'volcano') && (
+                <p className="mt-1 text-xs text-destructive">{missingCredentialHint('volcano', tts)}</p>
+              )
+            )}
+          </div>
+
           <div>
             <Label className="mb-1">音色名称</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如：店主本人 / 小助理" />
@@ -500,7 +555,9 @@ function NewVoiceDialog({
           </label>
 
           <p className="text-xs text-muted-foreground">
-            提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」权限。
+            {provider === 'volcano'
+              ? '提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」权限。'
+              : '阿里云百炼音色复刻还没实现（接口核对中），先选火山引擎提交。'}
           </p>
         </div>
 
@@ -508,7 +565,10 @@ function NewVoiceDialog({
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button disabled={busy || !name.trim() || !samplePath || !authorized} onClick={submit}>
+          <Button
+            disabled={busy || provider !== 'volcano' || !name.trim() || !samplePath || !authorized}
+            onClick={submit}
+          >
             {busy ? '提交中…' : '提交克隆'}
           </Button>
         </DialogFooter>

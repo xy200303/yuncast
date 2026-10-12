@@ -223,11 +223,6 @@ export function providerLabel(providers: LlmProviderManifest[], providerId: stri
   return providers.find((item) => item.id === providerId)?.label ?? providerId
 }
 
-/** TTS 服务商显示名（拿不到 manifest 就退回 id） */
-export function ttsProviderLabel(providers: TtsProviderManifest[], providerId: string): string {
-  return providers.find((item) => item.id === providerId)?.label ?? providerId
-}
-
 /** 接入实际用的模型（默认模型 → 列表第一个 → 服务商默认模型），与主进程的取用口径一致 */
 export function effectiveModel(
   connection: ModelConnectionSafe,

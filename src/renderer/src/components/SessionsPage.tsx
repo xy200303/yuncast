@@ -32,8 +32,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
+import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { groupVoicesByProvider } from '../lib/voice'
-import { ttsProviderLabel, useAppStore } from '../stores/useAppStore'
+import { useAppStore } from '../stores/useAppStore'
 import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
@@ -291,8 +292,7 @@ function PlanDialog({
     knowledgeScope: plan?.knowledgeScope ?? DEFAULT_PLAN_KNOWLEDGE_SCOPE,
     voiceId: plan?.voiceId ?? ''
   })
-  const currentProvider = useAppStore((s) => s.config.tts.provider)
-  const ttsProviders = useAppStore((s) => s.ttsProviders)
+  const tts = useAppStore((s) => s.config.tts)
   const [busy, setBusy] = useState(false)
 
   const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
@@ -420,7 +420,7 @@ function PlanDialog({
                   <SelectItem value="none">不覆盖</SelectItem>
                   {groupVoicesByProvider(
                     voices.filter((v) => v.status === 'ready' && v.voiceType),
-                    currentProvider
+                    tts
                   ).map((group) =>
                     group.voices.length === 0 ? null : (
                       <SelectGroup key={group.provider}>
@@ -428,13 +428,12 @@ function PlanDialog({
                           <ProviderIcon providerId={group.provider} size="sm" />
                           <span>
                             {group.label}
-                            {group.usable ? '' : ' · 属于另一家，当前用不了'}
+                            {group.hasCredentials ? '' : '（缺凭据）'}
                           </span>
                         </SelectLabel>
                         {group.voices.map((voice) => (
-                          <SelectItem key={voice.id} value={voice.voiceType} disabled={!group.usable}>
+                          <SelectItem key={voice.id} value={voice.voiceType}>
                             {voice.name}
-                            {group.usable ? '' : `（属于${group.label}）`}
                           </SelectItem>
                         ))}
                       </SelectGroup>
@@ -443,8 +442,9 @@ function PlanDialog({
                 </SelectContent>
               </Select>
               <p className="mt-1 text-xs text-muted-foreground">
-                只列当前语音合成服务商（{ttsProviderLabel(ttsProviders, currentProvider)}）的克隆音色：跨平台克隆的音色合成不了
+                列出音色库所有已就绪的克隆音色（按服务商分组）：缺凭据的那家选中后会就地提示
               </p>
+              <VoiceProviderHint voiceId={form.voiceId} />
             </div>
           </div>
 

@@ -6,8 +6,8 @@ import { randomUUID } from 'node:crypto'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
 import { getTtsProvider } from './providers/registry'
-import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../shared/types'
-import { cloneVoiceMismatchError, voiceMatchesProvider } from '../../shared/voiceProvider'
+import { TTS_PROVIDER_SHORT, ttsProviderHasCredentials, type TtsProvider, type VoiceRecord, type VoiceUsage } from '../../shared/types'
+import { voiceMatchesProvider, voiceUnavailableError } from '../../shared/voiceProvider'
 
 /**
  * 音色库 / 声音克隆（M8）。
@@ -61,30 +61,33 @@ export class VoiceService {
     return file
   }
 
-  /** 提交克隆。authorized 必须为 true（合规底线）。 */
+  /** 提交克隆。authorized 必须为 true（合规底线）；provider = 这次复刻交给哪家（新建弹窗里选的）。 */
   async clone(input: {
     name: string
     samplePath: string
     authorized: boolean
+    provider: TtsProvider
   }): Promise<{ ok: true; voice: VoiceRecord } | { ok: false; error: string }> {
     const name = input.name.trim()
     if (!name) return { ok: false, error: '请填写音色名称' }
     if (!input.authorized) return { ok: false, error: '请先勾选「已获得录音人授权」' }
 
+    const provider = input.provider
     const tts = this.storage.getConfig().tts
     // 能力位驱动：只有火山实现了复刻（百炼 CosyVoice 复刻待核对是否支持本地音频直传，见 docs/06）
     // 放在样本校验之前：不能克隆的理由先于「样本没传」给出来
-    if (!getTtsProvider(tts.provider)?.capabilities.clone || tts.provider !== 'volcano') {
-      return {
-        ok: false,
-        error: `${TTS_PROVIDER_SHORT[tts.provider]}的音色复刻还没实现（接口核对中），当前只有火山引擎支持克隆（设置 → 语音合成）`
-      }
+    if (!getTtsProvider(provider)?.capabilities.clone) {
+      return { ok: false, error: `${TTS_PROVIDER_SHORT[provider]}音色复刻还没实现（接口核对中）：先选火山引擎` }
     }
     if (!input.samplePath || !existsSync(input.samplePath)) {
       return { ok: false, error: '样本文件不存在，请重新上传或录制' }
     }
-    if (!tts.appId || !tts.accessToken) {
-      return { ok: false, error: '请先在「设置 → 语音合成」配置火山 AppId / Access Token' }
+    // 复刻实现目前只认火山那一套字段（appId / accessToken）：所选那家不是当前配置的那家就按缺凭据说
+    if (provider !== tts.provider || !ttsProviderHasCredentials(tts, provider)) {
+      return {
+        ok: false,
+        error: `还没有${TTS_PROVIDER_SHORT[provider]}的凭据：到设置 → 语音合成加一条（克隆要用那家的凭据）`
+      }
     }
 
     // 样本统一复制进音色目录，避免用户原始文件被移动/删除
@@ -99,7 +102,7 @@ export class VoiceService {
     const voice: VoiceRecord = {
       id: randomUUID(),
       name,
-      provider: 'volcano',
+      provider,
       voiceType: '',
       samplePath,
       status: 'training',
@@ -299,7 +302,7 @@ export class VoiceService {
 
   /**
    * 试听：用该音色合成一句固定文案，返回缓存文件路径（渲染层 media:// 播放）。
-   * 只允许试听属于当前 TTS 服务商的音色——跨平台的克隆音色合成不了。
+   * 合成永远带当前服务商的凭据，所以不属于当前服务商的音色试听不了（缺凭据就说缺凭据）。
    */
   async preview(id: string): Promise<{ ok: true; audioPath: string } | { ok: false; error: string }> {
     const voice = this.storage.listVoices().find((v) => v.id === id)
@@ -307,9 +310,9 @@ export class VoiceService {
     if (voice.status !== 'ready' || !voice.voiceType) {
       return { ok: false, error: '该音色还没训练完成，暂时没法试听' }
     }
-    const provider = this.storage.getConfig().tts.provider
-    if (!voiceMatchesProvider(voice, provider)) {
-      return { ok: false, error: cloneVoiceMismatchError(voice, provider) }
+    const tts = this.storage.getConfig().tts
+    if (!voiceMatchesProvider(voice, tts.provider)) {
+      return { ok: false, error: voiceUnavailableError(voice, tts) }
     }
     try {
       const audioPath = await this.tts.synthesize(

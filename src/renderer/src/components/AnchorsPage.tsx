@@ -548,7 +548,7 @@ function PersonaEditorDialog({
   )
 }
 
-/** 从音色库挑选（只列训练完成的音色）；按归属分组，不属于当前服务商的那组禁用 */
+/** 从音色库挑选（只列训练完成的音色）；按归属分组，缺凭据的组照常可选并就地提示 */
 function VoicePickerDialog({
   open,
   onOpenChange,
@@ -559,10 +559,10 @@ function VoicePickerDialog({
   onPick: (voiceType: string) => void
 }) {
   const voices = useAppStore((s) => s.voices)
-  const currentProvider = useAppStore((s) => s.config.tts.provider)
+  const tts = useAppStore((s) => s.config.tts)
   const groups = groupVoicesByProvider(
     voices.filter((v) => v.status === 'ready' && v.voiceType),
-    currentProvider
+    tts
   )
 
   return (
@@ -582,22 +582,19 @@ function VoicePickerDialog({
                 <div key={group.provider} className="flex flex-col gap-1">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <ProviderIcon providerId={group.provider} size="sm" />
-                    <span>{group.label}</span>
-                    {!group.usable && <span>属于{group.label}，当前用不了</span>}
+                    <span>
+                      {group.label}
+                      {group.hasCredentials ? '' : '（缺凭据）'}
+                    </span>
                   </div>
                   {group.voices.map((voice) => (
                     <button
                       key={voice.id}
                       type="button"
-                      disabled={!group.usable}
-                      title={group.usable ? undefined : `属于${group.label}，当前语音合成用的是另一家，合成不了`}
-                      className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
+                      className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent"
                       onClick={() => onPick(voice.voiceType)}
                     >
-                      <span className="min-w-0 truncate">
-                        {voice.name}
-                        {group.usable ? '' : `（属于${group.label}）`}
-                      </span>
+                      <span className="min-w-0 truncate">{voice.name}</span>
                       <Badge variant="outline">{voice.voiceType.slice(0, 12)}…</Badge>
                     </button>
                   ))}

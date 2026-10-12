@@ -24,6 +24,7 @@ import {
   type SpeechLane,
   type StreamStats,
   type TriggerInput,
+  type TtsProvider,
   type Utterance,
   type UtteranceInput,
   type VoiceRecord
@@ -463,7 +464,7 @@ function registerIpc(
   ipcMain.handle(IPC.voiceList, () => voiceSvc?.list() ?? [])
   ipcMain.handle(
     IPC.voiceClone,
-    (_e, input: { name: string; samplePath: string; authorized: boolean }) =>
+    (_e, input: { name: string; samplePath: string; authorized: boolean; provider: TtsProvider }) =>
       voiceSvc?.clone(input) ?? { ok: false, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceRemove, (_e, id: string) => voiceSvc?.remove(id) ?? { ok: false, error: '音色服务未初始化' })

@@ -77,7 +77,7 @@ export const IPC = {
   voiceRemove: 'voice:remove',
   voiceSetDefault: 'voice:set-default',
   voiceUploadSample: 'voice:upload-sample',
-  /** 用该音色合成一句固定文案试听（只允许属于当前 TTS 服务商的音色） */
+  /** 用该音色合成一句固定文案试听（合成带当前服务商的凭据，不属于那家时返回中文错误） */
   voicePreview: 'voice:preview',
   /** 重命名音色 */
   voiceRename: 'voice:rename',

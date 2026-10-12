@@ -1,5 +1,6 @@
 import {
   ttsConfigured,
+  ttsProviderHasCredentials,
   TTS_PROVIDER_SHORT,
   type LaunchResult,
   type PreflightItem
@@ -14,7 +15,7 @@ import type { StreamService } from './stream/StreamService'
 import type { UtteranceService } from './UtteranceService'
 import { resolveModelForPersona } from './llmModel'
 import { getLlmProvider } from './providers/registry'
-import { findCloneVoice, voiceMatchesProvider } from '../../shared/voiceProvider'
+import { configuredProviderLabels, findCloneVoice } from '../../shared/voiceProvider'
 
 /** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
 const LIBRARY_SOURCE_ID = 'library'
@@ -132,22 +133,22 @@ export class LaunchService {
       }
     }
 
-    // ②b 音色与服务商匹配：本场生效音色 = 场次 > 人设 > TTS 默认（显式/角色的音色逐条解析，这里校验到不了）
+    // ②b 音色凭据：本场生效音色 = 场次 > 人设 > TTS 默认（角色/逐条话术的音色合成时另有护栏）
     const effectiveVoice = (plan.voiceId || persona?.voiceId || cfg.tts.voiceId).trim()
     if (effectiveVoice) {
       const clone = findCloneVoice(this.storage.listVoices(), effectiveVoice)
-      if (clone && !voiceMatchesProvider(clone, cfg.tts.provider)) {
-        const owner = TTS_PROVIDER_SHORT[clone.provider]
+      const owner = clone ? TTS_PROVIDER_SHORT[clone.provider] : ''
+      if (clone && !ttsProviderHasCredentials(cfg.tts, clone.provider)) {
+        const others = configuredProviderLabels(cfg.tts, clone.provider)
         items.push({
           level: 'block',
-          label: `音色与服务商不匹配：音色「${clone.name}」是${owner}克隆的，当前语音合成用的是${TTS_PROVIDER_SHORT[cfg.tts.provider]}`,
-          detail: `到设置 → 语音合成切回${owner}，或到主播团 / 场次页把音色换成当前服务商的那个（跨平台克隆的音色合成不了）`
+          label: `音色缺凭据：音色「${clone.name}」属于${owner}，${
+            others.length > 0 ? `当前只配了${others.join('、')}的凭据` : '现在哪家的凭据都还没配'
+          }`,
+          detail: `到设置 → 语音合成加上${owner}的凭据，或把音色换成有凭据那家的`
         })
       } else {
-        items.push({
-          level: 'ok',
-          label: `音色：${effectiveVoice}（${clone ? TTS_PROVIDER_SHORT[clone.provider] : '系统音色'}）`
-        })
+        items.push({ level: 'ok', label: `音色：${effectiveVoice}（${owner || '系统音色'}）` })
       }
     }
 

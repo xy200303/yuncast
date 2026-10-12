@@ -29,6 +29,7 @@ import type {
   ScriptInput,
   SpeechItem,
   SpeechLane,
+  TtsProvider,
   Utterance,
   UtteranceInput,
   VoiceRecord,
@@ -185,7 +186,8 @@ const api = {
   },
   voice: {
     list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,
-    clone: (input: { name: string; samplePath: string; authorized: boolean }) =>
+    /** provider = 这次复刻交给哪家（新建弹窗里选，克隆要用那家的凭据） */
+    clone: (input: { name: string; samplePath: string; authorized: boolean; provider: TtsProvider }) =>
       ipcRenderer.invoke(IPC.voiceClone, input) as Promise<{ ok: boolean; error?: string }>,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,

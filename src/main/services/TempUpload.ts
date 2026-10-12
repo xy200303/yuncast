@@ -51,10 +51,23 @@ function mimeOf(fileName: string): string {
   return 'application/octet-stream'
 }
 
+/**
+ * 单个托管方的超时：连不上就尽快失败（国内网络下 IPv6 黑洞会让请求挂在 SYN_SENT 很久，
+ * 用户只看到按钮转圈）。主进程已设 dns ipv4first（见 main/index.ts），这里再把上限收住。
+ */
+const UPLOAD_TIMEOUT_MS = 25_000
+
 async function postForm(url: string, form: FormData): Promise<string> {
-  const res = await fetch(url, { method: 'POST', body: form, signal: AbortSignal.timeout(90_000) })
+  let res: Response
+  try {
+    res = await fetch(url, { method: 'POST', body: form, signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    if (/timeout|abort/i.test(reason)) throw new Error(`连接超时（${UPLOAD_TIMEOUT_MS / 1000} 秒）`)
+    throw new Error(`连不上：${reason.slice(0, 120)}`)
+  }
   const text = (await res.text()).trim()
-  if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 160)}`)
+  if (!res.ok) throw new Error(`${res.status} ${text.slice(0, 140)}`)
   return text
 }
 
@@ -136,6 +149,9 @@ export class TempUploadService {
         failures.push(`${provider.name}：${error instanceof Error ? error.message : String(error)}`)
       }
     }
-    return { ok: false, error: `临时上传都失败了——${failures.join('；')}` }
+    return {
+      ok: false,
+      error: `临时文件站都连不上（国内网络常见）——${failures.join('；')}。可以自己把样本传到任意可公网访问的地址后粘贴`
+    }
   }
 }

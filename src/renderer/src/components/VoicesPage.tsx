@@ -20,6 +20,19 @@ import { cloneVoiceHint, flattenModelCatalog, type CatalogModel } from '@/lib/vo
 import { useAppStore } from '../stores/useAppStore'
 import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../../shared/types'
 
+/** 只显示文件名：分隔符按字符码判断（92=\ 47=/），省得在字符串与正则里跟反斜杠较劲 */
+function fileNameOf(path: string): string {
+  let cut = -1
+  for (let i = path.length - 1; i >= 0; i -= 1) {
+    const code = path.charCodeAt(i)
+    if (code === 92 || code === 47) {
+      cut = i
+      break
+    }
+  }
+  return cut >= 0 ? path.slice(cut + 1) : path
+}
+
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
@@ -603,7 +616,7 @@ function NewVoiceDialog({
                 {recording ? `停止录音（${seconds}s）` : '现场录音'}
               </Button>
               <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                {samplePath ? samplePath.split(/[\/]/).pop() : '尚未选择样本'}
+                {samplePath ? fileNameOf(samplePath) : '尚未选择样本'}
               </span>
             </div>
             {samplePath && !/\.(mp3|wav|m4a)$/i.test(samplePath) && (

@@ -415,19 +415,9 @@ function LlmSection() {
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
   /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
-  const [testingId, setTestingId] = useState('')
+  const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
 
-  const test = async (connection: ModelConnectionSafe) => {
-    if (testingId) return
-    setTestingId(connection.id)
-    try {
-      const result = await window.api.model.test(connection.id)
-      if (result.ok) toast.success(`「${connection.name}」连通正常`)
-      else toast.error('测试失败', { description: result.error })
-    } finally {
-      setTestingId('')
-    }
-  }
+  const test = (connection: ModelConnectionSafe) => setTesting(connection)
 
   const setDefault = (connection: ModelConnectionSafe) => {
     void window.api.model.setDefault(connection.id).then((result) => {
@@ -503,10 +493,9 @@ function LlmSection() {
                   variant="outline"
                   size="sm"
                   className="h-7 text-xs"
-                  disabled={testingId === connection.id}
-                  onClick={() => void test(connection)}
+                  onClick={() => test(connection)}
                 >
-                  {testingId === connection.id ? '测试中…' : '测试'}
+                  测试
                 </Button>
                 <Button
                   variant="ghost"
@@ -553,6 +542,8 @@ function LlmSection() {
         />
       )}
 
+      {testing && <TestConnectionDialog connection={testing} onClose={() => setTesting(null)} />}
+
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -574,6 +565,107 @@ function LlmSection() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/**
+ * 连通性测试弹窗：列出这条接入的全部模型，逐个测（也能一次全测）。
+ * 之所以不直接测默认模型：同一家的模型可用性常常不一致，得能单独验。
+ */
+function TestConnectionDialog({
+  connection,
+  onClose
+}: {
+  connection: ModelConnectionSafe
+  onClose: () => void
+}) {
+  const providers = useAppStore((s) => s.llmProviders)
+  type TestState = { state: 'idle' | 'running' | 'ok' | 'error'; detail?: string }
+  const [results, setResults] = useState<Record<string, TestState>>({})
+  const [batchRunning, setBatchRunning] = useState(false)
+
+  const setResult = (model: string, next: TestState) =>
+    setResults((prev) => ({ ...prev, [model]: next }))
+
+  const runOne = async (model: string): Promise<void> => {
+    setResult(model, { state: 'running' })
+    const result = await window.api.model.test(connection.id, model)
+    setResult(
+      model,
+      result.ok
+        ? { state: 'ok', detail: result.latencyMs ? `${result.latencyMs} ms` : undefined }
+        : { state: 'error', detail: result.error }
+    )
+  }
+
+  const runAll = async (): Promise<void> => {
+    if (batchRunning) return
+    setBatchRunning(true)
+    try {
+      // 串行：同一条接入并发打请求容易被限流，也会把失败原因搅在一起
+      for (const model of connection.models) await runOne(model)
+    } finally {
+      setBatchRunning(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ProviderIcon providerId={connection.providerId} />
+            测试「{connection.name}」
+          </DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          对一个模型发一次最小请求（max_tokens=1），验的是「地址 + 密钥 + 模型名」这一整套。
+        </p>
+        <div className="flex flex-col gap-1.5">
+          {connection.models.map((model) => {
+            const result = results[model] ?? { state: 'idle' as const }
+            return (
+              <div
+                key={model}
+                className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2"
+              >
+                <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{model}</span>
+                {model === connection.defaultModel && (
+                  <Badge variant="secondary" className="shrink-0">
+                    默认
+                  </Badge>
+                )}
+                {result.state === 'ok' && (
+                  <span className="shrink-0 text-xs text-emerald-600">
+                    连通{result.detail ? ` · ${result.detail}` : ''}
+                  </span>
+                )}
+                {result.state === 'error' && (
+                  <span className="max-w-[16rem] shrink-0 truncate text-xs text-destructive" title={result.detail}>
+                    {result.detail}
+                  </span>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 shrink-0 px-2 text-xs"
+                  disabled={result.state === 'running' || batchRunning}
+                  onClick={() => void runOne(model)}
+                >
+                  {result.state === 'running' ? '测试中…' : '测试'}
+                </Button>
+              </div>
+            )
+          })}
+        </div>
+        <DialogFooter className="gap-2 sm:justify-between">
+          <Button variant="outline" disabled={batchRunning} onClick={() => void runAll()}>
+            {batchRunning ? '测试中…' : '全部测试'}
+          </Button>
+          <Button onClick={onClose}>关闭</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

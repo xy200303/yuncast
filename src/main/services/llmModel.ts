@@ -161,15 +161,18 @@ export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string)
  * 发一个 max_tokens=1 的最小请求。不走 pi（那里没有「测试」入口），错误翻成中文给 UI。
  */
 export async function testModelConnection(
-  connection: ModelConnection
-): Promise<{ ok: boolean; error?: string }> {
+  connection: ModelConnection,
+  model?: string
+): Promise<{ ok: boolean; error?: string; latencyMs?: number }> {
   const def = getLlmProvider(connection.providerId)
   if (!def) return { ok: false, error: `不认识的服务商：${connection.providerId}` }
-  const model = connectionModel(connection, def)
-  const cfg = def.toModelConfig(connection.params, model)
+  // 测试指定模型优先：模型列表里逐个验，比只测默认模型有用
+  const target = (model ?? '').trim() || connectionModel(connection, def)
+  const cfg = def.toModelConfig(connection.params, target)
   if (!cfg.model) return { ok: false, error: `还没有模型（${def.label}）：先加一个模型再测` }
 
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const startedAt = Date.now()
   try {
     const res = await fetch(url, {
       method: 'POST',
@@ -193,7 +196,7 @@ export async function testModelConnection(
     if (!res.ok) {
       return { ok: false, error: `服务商返回 ${res.status}：${(await res.text()).slice(0, 200)}` }
     }
-    return { ok: true }
+    return { ok: true, latencyMs: Date.now() - startedAt }
   } catch (error) {
     if (error instanceof Error && error.name === 'TimeoutError') {
       return { ok: false, error: `超时（${TEST_TIMEOUT_MS / 1000} 秒没响应）：检查网络，或本地服务是否在跑` }

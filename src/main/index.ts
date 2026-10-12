@@ -378,10 +378,10 @@ function registerIpc(
     storage.setDefaultConnection(String(id ?? ''))
     return { ok: true, connections: storage.connectionListSafe() }
   })
-  ipcMain.handle(IPC.modelTest, async (_e, id: string) => {
+  ipcMain.handle(IPC.modelTest, async (_e, id: string, model?: string) => {
     const connection = storage.connectionGet(String(id ?? ''))
     if (!connection) return { ok: false, error: '这条接入不存在（可能刚被删掉）' }
-    return testModelConnection(connection)
+    return testModelConnection(connection, model)
   })
   ipcMain.handle(IPC.providersLlmList, () => listLlmProviders())
   ipcMain.handle(IPC.providersModels, (_e, providerId: string) => listProviderModels(String(providerId ?? '')))

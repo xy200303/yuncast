@@ -101,9 +101,13 @@ const api = {
         ok: true
         connections: ModelConnectionSafe[]
       }>,
-    /** 连通性测试（用该接入的默认模型发一个最小请求） */
-    test: (id: string) =>
-      ipcRenderer.invoke(IPC.modelTest, id) as Promise<{ ok: boolean; error?: string }>
+    /** 连通性测试；不传 model 就测该接入的默认模型 */
+    test: (id: string, model?: string) =>
+      ipcRenderer.invoke(IPC.modelTest, id, model) as Promise<{
+        ok: boolean
+        error?: string
+        latencyMs?: number
+      }>
   },
   providers: {
     /** 服务商能力与配置字段（表单由 manifest 驱动渲染） */

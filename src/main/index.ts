@@ -11,7 +11,7 @@ import {
   type ConnectorStatus,
   type DirectorMessage,
   type LiveComment,
-  type ModelProfileInput,
+  type ModelConnectionInput,
   type PartialDeep,
   type Persona,
   type PoolResult,
@@ -46,8 +46,8 @@ import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
 import { GenerationService, type GenerationProgress } from './services/GenerationService'
 import { LaunchService } from './services/LaunchService'
-import { testModelProfile } from './services/llmModel'
-import { listLlmProviders } from './services/providers/registry'
+import { listProviderModels, testModelConnection } from './services/llmModel'
+import { getLlmProvider, listLlmProviders } from './services/providers/registry'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -348,37 +348,43 @@ function registerIpc(
   // ---------- TTS ----------
   ipcMain.handle(IPC.ttsTest, (_e, text: string) => tts.test(String(text ?? '').slice(0, 200)))
 
-  // ---------- 语言模型（模型条目库，设置 → 语言模型） ----------
-  ipcMain.handle(IPC.modelList, () => storage.modelProfileListSafe())
-  ipcMain.handle(IPC.modelSave, (_e, input: ModelProfileInput) => {
+  // ---------- 语言模型（供应商接入，设置 → 语言模型） ----------
+  ipcMain.handle(IPC.modelList, () => storage.connectionListSafe())
+  ipcMain.handle(IPC.modelSave, (_e, input: ModelConnectionInput) => {
     try {
-      storage.modelProfileSave({
+      const providerId = String(input?.providerId ?? '')
+      if (!getLlmProvider(providerId)) return { ok: false, error: '服务商不认识：重新选一家' }
+      const models = (input?.models ?? []).map((model) => String(model ?? '').trim()).filter(Boolean)
+      if (models.length === 0) return { ok: false, error: '至少加一个模型：主播要靠它说话' }
+      storage.connectionSave({
         id: input?.id,
         name: String(input?.name ?? ''),
-        providerId: String(input?.providerId ?? ''),
+        providerId,
         params: input?.params ?? {},
-        model: String(input?.model ?? ''),
+        models,
+        defaultModel: String(input?.defaultModel ?? ''),
         isDefault: Boolean(input?.isDefault)
       })
-      return { ok: true, models: storage.modelProfileListSafe() }
+      return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
   ipcMain.handle(IPC.modelRemove, (_e, id: string) => {
-    storage.modelProfileDelete(String(id ?? ''))
-    return { ok: true, models: storage.modelProfileListSafe() }
+    storage.connectionDelete(String(id ?? ''))
+    return { ok: true, connections: storage.connectionListSafe() }
   })
   ipcMain.handle(IPC.modelSetDefault, (_e, id: string) => {
-    storage.setDefaultModelProfile(String(id ?? ''))
-    return { ok: true, models: storage.modelProfileListSafe() }
+    storage.setDefaultConnection(String(id ?? ''))
+    return { ok: true, connections: storage.connectionListSafe() }
   })
   ipcMain.handle(IPC.modelTest, async (_e, id: string) => {
-    const profile = storage.modelProfileGet(String(id ?? ''))
-    if (!profile) return { ok: false, error: '条目不存在（可能刚被删掉）' }
-    return testModelProfile(profile)
+    const connection = storage.connectionGet(String(id ?? ''))
+    if (!connection) return { ok: false, error: '这条接入不存在（可能刚被删掉）' }
+    return testModelConnection(connection)
   })
   ipcMain.handle(IPC.providersLlmList, () => listLlmProviders())
+  ipcMain.handle(IPC.providersModels, (_e, providerId: string) => listProviderModels(String(providerId ?? '')))
 
   // ---------- 主播 Agent ----------
   ipcMain.handle(IPC.agentStart, async () => {

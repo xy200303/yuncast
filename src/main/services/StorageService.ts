@@ -11,9 +11,9 @@ import {
   type AppConfig,
   type EpisodeSummary,
   type KnowledgeFile,
-  type ModelProfile,
-  type ModelProfileInput,
-  type ModelProfileSafe,
+  type ModelConnection,
+  type ModelConnectionInput,
+  type ModelConnectionSafe,
   type PartialDeep,
   type Persona,
   type PlanGenConfig,
@@ -32,7 +32,7 @@ import {
   type ViewerProfile,
   type VoiceRecord
 } from '../../shared/types'
-import { getLlmProvider, isModelProfileReady, secretFieldKeys } from './providers/registry'
+import { getLlmProvider, isModelConnectionReady, secretFieldKeys } from './providers/registry'
 
 /**
  * 持久化层：
@@ -362,21 +362,24 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    // 模型条目库（设置 → 语言模型）：一条 = 一次可用的模型接入
+    // 供应商接入（设置 → 语言模型）：一条 = 一个服务商 + 一份凭据 + 一串可用模型
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS model_profiles (
+      CREATE TABLE IF NOT EXISTS model_connections (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         provider_id TEXT NOT NULL,
         params TEXT NOT NULL DEFAULT '{}',
-        model TEXT NOT NULL DEFAULT '',
+        models TEXT NOT NULL DEFAULT '[]',
+        default_model TEXT NOT NULL DEFAULT '',
         is_default INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
-    // 人设卡的「大脑」：引用一条模型条目，空 = 用全局默认条目
-    this.ensureColumn('agents', 'model_profile_id', 'TEXT')
+    // 人设卡的「大脑」：引用一条接入与其中一个模型，空 = 用全局默认接入
+    this.ensureColumn('agents', 'model_connection_id', 'TEXT')
+    this.ensureColumn('agents', 'model', "TEXT NOT NULL DEFAULT ''")
+    this.migrateModelProfiles()
     this.migrateLegacyLlm()
   }
 
@@ -423,31 +426,31 @@ export class StorageService {
     this.db.prepare('DELETE FROM voices WHERE id = ?').run(id)
   }
 
-  // ---------- 模型条目库（设置 → 语言模型） ----------
+  // ---------- 供应商接入（设置 → 语言模型） ----------
 
-  /** 读出全部条目（密钥字段已解密） */
-  modelProfileList(): ModelProfile[] {
+  /** 读出全部接入（密钥字段已解密），默认接入排最前 */
+  connectionList(): ModelConnection[] {
     return this.db
-      .prepare('SELECT * FROM model_profiles ORDER BY is_default DESC, created_at ASC')
+      .prepare('SELECT * FROM model_connections ORDER BY is_default DESC, created_at ASC')
       .all()
-      .map((row) => this.toModelProfile(row as Record<string, unknown>))
+      .map((row) => this.toModelConnection(row as Record<string, unknown>))
   }
 
-  modelProfileGet(id: string): ModelProfile | null {
-    const row = this.db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id)
-    return row ? this.toModelProfile(row as Record<string, unknown>) : null
+  connectionGet(id: string): ModelConnection | null {
+    const row = this.db.prepare('SELECT * FROM model_connections WHERE id = ?').get(id)
+    return row ? this.toModelConnection(row as Record<string, unknown>) : null
   }
 
   /**
-   * 新建/更新条目。密钥字段留空表示不修改（沿用已保存的那个）；
-   * 库里的第一条自动成为默认，保证「默认条目」不会空着。
+   * 新建/更新接入。密钥字段留空表示不修改（沿用已保存的那个）；
+   * 库里的第一条自动成为默认，保证「默认接入」不会空着。
    */
-  modelProfileSave(input: ModelProfileInput): ModelProfile {
+  connectionSave(input: ModelConnectionInput): ModelConnection {
     const now = Date.now()
     const id = input.id || `model-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`
-    const existing = input.id ? this.modelProfileGet(input.id) : null
+    const existing = input.id ? this.connectionGet(input.id) : null
     const secrets = secretFieldKeys(input.providerId)
-    const params: ModelProfile['params'] = {}
+    const params: ModelConnection['params'] = {}
     for (const [key, value] of Object.entries(input.params ?? {})) {
       if (secrets.includes(key) && String(value ?? '') === '' && existing) {
         params[key] = existing.params[key] ?? ''
@@ -459,73 +462,85 @@ export class StorageService {
       if (!(key in params)) params[key] = existing?.params[key] ?? ''
     }
     const isDefault = input.isDefault ?? existing?.isDefault ?? false
+    const models = [...new Set((input.models ?? []).map((model) => model.trim()).filter(Boolean))]
+    // 默认模型必须在列表里：填了列表外的（或没填）就取第一个
+    const defaultModel = models.includes(input.defaultModel.trim())
+      ? input.defaultModel.trim()
+      : (models[0] ?? '')
 
     this.db
       .prepare(
-        `INSERT INTO model_profiles (id, name, provider_id, params, model, is_default, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @model, @isDefault, @createdAt, @updatedAt)
+        `INSERT INTO model_connections (id, name, provider_id, params, models, default_model, is_default, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @defaultModel, @isDefault, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           model = @model, is_default = @isDefault, updated_at = @updatedAt`
+           models = @models, default_model = @defaultModel,
+           is_default = @isDefault, updated_at = @updatedAt`
       )
       .run({
         id,
-        name: input.name.trim() || '未命名模型',
+        name: input.name.trim() || getLlmProvider(input.providerId)?.label || '未命名接入',
         providerId: input.providerId,
         params: JSON.stringify(this.encryptParams(params, input.providerId)),
-        model: input.model.trim(),
+        models: JSON.stringify(models),
+        defaultModel,
         isDefault: isDefault ? 1 : 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
 
     const total = Number(
-      (this.db.prepare('SELECT COUNT(*) AS n FROM model_profiles').get() as { n?: unknown } | undefined)?.n ?? 0
+      (this.db.prepare('SELECT COUNT(*) AS n FROM model_connections').get() as { n?: unknown } | undefined)?.n ?? 0
     )
-    if (isDefault || total === 1) this.setDefaultModelProfile(id)
-    return this.modelProfileGet(id) as ModelProfile
+    if (isDefault || total === 1) this.setDefaultConnection(id)
+    return this.connectionGet(id) as ModelConnection
   }
 
-  modelProfileDelete(id: string): void {
-    const wasDefault = this.modelProfileGet(id)?.isDefault ?? false
-    this.db.prepare('DELETE FROM model_profiles WHERE id = ?').run(id)
-    // 删掉的正好是默认条目：让剩下最早的一个接手，别把库留在「没有默认」的中间态
+  connectionDelete(id: string): void {
+    const wasDefault = this.connectionGet(id)?.isDefault ?? false
+    this.db.prepare('DELETE FROM model_connections WHERE id = ?').run(id)
+    // 删掉的正好是默认接入：让剩下最早的一个接手，别把库留在「没有默认」的中间态
     if (wasDefault) {
-      const next = this.modelProfileList()[0]
-      if (next) this.setDefaultModelProfile(next.id)
+      const next = this.connectionList()[0]
+      if (next) this.setDefaultConnection(next.id)
     }
   }
 
   /** 设为默认（互斥：全表先清零再置一） */
-  setDefaultModelProfile(id: string): void {
-    this.db.prepare('UPDATE model_profiles SET is_default = 0').run()
-    this.db.prepare('UPDATE model_profiles SET is_default = 1 WHERE id = ?').run(id)
+  setDefaultConnection(id: string): void {
+    this.db.prepare('UPDATE model_connections SET is_default = 0').run()
+    this.db.prepare('UPDATE model_connections SET is_default = 1 WHERE id = ?').run(id)
   }
 
   /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
-  modelProfileListSafe(): ModelProfileSafe[] {
-    return this.modelProfileList().map((profile) => {
-      const secrets = secretFieldKeys(profile.providerId)
-      const hasSecret = secrets.some((key) => String(profile.params[key] ?? '').trim().length > 0)
-      const params = { ...profile.params }
+  connectionListSafe(): ModelConnectionSafe[] {
+    return this.connectionList().map((connection) => {
+      const secrets = secretFieldKeys(connection.providerId)
+      const hasSecret = secrets.some((key) => String(connection.params[key] ?? '').trim().length > 0)
+      const params = { ...connection.params }
       for (const key of secrets) params[key] = ''
       return {
-        ...profile,
+        ...connection,
         params,
         hasSecret,
-        ready: isModelProfileReady(profile, getLlmProvider(profile.providerId))
+        ready: isModelConnectionReady(connection, getLlmProvider(connection.providerId))
       }
     })
   }
 
-  private toModelProfile(r: Record<string, unknown>): ModelProfile {
+  private toModelConnection(r: Record<string, unknown>): ModelConnection {
     const providerId = str(r.provider_id)
+    const rawModels = parseJson<unknown>(r.models, [])
+    const models = Array.isArray(rawModels)
+      ? rawModels.map(String).filter((model) => model.trim().length > 0)
+      : []
     return {
       id: str(r.id),
       name: str(r.name),
       providerId,
       params: this.decryptParams(r.params, providerId),
-      model: str(r.model),
+      models,
+      defaultModel: str(r.default_model),
       isDefault: num(r.is_default) === 1,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
@@ -534,7 +549,7 @@ export class StorageService {
 
   /** 密钥字段按 {"__enc": base64} 加密后内联进 params，与 config.json 用同一套写法 */
   private encryptParams(
-    params: ModelProfile['params'],
+    params: ModelConnection['params'],
     providerId: string
   ): Record<string, string | number | boolean | { __enc: string }> {
     const secrets = secretFieldKeys(providerId)
@@ -550,10 +565,10 @@ export class StorageService {
     return out
   }
 
-  private decryptParams(raw: unknown, providerId: string): ModelProfile['params'] {
+  private decryptParams(raw: unknown, providerId: string): ModelConnection['params'] {
     const parsed = parseJson<Record<string, unknown>>(raw, {})
     const secrets = secretFieldKeys(providerId)
-    const out: ModelProfile['params'] = {}
+    const out: ModelConnection['params'] = {}
     for (const [key, value] of Object.entries(parsed)) {
       if (secrets.includes(key) && value && typeof value === 'object' && '__enc' in value) {
         try {
@@ -569,19 +584,98 @@ export class StorageService {
   }
 
   /**
-   * 旧配置迁移：模型条目库为空且旧的 config.llm 填过密钥时，用它建一个默认条目。
+   * 旧「模型条目库」归并成供应商接入：一条模型 = 一次接入时密钥要反复填，改成一家一份凭据。
+   * 按 provider_id + params 分组（同一家的同一个密钥共用一条），保留组里第一条的 id 作为新接入 id
+   * ——人设卡里存的旧条目 id 因此直接有效，不必重写。
+   */
+  private migrateModelProfiles(): void {
+    const remap = new Map<string, string>()
+    const table = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_profiles'")
+      .get()
+    if (!table) {
+      this.migratePersonaConnectionId(remap)
+      return
+    }
+    const rows = this.db
+      .prepare('SELECT * FROM model_profiles ORDER BY created_at ASC')
+      .all()
+      .map((row) => row as Record<string, unknown>)
+
+    const groups = new Map<string, Record<string, unknown>[]>()
+    for (const row of rows) {
+      const key = `${str(row.provider_id)}\u0000${str(row.params)}`
+      const group = groups.get(key)
+      if (group) group.push(row)
+      else groups.set(key, [row])
+    }
+
+    for (const group of groups.values()) {
+      const head = group[0]
+      const providerId = str(head.provider_id)
+      const def = getLlmProvider(providerId)
+      const models = [
+        ...new Set(group.map((row) => str(row.model).trim()).filter((model) => model.length > 0))
+      ]
+      // 老条目模型名留空 = 用服务商默认模型，换成列表后要显式写出来才不至于变「没模型」
+      if (models.length === 0 && def?.defaultModel) models.push(def.defaultModel)
+      const defaultRow = group.find((row) => num(row.is_default) === 1)
+      const id = str(head.id)
+      for (const row of group) remap.set(str(row.id), id)
+      this.connectionSave({
+        id,
+        name: def?.label ?? providerId,
+        providerId,
+        params: this.decryptParams(head.params, providerId),
+        models,
+        defaultModel: str(defaultRow?.model) || (models[0] ?? ''),
+        isDefault: group.some((row) => num(row.is_default) === 1)
+      })
+    }
+
+    this.db.exec('DROP TABLE model_profiles')
+    this.migratePersonaConnectionId(remap)
+  }
+
+  /** 人设卡的绑定从旧列搬到新列（归并过的按 remap 指向保留的那条接入） */
+  private migratePersonaConnectionId(remap: Map<string, string>): void {
+    // 旧列只在老库里有；新库不再建它，所以先看列在不在
+    const hasOldColumn = this.db
+      .prepare('PRAGMA table_info(agents)')
+      .all()
+      .some((row) => (row as Record<string, unknown>).name === 'model_profile_id')
+    if (!hasOldColumn) return
+    const rows = this.db
+      .prepare('SELECT id, model_profile_id, model_connection_id FROM agents')
+      .all()
+      .map((row) => row as Record<string, unknown>)
+    for (const row of rows) {
+      if (str(row.model_connection_id)) continue
+      const old = str(row.model_profile_id)
+      if (!old) continue
+      const mapped = remap.get(old) ?? old
+      // 指向的接入已不存在就留空：解析时按「跟随全局默认」处理
+      this.db
+        .prepare('UPDATE agents SET model_connection_id = ? WHERE id = ?')
+        .run(this.connectionGet(mapped) ? mapped : null, str(row.id))
+    }
+  }
+
+  /**
+   * 旧配置迁移：接入库为空且旧的 config.llm 填过密钥时，用它建一个默认接入。
    * 旧的 config.llm 保留不动，仍作为解析链的最后一档兜底。
    */
   private migrateLegacyLlm(): void {
-    const row = this.db.prepare('SELECT COUNT(*) AS n FROM model_profiles').get() as { n?: unknown } | undefined
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM model_connections').get() as { n?: unknown } | undefined
     if (Number(row?.n ?? 0) > 0) return
     const { llm } = this.config
     if (!llm.apiKey) return
-    this.modelProfileSave({
-      name: `${LLM_PROVIDER_META[llm.provider].label} · 默认`,
+    this.connectionSave({
+      name: LLM_PROVIDER_META[llm.provider].label,
       providerId: llm.provider,
       params: { apiKey: llm.apiKey, baseUrl: llm.baseUrl },
-      model: llm.model,
+      models: [llm.model],
+      defaultModel: llm.model,
       isDefault: true
     })
   }
@@ -816,7 +910,8 @@ export class StorageService {
       background: str(r.background),
       taboos: str(r.taboos),
       voiceId: str(r.voice_id),
-      modelProfileId: str(r.model_profile_id) || null,
+      modelConnectionId: str(r.model_connection_id) || null,
+      model: str(r.model),
       roles,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -825,13 +920,14 @@ export class StorageService {
   personaSave(persona: Persona): void {
     this.db
       .prepare(
-        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, model_profile_id, roles, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, model_connection_id, model, roles, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, personality = excluded.personality,
            catchphrases = excluded.catchphrases, background = excluded.background,
            taboos = excluded.taboos, voice_id = excluded.voice_id,
-           model_profile_id = excluded.model_profile_id,
+           model_connection_id = excluded.model_connection_id,
+           model = excluded.model,
            roles = excluded.roles, updated_at = excluded.updated_at`
       )
       .run(
@@ -842,7 +938,8 @@ export class StorageService {
         persona.background,
         persona.taboos,
         persona.voiceId,
-        persona.modelProfileId ?? null,
+        persona.modelConnectionId ?? null,
+        persona.model,
         JSON.stringify(persona.roles),
         persona.updatedAt
       )

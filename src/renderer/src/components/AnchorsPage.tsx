@@ -7,17 +7,56 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
-import { providerLabel, selectLlmReady, useAppStore } from '../stores/useAppStore'
-import type { ModelProfileSafe, Persona, Trigger, TriggerMode } from '../../../shared/types'
+import {
+  defaultConnection,
+  effectiveModel,
+  selectLlmReady,
+  useAppStore,
+  type LlmProviderManifest
+} from '../stores/useAppStore'
+import type { ModelConnectionSafe, Persona, Trigger, TriggerMode } from '../../../shared/types'
 
-/** 「大脑」下拉里表示「不指定、用默认条目」的哨兵值（Select 不接受空串 value） */
+/** 「大脑」下拉里表示「不指定、跟随全局默认」的哨兵值（Select 不接受空串 value） */
 const DEFAULT_MODEL_VALUE = '__default__'
+/** 下拉里「接入 + 模型」两级值的分隔符（接入 id 里不会有冒号） */
+const MODEL_VALUE_SEP = '::'
+
+function brainValue(connectionId: string, model: string): string {
+  return `${connectionId}${MODEL_VALUE_SEP}${model}`
+}
+
+function parseBrainValue(value: string): { connectionId: string | null; model: string } {
+  if (value === DEFAULT_MODEL_VALUE) return { connectionId: null, model: '' }
+  const index = value.indexOf(MODEL_VALUE_SEP)
+  if (index < 0) return { connectionId: null, model: '' }
+  return { connectionId: value.slice(0, index), model: value.slice(index + MODEL_VALUE_SEP.length) }
+}
+
+/** 卡片摘要里的「大脑」：接入名 · 模型；没绑定（或绑定已删）就说跟随默认 */
+function brainLabelOf(
+  connections: ModelConnectionSafe[],
+  providers: LlmProviderManifest[],
+  persona: Persona
+): string {
+  const bound = persona.modelConnectionId
+    ? connections.find((item) => item.id === persona.modelConnectionId)
+    : undefined
+  if (bound) {
+    const model = persona.model && bound.models.includes(persona.model)
+      ? persona.model
+      : effectiveModel(bound, providers)
+    return `${bound.name} · ${model || '未选模型'}`
+  }
+  const fallback = defaultConnection(connections)
+  if (!fallback) return '未配置'
+  return `默认（${fallback.name} · ${effectiveModel(fallback, providers) || '未选模型'}）`
+}
 
 const AGENT_STATE_LABEL: Record<string, string> = {
   stopped: '未启动',
@@ -40,24 +79,13 @@ const MODE_BADGE_VARIANT: Record<TriggerMode, 'outline' | 'secondary' | 'default
 
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
-/** 卡片摘要里的「大脑」：绑了条目显示条目名，没绑（或条目已删）显示默认条目名 */
-function modelNameOf(
-  models: ModelProfileSafe[],
-  modelProfileId: string | null,
-  fallback?: ModelProfileSafe
-): string {
-  const bound = modelProfileId ? models.find((item) => item.id === modelProfileId) : undefined
-  if (bound) return bound.name
-  return fallback ? `默认（${fallback.name}）` : '未配置'
-}
-
 /** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由场次带着切换）。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
   const config = useAppStore((s) => s.config)
-  const models = useAppStore((s) => s.models)
-  const llmReady = selectLlmReady(models, config)
-  const defaultProfile = models.find((item) => item.isDefault)
+  const connections = useAppStore((s) => s.connections)
+  const providers = useAppStore((s) => s.llmProviders)
+  const llmReady = selectLlmReady(connections, config)
   const [personas, setPersonas] = useState<Persona[]>([])
   const [activeId, setActiveId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -124,7 +152,7 @@ export function AnchorsPage() {
             size="sm"
             disabled={busy}
             onClick={() => void toggleAgent()}
-            title={llmReady ? undefined : '先到「设置 → 语言模型」添加一个模型条目'}
+            title={llmReady ? undefined : '先到「设置 → 语言模型」添加一个供应商接入'}
           >
             {busy ? (
               <Loader2 className="animate-spin" />
@@ -186,7 +214,7 @@ export function AnchorsPage() {
                     {item.personality || '（还没写性格）'}
                   </p>
                   <p className="truncate text-[11px] text-muted-foreground">
-                    大脑：{modelNameOf(models, item.modelProfileId, defaultProfile)} · 嗓子：
+                    大脑：{brainLabelOf(connections, providers, item)} · 嗓子：
                     {item.voiceId || 'TTS 默认'}
                   </p>
                   <div className="flex flex-wrap gap-1">
@@ -247,9 +275,9 @@ function PersonaEditorDialog({
 }) {
   const open = editing !== null
   const source = editing?.persona
-  const models = useAppStore((s) => s.models)
+  const connections = useAppStore((s) => s.connections)
   const providers = useAppStore((s) => s.llmProviders)
-  const defaultProfile = models.find((item) => item.isDefault)
+  const fallbackConnection = defaultConnection(connections)
   const [form, setForm] = useState<PersonaForm>(() => ({
     name: source?.name ?? '',
     personality: source?.personality ?? '',
@@ -257,12 +285,18 @@ function PersonaEditorDialog({
     background: source?.background ?? '',
     taboos: source?.taboos ?? '',
     voiceId: source?.voiceId ?? '',
-    modelProfileId: source?.modelProfileId ?? null,
+    modelConnectionId: source?.modelConnectionId ?? null,
+    model: source?.model ?? '',
     roles: source?.roles ?? []
   }))
   const [busy, setBusy] = useState(false)
   const [voicePickerOpen, setVoicePickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
+
+  // 绑定的接入被删掉时按「跟随全局默认」显示，别让下拉停在无值的空态
+  const boundConnection = form.modelConnectionId
+    ? connections.find((item) => item.id === form.modelConnectionId)
+    : undefined
 
   const patch = (part: Partial<PersonaForm>) => setForm((prev) => ({ ...prev, ...part }))
 
@@ -312,16 +346,23 @@ function PersonaEditorDialog({
 
           <div>
             <Label className="mb-1">大脑（模型）</Label>
-            {models.length === 0 ? (
+            {connections.length === 0 ? (
               <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                还没有模型，去「设置 → 语言模型」添加一个（主播开机时按它选模型）。
+                还没有供应商接入，去「设置 → 语言模型」加一条（选服务商、填一次密钥、把那家能用的模型放进列表）。
               </p>
             ) : (
               <Select
-                value={form.modelProfileId ?? DEFAULT_MODEL_VALUE}
-                onValueChange={(value) =>
-                  patch({ modelProfileId: value === DEFAULT_MODEL_VALUE ? null : value })
+                value={
+                  boundConnection
+                    ? brainValue(
+                        boundConnection.id,
+                        boundConnection.models.includes(form.model)
+                          ? form.model
+                          : effectiveModel(boundConnection, providers)
+                      )
+                    : DEFAULT_MODEL_VALUE
                 }
+                onValueChange={(value) => patch(parseBrainValue(value))}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue />
@@ -329,22 +370,45 @@ function PersonaEditorDialog({
                 <SelectContent>
                   <SelectItem value={DEFAULT_MODEL_VALUE}>
                     <span className="flex items-center gap-2">
-                      <ProviderIcon providerId={defaultProfile?.providerId ?? ''} size="sm" />
-                      用默认（{defaultProfile?.name ?? '无默认条目'}）
+                      <ProviderIcon providerId={fallbackConnection?.providerId ?? ''} size="sm" />
+                      {fallbackConnection
+                        ? `跟随全局默认（${fallbackConnection.name} · ${effectiveModel(fallbackConnection, providers) || '未选模型'}）`
+                        : '跟随全局默认（还没有默认接入）'}
                     </span>
                   </SelectItem>
-                  {models.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      <span className="flex items-center gap-2">
+                  {connections.map((item) => (
+                    <SelectGroup key={item.id}>
+                      <SelectLabel className="flex items-center gap-2">
                         <ProviderIcon providerId={item.providerId} size="sm" />
-                        {item.name}
-                        <span className="text-muted-foreground">
-                          · {providerLabel(providers, item.providerId)}
+                        <span className="truncate">
+                          {item.name}
                           {item.ready ? '' : '（未配齐）'}
                         </span>
-                      </span>
-                    </SelectItem>
+                      </SelectLabel>
+                      {item.models.length === 0 ? (
+                        <SelectItem value={brainValue(item.id, '')} disabled>
+                          （这条接入还没有模型）
+                        </SelectItem>
+                      ) : (
+                        item.models.map((model) => (
+                          <SelectItem key={model} value={brainValue(item.id, model)}>
+                            <span className="flex items-center gap-2">
+                              <span className="truncate">{model}</span>
+                              {model === effectiveModel(item, providers) && (
+                                <span className="text-muted-foreground">· 接入默认</span>
+                              )}
+                            </span>
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectGroup>
                   ))}
+                  {/* 绑定的这条接入一个模型都没有（老数据兜底）：给它一个可选中的项，别让下拉停在空态 */}
+                  {boundConnection && boundConnection.models.length === 0 && (
+                    <SelectItem value={brainValue(boundConnection.id, '')}>
+                      {boundConnection.name}（还没有模型，去设置里加）
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             )}

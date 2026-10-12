@@ -56,12 +56,19 @@ export class LaunchService {
       items.push({ level: 'ok', label: `人设：${persona.name}${roles}` })
     }
 
-    // ② 大脑与声音的凭据（模型按主播卡 → 默认条目 → 旧配置解析，和开播时用的完全是同一处逻辑）
+    // ② 大脑与声音的凭据（模型按主播卡 → 默认接入 → 旧配置解析，和开播时用的完全是同一处逻辑）
     try {
       const resolved = resolveModelForPersona(this.storage, persona)
-      const label = getLlmProvider(resolved.providerId)?.label ?? resolved.providerId
-      const model = resolved.model || getLlmProvider(resolved.providerId)?.defaultModel || ''
-      items.push({ level: 'ok', label: `语言模型：${label} / ${model}` })
+      const name = resolved.connectionId
+        ? (this.storage.connectionGet(resolved.connectionId)?.name ?? resolved.providerId)
+        : (getLlmProvider(resolved.providerId)?.label ?? resolved.providerId)
+      items.push({ level: 'ok', label: `语言模型：${name} · ${resolved.model}` })
+      if (resolved.fallback) {
+        items.push({
+          level: 'warn',
+          label: `指定模型 ${resolved.fallback.requested} 不在接入「${resolved.fallback.connectionName}」的模型列表里，已回落用 ${resolved.fallback.used}`
+        })
+      }
     } catch (error) {
       items.push({
         level: 'block',

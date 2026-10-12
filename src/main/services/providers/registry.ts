@@ -1,4 +1,4 @@
-import type { ModelProfile } from '../../../shared/types'
+import type { ModelConnection } from '../../../shared/types'
 import { piCloudProviders } from './llm/piCloud'
 import { localOpenAiProvider } from './llm/localOpenAi'
 
@@ -33,8 +33,14 @@ export interface LlmProviderDef {
   capabilities: { tools: boolean; streaming: boolean; contextWindow?: number }
   /** 各家自有参数（baseUrl / region / apiKey …） */
   configFields: FieldSpec[]
-  /** 默认模型名，条目里留空时用它 */
+  /** 默认模型名，接入里没指定时用它 */
   defaultModel: string
+  /**
+   * 该服务商的常见模型 id，给设置页的模型列表做下拉建议。
+   * pi 内置目录里能查到真实可用模型的（deepseek / kimi / zai）由目录兜底，
+   * 查不到的（qwen / 豆包）只有这里列出的名字，所以只填确信存在的。
+   */
+  modelSuggestions: string[]
   /** 组装成 pi-agent 可用的模型描述（OpenAI 兼容通道） */
   toModelConfig(
     params: Record<string, string | number | boolean>,
@@ -52,9 +58,13 @@ export type LlmProviderManifest = Omit<LlmProviderDef, 'toModelConfig'>
 
 /** 解析出来的模型来源（喂给 prepareLlmModel） */
 export interface ResolvedModel {
+  /** 命中的接入 id；走旧的 config.llm 兜底时为 null */
+  connectionId: string | null
   providerId: string
   params: Record<string, string | number | boolean>
   model: string
+  /** 人物指定的模型已不在接入列表里时的回落信息（预检提示用） */
+  fallback?: { requested: string; used: string; connectionName: string }
 }
 
 const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, localOpenAiProvider]
@@ -75,17 +85,31 @@ export function secretFieldKeys(providerId: string): string[] {
 }
 
 /**
- * 条目是否具备调用条件：有模型名（或服务商有默认模型），且必填的密钥字段有值
+ * 接入实际用的模型：默认模型（得在列表里）→ 列表第一个 → provider 的默认模型。
+ * 解析模型、连通性测试都走它，保证「测的是哪条」和「跑的是哪条」一致。
+ */
+export function connectionModel(
+  connection: Pick<ModelConnection, 'models' | 'defaultModel'>,
+  def: LlmProviderDef | undefined
+): string {
+  const models = connection.models.filter((model) => model.trim())
+  const preferred = connection.defaultModel.trim()
+  if (preferred && models.includes(preferred)) return preferred
+  return models[0] ?? def?.defaultModel ?? ''
+}
+
+/**
+ * 接入是否具备调用条件：模型列表里至少有一个模型，且必填的密钥字段有值
  * （标注 optional 的密钥可空，如本地服务）。
  */
-export function isModelProfileReady(
-  profile: Pick<ModelProfile, 'model' | 'params'>,
+export function isModelConnectionReady(
+  connection: Pick<ModelConnection, 'models' | 'params'>,
   def: LlmProviderDef | undefined
 ): boolean {
   if (!def) return false
-  if (!(profile.model.trim() || def.defaultModel)) return false
+  if (connection.models.filter((model) => model.trim()).length === 0) return false
   return def.configFields.every((field) => {
     if (!field.secret || field.optional) return true
-    return String(profile.params[field.key] ?? '').trim().length > 0
+    return String(connection.params[field.key] ?? '').trim().length > 0
   })
 }

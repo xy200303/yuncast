@@ -29,6 +29,7 @@ export const localOpenAiProvider: LlmProviderDef = {
   ],
   // 本地服务的模型名由用户自己拉过什么模型决定，没有通用默认值
   defaultModel: '',
+  modelSuggestions: [],
   toModelConfig(params, model) {
     return {
       baseUrl: String(params.baseUrl ?? '').trim() || DEFAULT_BASE_URL,

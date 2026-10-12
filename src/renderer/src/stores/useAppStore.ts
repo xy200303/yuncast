@@ -11,7 +11,7 @@ import {
   type AppConfig,
   type AppTheme,
   type ConnectorStatus,
-  type ModelProfileSafe,
+  type ModelConnectionSafe,
   type PartialDeep,
   type PoolSnapshot,
   type VoiceRecord,
@@ -83,11 +83,11 @@ interface AppState {
   voices: VoiceRecord[]
   setVoices: (voices: VoiceRecord[]) => void
 
-  /** 模型条目库 + 服务商清单（设置 → 语言模型；状态栏徽章与主播卡的「大脑」下拉都读它） */
-  models: ModelProfileSafe[]
+  /** 供应商接入 + 服务商清单（设置 → 语言模型；状态栏徽章与主播卡的「大脑」下拉都读它） */
+  connections: ModelConnectionSafe[]
   llmProviders: LlmProviderManifest[]
   loadModelLibrary: () => Promise<void>
-  setModels: (models: ModelProfileSafe[]) => void
+  setConnections: (connections: ModelConnectionSafe[]) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -171,17 +171,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
   voices: [],
   setVoices: (voices) => set({ voices }),
 
-  models: [],
+  connections: [],
   llmProviders: [],
   loadModelLibrary: async () => {
     if (!('api' in window)) return
-    const [models, llmProviders] = await Promise.all([
+    const [connections, llmProviders] = await Promise.all([
       window.api.model.list(),
       window.api.providers.llmList()
     ])
-    set({ models, llmProviders })
+    set({ connections, llmProviders })
   },
-  setModels: (models) => set({ models })
+  setConnections: (connections) => set({ connections })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */
@@ -189,12 +189,32 @@ export function selectTtsReady(config: AppConfig): boolean {
   return ttsConfigured(config.tts)
 }
 
-/** 是否有可用的语言模型（状态栏徽章用）：条目库里有可用条目，或旧的 config.llm 还兜底着 */
-export function selectLlmReady(models: ModelProfileSafe[], config: AppConfig): boolean {
-  return llmReady(models, config.llm)
+/** 是否有可用的语言模型（状态栏徽章用）：库里有一条可用接入，或旧的 config.llm 还兜底着 */
+export function selectLlmReady(connections: ModelConnectionSafe[], config: AppConfig): boolean {
+  return llmReady(connections, config.llm)
 }
 
 /** 服务商显示名（拿不到 manifest 就退回 id） */
 export function providerLabel(providers: LlmProviderManifest[], providerId: string): string {
   return providers.find((item) => item.id === providerId)?.label ?? providerId
+}
+
+/** 全局默认接入（没有标记默认时取库里的第一条） */
+export function defaultConnection(
+  connections: ModelConnectionSafe[]
+): ModelConnectionSafe | undefined {
+  return connections.find((item) => item.isDefault) ?? connections[0]
+}
+
+/** 接入实际用的模型（默认模型 → 列表第一个 → 服务商默认模型），与主进程的取用口径一致 */
+export function effectiveModel(
+  connection: ModelConnectionSafe,
+  providers: LlmProviderManifest[]
+): string {
+  if (connection.defaultModel) return connection.defaultModel
+  return (
+    connection.models[0] ??
+    providers.find((item) => item.id === connection.providerId)?.defaultModel ??
+    ''
+  )
 }

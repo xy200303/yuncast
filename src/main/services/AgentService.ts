@@ -99,7 +99,7 @@ export class AgentService {
   /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。 */
   async start(): Promise<void> {
     if (this.session) return
-    // 模型按「这张卡的绑定 → 全局默认条目 → 旧的 config.llm」解析，解析不出就明确报错
+    // 模型按「这张卡的接入与模型 → 全局默认接入 → 旧的 config.llm」解析，解析不出就明确报错
     const resolved = resolveModelForPersona(this.storage, this.persona.get())
     this.setState('starting')
     try {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   AudioLines,
   Brain,
@@ -26,7 +26,12 @@ import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
-import { providerLabel, useAppStore, type LlmProviderManifest } from '../stores/useAppStore'
+import {
+  effectiveModel,
+  providerLabel,
+  useAppStore,
+  type LlmProviderManifest
+} from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import {
   APP_ACCENTS,
@@ -34,7 +39,7 @@ import {
   ttsConfigured,
   type AppAccent,
   type AppTheme,
-  type ModelProfileSafe,
+  type ModelConnectionSafe,
   type StreamConfig,
   type StreamMode,
   type TtsConfig,
@@ -397,52 +402,53 @@ function CommentGatewayCard() {
 }
 
 /**
- * 语言模型：模型条目库（设置 = 库和默认值）。
- * 一条条目 = 服务商 + 自有参数 + 模型名；字段由 provider 的 configFields 动态渲染，
- * 加一家服务商不用改这里。密钥字段只在落盘时加密，渲染层只看得到「填没填过」。
+ * 语言模型：供应商接入库（设置 = 库和默认值）。
+ * 一条接入 = 一个服务商 + 一份凭据（只填一次）+ 一串这家能用的模型；
+ * 字段由 provider 的 configFields 动态渲染，加一家服务商不用改这里。
+ * 密钥字段只在落盘时加密，渲染层只看得到「填没填过」。
  */
 function LlmSection() {
-  const models = useAppStore((s) => s.models)
+  const connections = useAppStore((s) => s.connections)
   const providers = useAppStore((s) => s.llmProviders)
-  const setModels = useAppStore((s) => s.setModels)
-  const [editing, setEditing] = useState<{ profile?: ModelProfileSafe } | null>(null)
-  const [deleting, setDeleting] = useState<ModelProfileSafe | null>(null)
-  /** 待删条目被几张主播卡引用（删除前查一次，用于提示） */
+  const setConnections = useAppStore((s) => s.setConnections)
+  const [editing, setEditing] = useState<{ connection?: ModelConnectionSafe } | null>(null)
+  const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
+  /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
   const [testingId, setTestingId] = useState('')
 
-  const test = async (profile: ModelProfileSafe) => {
+  const test = async (connection: ModelConnectionSafe) => {
     if (testingId) return
-    setTestingId(profile.id)
+    setTestingId(connection.id)
     try {
-      const result = await window.api.model.test(profile.id)
-      if (result.ok) toast.success(`「${profile.name}」连通正常`)
+      const result = await window.api.model.test(connection.id)
+      if (result.ok) toast.success(`「${connection.name}」连通正常`)
       else toast.error('测试失败', { description: result.error })
     } finally {
       setTestingId('')
     }
   }
 
-  const setDefault = (profile: ModelProfileSafe) => {
-    void window.api.model.setDefault(profile.id).then((result) => {
-      setModels(result.models)
-      toast.success(`「${profile.name}」已设为默认条目`)
+  const setDefault = (connection: ModelConnectionSafe) => {
+    void window.api.model.setDefault(connection.id).then((result) => {
+      setConnections(result.connections)
+      toast.success(`「${connection.name}」已设为默认接入`)
     })
   }
 
-  const askDelete = async (profile: ModelProfileSafe) => {
+  const askDelete = async (connection: ModelConnectionSafe) => {
     const personas = await window.api.persona.list()
-    setUsedBy(personas.filter((item) => item.modelProfileId === profile.id).length)
-    setDeleting(profile)
+    setUsedBy(personas.filter((item) => item.modelConnectionId === connection.id).length)
+    setDeleting(connection)
   }
 
   const remove = () => {
-    const profile = deleting
-    if (!profile) return
+    const connection = deleting
+    if (!connection) return
     setDeleting(null)
-    void window.api.model.remove(profile.id).then((result) => {
-      setModels(result.models)
-      toast.success(`已删除「${profile.name}」`)
+    void window.api.model.remove(connection.id).then((result) => {
+      setConnections(result.connections)
+      toast.success(`已删除「${connection.name}」`)
     })
   }
 
@@ -452,99 +458,96 @@ function LlmSection() {
         <div>
           <p className="text-[13px] font-medium">语言模型（LLM）</p>
           <p className="text-xs text-muted-foreground">
-            主播 Agent 的大脑。一条 = 一次可用的接入；人设卡可以各自指定，没指定就走默认条目
+            主播 Agent 的大脑。一条 = 一个服务商的接入，密钥只填一次；模型列表里放这家能用的模型，默认模型是没特别指定时用的那个
           </p>
         </div>
         <Button size="sm" onClick={() => setEditing({})}>
           <Plus />
-          新建条目
+          新建接入
         </Button>
       </div>
 
       <div className="mt-4 flex flex-col gap-2">
-        {models.length === 0 ? (
+        {connections.length === 0 ? (
           <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
-            还没有模型条目。新建一个（选服务商、填 API Key 和模型名），主播才有大脑。
+            还没有供应商接入。新建一条（选服务商、填一次 API Key、把这家能用的模型加进列表），主播才有大脑。
           </p>
         ) : (
-          models.map((profile) => {
-            const def = providers.find((item) => item.id === profile.providerId)
-            const modelName = profile.model || def?.defaultModel || '（用服务商默认模型）'
-            return (
-              <div
-                key={profile.id}
-                className="flex items-center gap-3 rounded-lg border bg-background px-3 py-2"
-              >
-                <ProviderIcon providerId={profile.providerId} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-medium">{profile.name}</span>
-                    {profile.isDefault && (
-                      <Badge variant="secondary" className="shrink-0">
-                        默认
-                      </Badge>
-                    )}
-                    {!profile.ready && (
-                      <Badge variant="outline" className="shrink-0 text-muted-foreground">
-                        未配齐
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {providerLabel(providers, profile.providerId)} · {modelName}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    disabled={testingId === profile.id}
-                    onClick={() => void test(profile)}
-                  >
-                    {testingId === profile.id ? '测试中…' : '测试'}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    title="编辑"
-                    onClick={() => setEditing({ profile })}
-                  >
-                    <Pencil />
-                  </Button>
-                  {!profile.isDefault && (
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title="设为默认"
-                      onClick={() => setDefault(profile)}
-                    >
-                      <Star />
-                    </Button>
+          connections.map((connection) => (
+            <div
+              key={connection.id}
+              className="flex items-center gap-3 rounded-lg border bg-background px-3 py-2"
+            >
+              <ProviderIcon providerId={connection.providerId} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="truncate text-[13px] font-medium">{connection.name}</span>
+                  {connection.isDefault && (
+                    <Badge variant="secondary" className="shrink-0">
+                      默认
+                    </Badge>
                   )}
+                  {!connection.ready && (
+                    <Badge variant="outline" className="shrink-0 text-muted-foreground">
+                      未配齐
+                    </Badge>
+                  )}
+                </div>
+                <p className="truncate text-xs text-muted-foreground">
+                  {providerLabel(providers, connection.providerId)} · {connection.models.length} 个模型 ·
+                  默认 {effectiveModel(connection, providers) || '—'}
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  disabled={testingId === connection.id}
+                  onClick={() => void test(connection)}
+                >
+                  {testingId === connection.id ? '测试中…' : '测试'}
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="编辑"
+                  onClick={() => setEditing({ connection })}
+                >
+                  <Pencil />
+                </Button>
+                {!connection.isDefault && (
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    title="删除"
-                    onClick={() => void askDelete(profile)}
+                    title="设为默认"
+                    onClick={() => setDefault(connection)}
                   >
-                    <Trash2 />
+                    <Star />
                   </Button>
-                </div>
+                )}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="删除"
+                  onClick={() => void askDelete(connection)}
+                >
+                  <Trash2 />
+                </Button>
               </div>
-            )
-          })
+            </div>
+          ))
         )}
       </div>
 
       <p className="mt-3 text-xs text-muted-foreground">
-        密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；条目没指定给谁就作全站默认。
+        密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；没被主播卡指定的接入就是全站默认。
       </p>
 
       {editing && (
-        <ModelEditorDialog
-          key={editing.profile?.id ?? 'new'}
-          profile={editing.profile}
+        <ConnectionEditorDialog
+          key={editing.connection?.id ?? 'new'}
+          connection={editing.connection}
           providers={providers}
           onClose={() => setEditing(null)}
         />
@@ -553,11 +556,11 @@ function LlmSection() {
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>删除模型条目</DialogTitle>
+            <DialogTitle>删除供应商接入</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             {usedBy > 0
-              ? `「${deleting?.name}」正被 ${usedBy} 张主播卡使用，删掉后它们会回落到默认条目。`
+              ? `「${deleting?.name}」正被 ${usedBy} 张主播卡使用，删掉后它们会回落到默认接入。`
               : `确认删除「${deleting?.name}」？`}
           </p>
           <DialogFooter>
@@ -574,25 +577,31 @@ function LlmSection() {
   )
 }
 
-/** 新建/编辑模型条目：服务商参数按 manifest 的 configFields 渲染，密钥字段用密码框 */
-function ModelEditorDialog({
-  profile,
+/** 新建/编辑供应商接入：凭据按 manifest 的 configFields 渲染，模型列表单独编辑 */
+function ConnectionEditorDialog({
+  connection,
   providers,
   onClose
 }: {
-  profile?: ModelProfileSafe
+  connection?: ModelConnectionSafe
   providers: LlmProviderManifest[]
   onClose: () => void
 }) {
-  const setModels = useAppStore((s) => s.setModels)
-  const [providerId, setProviderId] = useState(profile?.providerId ?? providers[0]?.id ?? 'deepseek')
-  const [name, setName] = useState(profile?.name ?? '')
-  const [model, setModel] = useState(profile?.model ?? '')
-  const [isDefault, setIsDefault] = useState(profile?.isDefault ?? false)
+  const setConnections = useAppStore((s) => s.setConnections)
+  const initialProviderId = connection?.providerId ?? providers[0]?.id ?? 'deepseek'
+  const [providerId, setProviderId] = useState(initialProviderId)
+  // 接入名默认就用服务商 label（一条接入 = 一家，改不改随你）
+  const [name, setName] = useState(
+    connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
+  )
+  const [models, setModels] = useState<string[]>(connection?.models ?? [])
+  const [defaultModel, setDefaultModel] = useState(connection?.defaultModel ?? '')
+  const [isDefault, setIsDefault] = useState(connection?.isDefault ?? false)
   const [busy, setBusy] = useState(false)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
-    const def = providers.find((item) => item.id === profile?.providerId) ?? providers[0]
-    const initial: Record<string, string | number | boolean> = { ...(profile?.params ?? {}) }
+    const def = providers.find((item) => item.id === connection?.providerId) ?? providers[0]
+    const initial: Record<string, string | number | boolean> = { ...(connection?.params ?? {}) }
     for (const field of def?.configFields ?? []) {
       if (initial[field.key] === undefined && field.default !== undefined) initial[field.key] = field.default
     }
@@ -608,6 +617,8 @@ function ModelEditorDialog({
   const changeProvider = (next: string) => {
     setProviderId(next)
     const nextDef = providers.find((item) => item.id === next)
+    // 新建时名字还没改过（仍是上一家的 label）就跟着换，省得手填
+    if (!connection && name === def?.label) setName(nextDef?.label ?? name)
     const nextParams: Record<string, string | number | boolean> = {}
     for (const field of nextDef?.configFields ?? []) {
       const current = params[field.key]
@@ -616,28 +627,59 @@ function ModelEditorDialog({
     setParams(nextParams)
   }
 
+  const setModelAt = (index: number, value: string) => {
+    // 改的正好是当前默认模型：跟着改名，别让它掉出列表
+    if (models[index] === defaultModel) setDefaultModel(value)
+    setModels(models.map((model, i) => (i === index ? value : model)))
+  }
+
+  const removeModelAt = (index: number) => {
+    const next = models.filter((_, i) => i !== index)
+    if (models[index] === defaultModel) setDefaultModel(next[0] ?? '')
+    setModels(next)
+  }
+
+  const addModels = (ids: string[]) => {
+    const next = [...models]
+    for (const id of ids) {
+      const value = id.trim()
+      if (value && !next.includes(value)) next.push(value)
+    }
+    setModels(next)
+    if (!defaultModel) setDefaultModel(next[0] ?? '')
+  }
+
   const save = async () => {
     if (busy) return
     if (!name.trim()) {
-      toast.warning('先给这个条目起个名字')
+      toast.warning('先给这条接入起个名字')
+      return
+    }
+    if (models.length === 0) {
+      toast.warning('至少加一个模型', { description: '模型列表里放这家能用的模型 id' })
+      return
+    }
+    if (!models.includes(defaultModel)) {
+      toast.warning('默认模型要在模型列表里', { description: '点模型行右侧的「默认」按钮指定一个' })
       return
     }
     setBusy(true)
     try {
       const result = await window.api.model.save({
-        id: profile?.id,
+        id: connection?.id,
         name,
         providerId,
         params,
-        model,
+        models,
+        defaultModel,
         isDefault
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
         return
       }
-      setModels(result.models)
-      toast.success(profile ? '条目已保存' : '条目已新建', {
+      setConnections(result.connections)
+      toast.success(connection ? '接入已保存' : '接入已新建', {
         description: '已启动的主播重启后使用新模型'
       })
       onClose()
@@ -650,13 +692,15 @@ function ModelEditorDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>{profile ? `模型条目 · ${profile.name || '未命名'}` : '新建模型条目'}</DialogTitle>
+          <DialogTitle>
+            {connection ? `供应商接入 · ${connection.name || '未命名'}` : '新建供应商接入'}
+          </DialogTitle>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="mb-1">名称</Label>
+              <Label className="mb-1">接入名</Label>
               <Input
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -692,7 +736,7 @@ function ModelEditorDialog({
                 <ProviderField
                   field={field}
                   value={params[field.key] ?? ''}
-                  secretSaved={Boolean(profile?.hasSecret && field.secret)}
+                  secretSaved={Boolean(connection?.hasSecret && field.secret)}
                   onChange={(value) => patch({ key: field.key, value })}
                 />
                 {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
@@ -701,20 +745,61 @@ function ModelEditorDialog({
           </div>
 
           <div>
-            <Label className="mb-1">模型名（留空用服务商默认模型）</Label>
-            <Input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              placeholder={def?.defaultModel || '本地服务填已有的模型名，例如 qwen3:8b'}
-            />
+            <div className="mb-1 flex items-center justify-between">
+              <Label>模型列表（这家能用的模型，右侧点「默认」指定默认模型）</Label>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-xs"
+                onClick={() => setPickerOpen(true)}
+              >
+                <Plus className="size-3" />
+                添加模型
+              </Button>
+            </div>
+            {models.length === 0 ? (
+              <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">
+                还没有模型。点「添加模型」从可用模型里挑，或直接手打模型 id（本地服务的模型名必须手打）。
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {models.map((model, index) => (
+                  <div key={index} className="flex items-center gap-1.5">
+                    <Input
+                      value={model}
+                      onChange={(e) => setModelAt(index, e.target.value)}
+                      placeholder="模型 id，如 deepseek-chat"
+                      className="h-7 text-xs"
+                    />
+                    <Button
+                      variant={model === defaultModel ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-7 shrink-0 text-xs"
+                      title="设为默认模型"
+                      onClick={() => setDefaultModel(model)}
+                    >
+                      {model === defaultModel ? '默认' : '设为默认'}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="删除这一行"
+                      onClick={() => removeModelAt(index)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
             <div>
-              <p className="text-[13px]">设为默认条目</p>
-              <p className="text-xs text-muted-foreground">没绑定模型的场景与主播卡都用它</p>
+              <p className="text-[13px]">设为默认接入</p>
+              <p className="text-xs text-muted-foreground">没指定大脑的场景与主播卡都用它</p>
             </div>
-            <Switch checked={isDefault} onCheckedChange={setIsDefault} aria-label="设为默认条目" />
+            <Switch checked={isDefault} onCheckedChange={setIsDefault} aria-label="设为默认接入" />
           </div>
 
           {links && (
@@ -733,6 +818,120 @@ function ModelEditorDialog({
           </Button>
           <Button disabled={busy} onClick={() => void save()}>
             {busy ? '保存中…' : '保存'}
+          </Button>
+        </DialogFooter>
+
+        <ModelPickerDialog
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          providerId={providerId}
+          providerLabel={def?.label ?? providerId}
+          picked={models}
+          onPick={(ids) => addModels(ids)}
+        />
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * 从该服务商真实可用的模型里挑（providers:models：pi 目录 → manifest 建议）。
+ * 目录里没有的（本地服务）只能手打，所以同时允许直接把输入的内容加进去。
+ */
+function ModelPickerDialog({
+  open,
+  onOpenChange,
+  providerId,
+  providerLabel,
+  picked,
+  onPick
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  providerId: string
+  providerLabel: string
+  picked: string[]
+  onPick: (ids: string[]) => void
+}) {
+  const [available, setAvailable] = useState<string[]>([])
+  const [loading, setLoading] = useState(false)
+  const [keyword, setKeyword] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setLoading(true)
+    setKeyword('')
+    window.api.providers
+      .models(providerId)
+      .then(setAvailable)
+      .catch(() => setAvailable([]))
+      .finally(() => setLoading(false))
+  }, [open, providerId])
+
+  const filtered = available.filter((id) => id.toLowerCase().includes(keyword.trim().toLowerCase()))
+  const typed = keyword.trim()
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="flex max-h-[70vh] flex-col overflow-hidden sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>添加模型 · {providerLabel}</DialogTitle>
+        </DialogHeader>
+
+        <Input
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          placeholder="搜索模型 id，或直接手打一个（本地服务只能手打）"
+        />
+
+        <div className="flex min-h-32 flex-1 flex-col gap-1 overflow-y-auto">
+          {typed && !available.includes(typed) && (
+            <button
+              type="button"
+              className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-left text-[13px] hover:bg-accent"
+              onClick={() => {
+                onPick([typed])
+                setKeyword('')
+              }}
+            >
+              <span className="min-w-0 truncate">手打添加「{typed}」</span>
+              <Plus className="size-3.5 shrink-0" />
+            </button>
+          )}
+          {loading ? (
+            <p className="px-1 py-4 text-center text-xs text-muted-foreground">读取可用模型…</p>
+          ) : filtered.length === 0 ? (
+            <p className="px-1 py-4 text-center text-xs text-muted-foreground">
+              {available.length === 0
+                ? '这家服务商没有可列出的模型目录，直接在左边输入框里手打模型 id。'
+                : '没有匹配的模型。'}
+            </p>
+          ) : (
+            filtered.map((id) => {
+              const added = picked.includes(id)
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  disabled={added}
+                  className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent disabled:opacity-50"
+                  onClick={() => onPick([id])}
+                >
+                  <span className="min-w-0 truncate">{id}</span>
+                  {added ? (
+                    <span className="shrink-0 text-xs text-muted-foreground">已添加</span>
+                  ) : (
+                    <Plus className="size-3.5 shrink-0" />
+                  )}
+                </button>
+              )
+            })
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            关闭
           </Button>
         </DialogFooter>
       </DialogContent>

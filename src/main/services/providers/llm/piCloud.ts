@@ -1,5 +1,13 @@
-import { LLM_PROVIDER_META, LLM_PROVIDERS } from '../../../../shared/types'
+import { LLM_PROVIDER_META, LLM_PROVIDERS, type LlmProvider } from '../../../../shared/types'
 import type { LlmProviderDef } from '../registry'
+
+/**
+ * pi 内置目录里没有的服务商（通义千问 / 豆包）只能靠这里列出的型号做建议，
+ * 只填确信存在的通用型号；目录能查到的（deepseek / kimi / zai）不必重复列举。
+ */
+const EXTRA_MODEL_SUGGESTIONS: Partial<Record<LlmProvider, string[]>> = {
+  qwen: ['qwen-max', 'qwen-turbo', 'qwen-long']
+}
 
 /**
  * 云端 OpenAI 兼容通道：DeepSeek / 通义千问 / 豆包 / Kimi / 智谱。
@@ -31,6 +39,7 @@ export const piCloudProviders: LlmProviderDef[] = LLM_PROVIDERS.map((id) => {
       }
     ],
     defaultModel: meta.defaultModel,
+    modelSuggestions: [...new Set([meta.defaultModel, ...(EXTRA_MODEL_SUGGESTIONS[id] ?? [])])],
     toModelConfig(params, model) {
       const baseUrl = String(params.baseUrl ?? '').trim() || meta.defaultBaseUrl
       return {

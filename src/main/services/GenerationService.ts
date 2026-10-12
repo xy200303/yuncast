@@ -69,7 +69,7 @@ export class GenerationService {
     if (!script || script.scenes.length === 0) {
       throw new Error('先给场次绑定剧本——生成按场景逐场产出')
     }
-    // 模型：场次绑了主播卡就用那张卡的，没绑就用全局默认条目
+    // 模型：场次绑了主播卡就用那张卡的，没绑就用全局默认接入
     const bound = plan.personaId ? (this.persona.list().find((p) => p.id === plan.personaId) ?? null) : null
     const resolved = resolveModelForPersona(this.storage, bound)
     void this.run(plan, script, resolved)

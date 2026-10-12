@@ -13,8 +13,8 @@ import type {
   LivePlan,
   LivePlanInput,
   LaunchResult,
-  ModelProfileInput,
-  ModelProfileSafe,
+  ModelConnectionInput,
+  ModelConnectionSafe,
   PartialDeep,
   Persona,
   PlaybackControlAction,
@@ -84,24 +84,33 @@ const api = {
     test: (text: string) =>
       ipcRenderer.invoke(IPC.ttsTest, text) as Promise<{ ok: boolean; error?: string; audioPath?: string }>
   },
-  /** 语言模型条目库（设置 → 语言模型）。密钥字段的值不出主进程，只有 hasSecret / ready 两个标记 */
+  /**
+   * 供应商接入（设置 → 语言模型）：一条 = 一个服务商 + 一份凭据 + 一串模型。
+   * 密钥字段的值不出主进程，只有 hasSecret / ready 两个标记。
+   */
   model: {
-    list: () => ipcRenderer.invoke(IPC.modelList) as Promise<ModelProfileSafe[]>,
-    save: (input: ModelProfileInput) =>
+    list: () => ipcRenderer.invoke(IPC.modelList) as Promise<ModelConnectionSafe[]>,
+    save: (input: ModelConnectionInput) =>
       ipcRenderer.invoke(IPC.modelSave, input) as Promise<
-        { ok: true; models: ModelProfileSafe[] } | { ok: false; error: string }
+        { ok: true; connections: ModelConnectionSafe[] } | { ok: false; error: string }
       >,
     remove: (id: string) =>
-      ipcRenderer.invoke(IPC.modelRemove, id) as Promise<{ ok: true; models: ModelProfileSafe[] }>,
+      ipcRenderer.invoke(IPC.modelRemove, id) as Promise<{ ok: true; connections: ModelConnectionSafe[] }>,
     setDefault: (id: string) =>
-      ipcRenderer.invoke(IPC.modelSetDefault, id) as Promise<{ ok: true; models: ModelProfileSafe[] }>,
-    /** 连通性测试（对条目发一个最小请求） */
+      ipcRenderer.invoke(IPC.modelSetDefault, id) as Promise<{
+        ok: true
+        connections: ModelConnectionSafe[]
+      }>,
+    /** 连通性测试（用该接入的默认模型发一个最小请求） */
     test: (id: string) =>
       ipcRenderer.invoke(IPC.modelTest, id) as Promise<{ ok: boolean; error?: string }>
   },
   providers: {
     /** 服务商能力与配置字段（表单由 manifest 驱动渲染） */
-    llmList: () => ipcRenderer.invoke(IPC.providersLlmList) as Promise<LlmProviderManifest[]>
+    llmList: () => ipcRenderer.invoke(IPC.providersLlmList) as Promise<LlmProviderManifest[]>,
+    /** 该服务商真实可用的模型 id（模型列表的下拉建议） */
+    models: (providerId: string) =>
+      ipcRenderer.invoke(IPC.providersModels, providerId) as Promise<string[]>
   },
   agent: {
     start: () => ipcRenderer.invoke(IPC.agentStart) as Promise<{ ok: boolean; error?: string }>,

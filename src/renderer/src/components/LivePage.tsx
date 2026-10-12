@@ -641,9 +641,58 @@ type ChatEntry =
     }
   | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
 
+/** 连续同名工具并成一行（say ×4 · 65ms），点开看每一条 */
+function ToolGroup({ items }: { items: Extract<ChatEntry, { type: 'tool' }>[] }) {
+  const [open, setOpen] = useState(false)
+  const name = items[0].name
+  const totalMs = items.reduce((sum, item) => sum + (item.durationMs ?? 0), 0)
+  const running = items.some((item) => item.status === 'running')
+  const failed = items.some((item) => item.status === 'error')
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        className="group flex w-full items-center gap-1.5 rounded px-0.5 py-0.5 text-left text-muted-foreground hover:bg-muted/40 hover:text-foreground"
+        onClick={() => setOpen((prev) => !prev)}
+      >
+        <Wrench className="size-3 shrink-0 opacity-60" />
+        <span className="shrink-0 font-mono text-[11px]">{name}</span>
+        <span className="shrink-0 font-mono text-[11px] opacity-60">×{items.length}</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-60">
+          {items[0].args && !NOISY_TOOLS.has(name) ? items[0].args : ''}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
+          {totalMs > 0 && <span className="font-mono text-[10px] opacity-50">{Math.round(totalMs)}ms</span>}
+          {running ? (
+            <Loader2 className="size-3 animate-spin opacity-60" />
+          ) : failed ? (
+            <XCircle className="size-3 text-destructive/80" />
+          ) : (
+            <CheckCircle2 className="size-3 text-emerald-600/70" />
+          )}
+          <ChevronRight className={cn('size-3 opacity-40 transition-transform', open && 'rotate-90')} />
+        </span>
+      </button>
+      {open && (
+        <div className="mt-0.5 flex flex-col gap-1 border-l border-border/70 py-0.5 pl-3">
+          {items.map((item) => (
+            <div key={item.id} className="flex flex-col gap-0.5 font-mono text-[11px] leading-[17px] text-muted-foreground">
+              {item.args && <p className="whitespace-pre-wrap break-all opacity-80">{item.args}</p>}
+              {item.result && <p className="whitespace-pre-wrap break-all opacity-60">{item.result}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 播出类工具：一轮里能出现十几条，参数（就是话术原文）没必要塞在行里，展开再看 */
+const NOISY_TOOLS = new Set(['say', 'insert_next'])
+
 /**
  * 工具调用：做成一行"日志行"——浅灰等宽字 + 小图标，不套边框卡片，好让文本穿插其间时读起来连贯。
- * 点一下展开完整参数与结果。
+ * 点一下展开完整参数与结果；播出类工具收起时不显示参数（否则每句台词都糊在时间线上）。
  */
 function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
   const [open, setOpen] = useState(false)
@@ -656,7 +705,10 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
       >
         <Wrench className="size-3 shrink-0 opacity-60" />
         <span className="shrink-0 font-mono text-[11px]">{entry.name}</span>
-        {entry.args && <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-75">{entry.args}</span>}
+        {entry.args && !NOISY_TOOLS.has(entry.name) && (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-75">{entry.args}</span>
+        )}
+        {NOISY_TOOLS.has(entry.name) && <span className="min-w-0 flex-1" />}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {entry.durationMs !== undefined && (
             <span className="font-mono text-[10px] opacity-50">{Math.round(entry.durationMs)}ms</span>
@@ -714,7 +766,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       const index = prev.findIndex((item) => item.id === entry.id)
       if (index < 0) return [...prev.slice(-199), entry]
       const next = prev.slice()
-      next[index] = { ...entry, ts: prev[index].ts } as ChatEntry
+      // 合并而不是替换：工具结束的更新不带 args，整体替换会把参数/结果冲掉
+      next[index] = { ...prev[index], ...entry, ts: prev[index].ts } as ChatEntry
       return next
     })
   }
@@ -792,6 +845,10 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       { type: 'text', id: 'demo-2', ts: t0 - 117000, turnId: 'turn-1', text: '先查一下内胆材质的话术，再调下面几条。', final: false },
       { type: 'tool', id: 'demo-t2', ts: t0 - 116000, turnId: 'turn-1', name: 'revise_next', args: 'count=2', status: 'ok', result: '已改写 2 条未播话术', durationMs: 88 },
       { type: 'text', id: 'demo-3', ts: t0 - 60000, turnId: 'turn-1', text: '收到：接下来两条改成强调 316 不锈钢内胆，语速提示调慢了 10%，预计 30 秒后生效。', final: true },
+      { type: 'tool', id: 'demo-s1', ts: t0 - 55000, turnId: 'turn-2', name: 'say', args: '{"text":"家人们欢迎进直播间"}', status: 'ok', result: '已排进队列', durationMs: 31 },
+      { type: 'tool', id: 'demo-s2', ts: t0 - 54800, turnId: 'turn-2', name: 'say', args: '{"text":"今天咱们是保温杯专场"}', status: 'ok', result: '已排进队列', durationMs: 8 },
+      { type: 'tool', id: 'demo-s3', ts: t0 - 54600, turnId: 'turn-2', name: 'say', args: '{"text":"316 内胆，12 小时保温"}', status: 'ok', result: '已排进队列', durationMs: 5 },
+      { type: 'tool', id: 'demo-s4', ts: t0 - 54400, turnId: 'turn-2', name: 'say', args: '{"text":"价格给到位，59 块 9"}', status: 'ok', result: '已排进队列', durationMs: 3 },
       { type: 'text', id: 'demo-4', ts: t0 - 40000, turnId: 'turn-2', text: '这一轮没有任何工具调用，只有这一句结论——所以它不带「最终回复」标签，就是一条普通回复。', final: true },
       {
         type: 'ask',
@@ -871,6 +928,24 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     send(answer)
   }
 
+  /** 连续同名工具并成一组（中间夹着文本就断开），避免 say 刷屏 */
+  const rows = useMemo(() => {
+    const list: (
+      | { kind: 'entry'; entry: ChatEntry }
+      | { kind: 'tools'; id: string; items: Extract<ChatEntry, { type: 'tool' }>[] }
+    )[] = []
+    for (const entry of entries) {
+      const last = list[list.length - 1]
+      if (entry.type === 'tool' && last?.kind === 'tools' && last.items[0].name === entry.name) {
+        last.items.push(entry)
+        continue
+      }
+      if (entry.type === 'tool') list.push({ kind: 'tools', id: `group-${entry.id}`, items: [entry] })
+      else list.push({ kind: 'entry', entry })
+    }
+    return list
+  }, [entries])
+
   const canSend = input.trim().length > 0 || attachments.length > 0
 
   return (
@@ -893,9 +968,20 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             </p>
           </div>
         ) : (
-          entries.map((entry, index) => {
-            const prev = entries[index - 1]
-            const dayBreak = prev ? new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString() : false
+          rows.map((row, index) => {
+            if (row.kind === 'tools') {
+              return row.items.length > 1 ? (
+                <ToolGroup key={row.id} items={row.items} />
+              ) : (
+                <ToolCard key={row.id} entry={row.items[0]} />
+              )
+            }
+            const entry = row.entry
+            const prev = index > 0 ? rows[index - 1] : undefined
+            const prevEntry = prev?.kind === 'entry' ? prev.entry : undefined
+            const dayBreak = prevEntry
+              ? new Date(prevEntry.ts).toDateString() !== new Date(entry.ts).toDateString()
+              : false
             /** 「最终回复」标签只在本轮出现过中间内容（工具卡片 / 别的文本）时才加，避免看起来像重复 */
             const showFinalLabel =
               entry.type === 'text' &&

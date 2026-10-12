@@ -845,11 +845,12 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       { type: 'text', id: 'demo-2', ts: t0 - 117000, turnId: 'turn-1', text: '先查一下内胆材质的话术，再调下面几条。', final: false },
       { type: 'tool', id: 'demo-t2', ts: t0 - 116000, turnId: 'turn-1', name: 'revise_next', args: 'count=2', status: 'ok', result: '已改写 2 条未播话术', durationMs: 88 },
       { type: 'text', id: 'demo-3', ts: t0 - 60000, turnId: 'turn-1', text: '收到：接下来两条改成强调 316 不锈钢内胆，语速提示调慢了 10%，预计 30 秒后生效。', final: true },
+      { type: 'text', id: 'demo-3b', ts: t0 - 59000, turnId: 'turn-1', text: '（同轮续写：这段也算这一轮的文本，不会再插分隔线。）', final: true },
       { type: 'tool', id: 'demo-s1', ts: t0 - 55000, turnId: 'turn-2', name: 'say', args: '{"text":"家人们欢迎进直播间"}', status: 'ok', result: '已排进队列', durationMs: 31 },
       { type: 'tool', id: 'demo-s2', ts: t0 - 54800, turnId: 'turn-2', name: 'say', args: '{"text":"今天咱们是保温杯专场"}', status: 'ok', result: '已排进队列', durationMs: 8 },
       { type: 'tool', id: 'demo-s3', ts: t0 - 54600, turnId: 'turn-2', name: 'say', args: '{"text":"316 内胆，12 小时保温"}', status: 'ok', result: '已排进队列', durationMs: 5 },
       { type: 'tool', id: 'demo-s4', ts: t0 - 54400, turnId: 'turn-2', name: 'say', args: '{"text":"价格给到位，59 块 9"}', status: 'ok', result: '已排进队列', durationMs: 3 },
-      { type: 'text', id: 'demo-4', ts: t0 - 40000, turnId: 'turn-2', text: '这一轮没有任何工具调用，只有这一句结论——所以它不带「最终回复」标签，就是一条普通回复。', final: true },
+      { type: 'text', id: 'demo-4', ts: t0 - 40000, turnId: 'turn-2', text: '第二轮只有这一段文本：中间文本与最终回复都铺满宽度，靠上面的时间分隔线区分是哪一轮。', final: true },
       {
         type: 'ask',
         id: 'demo-4',
@@ -969,38 +970,53 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           </div>
         ) : (
           rows.map((row, index) => {
-            if (row.kind === 'tools') {
-              return row.items.length > 1 ? (
-                <ToolGroup key={row.id} items={row.items} />
-              ) : (
-                <ToolCard key={row.id} entry={row.items[0]} />
-              )
-            }
-            const entry = row.entry
-            const prev = index > 0 ? rows[index - 1] : undefined
-            const prevEntry = prev?.kind === 'entry' ? prev.entry : undefined
+            // 分组的工具行也要参与"轮"的判断：取它第一条的 turnId
+            const firstEntry = row.kind === 'tools' ? row.items[0] : row.entry
+            const prevRow = index > 0 ? rows[index - 1] : undefined
+            const prevEntry = prevRow?.kind === 'entry' ? prevRow.entry : prevRow?.items?.[0]
             const dayBreak = prevEntry
-              ? new Date(prevEntry.ts).toDateString() !== new Date(entry.ts).toDateString()
+              ? new Date(prevEntry.ts).toDateString() !== new Date(firstEntry.ts).toDateString()
               : false
-            /** 「最终回复」标签只在本轮出现过中间内容（工具卡片 / 别的文本）时才加，避免看起来像重复 */
-            const showFinalLabel =
-              entry.type === 'text' &&
-              entry.final &&
-              entries.some(
-                (item) =>
-                  item.id !== entry.id &&
-                  (item.type === 'text' || item.type === 'tool') &&
-                  item.turnId === entry.turnId
-              )
-            return (
-              <Fragment key={entry.id}>
+            /** 每轮开头插一条时间分隔线：用时间把一轮对话框起来（不给最终回复贴标签） */
+            const turnId =
+              firstEntry.type === 'text' || firstEntry.type === 'tool' ? firstEntry.turnId : undefined
+            const prevTurnId =
+              prevEntry && (prevEntry.type === 'text' || prevEntry.type === 'tool')
+                ? prevEntry.turnId
+                : undefined
+            const showTurnBreak = Boolean(turnId) && turnId !== prevTurnId
+            const head = (
+              <>
                 {dayBreak && (
                   <div className="my-1 flex items-center gap-2 text-[11px] text-muted-foreground">
                     <span className="h-px flex-1 bg-border" />
-                    {new Date(entry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}
+                    {new Date(firstEntry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}
                     <span className="h-px flex-1 bg-border" />
                   </div>
                 )}
+                {showTurnBreak && (
+                  <div className="mt-1.5 mb-0.5 flex items-center gap-2 font-mono text-[10px] text-muted-foreground/50">
+                    <span className="h-px flex-1 bg-border/60" />
+                    {clock(firstEntry.ts)}
+                    <span className="h-px flex-1 bg-border/60" />
+                  </div>
+                )}
+              </>
+            )
+
+            if (row.kind === 'tools') {
+              return (
+                <Fragment key={row.id}>
+                  {head}
+                  {row.items.length > 1 ? <ToolGroup items={row.items} /> : <ToolCard entry={row.items[0]} />}
+                </Fragment>
+              )
+            }
+
+            const entry = row.entry
+            return (
+              <Fragment key={entry.id}>
+                {head}
                 {entry.type === 'director' ? (
                   <div className="flex max-w-[86%] flex-col items-end gap-1 self-end">
                     <div className="rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-[13px] leading-[20px] text-primary-foreground">
@@ -1022,21 +1038,13 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                   // 中间文本：淡色、不套气泡、铺满宽度（流式追加时不会跳成多块）
                   <p className="whitespace-pre-wrap text-[13px] leading-[21px] text-muted-foreground">
                     {entry.text}
-                    {agent.state === 'running' && index === entries.length - 1 && (
+                    {agent.state === 'running' && index === rows.length - 1 && (
                       <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
                     )}
                   </p>
                 ) : entry.type === 'text' ? (
-                  // 最终回复：正常前景色，同样铺满宽度；只有在轮内有中间内容时才标"最终回复"
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center gap-2">
-                      {showFinalLabel && (
-                        <span className="font-mono text-[10px] text-muted-foreground/70">最终回复</span>
-                      )}
-                      <span className="font-mono text-[10px] text-muted-foreground/50">{clock(entry.ts)}</span>
-                    </div>
-                    <MiniMarkdown text={entry.text} />
-                  </div>
+                  // 最终回复：正常前景色、铺满宽度（时间在轮分隔线上，这里不再重复）
+                  <MiniMarkdown text={entry.text} />
                 ) : entry.type === 'tool' ? (
                   <ToolCard entry={entry} />
                 ) : (

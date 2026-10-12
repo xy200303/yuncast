@@ -44,6 +44,7 @@ import { ScriptService } from './services/ScriptService'
 import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
 import { VoiceService, type VoiceCloneInput } from './services/VoiceService'
+import { TempUploadService } from './services/TempUpload'
 import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
@@ -526,6 +527,10 @@ function registerIpc(
     const path = await voiceSvc.saveSample(bytes, ext)
     return { ok: true, path }
   })
+
+  // 本地样本 → 临时文件站 → 公网直链（百炼复刻只收 URL）
+  const tempUpload = new TempUploadService()
+  ipcMain.handle(IPC.voiceUploadTemp, (_e, filePath: string) => tempUpload.upload(String(filePath ?? '')))
 
   // ---------- 知识库 ----------
   ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listProducts())

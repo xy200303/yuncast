@@ -49,6 +49,7 @@ import type { GenerationProgress } from '../main/services/GenerationService'
 import type { LlmProviderManifest, TtsProviderManifest } from '../main/services/providers/registry'
 import type { TtsTestInput, TtsTestResult } from '../main/services/TtsService'
 import type { VoiceCloneInput } from '../main/services/VoiceService'
+import type { TempUploadResult } from '../main/services/TempUpload'
 
 /**
  * 渲染进程唯一可见的 API 白名单。
@@ -242,6 +243,9 @@ const api = {
       ipcRenderer.invoke(IPC.voiceUploadSample, bytes, ext) as Promise<
         { ok: true; path: string } | { ok: false; error: string }
       >,
+    /** 传本地样本到临时文件站，换回公网直链（百炼复刻只接受 URL） */
+    uploadTemp: (filePath: string) =>
+      ipcRenderer.invoke(IPC.voiceUploadTemp, filePath) as Promise<TempUploadResult>,
     /** 音色列表变化（训练完成/失败等），返回取消订阅函数 */
     onChanged: (cb: (voices: VoiceRecord[]) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, voices: VoiceRecord[]) => cb(voices)

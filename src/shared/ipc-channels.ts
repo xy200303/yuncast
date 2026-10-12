@@ -88,6 +88,8 @@ export const IPC = {
   voiceClone: 'voice:clone',
   voiceRemove: 'voice:remove',
   voiceUploadSample: 'voice:upload-sample',
+  /** 把本地样本传到临时文件站换公网直链（百炼复刻只收 URL） */
+  voiceUploadTemp: 'voice:upload-temp',
   /** 用该音色合成一句固定文案试听（用该音色自己那家的接入，那条接入没配就返回中文错误） */
   voicePreview: 'voice:preview',
   /** 重命名音色 */

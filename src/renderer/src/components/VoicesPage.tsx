@@ -405,6 +405,8 @@ function NewVoiceDialog({
   const [name, setName] = useState('')
   const [samplePath, setSamplePath] = useState('')
   const [sampleUrl, setSampleUrl] = useState('')
+  const [uploading, setUploading] = useState(false)
+  const [uploadInfo, setUploadInfo] = useState('')
   const [authorized, setAuthorized] = useState(false)
   const [busy, setBusy] = useState(false)
   const [recording, setRecording] = useState(false)
@@ -416,6 +418,8 @@ function NewVoiceDialog({
 
   useEffect(() => {
     if (open) {
+      setUploading(false)
+      setUploadInfo('')
       setConnectionId(readyConnections[0]?.id ?? '')
       setName('')
       setSamplePath('')
@@ -492,6 +496,24 @@ function NewVoiceDialog({
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
     setRecording(false)
+  }
+
+  /** 把本地样本传到临时文件站换公网直链（百炼复刻要用）；是否上传由用户点按钮决定 */
+  const uploadSample = async () => {
+    if (!samplePath || uploading) return
+    setUploading(true)
+    setUploadInfo('')
+    try {
+      const result = await window.api.voice.uploadTemp(samplePath)
+      if (result.ok && result.url) {
+        setSampleUrl(result.url)
+        setUploadInfo(`已上传到${result.provider ?? '临时文件站'}（${result.expiresIn ?? '临时'}后失效）`)
+      } else {
+        toast.error('上传失败', { description: result.error })
+      }
+    } finally {
+      setUploading(false)
+    }
   }
 
   const submit = () => {
@@ -600,38 +622,50 @@ function NewVoiceDialog({
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如：店主本人 / 小助理" />
           </div>
 
-          {provider === 'bailian' ? (
+          <div>
+            <Label className="mb-1">声音样本（建议 10-30 秒清晰人声，无背景音乐）</Label>
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => void pickFile()}>
+                <Upload />
+                上传音频
+              </Button>
+              <Button
+                variant={recording ? 'destructive' : 'outline'}
+                size="sm"
+                onClick={() => (recording ? stopRecording() : void startRecording())}
+              >
+                {recording ? <Square /> : <Mic />}
+                {recording ? `停止录音（${seconds}s）` : '现场录音'}
+              </Button>
+              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                {samplePath ? samplePath.split(/[\/]/).pop() : '尚未选择样本'}
+              </span>
+            </div>
+          </div>
+
+          {provider === 'bailian' && (
             <div>
-              <Label className="mb-1">样本音频的公网地址（百炼复刻只认 URL）</Label>
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <Label>样本的公网地址（百炼复刻只认 URL）</Label>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!samplePath || uploading}
+                  onClick={() => void uploadSample()}
+                >
+                  {uploading ? '上传中…' : '上传样本并取地址'}
+                </Button>
+              </div>
               <Input
                 value={sampleUrl}
                 onChange={(e) => setSampleUrl(e.target.value)}
-                placeholder="https://…（把样本传到可访问的 URL 后粘贴）"
+                placeholder="https://…（点上面按钮自动填，也可自己粘）"
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                百炼的复刻接口只接受公网可访问的音频地址，本地文件传不上去
+                百炼只接受公网可访问的音频地址。点「上传样本并取地址」会把上面选的样本临时传到第三方文件站换回直链
+                ——样本是隐私内容，不想上传就自己粘一个地址。
               </p>
-            </div>
-          ) : (
-            <div>
-              <Label className="mb-1">声音样本（建议 10-30 秒清晰人声，无背景音乐）</Label>
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => void pickFile()}>
-                  <Upload />
-                  上传音频
-                </Button>
-                <Button
-                  variant={recording ? 'destructive' : 'outline'}
-                  size="sm"
-                  onClick={() => (recording ? stopRecording() : void startRecording())}
-                >
-                  {recording ? <Square /> : <Mic />}
-                  {recording ? `停止录音（${seconds}s）` : '现场录音'}
-                </Button>
-                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                  {samplePath ? samplePath.split(/[\\/]/).pop() : '尚未选择样本'}
-                </span>
-              </div>
+              {uploadInfo && <p className="mt-1 text-xs text-emerald-600">{uploadInfo}</p>}
             </div>
           )}
 

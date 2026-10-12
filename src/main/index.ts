@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { basename, join, resolve } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
 import { IPC } from '../shared/ipc-channels'
 import {
@@ -8,6 +9,7 @@ import {
   type AppConfig,
   type AppInfo,
   type ConnectorStatus,
+  type DirectorMessage,
   type LiveComment,
   type PartialDeep,
   type Persona,
@@ -188,6 +190,13 @@ function broadcastComment(comment: LiveComment): void {
   }
 }
 
+/** 导演对话消息广播（主播汇报/请示 → 导演对话面板） */
+function broadcastDirector(message: DirectorMessage): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.directorEvent, message)
+  }
+}
+
 /** 推流状态广播 */
 function broadcastStream(stats: StreamStats): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -319,6 +328,11 @@ function registerIpc(
     }
   })
   ipcMain.handle(IPC.agentStatus, () => agent.status())
+
+  // ---------- 导演对话 ----------
+  ipcMain.handle(IPC.directorSend, (_e, text: string) =>
+    guard(() => agent.directorSay(String(text ?? '').slice(0, 500)))
+  )
 
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
@@ -506,7 +520,14 @@ if (!single) {
     const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
-    agent = new AgentService(storage, pool, persona, knowledge, memory, script, broadcastAgent)
+    agent = new AgentService(storage, pool, persona, knowledge, memory, script, broadcastAgent, (text) =>
+      broadcastDirector({
+        id: `dm-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        ts: Date.now(),
+        kind: 'report',
+        text
+      })
+    )
     triggers = new TriggerRuntime(storage, bus, pool, agent)
     streamSvc = new StreamService(storage, broadcastStream)
 

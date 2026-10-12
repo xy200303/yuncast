@@ -35,10 +35,12 @@ export interface AnchorToolDeps {
   getLastComment: () => LiveComment | null
   /** 场景推进后通知 AgentService 广播状态（提词器刷新） */
   onSceneChanged: () => void
+  /** 汇报给导演：消息进导演对话面板（不播报、不进话术池）。无头测试可不传 */
+  onDirectorReport?: (text: string) => void
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
-  const { pool, knowledge, memory, persona, script, getLastComment, onSceneChanged } = deps
+  const { pool, knowledge, memory, persona, script, getLastComment, onSceneChanged, onDirectorReport } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
     try {
@@ -221,6 +223,21 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
           memory.rememberViewer(params.name, params.note)
           return `已记住 ${params.name}：${params.note}`
         })
+    }),
+    defineTool({
+      name: 'report_to_director',
+      label: '汇报给导演',
+      description:
+        '给导演（真人场控）发一条文字汇报：出现在直播台的导演对话面板里，不会播报、不进话术池。' +
+          '收到导演指令后用它确认执行情况；直播中发现需要导演知道的事（冷场、库存告急、弹幕风向）也用它主动汇报。',
+      parameters: Type.Object({
+        text: Type.String({ description: '汇报内容，一两句话' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          onDirectorReport?.(params.text)
+          return '已汇报给导演'
+        })
     })
   ]
 }
@@ -236,5 +253,6 @@ export const ANCHOR_TOOL_NAMES = [
   'search_knowledge',
   'check_price',
   'lookup_viewer',
-  'remember_viewer'
+  'remember_viewer',
+  'report_to_director'
 ]

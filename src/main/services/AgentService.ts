@@ -62,7 +62,8 @@ export class AgentService {
     private readonly knowledge: KnowledgeService,
     private readonly memory: MemoryService,
     private readonly script: ScriptService,
-    private readonly broadcast: (status: AgentStatus) => void
+    private readonly broadcast: (status: AgentStatus) => void,
+    private readonly onDirectorReport?: (text: string) => void
   ) {}
 
   status(): AgentStatus {
@@ -154,6 +155,20 @@ export class AgentService {
       return
     }
     void this.ask(text)
+  }
+
+  /**
+   * 导演指令入口（docs/07 §8.8）：最高优先级，生成中就 steer 插队，空闲直接派。
+   * 主播用 report_to_director 工具回报执行结果（进导演对话面板，不播报）。
+   */
+  directorSay(text: string): void {
+    if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
+      throw new Error('主播没在跑：先在直播台启动场次')
+    }
+    this.inject(
+      `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完用 report_to_director 简要汇报执行情况。`,
+      'steer'
+    )
   }
 
   /** 急停（配合 renderer 停播放 + 清池）：停会话即可，池由调用方清 */
@@ -302,7 +317,8 @@ export class AgentService {
         persona: this.persona,
         script: this.script,
         getLastComment: () => this.lastComment,
-        onSceneChanged: () => this.notifySceneChanged()
+        onSceneChanged: () => this.notifySceneChanged(),
+        onDirectorReport: (text) => this.onDirectorReport?.(text)
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),

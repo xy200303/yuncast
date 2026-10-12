@@ -25,7 +25,7 @@ ws.onopen = async () => {
     await writeFile(arg, Buffer.from(res.data, 'base64'))
     console.log('saved')
   } else if (action === 'eval') {
-    const res = await send('Runtime.evaluate', { expression: arg, returnByValue: true })
+    const res = await send('Runtime.evaluate', { expression: arg, returnByValue: true, awaitPromise: true })
     console.log(JSON.stringify(res.result?.value ?? res, null, 2))
   } else if (action === 'nav') {
     // 点侧边栏指定文本的导航按钮

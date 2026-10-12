@@ -1,14 +1,20 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  Bot,
+  ChevronDown,
+  ChevronUp,
+  CircleHelp,
   Clapperboard,
   Loader2,
   Megaphone,
+  MessagesSquare,
   MessageSquareText,
   OctagonAlert,
   Pause,
   Play,
   Radio,
   RadioTower,
+  SendHorizontal,
   SlidersHorizontal,
   Square,
   X
@@ -31,6 +37,7 @@ import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { playbackLoop } from '../audio/playbackLoop'
 import type {
+  DirectorMessage,
   LiveComment,
   LivePlan,
   SpeechItem,
@@ -229,6 +236,7 @@ export function LivePage() {
               </div>
             )}
           </div>
+          <DirectorConsole />
           <ControlPanel />
         </aside>
       </div>
@@ -522,6 +530,232 @@ function AgentDraft() {
     </div>
   )
 }
+
+/**
+ * 导演对话（docs/07 §8.8）：导演 ↔ 主播的实时文字通道，提词器下方、可折叠。
+ * 消息三类分流：导演指令（右侧气泡）/ 主播汇报（灰字，report_to_director 工具）/ 主播请示（高亮卡片 + 一键选项）。
+ * 快速指令（暂停/跳过/恢复）本地解析直接执行，不过 LLM；其余文本 steer 插队给主播。
+ */
+function DirectorConsole() {
+  const agent = useAppStore((s) => s.agent)
+  const loopRunning = useAppStore((s) => s.loopRunning)
+  const setLoopRunning = useAppStore((s) => s.setLoopRunning)
+  const [open, setOpen] = useState(true)
+  const [messages, setMessages] = useState<DirectorMessage[]>([])
+  const [input, setInput] = useState('')
+  const [unread, setUnread] = useState(0)
+  const listRef = useRef<HTMLDivElement>(null)
+  const openRef = useRef(open)
+  openRef.current = open
+
+  // 订阅主播汇报/请示（主进程广播）
+  useEffect(() => {
+    if (!('api' in window)) return
+    return window.api.director.onEvent((message) => {
+      setMessages((prev) => [...prev.slice(-99), message])
+      if (!openRef.current) setUnread((n) => n + 1)
+    })
+  }, [])
+
+  // 开发演示：?demo 时塞一组样例消息看布局（仅 dev，不进生产包行为）
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    if (!new URLSearchParams(window.location.search).has('demo')) return
+    const now = Date.now()
+    setMessages([
+      { id: 'demo-1', ts: now - 120000, kind: 'report', text: '开场白播完了，在线 23 人，正在讲 1 号链接的保温杯' },
+      { id: 'demo-2', ts: now - 90000, kind: 'director', text: '语速放慢一点，多强调 316 不锈钢内胆' },
+      { id: 'demo-3', ts: now - 60000, kind: 'report', text: '收到，已把「316 不锈钢内胆」编进当前话术，语速调慢了 10%' },
+      {
+        id: 'demo-4',
+        ts: now - 15000,
+        kind: 'ask',
+        text: '有观众问能不能刻字，知识库里没有这一条。可以承诺免费刻字吗？',
+        options: ['可以承诺', '别承诺，引导私信', '我确认下再回']
+      }
+    ])
+  }, [])
+
+  // 新消息：贴底状态时自动滚到底（导演往上翻时不抢滚动条）；初始视为贴底
+  const stickRef = useRef(true)
+  useEffect(() => {
+    const el = listRef.current
+    if (!el || !open) return
+    if (stickRef.current) el.scrollTop = el.scrollHeight
+  }, [messages, open])
+
+  const append = (message: DirectorMessage): void => {
+    setMessages((prev) => [...prev.slice(-99), message])
+  }
+
+  /** 快速指令本地解析（不过 LLM）。命中返回 true。 */
+  const runQuickCommand = (text: string): boolean => {
+    if (/^(暂停|暂停播报|停一下)$/.test(text)) {
+      playbackLoop.stop()
+      setLoopRunning(false)
+      toast.message('播报已暂停', { description: '池里的内容保留，恢复后继续播' })
+      return true
+    }
+    if (/^(恢复|继续|恢复播报|继续播报)$/.test(text)) {
+      playbackLoop.start()
+      setLoopRunning(true)
+      return true
+    }
+    if (/^(跳过|跳过这条|下一条)$/.test(text)) {
+      audioEngine.stopCurrentTts()
+      toast.message('已跳过当前播报')
+      return true
+    }
+    return false
+  }
+
+  const send = (raw: string): void => {
+    const text = raw.trim()
+    if (!text) return
+    setInput('')
+    append({ id: `dm-local-${Date.now()}`, ts: Date.now(), kind: 'director', text })
+    if (runQuickCommand(text)) return
+    void window.api.director.send(text).then((result) => {
+      if (!result.ok) toast.error('指令没送达', { description: result.error })
+    })
+  }
+
+  const answerAsk = (message: DirectorMessage, answer: string): void => {
+    setMessages((prev) => prev.map((m) => (m.id === message.id ? { ...m, answered: answer } : m)))
+    send(answer)
+  }
+
+  return (
+    <div className="shrink-0 border-t">
+      <button
+        type="button"
+        className="flex h-8 w-full items-center gap-1.5 px-4 text-xs text-muted-foreground hover:text-foreground"
+        onClick={() => {
+          setOpen(!open)
+          if (!open) setUnread(0)
+        }}
+      >
+        <MessagesSquare className="size-3.5" />
+        <span>导演对话</span>
+        {unread > 0 && <Badge className="h-4 px-1 text-[10px]">{unread}</Badge>}
+        {agent.state === 'running' && (
+          <span className="size-1.5 rounded-full bg-green-500" title="主播在跑，指令 steer 插队直达" />
+        )}
+        <span className="ml-auto">{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}</span>
+      </button>
+
+      {open && (
+        <div className="flex h-56 flex-col">
+          <div
+            ref={listRef}
+            className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2"
+            onScroll={(e) => {
+              const el = e.currentTarget
+              stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            }}
+          >
+            {messages.length === 0 ? (
+              <p className="py-4 text-center text-xs text-muted-foreground">
+                和主播直接对话：下指令、收汇报、答请示。消息只进对话，不会被播出去。
+              </p>
+            ) : (
+              messages.map((message) =>
+                message.kind === 'director' ? (
+                  <div
+                    key={message.id}
+                    className="ml-auto max-w-[85%] rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground"
+                  >
+                    {message.text}
+                  </div>
+                ) : message.kind === 'report' ? (
+                  <div key={message.id} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                    <Bot className="mt-0.5 size-3.5 shrink-0" />
+                    <p className="min-w-0">
+                      {message.text}
+                      <span className="ml-1.5 text-[10px] opacity-60">
+                        {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </p>
+                  </div>
+                ) : (
+                  <div key={message.id} className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                    <div className="mb-1.5 flex items-center gap-1.5">
+                      <CircleHelp className="size-3.5 text-primary" />
+                      <span className="text-xs font-medium text-primary">主播请示</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <p className="mb-2 text-[13px]">{message.text}</p>
+                    {message.answered ? (
+                      <Badge variant="secondary">已答复：{message.answered}</Badge>
+                    ) : (
+                      <div className="flex flex-wrap gap-1.5">
+                        {(message.options ?? []).map((option) => (
+                          <Button
+                            key={option}
+                            variant="outline"
+                            size="sm"
+                            className="h-6 px-2 text-xs"
+                            onClick={() => answerAsk(message, option)}
+                          >
+                            {option}
+                          </Button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              )
+            )}
+          </div>
+
+          {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
+          <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-xs"
+              onClick={() => send(loopRunning ? '暂停播报' : '恢复播报')}
+            >
+              {loopRunning ? '暂停播报' : '恢复播报'}
+            </Button>
+            <Button variant="outline" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={() => send('跳过')}>
+              跳过这条
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-6 shrink-0 px-2 text-xs"
+              onClick={() => send('汇报一下当前直播状态')}
+            >
+              汇报下状态
+            </Button>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-1.5 border-t p-2">
+            <Input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder={agent.state === 'running' ? '对主播说点什么…' : '主播没在跑（先启动场次）'}
+              className="h-8 text-[13px]"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault()
+                  send(input)
+                }
+              }}
+            />
+            <Button size="icon-sm" disabled={!input.trim()} onClick={() => send(input)} title="发送">
+              <SendHorizontal />
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 
 /** 右侧操作面板：人工控制入口。后续场控/场景/音量等能力都往这里加按钮。 */
 function ControlPanel() {

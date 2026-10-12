@@ -32,6 +32,11 @@ export const IPC = {
   /** main → renderer：Agent 状态 + 生成中预览 */
   agentStatusEvent: 'agent:status-event',
 
+  // 导演对话
+  directorSend: 'director:send',
+  /** main → renderer：主播汇报/请示消息 */
+  directorEvent: 'director:event',
+
   // 人设卡
   personaGet: 'persona:get',
   personaList: 'persona:list',

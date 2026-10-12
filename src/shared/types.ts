@@ -483,6 +483,22 @@ export interface LiveComment {
   ts: number
 }
 
+// ---------- 导演对话（docs/07 §8.8） ----------
+
+export type DirectorMessageKind = 'director' | 'report' | 'ask'
+
+export interface DirectorMessage {
+  id: string
+  ts: number
+  /** director=导演指令（右侧气泡）；report=主播汇报（灰字）；ask=主播请示（高亮卡片+一键选项） */
+  kind: DirectorMessageKind
+  text: string
+  /** ask 的一键选项 */
+  options?: string[]
+  /** ask 被回答后记录所选/所答 */
+  answered?: string
+}
+
 // ---------- 音色库（M8 声音克隆） ----------
 
 export type VoiceProvider = 'volcano' | 'bailian'

@@ -5,6 +5,7 @@ import type {
   AppConfig,
   AppInfo,
   ConnectorStatus,
+  DirectorMessage,
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
@@ -83,6 +84,19 @@ const api = {
       ipcRenderer.on(IPC.agentStatusEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.agentStatusEvent, listener)
+      }
+    }
+  },
+  director: {
+    /** 导演指令 → 主播（最高优先级，steer 插队） */
+    send: (text: string) =>
+      ipcRenderer.invoke(IPC.directorSend, text) as Promise<{ ok: boolean; error?: string }>,
+    /** 订阅主播汇报/请示消息，返回取消订阅函数 */
+    onEvent: (cb: (message: DirectorMessage) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, message: DirectorMessage) => cb(message)
+      ipcRenderer.on(IPC.directorEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.directorEvent, listener)
       }
     }
   },

@@ -47,7 +47,9 @@ import {
   secretFieldKeys,
   ttsConnectionFields,
   ttsModelSpec,
-  ttsSecretFieldKeys
+  ttsSecretFieldKeys,
+  findTtsCatalogVoice,
+  ttsConnectionDefaultModel
 } from './providers/registry'
 
 /**
@@ -400,8 +402,8 @@ export class StorageService {
     // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     this.ensureColumn('agents', 'model_connection_id', 'TEXT')
     this.ensureColumn('agents', 'model', "TEXT NOT NULL DEFAULT ''")
-    // 语音合成的供应商接入（设置 → 语音合成）：一条 = 一个服务商 + 一份凭据 + 一串启用模型
-    // 同一服务商允许多条（不同账号/参数）；is_default 每个 provider 恰好一条（首条自动，删默认提升最老的）
+    // 语音合成的服务商接入（设置 → 语音合成）：一个条目 = 一个服务商 + 一份凭据 + 它的模型与参数
+    // 同一服务商允许多条（不同账号/参数）；is_default 全站唯一（首条自动，删默认自动提升）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tts_connections (
         id TEXT PRIMARY KEY,
@@ -410,12 +412,18 @@ export class StorageService {
         params TEXT NOT NULL DEFAULT '{}',
         models TEXT NOT NULL DEFAULT '[]',
         default_model TEXT NOT NULL DEFAULT '',
+        default_voice TEXT NOT NULL DEFAULT '',
+        realtime INTEGER NOT NULL DEFAULT 0,
         is_default INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
     this.migrateTtsConnections()
+    // 默认音色与实时开关跟着接入走（原来的全局偏好已经没有意义：接入本身就是按服务商组织的）
+    this.ensureColumn('tts_connections', 'default_voice', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('tts_connections', 'realtime', 'INTEGER NOT NULL DEFAULT 0')
+    this.migrateTtsGlobalPrefs()
     // 克隆音色绑定目标模型与克隆时的接入（合成路由按它反推，定死不可跨模型）
     this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
@@ -594,6 +602,14 @@ export class StorageService {
     return row ? this.toTtsConnection(row as Record<string, unknown>) : null
   }
 
+  /** 全站默认接入（人设卡/场次都没指定音色时整条用它）；没有任何接入返回 null */
+  ttsConnectionGetDefaultAny(): TtsConnection | null {
+    const row = this.db
+      .prepare('SELECT * FROM tts_connections ORDER BY is_default DESC, created_at ASC LIMIT 1')
+      .get()
+    return row ? this.toTtsConnection(row as Record<string, unknown>) : null
+  }
+
   /**
    * 新建/更新接入（按 id UPSERT；id 空则新建）。密钥字段留空表示不修改（沿用已保存的那个）。
    * 新建时该 provider 还没有接入 → 自动成为默认；默认模型不在启用列表里 → 回落第一个。
@@ -631,19 +647,24 @@ export class StorageService {
       ? preferred
       : (models[0]?.id ?? '')
 
-    // 每个 provider 恰好一条默认：新建首条自动默认；已有接入不动默认位（用 ttsConnectionSetDefault 换）
-    const siblings = this.db
-      .prepare('SELECT COUNT(*) AS n FROM tts_connections WHERE provider_id = ? AND id != ?')
-      .get(input.providerId, id) as { n?: unknown } | undefined
-    const isDefault = existing ? existing.isDefault : Number(siblings?.n ?? 0) === 0
+    // 全站唯一的默认接入：首条自动占默认位；已有默认就别抢（换默认用 ttsConnectionSetDefault）
+    const anyDefault = this.db
+      .prepare('SELECT COUNT(*) AS n FROM tts_connections WHERE is_default = 1 AND id != ?')
+      .get(id) as { n?: unknown } | undefined
+    const isDefault = existing ? existing.isDefault : Number(anyDefault?.n ?? 0) === 0
+    // 入参明确要求设默认（编辑弹窗里的「设为默认接入」）：只留这一条
+    if (input.makeDefault) {
+      this.db.prepare('UPDATE tts_connections SET is_default = 0').run()
+    }
 
     this.db
       .prepare(
-        `INSERT INTO tts_connections (id, provider_id, name, params, models, default_model, is_default, created_at, updated_at)
-         VALUES (@id, @providerId, @name, @params, @models, @defaultModel, @isDefault, @createdAt, @updatedAt)
+        `INSERT INTO tts_connections (id, provider_id, name, params, models, default_model, default_voice, realtime, is_default, created_at, updated_at)
+         VALUES (@id, @providerId, @name, @params, @models, @defaultModel, @defaultVoice, @realtime, @isDefault, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, default_model = @defaultModel, updated_at = @updatedAt`
+           models = @models, default_model = @defaultModel, default_voice = @defaultVoice,
+           realtime = @realtime, is_default = @isDefault, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -652,7 +673,9 @@ export class StorageService {
         params: JSON.stringify(this.encryptTtsParams(params, input.providerId)),
         models: JSON.stringify(models),
         defaultModel,
-        isDefault: isDefault ? 1 : 0,
+        defaultVoice: input.defaultVoice?.trim() ?? existing?.defaultVoice ?? '',
+        realtime: (input.realtime ?? existing?.realtime ?? false) ? 1 : 0,
+        isDefault: isDefault || input.makeDefault ? 1 : 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
@@ -666,22 +689,30 @@ export class StorageService {
     if (!existing) return
     this.db.prepare('DELETE FROM tts_connections WHERE id = ?').run(id)
     if (!existing.isDefault) return
+    // 删掉的是默认接入：把最老的一条提升上来，让"默认"这个概念始终有个落点
     const oldest = this.db
-      .prepare('SELECT id FROM tts_connections WHERE provider_id = ? ORDER BY created_at ASC LIMIT 1')
-      .get(existing.providerId) as Record<string, unknown> | undefined
+      .prepare('SELECT id FROM tts_connections ORDER BY created_at ASC LIMIT 1')
+      .get() as Record<string, unknown> | undefined
     if (oldest) {
       this.db.prepare('UPDATE tts_connections SET is_default = 1 WHERE id = ?').run(str(oldest.id))
     }
   }
 
-  /** 把某条接入设为该 provider 的默认（同 provider 其余全部清掉） */
+  /** 换默认接入（全站唯一）：没指定音色/模型时整条用它 */
   ttsConnectionSetDefault(id: string): void {
     const existing = this.ttsConnectionGet(id)
     if (!existing) return
+    this.db.prepare('UPDATE tts_connections SET is_default = 0').run()
     this.db
-      .prepare('UPDATE tts_connections SET is_default = 0 WHERE provider_id = ?')
-      .run(existing.providerId)
-    this.db.prepare('UPDATE tts_connections SET is_default = 1 WHERE id = ?').run(id)
+      .prepare('UPDATE tts_connections SET is_default = 1, updated_at = ? WHERE id = ?')
+      .run(Date.now(), id)
+  }
+
+  /** 写某条接入的默认音色（音色库里「设为默认音色」走这里） */
+  ttsConnectionSetDefaultVoice(id: string, defaultVoice: string): void {
+    this.db
+      .prepare('UPDATE tts_connections SET default_voice = ?, updated_at = ? WHERE id = ?')
+      .run(defaultVoice, Date.now(), id)
   }
 
   /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
@@ -727,6 +758,8 @@ export class StorageService {
       params: this.decryptTtsParams(r.params, providerId),
       models,
       defaultModel: str(r.default_model),
+      defaultVoice: str(r.default_voice),
+      realtime: Number(r.realtime) === 1,
       isDefault: Number(r.is_default) === 1,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
@@ -910,6 +943,8 @@ export class StorageService {
         params TEXT NOT NULL DEFAULT '{}',
         models TEXT NOT NULL DEFAULT '[]',
         default_model TEXT NOT NULL DEFAULT '',
+        default_voice TEXT NOT NULL DEFAULT '',
+        realtime INTEGER NOT NULL DEFAULT 0,
         is_default INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -1047,7 +1082,10 @@ export class StorageService {
       name: def.label,
       params: credentials,
       models,
-      defaultModel
+      defaultModel,
+      // 原来的全局偏好折进这条接入：默认音色与实时开关现在跟着接入走
+      defaultVoice: String(tts.voiceId ?? '').trim(),
+      realtime: Boolean(tts.realtime)
     })
   }
 
@@ -1055,6 +1093,60 @@ export class StorageService {
    * 人设卡的大脑迁移：老库里没选过接入的卡，挑一条能用的接入补上（模型用该接入的默认模型）。
    * 开播必须每张卡都有明确的大脑，不能让升级上来的用户一开播就发现没得选。
    */
+  /**
+   * 一次性：把旧 config.tts 的全局偏好（默认音色 / 实时合成）折进默认接入，折完清空旧字段。
+   * 折进来的音色要过一遍可用性：老配置里的音色可能属于另一个模型（比如 longanhuan_v3.1 是
+   * qwen-audio 的，而默认模型是 qwen3），折进去只会留一个必然失败的默认值。
+   * 顺带做一次兜底清理：默认接入的默认音色自己都合成不了就清掉，让界面重新选。
+   */
+  private migrateTtsGlobalPrefs(): void {
+    const { tts } = this.config
+    const legacyVoice = String(tts.voiceId ?? '').trim()
+    const legacyRealtime = Boolean(tts.realtime)
+    const rows = this.ttsConnectionList()
+    if (rows.length === 0) return
+    const target = rows.find((connection) => connection.isDefault) ?? rows[0]
+
+    if (legacyRealtime && !target.realtime) {
+      this.db.prepare('UPDATE tts_connections SET realtime = 1 WHERE id = ?').run(target.id)
+    }
+    if (legacyVoice && target.defaultVoice !== legacyVoice && this.voiceUsableBy(target, legacyVoice)) {
+      this.ttsConnectionSetDefaultVoice(target.id, legacyVoice)
+    }
+    if (legacyVoice || legacyRealtime) {
+      this.setConfig({ tts: { voiceId: '', realtime: false } })
+    }
+
+    const current = this.ttsConnectionGet(target.id)
+    if (current?.defaultVoice && !this.voiceUsableBy(current, current.defaultVoice)) {
+      this.ttsConnectionSetDefaultVoice(current.id, '')
+    }
+  }
+
+  /** 这个音色能不能被这条接入合成（克隆音色看归属；系统音色看它所属模型在这条接入里启用了没） */
+  private voiceUsableBy(connection: TtsConnection, voiceId: string): boolean {
+    const id = voiceId.trim()
+    if (!id) return false
+    const clone = this.listVoices().find((voice) => voice.voiceType === id)
+    if (clone) {
+      if (clone.connectionId) return clone.connectionId === connection.id
+      return clone.provider === connection.providerId
+    }
+    const hits = findTtsCatalogVoice(id)
+    if (hits.length > 0) {
+      return hits.some(
+        (hit) =>
+          hit.providerId === connection.providerId &&
+          connection.models.some((model) => model.id === hit.model.id)
+      )
+    }
+    // 目录里查不到：默认模型自带音色目录就说明这个音色不属于它（老配置常见：音色是 qwen-audio 的，
+    // 默认模型却换成了 qwen3）；模型本来就没目录（qwen-audio / cosyvoice-v3.5 等）则无法判定，放行
+    const def = getTtsProvider(connection.providerId)
+    const defaultSpec = ttsModelSpec(connection.providerId, ttsConnectionDefaultModel(connection, def))
+    return (defaultSpec?.voices.length ?? 0) === 0
+  }
+
   private migratePersonaBrains(): void {
     const rows = this.db
       .prepare('SELECT id, model_connection_id, model FROM agents')

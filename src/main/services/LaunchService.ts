@@ -13,7 +13,7 @@ import type { StreamService } from './stream/StreamService'
 import type { TtsService } from './TtsService'
 import type { UtteranceService } from './UtteranceService'
 import { resolveModelForPersona } from './llmModel'
-import { getLlmProvider } from './providers/registry'
+import { getLlmProvider, getTtsProvider, ttsConnectionDefaultModel, ttsModelBlocker, ttsModelSpec } from './providers/registry'
 import { findCloneVoice } from '../../shared/voiceProvider'
 
 /** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
@@ -109,8 +109,9 @@ export class LaunchService {
         })
       }
     }
-    // ②a 语音合成：生效音色（场次 > 人设 > TTS 默认）走和运行时完全相同的合成路由
-    const effectiveVoice = (plan.voiceId || persona?.voiceId || cfg.tts.voiceId).trim()
+    // ②a 语音合成：生效音色（场次 > 人设 > 默认接入的默认音色）走和运行时完全相同的合成路由
+    const defaultVoice = this.storage.ttsConnectionGetDefaultAny()?.defaultVoice ?? ''
+    const effectiveVoice = (plan.voiceId || persona?.voiceId || defaultVoice).trim()
     let ttsReady = false
     if (effectiveVoice) {
       try {
@@ -131,19 +132,30 @@ export class LaunchService {
         })
       }
     } else {
-      ttsReady = this.storage.ttsConnectionListSafe().some((connection) => connection.ready)
-      if (ttsReady) {
-        items.push({ level: 'ok', label: '语音合成：接入已配置' })
+      // 没指定音色（场次/人设都留空，默认接入也没写默认音色）：退到默认接入的默认模型上做检查，
+      // 播出时音色取该模型目录的第一个；这里至少要把「默认接入的默认模型能不能用」说清楚
+      const connection = this.storage.ttsConnectionGetDefaultAny()
+      const def = connection ? getTtsProvider(connection.providerId) : undefined
+      const modelId = connection ? ttsConnectionDefaultModel(connection, def) : ''
+      const blocker = connection ? ttsModelBlocker(connection, def, modelId) : '还没有语音合成接入'
+      if (connection && !blocker) {
+        ttsReady = true
+        items.push({
+          level: 'ok',
+          label: `语音合成：默认接入「${connection.name}」/ ${ttsModelSpec(connection.providerId, modelId)?.label ?? modelId}`
+        })
         items.push({
           level: 'warn',
-          label: '还没指定默认音色',
-          detail: '设置 → 语音合成填「默认音色」，或在人设卡 / 场次里指定'
+          label: '还没指定音色',
+          detail: '会用它自己音色目录的第一个音色；想换到人设卡或场次里选一个，或在默认接入里填默认音色'
         })
       } else {
         items.push({
           level: 'block',
-          label: '没有可用的语音合成接入',
-          detail: '设置 → 语音合成：配一条接入（凭据齐全 + 至少启用一个模型），不然主播没声音'
+          label: '没有可用的语音合成',
+          detail: connection
+            ? `${blocker}（默认接入「${connection.name}」）：设置 → 语音合成处理`
+            : '设置 → 语音合成：加一条接入（凭据齐全 + 至少启用一个模型），不然主播没声音'
         })
       }
     }

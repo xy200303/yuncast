@@ -1,5 +1,3 @@
-import { TTS_PROVIDER_SHORT, type TtsProvider } from './types'
-
 /**
  * 音色与服务商的绑定关系。
  *
@@ -17,9 +15,4 @@ export function findCloneVoice<T extends { voiceType: string }>(
   const id = voiceType.trim()
   if (!id) return undefined
   return voices.find((voice) => voice.voiceType === id)
-}
-
-/** 默认服务商（既不在模型目录里、也不是克隆音色的手动音色）没有接入时的中文原因 */
-export function defaultProviderConnectionError(provider: TtsProvider): string {
-  return `默认服务商${TTS_PROVIDER_SHORT[provider]}还没配置接入：到设置 → 语音合成加上`
 }

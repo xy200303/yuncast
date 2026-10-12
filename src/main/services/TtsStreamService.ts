@@ -92,7 +92,7 @@ export class TtsStreamService {
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     // 路由到百炼且模型标了 streaming 的音色直接用它的 SSE 真流式（接口已按官方文档核实）
     const route = this.tts.routeForVoice(voiceId)
-    if (route.provider === 'bailian' && route.model.streaming) {
+    if (route.provider === 'bailian' && route.model.streaming && route.connection.realtime) {
       yield* this.tts.synthesizeBailianStream(text, voiceId, signal)
       return
     }

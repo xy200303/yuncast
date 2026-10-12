@@ -141,9 +141,9 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   lastTestAt: 0
 }
 
-// ---------- 语音合成的供应商接入（与 model_connections 同构：一条 = 一个服务商 + 一份凭据 + 一串启用模型） ----------
+// ---------- 语音合成的服务商接入（一个条目 = 一个服务商 + 一份凭据 + 它的模型与参数） ----------
 
-/** 接入里启用的一个模型及其参数覆盖（参数键由 manifest 里该模型的 ParamSpec 声明） */
+/** 接入里启用的一个模型及其参数覆盖（参数键由 manifest 里该模型的 ParamSpec 声明，比如语气指令） */
 export interface TtsConnectionModel {
   id: string
   /** 覆盖 manifest ParamSpec 默认值；缺省用默认 */
@@ -161,7 +161,11 @@ export interface TtsConnection {
   models: TtsConnectionModel[]
   /** 默认模型，必须是 models 里的一员 */
   defaultModel: string
-  /** 每个 provider 恰好一条为 true（首条自动；删默认时提升最老的一条） */
+  /** 这条接入的默认音色（留空则用默认模型音色目录第一个）：人设卡/场次都没指定音色时用它 */
+  defaultVoice: string
+  /** 实时合成（动态内容流式播报）：按接入开，只有支持流式的模型才真生效 */
+  realtime: boolean
+  /** 全站唯一的默认接入：谁都没指定时整条用它（默认音色 + 默认模型） */
   isDefault: boolean
   createdAt: number
   updatedAt: number
@@ -175,6 +179,10 @@ export interface TtsConnectionInput {
   params: Record<string, string | number | boolean>
   models: TtsConnectionModel[]
   defaultModel: string
+  defaultVoice?: string
+  realtime?: boolean
+  /** 设为全站默认接入（会清掉其它接入的默认位） */
+  makeDefault?: boolean
 }
 
 /** 给渲染层用的接入：密钥字段的值置空，只留「填没填过」「能不能用」与「哪些模型可用」 */

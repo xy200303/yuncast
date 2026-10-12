@@ -19,7 +19,7 @@ import {
   type TtsProvider,
   type VoiceRecord
 } from '../../shared/types'
-import { defaultProviderConnectionError, findCloneVoice } from '../../shared/voiceProvider'
+import { findCloneVoice } from '../../shared/voiceProvider'
 
 /**
  * TTS 双通道合成。
@@ -106,24 +106,26 @@ export class TtsService {
   }
 
   /**
-   * 合成路由：输入 voiceId（可空 → 用 config.tts.voiceId），输出接入 + 模型 + 音色 + 合并参数。
+   * 合成路由：输入 voiceId（可空 → 用默认接入的默认音色），输出接入 + 模型 + 音色 + 合并参数。
    * 1. 克隆音色命中（voices 表，按 voiceType 或 name）→ 接入 = connection_id 指向的那条
-   *    （失效回退该 provider 默认接入）；模型 = voices.model；接入没启用该模型 → 中文报错指路。
-   * 2. 系统音色 → manifest 目录反查（可能多个模型含同名音色）：在该 provider 默认接入已启用的
-   *    模型里挑包含它的（优先默认模型）；默认接入没有 → 找其它已配接入；都没有 → 中文报错指路。
-   * 3. 目录查不到（手动输入的音色）→ config.tts.providerId 的默认接入 + 其默认模型，原样透传。
+   *    （失效回退该服务商默认接入）；模型 = voices.model；接入没启用该模型 → 中文报错指路。
+   * 2. 系统音色 → manifest 目录反查（可能多个模型含同名音色）：优先全站默认接入能服务的，
+   *    其次该服务商其它接入；都没有 → 中文报错指路。
+   * 3. 目录查不到（手动输入的音色）→ 全站默认接入 + 其默认模型，原样透传。
    */
   private route(voiceId?: string): TtsRoute {
     const { tts } = this.storage.getConfig()
-    const voice = (voiceId || tts.voiceId).trim()
+    const fallback = this.storage.ttsConnectionGetDefaultAny()
+    // 音色兜底顺序：调用方给的 → 旧配置里的全局默认（迁移遗留）→ 默认接入的默认音色
+    const voice = (voiceId || tts.voiceId || fallback?.defaultVoice || '').trim()
     if (!voice) {
-      throw new Error('还没选音色：到设置 → 语音合成填默认音色，或在音色库克隆一个')
+      throw new Error('还没选音色：到主播团给人设卡挑一个，或在设置 → 语音合成的默认接入里指定')
     }
     const voices = this.storage.listVoices()
     const clone =
       findCloneVoice(voices, voice) ?? voices.find((item) => item.name === voice && item.voiceType)
     if (clone) return this.routeClone(clone)
-    return this.routeSystem(voice, tts.providerId)
+    return this.routeSystem(voice)
   }
 
   private routeClone(clone: VoiceRecord): TtsRoute {
@@ -163,10 +165,12 @@ export class TtsService {
     }
   }
 
-  private routeSystem(voice: string, defaultProvider: TtsProvider): TtsRoute {
+  private routeSystem(voice: string): TtsRoute {
+    const defaultConnection = this.storage.ttsConnectionGetDefaultAny()
     const hits = findTtsCatalogVoice(voice)
     if (hits.length > 0) {
-      // 默认服务商的命中优先，其次按 manifest 顺序
+      // 全站默认接入所在服务商的命中优先，其次按 manifest 顺序
+      const defaultProvider = defaultConnection?.providerId
       const ordered = [...hits].sort((a, b) => {
         const ap = a.providerId === defaultProvider ? 0 : 1
         const bp = b.providerId === defaultProvider ? 0 : 1
@@ -187,31 +191,30 @@ export class TtsService {
         `音色 ${voice} 属于${TTS_PROVIDER_SHORT[first.providerId]}模型「${first.model.label}」，但现在用不了：${blocker}：到设置 → 语音合成处理`
       )
     }
-    // 目录查不到（手动输入的音色）：默认服务商的默认接入 + 默认模型，原样透传
-    const def = getTtsProvider(defaultProvider)
-    const connection = this.storage.ttsConnectionGetDefault(defaultProvider)
-    if (!connection) throw new Error(defaultProviderConnectionError(defaultProvider))
-    const modelId = ttsConnectionDefaultModel(connection, def)
-    const blocker = ttsModelBlocker(connection, def, modelId)
-    if (blocker) {
-      throw new Error(
-        `默认接入「${connection.name}」现在用不了：${blocker}：到设置 → 语音合成处理`
-      )
+    // 目录查不到（手动输入的音色）：全站默认接入 + 它的默认模型，原样透传
+    if (!defaultConnection) {
+      throw new Error('还没有语音合成接入：到设置 → 语音合成加一条（填密钥、勾上要用的模型）')
     }
-    const spec = ttsModelSpec(defaultProvider, modelId)
+    const def = getTtsProvider(defaultConnection.providerId)
+    const modelId = ttsConnectionDefaultModel(defaultConnection, def)
+    const blocker = ttsModelBlocker(defaultConnection, def, modelId)
+    if (blocker) {
+      throw new Error(`默认接入「${defaultConnection.name}」现在用不了：${blocker}：到设置 → 语音合成处理`)
+    }
+    const spec = ttsModelSpec(defaultConnection.providerId, modelId)
     if (!spec) {
       throw new Error(
-        `接入「${connection.name}」的默认模型 ${modelId} 不在${def?.label ?? defaultProvider}目录里：到设置 → 语音合成重选默认模型`
+        `默认接入「${defaultConnection.name}」的默认模型 ${modelId} 不在目录里：到设置 → 语音合成重选默认模型`
       )
     }
     return {
-      provider: defaultProvider,
-      connection,
+      provider: defaultConnection.providerId,
+      connection: defaultConnection,
       modelId,
       model: spec,
       voice,
       isClone: false,
-      params: ttsModelParams(connection, spec, modelId)
+      params: ttsModelParams(defaultConnection, spec, modelId)
     }
   }
 
@@ -228,7 +231,11 @@ export class TtsService {
     const candidates = this.storage
       .ttsConnectionList()
       .filter((connection) => connection.providerId === provider)
-      .sort((a, b) => Number(b.isDefault) - Number(a.isDefault))
+      // 全站默认接入优先，其次该服务商标了默认的，然后按建立时间
+      .sort(
+        (a, b) =>
+          Number(b.isDefault) - Number(a.isDefault) || Number(a.createdAt) - Number(b.createdAt)
+      )
     for (const connection of candidates) {
       const enabled = connection.models.map((model) => model.id)
       // 默认接入里挑模型：优先接入默认模型（若它也含此音色），其次本次命中的模型
@@ -375,6 +382,11 @@ export class TtsService {
     const format = String(p.format ?? 'mp3')
     const emotion = String(p.emotion ?? '').trim()
     const pitch = asNumber(p.pitch, 0)
+    // additions：音调后处理 + 语音指令（仅 2.0 / ICL2.0 支持，文档说列表只第一个值有效）
+    const instruction = route.model.instruction ? String(p.instruction ?? '').trim() : ''
+    const additions: Record<string, unknown> = {}
+    if (pitch !== 0) additions.post_process = { pitch }
+    if (instruction) additions.context_texts = [instruction]
     const reqParams: Record<string, unknown> = {
       text,
       speaker: route.voice,
@@ -387,7 +399,7 @@ export class TtsService {
         loudness_rate: asNumber(p.loudness_rate, 0),
         ...(emotion ? { emotion, emotion_scale: asNumber(p.emotion_scale, 4) } : {})
       },
-      ...(pitch !== 0 ? { additions: JSON.stringify({ post_process: { pitch } }) } : {})
+      ...(Object.keys(additions).length > 0 ? { additions: JSON.stringify(additions) } : {})
     }
 
     const res = await fetch(VOLCANO_V3_URL, {
@@ -516,17 +528,16 @@ export class TtsService {
    * 依据路由的模型系列，构造百炼请求的端点与请求体：
    * qwen3-tts 系 → DashScope 通用端点（language_type，无 format/sample_rate）；
    * 其余系（needsWorkspace）→ maas 业务空间端点（format/sample_rate/volume/rate/pitch）。
-   * instruction 是调用级覆盖（config.tts.instruction），只发给 manifest 标 instruction 的模型。
+   * instruction 是模型参数（在接入弹窗里逐个模型配），只发给 manifest 标 instruction 的模型。
    */
   private buildBailianTarget(
     text: string,
     route: TtsRoute,
     extra: { stream: boolean }
   ): BailianTarget {
-    const { tts } = this.storage.getConfig()
     const credentials = route.connection.params
     const base = (String(credentials.baseUrl ?? '') || BAILIAN_DEFAULT_BASE).replace(/\/+$/, '')
-    const instruction = route.model.instruction ? tts.instruction?.trim() : ''
+    const instruction = route.model.instruction ? String(route.params.instruction ?? '').trim() : ''
 
     // Qwen-TTS 系列（qwen3-tts-flash）：通用端点 + multimodal-generation 请求体
     if (route.modelId.startsWith(BAILIAN_QWEN_TTS_PREFIX)) {

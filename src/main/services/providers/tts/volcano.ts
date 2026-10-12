@@ -9,6 +9,16 @@ import { seedTts1Voices, seedTts2Voices } from './voices.volcano'
  * 复刻走 /api/v3/tts/voice_clone + /api/v3/tts/get_voice（VoiceService）。
  */
 
+/** 语气指令参数（instruction）：支持它的模型才有这一项，值随模型参数落库 */
+function instructionParam(): ParamSpec {
+  return {
+    key: 'instruction',
+    label: '语气指令（可选）',
+    type: 'text',
+    help: '≤100 字，如「语速稍快，语气热情，像直播间卖货」'
+  }
+}
+
 /** 火山全模型共用的合成参数（V3 req_params / audio_params / additions） */
 function volcanoParams(extra: ParamSpec[] = []): ParamSpec[] {
   return [
@@ -69,7 +79,8 @@ const models: TtsModelSpec[] = [
     label: 'Seed-TTS 2.0',
     note: '最新一代大模型音色（uranus 族），Resource-Id 同名',
     kind: 'tts',
-    params: volcanoParams(),
+    instruction: true,
+    params: volcanoParams([instructionParam()]),
     voices: seedTts2Voices
   },
   {
@@ -86,6 +97,7 @@ const models: TtsModelSpec[] = [
     note: '只吃复刻出的 speaker_id（音色库克隆产物）',
     kind: 'clone',
     cloneTarget: true,
+    instruction: true,
     params: volcanoParams([
       {
         key: 'model',
@@ -96,7 +108,8 @@ const models: TtsModelSpec[] = [
           { value: 'seed-tts-2.0-standard', label: 'standard（标准）' },
           { value: 'seed-tts-2.0-expressive', label: 'expressive（表现力）' }
         ]
-      }
+      },
+      instructionParam()
     ]),
     voices: []
   },

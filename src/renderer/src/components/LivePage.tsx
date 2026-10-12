@@ -1091,7 +1091,7 @@ function ManualBroadcastDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const defaultVoice = useAppStore((s) => s.config.tts.voiceId)
+  const defaultVoice = useAppStore((s) => s.ttsConnections.find((item) => item.isDefault)?.defaultVoice ?? '')
   const [text, setText] = useState('')
   const [lane, setLane] = useState<'normal' | 'next'>('normal')
   const [voice, setVoice] = useState('')

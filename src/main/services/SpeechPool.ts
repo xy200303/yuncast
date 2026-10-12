@@ -326,18 +326,26 @@ export class SpeechPool {
   }
 
   private async synthesize(item: SpeechItem): Promise<void> {
-    // 混合策略（tts.realtime 开启时）：
+    // 混合策略（接入开了「实时合成」时）：
     // - 文本已知的剧情/暖场话术 → 照常预合成成文件（提前备好，播出零延迟）
     // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时流式合成（首包延迟最低）
+    // 开关按接入走：这条话术会走哪条接入、那个模型支不支持流式，路由说了算
     const cfg = this.storage.getConfig()
     if (cfg.ttsRealtime.enabled && !this.realtime.available()) {
       // 实时语音通道不可用：记一次原因，动态内容降级到「语音合成」的流式
       this.lastRealtimeFallback = this.realtime.unavailableReason()
     }
-    if (
-      !PRE_SYNTH_KINDS.includes(item.source.kind) &&
-      (this.realtime.available() || cfg.tts.realtime)
-    ) {
+    const streamable = (() => {
+      if (PRE_SYNTH_KINDS.includes(item.source.kind)) return false
+      try {
+        const route = this.tts.routeForVoice(item.voiceId || undefined)
+        return Boolean(route.model.streaming && route.connection.realtime)
+      } catch {
+        // 路由不通就别标 stream：等真正合成时会把中文原因记在条目上
+        return false
+      }
+    })()
+    if (streamable || (this.realtime.available() && !PRE_SYNTH_KINDS.includes(item.source.kind))) {
       // 修订后的条目同样走这里：无需合成，只要文本已是新的（revise 已改），标 ready 即可
       this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
       this.broadcast(this.snapshot())

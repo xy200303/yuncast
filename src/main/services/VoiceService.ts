@@ -389,22 +389,33 @@ export class VoiceService {
     }
     this.storage.deleteVoice(id)
     if (voice.samplePath) await rm(voice.samplePath, { force: true }).catch(() => undefined)
-    // 删掉的是当前默认音色就清空，避免指向不存在的音色
-    if (this.storage.getConfig().tts.voiceId === voice.voiceType) {
-      this.storage.setConfig({ tts: { voiceId: '' } })
+    // 删掉的是哪条接入的默认音色就清空，别留一个指向不存在音色的默认值
+    const owner = this.storage.ttsConnectionGet(voice.connectionId)
+    if (owner?.defaultVoice && owner.defaultVoice === voice.voiceType) {
+      this.storage.ttsConnectionSetDefaultVoice(owner.id, '')
     }
     this.emitChanged()
     return { ok: true }
   }
 
-  /** 设为默认音色（写 config.tts.voiceId，人设卡留空时即用它） */
+  /**
+   * 设为默认音色 = 把这条音色记在它归属接入上，并让那条接入成为全站默认接入。
+   * 这样「谁都没指定音色」时走的就是它（原来的 config.tts.voiceId 是跨服务商的全局偏好，已废弃）。
+   */
   setDefault(id: string): { ok: boolean; error?: string } {
     const voice = this.storage.listVoices().find((v) => v.id === id)
     if (!voice) return { ok: false, error: '音色不存在' }
     if (voice.status !== 'ready' || !voice.voiceType) {
       return { ok: false, error: '该音色还没训练完成' }
     }
-    this.storage.setConfig({ tts: { voiceId: voice.voiceType } })
+    const connection =
+      this.storage.ttsConnectionGet(voice.connectionId) ??
+      this.storage.ttsConnectionGetDefault(voice.provider)
+    if (!connection) {
+      return { ok: false, error: '这条音色没有可用的接入：先到设置 → 语音合成加一条' }
+    }
+    this.storage.ttsConnectionSetDefaultVoice(connection.id, voice.voiceType)
+    this.storage.ttsConnectionSetDefault(connection.id)
     this.emitChanged()
     return { ok: true }
   }

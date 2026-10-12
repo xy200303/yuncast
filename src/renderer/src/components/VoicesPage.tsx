@@ -36,15 +36,13 @@ function formatTime(ts: number): string {
 type VoiceFilter = 'all' | TtsProvider
 
 /** 音色库：克隆音色的管理、试听与引用关系。
- *  克隆在服务商侧异步训练，本页接收广播更新状态；「设为默认音色」写 config.tts.voiceId。
- *  克隆音色绑定「它克隆时那条接入 + 目标模型」（不可跨模型），合成时按这个绑定路由。 */
+ *  克隆在服务商侧异步训练，本页接收广播更新状态。克隆音色绑定「它克隆时那条接入 + 目标模型」
+ *  （不可跨模型），合成时按这个绑定路由；「设为默认音色」= 写在该接入上 + 把该接入设为默认接入。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
-  const tts = useAppStore((s) => s.config.tts)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const catalog = flattenModelCatalog(ttsProviders)
-  const defaultVoiceId = tts.voiceId
   const [filter, setFilter] = useState<VoiceFilter>('all')
   /** 再按接入筛一层：一家可以有多条接入，音色属于哪条得能分开看 */
   const [connectionFilter, setConnectionFilter] = useState('all')
@@ -101,7 +99,7 @@ export function VoicesPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <AudioLines className="size-4 text-primary" />
         <h1 className="text-sm font-medium">音色库</h1>
-        <p className="text-xs text-muted-foreground">克隆音色管理 · 主播可以调度各家的音色</p>
+        <p className="text-[13px] text-muted-foreground">克隆音色管理 · 主播可以调度各家的音色</p>
         <div className="ml-2 flex items-center gap-1">
           {filters.map((id) => {
             const label = id === 'all' ? '全部' : TTS_PROVIDER_SHORT[id]
@@ -164,9 +162,11 @@ export function VoicesPage() {
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {shown.map((voice) => {
-              const isDefault = voice.status === 'ready' && voice.voiceType === defaultVoiceId
-              const owner = TTS_PROVIDER_SHORT[voice.provider]
               const connection = ttsConnections.find((item) => item.id === voice.connectionId)
+              // 「默认音色」= 它所在接入的默认音色（该接入同时是默认接入时才是全站兜底的那一个）
+              const isDefault =
+                Boolean(connection?.defaultVoice) && connection?.defaultVoice === voice.voiceType
+              const owner = TTS_PROVIDER_SHORT[voice.provider]
               const spec = catalog.find(
                 (entry) => entry.provider === voice.provider && entry.model.id === voice.model
               )
@@ -175,9 +175,9 @@ export function VoicesPage() {
               return (
                 <div key={voice.id} className="flex flex-col gap-2 rounded-lg border bg-card px-4 py-3">
                   <div className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate text-[13px] font-medium">{voice.name}</span>
+                    <span className="min-w-0 truncate text-sm font-medium">{voice.name}</span>
                     <div className="flex shrink-0 items-center gap-1.5">
-                      {isDefault && <Badge variant="secondary">默认</Badge>}
+                      {isDefault && <Badge variant="secondary">默认音色</Badge>}
                       <Badge variant="outline" className="gap-1">
                         <ProviderIcon providerId={voice.provider} size="sm" />
                         {owner}
@@ -202,18 +202,18 @@ export function VoicesPage() {
                       音色标识：{voice.voiceType}
                     </p>
                   )}
-                  <p className="truncate text-xs text-muted-foreground" title={voice.model}>
-                    目标模型：{spec?.model.label ?? (voice.model || '—')}
+                  <p className="truncate text-[13px] text-muted-foreground" title={voice.model}>
+                    模型 {spec?.model.label ?? (voice.model || '—')}
                     {connection ? ` · 接入「${connection.name}」` : ''}
                   </p>
                   {voice.status === 'failed' && voice.error && (
-                    <p className="text-xs text-destructive">{voice.error}</p>
+                    <p className="text-[13px] text-destructive">{voice.error}</p>
                   )}
-                  <p className="text-xs text-muted-foreground">
+                  <p className="text-[13px] text-muted-foreground">
                     {usage ? usageSummary(usage) : '统计引用关系…'}
                   </p>
                   {hint.hint && (
-                    <p className={cn('text-xs', hint.ok ? 'text-muted-foreground' : 'text-destructive')}>
+                    <p className={cn('text-[13px]', hint.ok ? 'text-muted-foreground' : 'text-destructive')}>
                       {hint.hint}
                     </p>
                   )}
@@ -235,16 +235,19 @@ export function VoicesPage() {
                       <Button
                         size="sm"
                         variant="outline"
+                        title="写在这条接入上，并把它设为默认接入"
                         onClick={() => {
                           void window.api.voice.setDefault(voice.id).then((r) => {
                             if (r.ok) {
-                              toast.success('已设为默认音色')
-                              void useAppStore.getState().loadConfig()
+                              toast.success('已设为默认音色', {
+                                description: '它所在的接入也设成了默认接入'
+                              })
+                              reload()
                             } else toast.error('设置失败', { description: r.error })
                           })
                         }}
                       >
-                        设为默认
+                        设为默认音色
                       </Button>
                     )}
                     <Button

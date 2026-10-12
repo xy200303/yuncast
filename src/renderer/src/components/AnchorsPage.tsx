@@ -624,10 +624,10 @@ export function VoicePickerDialog({
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
           {cloneGroups.length > 0 && (
             <div className="flex flex-col gap-2">
-              <p className="text-xs font-medium text-muted-foreground">克隆音色（绑死接入与模型）</p>
+              <p className="text-[13px] font-medium text-muted-foreground">克隆音色（绑死接入与模型）</p>
               {cloneGroups.map((group) => (
                 <div key={group.key} className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
                     <ProviderIcon providerId={group.provider} size="sm" />
                     <span>
                       {group.connectionLabel} · {group.modelLabel}
@@ -652,12 +652,12 @@ export function VoicePickerDialog({
 
           {systemGroups.length > 0 && (
             <div className="flex flex-col gap-2">
-              <p className="text-xs font-medium text-muted-foreground">系统音色（服务商自带，按模型分组）</p>
+              <p className="text-[13px] font-medium text-muted-foreground">系统音色（服务商自带，按模型分组）</p>
               {systemGroups.map(({ entry, groups }) => {
                 const enabled = connectionsWithModel(connections, entry.provider, entry.model.id).length > 0
                 return (
                   <div key={`${entry.provider}-${entry.model.id}`} className="flex flex-col gap-1">
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
                       <ProviderIcon providerId={entry.provider} size="sm" />
                       <span>
                         {TTS_PROVIDER_SHORT[entry.provider]} · {entry.model.label}

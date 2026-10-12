@@ -314,7 +314,8 @@ export class AgentService {
     const { plan, script } = this.script.getActive()
     const systemPrompt = this.persona.buildSystemPrompt(
       persona,
-      this.storage.getConfig().tts.voiceId,
+      // 人设卡的音色即主播的嗓子；没填就用默认接入的默认音色（不再有跨服务商的全局默认音色）
+      persona.voiceId || this.storage.ttsConnectionGetDefaultAny()?.defaultVoice || '',
       plan,
       script
     )

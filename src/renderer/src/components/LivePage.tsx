@@ -43,6 +43,7 @@ import type {
   LiveComment,
   LivePlan,
   PreflightItem,
+  Script,
   SpeechItem,
   SpeechLane,
   SpeechSourceKind,
@@ -110,6 +111,25 @@ export function LivePage() {
       setComments((prev) => [...prev.slice(-99), comment])
     })
   }, [])
+
+  // 主播工具触发的播报控制（pause_broadcast / resume_broadcast / skip_current）
+  useEffect(() => {
+    if (!('api' in window)) return
+    return window.api.playback.onControl((action) => {
+      if (action === 'pause') {
+        playbackLoop.stop()
+        setLoopRunning(false)
+        toast.message('主播暂停了播报', { description: '池里的内容保留' })
+      } else if (action === 'resume') {
+        playbackLoop.start()
+        setLoopRunning(true)
+        toast.message('主播恢复了播报')
+      } else {
+        audioEngine.stopCurrentTts()
+        toast.message('主播跳过了当前这条')
+      }
+    })
+  }, [setLoopRunning])
 
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const queued = pool.items.filter((item) => item.status !== 'playing')
@@ -273,7 +293,7 @@ export function LivePage() {
               )}
             </TabsContent>
             <TabsContent value="control" forceMount className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
-              <ControlPanel />
+              <ControlPanel onOpenChat={() => setRightTab('chat')} />
             </TabsContent>
           </Tabs>
         </aside>
@@ -639,6 +659,66 @@ function AgentDraft() {
   )
 }
 
+/** 请示卡片（docs/07 §8.8.6）：高亮卡片 + 一键选项；带 timeoutSec 的到点标过期，主播按默认策略继续 */
+function AskCard({
+  message,
+  now,
+  onAnswer
+}: {
+  message: DirectorMessage
+  now: number
+  onAnswer: (message: DirectorMessage, answer: string) => void
+}) {
+  const remain = message.timeoutSec
+    ? Math.max(0, Math.ceil((message.ts + message.timeoutSec * 1000 - now) / 1000))
+    : null
+  const expired = remain === 0
+  return (
+    <div
+      className={cn(
+        'rounded-lg border px-3 py-2.5',
+        expired ? 'border-border bg-muted/40' : 'border-primary/30 bg-primary/5'
+      )}
+    >
+      <div className="mb-1.5 flex items-center gap-1.5">
+        <CircleHelp className={cn('size-3.5', expired ? 'text-muted-foreground' : 'text-primary')} />
+        <span className={cn('text-xs font-medium', expired ? 'text-muted-foreground' : 'text-primary')}>
+          主播请示
+        </span>
+        {remain !== null && !expired && !message.answered && (
+          <span className="text-[10px] text-muted-foreground">剩 {remain}s</span>
+        )}
+        <span className="ml-auto text-[10px] text-muted-foreground">
+          {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+        </span>
+      </div>
+      <p className="mb-2 text-[13px]">{message.text}</p>
+      {message.defaultAction && (
+        <p className="mb-1.5 text-[11px] text-muted-foreground">没答就按这个走：{message.defaultAction}</p>
+      )}
+      {message.answered ? (
+        <Badge variant="secondary">已答复：{message.answered}</Badge>
+      ) : expired ? (
+        <Badge variant="outline">已过期（超过 {message.timeoutSec}s 未答，主播按默认策略继续）</Badge>
+      ) : (
+        <div className="flex flex-wrap gap-1.5">
+          {(message.options ?? []).map((option) => (
+            <Button
+              key={option}
+              variant="outline"
+              size="sm"
+              className="h-6 px-2 text-xs"
+              onClick={() => onAnswer(message, option)}
+            >
+              {option}
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 /**
  * 导演对话（docs/07 §8.8）：导演 ↔ 主播的实时文字通道，右栏主区（铺满整栏高度）。
  * 消息三类分流：导演指令（右侧气泡）/ 主播汇报（灰字，report_to_director 工具）/ 主播请示（高亮卡片 + 一键选项）。
@@ -652,6 +732,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   const [messages, setMessages] = useState<DirectorMessage[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
+  /** 请示倒计时用（有未答且有 timeoutSec 的卡片时每秒走一次） */
+  const [now, setNow] = useState(() => Date.now())
   const listRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef(active)
   activeRef.current = active
@@ -666,6 +748,14 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       if (!activeRef.current) onUnreadRef.current()
     })
   }, [])
+
+  // 请示超时倒计时：到点卡片标过期（主播那边本来就不阻塞，docs/07 §8.8.6 ④）
+  const hasPendingAsk = messages.some((m) => m.kind === 'ask' && !m.answered && m.timeoutSec)
+  useEffect(() => {
+    if (!hasPendingAsk) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [hasPendingAsk])
 
   // 开发演示：?demo 时塞一组样例消息看布局（仅 dev，不进生产包行为）
   useEffect(() => {
@@ -810,33 +900,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                 </p>
               </div>
             ) : (
-              <div key={message.id} className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <CircleHelp className="size-3.5 text-primary" />
-                  <span className="text-xs font-medium text-primary">主播请示</span>
-                  <span className="ml-auto text-[10px] text-muted-foreground">
-                    {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                </div>
-                <p className="mb-2 text-[13px]">{message.text}</p>
-                {message.answered ? (
-                  <Badge variant="secondary">已答复：{message.answered}</Badge>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {(message.options ?? []).map((option) => (
-                      <Button
-                        key={option}
-                        variant="outline"
-                        size="sm"
-                        className="h-6 px-2 text-xs"
-                        onClick={() => answerAsk(message, option)}
-                      >
-                        {option}
-                      </Button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              <AskCard key={message.id} message={message} now={now} onAnswer={answerAsk} />
             )
           )
         )}
@@ -929,11 +993,12 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
 }
 
 
-/** 右侧操作面板：人工控制入口。后续场控/场景/音量等能力都往这里加按钮。 */
-function ControlPanel() {
+/** 右侧操作面板：人工控制入口（人工播报 / 切场景 / 急停 / 场控指令 → 对话 / 调音量） */
+function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
   const [broadcastOpen, setBroadcastOpen] = useState(false)
   const [panicOpen, setPanicOpen] = useState(false)
   const [volumeOpen, setVolumeOpen] = useState(false)
+  const [sceneOpen, setSceneOpen] = useState(false)
 
   const panic = () => {
     setPanicOpen(false)
@@ -956,7 +1021,7 @@ function ControlPanel() {
           <Megaphone />
           人工播报
         </Button>
-        <Button variant="outline" size="sm" disabled title="剧本场景上线后可用">
+        <Button variant="outline" size="sm" onClick={() => setSceneOpen(true)} title="跳到剧本某一场景并装载该场景话术">
           <Clapperboard />
           切场景
         </Button>
@@ -964,7 +1029,7 @@ function ControlPanel() {
           <OctagonAlert />
           紧急停止
         </Button>
-        <Button variant="outline" size="sm" disabled title="场控能力上线后可用">
+        <Button variant="outline" size="sm" onClick={onOpenChat} title="到对话区直接指挥主播">
           <RadioTower />
           场控指令
         </Button>
@@ -975,6 +1040,7 @@ function ControlPanel() {
       </div>
       <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
       <VolumeDialog open={volumeOpen} onOpenChange={setVolumeOpen} />
+      <SceneDialog open={sceneOpen} onOpenChange={setSceneOpen} />
       <Dialog open={panicOpen} onOpenChange={setPanicOpen}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -994,6 +1060,78 @@ function ControlPanel() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/** 切场景：列当前场次剧本的场景，点一个就跳过去并把该场景话术库载入池 */
+function SceneDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const activePlanId = useAppStore((s) => s.config.live.activePlanId)
+  const scene = useAppStore((s) => s.agent.scene)
+  const [plan, setPlan] = useState<LivePlan | null>(null)
+  const [scripts, setScripts] = useState<Script[]>([])
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    void window.api.plan.list().then((list) => setPlan(list.find((p) => p.id === activePlanId) ?? null))
+    void window.api.script.list().then(setScripts)
+  }, [open, activePlanId])
+
+  const script = scripts.find((s) => s.id === plan?.scriptId) ?? null
+
+  const goto = async (index: number): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    try {
+      const result = await window.api.plan.gotoScene(activePlanId, index)
+      if (result.ok) {
+        onOpenChange(false)
+        toast.success(`已切到「${result.title ?? ''}」`, {
+          description: result.loaded ? `装载话术 ${result.loaded} 条` : '该场景没有就绪话术，主播现场补'
+        })
+      } else {
+        toast.error('切场景失败', { description: result.error })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>切场景{script ? ` · ${script.title}` : ''}</DialogTitle>
+        </DialogHeader>
+        {script ? (
+          <div className="space-y-1.5">
+            {script.scenes.map((item, index) => (
+              <button
+                key={item.id}
+                type="button"
+                disabled={busy}
+                onClick={() => void goto(index)}
+                className={cn(
+                  'flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-accent disabled:opacity-50',
+                  scene?.index === index && 'border-primary/40 bg-primary/5'
+                )}
+              >
+                <span className="text-xs text-muted-foreground">{index + 1}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{item.title}</span>
+                  <span className="block truncate text-xs text-muted-foreground">{item.goal}</span>
+                </span>
+                {scene?.index === index && <Badge variant="secondary">当前</Badge>}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            这场没绑剧本（或者还没选场次）——到场次页选一场，或在剧本里加场景。
+          </p>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

@@ -507,9 +507,16 @@ export interface DirectorMessage {
   options?: string[]
   /** ask 被回答后记录所选/所答 */
   answered?: string
+  /** ask 的等待时限（秒）：超时未答即按默认策略继续，卡片标过期（docs/07 §8.8.6 ④） */
+  timeoutSec?: number
+  /** ask 超时后主播打算走的默认策略（给导演看"不问会怎么走"） */
+  defaultAction?: string
   /** 导演指令附带的文件（名称 + 本机路径，随指令一起发给主播） */
   attachments?: { name: string; path: string }[]
 }
+
+/** 播报控制（主播工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */
+export type PlaybackControlAction = 'pause' | 'resume' | 'skip'
 
 // ---------- 音色库（M8 声音克隆） ----------
 

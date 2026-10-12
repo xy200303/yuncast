@@ -1,6 +1,6 @@
 import { defineTool, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import type { LiveComment, Persona } from '../../shared/types'
+import type { LiveComment, Persona, PlaybackControlAction } from '../../shared/types'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
@@ -47,6 +47,17 @@ export interface AnchorToolDeps {
   getPlanVoice?: () => string
   /** 场景切换后装载新场景话术库（AgentService 转发给 LaunchService） */
   onSceneAdvanced?: (sceneIndex: number) => void
+  /** 请示导演（ask_director）：进对话面板高亮卡片，不阻塞直播（docs/07 §8.8.6 ④） */
+  onDirectorAsk?: (ask: {
+    text: string
+    options: string[]
+    timeoutSec: number
+    defaultAction?: string
+  }) => void
+  /** 运行态换音色（set_voice） */
+  setPlanVoice?: (voiceId: string) => void
+  /** 播报控制（pause/resume/skip）：广播到渲染进程执行 */
+  onPlaybackControl?: (action: PlaybackControlAction) => void
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
@@ -60,7 +71,10 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     onSceneChanged,
     onDirectorReport,
     getPlanVoice,
-    onSceneAdvanced
+    onSceneAdvanced,
+    onDirectorAsk,
+    setPlanVoice,
+    onPlaybackControl
   } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
@@ -261,6 +275,100 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
           onDirectorReport?.(params.text)
           return '已汇报给导演'
         })
+    }),
+    defineTool({
+      name: 'ask_director',
+      label: '请示导演',
+      description:
+        '需要人拍板时问导演：指令有歧义（「把报价改一下」但本场有两个商品）、场景该推进还是循环、观众追问知识库没有的参数、准备做超出知识库的承诺。' +
+        '问完立刻按 default 继续播，不要停下等回答——导演的回答会作为新指令进来。' +
+        '不许问的（自己定）：回哪条评论、要不要插播、冷场怎么救、语气怎么调。',
+      parameters: Type.Object({
+        question: Type.String({ description: '要请示的问题，一两句话，说清背景' }),
+        options: Type.Optional(
+          Type.Array(Type.String(), { description: '给导演的快捷选项（2-3 个），导演点一下就能答' })
+        ),
+        timeoutSec: Type.Optional(Type.Number({ description: '等多久没答就算过期，默认 60 秒' })),
+        defaultAction: Type.Optional(Type.String({ description: '没等到回答时你按什么继续，比如「先含糊带过」' }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const timeoutSec = Math.min(Math.max(Math.round(params.timeoutSec ?? 60), 10), 600)
+          onDirectorAsk?.({
+            text: params.question,
+            options: (params.options ?? []).filter((o) => o.trim()).slice(0, 4),
+            timeoutSec,
+            defaultAction: params.defaultAction?.trim() || undefined
+          })
+          return (
+            `已请示导演（${timeoutSec} 秒没答就算过期）。继续按你的默认策略播，不要停：` +
+            `${params.defaultAction?.trim() || '照原节奏继续'}`
+          )
+        })
+    }),
+    defineTool({
+      name: 'goto_scene',
+      label: '跳到指定场景',
+      description: '直接跳到剧本里某一场景（序号从 1 数起）：要跳过某场或回到前面某场时用；按顺序推进用 advance_scene。',
+      parameters: Type.Object({
+        index: Type.Number({ description: '目标场次序号，从 1 开始' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const target = script.gotoScene(Math.floor(params.index) - 1)
+          if (!target) return '没有这个场景（或本场没绑剧本），序号从 1 数起'
+          onSceneChanged()
+          onSceneAdvanced?.(target.index)
+          return `已跳到第 ${target.index + 1}/${target.total} 场「${target.scene.title}」\n目标：${target.scene.goal}\n要点：${target.scene.keyPoints}`
+        })
+    }),
+    defineTool({
+      name: 'set_voice',
+      label: '换音色',
+      description:
+        '把本场音色换成另一个（voiceId 从音色库来；传空字符串回到人设默认）。换完之后新说出的每一句都用新音色，已经在池里的旧音频不受影响。',
+      parameters: Type.Object({
+        voiceId: Type.String({ description: '音色 id，留空 = 回到人设/TTS 默认音色' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const voiceId = String(params.voiceId ?? '').trim()
+          setPlanVoice?.(voiceId)
+          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它` : '已清掉场次音色，回到人设默认音色'
+        })
+    }),
+    defineTool({
+      name: 'pause_broadcast',
+      label: '暂停播报',
+      description: '暂停播报（池里的存货保留，恢复后接着播）。导演接管麦克风或需要安静几秒时用。',
+      parameters: Type.Object({}),
+      execute: async () =>
+        guardTool(() => {
+          onPlaybackControl?.('pause')
+          return '已暂停播报（池里的内容保留）'
+        })
+    }),
+    defineTool({
+      name: 'resume_broadcast',
+      label: '恢复播报',
+      description: '恢复播报，接着播池里没播完的内容。',
+      parameters: Type.Object({}),
+      execute: async () =>
+        guardTool(() => {
+          onPlaybackControl?.('resume')
+          return '已恢复播报'
+        })
+    }),
+    defineTool({
+      name: 'skip_current',
+      label: '跳过当前这条',
+      description: '掐掉正在播的这条，直接播下一条（说错了、卡住了、内容过时了就用）。',
+      parameters: Type.Object({}),
+      execute: async () =>
+        guardTool(() => {
+          onPlaybackControl?.('skip')
+          return '已跳过当前这条'
+        })
     })
   ]
 }
@@ -273,9 +381,15 @@ export const ANCHOR_TOOL_NAMES = [
   'get_recent_played',
   'revise_item',
   'advance_scene',
+  'goto_scene',
+  'set_voice',
+  'pause_broadcast',
+  'resume_broadcast',
+  'skip_current',
   'search_knowledge',
   'check_price',
   'lookup_viewer',
   'remember_viewer',
-  'report_to_director'
+  'report_to_director',
+  'ask_director'
 ]

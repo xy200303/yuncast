@@ -508,6 +508,10 @@ function registerIpc(
     if (result.ok && !wasRunning) bus.emit('stream.started', {}, 'human')
     return result
   })
+  /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
+  ipcMain.handle(IPC.planGotoScene, (_e, planId: string, index: number) =>
+    launch.gotoScene(String(planId ?? ''), Math.floor(Number(index) || 0))
+  )
 
   // ---------- 话术库（场次底稿） ----------
   ipcMain.handle(IPC.utteranceList, (_e, planId: string) => utterances.list(String(planId)))
@@ -643,6 +647,24 @@ if (!single) {
     agent.onSceneAdvanced = () => {
       const loaded = launch.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 新场景装载话术 ${loaded} 条`)
+    }
+    // 主播请示（ask_director）：进导演对话面板高亮卡片；不阻塞直播（docs/07 §8.8.6 ④）
+    agent.onDirectorAsk = (ask) => {
+      broadcastDirector({
+        id: `dm-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        ts: Date.now(),
+        kind: 'ask',
+        text: ask.text,
+        options: ask.options,
+        timeoutSec: ask.timeoutSec,
+        defaultAction: ask.defaultAction
+      })
+    }
+    // 播报控制（pause/resume/skip）：主播工具改播放状态，转给渲染进程的播放循环
+    agent.onPlaybackControl = (action) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.playbackControlEvent, action)
+      }
     }
 
     // 实时 TTS：流式合成（当前=整段合成后按真实速率分块吐，管线真流式；供应商流式接口见 docs/06）

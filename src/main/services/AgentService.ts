@@ -12,7 +12,8 @@ import {
   llmConfigured,
   type AgentStatus,
   type LiveComment,
-  type LlmConfig
+  type LlmConfig,
+  type PlaybackControlAction
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
@@ -49,6 +50,12 @@ export class AgentService {
   private planVoiceId = ''
   /** 场景推进后的装载钩子（LaunchService 接上：把新场景话术库载入池） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
+  /** 主播请示（ask_director）→ 导演对话面板高亮卡片；不阻塞 run（docs/07 §8.8.6 ④） */
+  onDirectorAsk:
+    | ((ask: { text: string; options: string[]; timeoutSec: number; defaultAction?: string }) => void)
+    | null = null
+  /** 播报控制（pause/resume/skip）→ 广播到渲染进程执行 */
+  onPlaybackControl: ((action: PlaybackControlAction) => void) | null = null
 
   constructor(
     private readonly storage: StorageService,
@@ -284,7 +291,10 @@ export class AgentService {
         onSceneChanged: () => this.notifySceneChanged(),
         onDirectorReport: (text) => this.onDirectorReport?.(text),
         getPlanVoice: () => this.planVoiceId,
-        onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex)
+        onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
+        onDirectorAsk: (ask) => this.onDirectorAsk?.(ask),
+        setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
+        onPlaybackControl: (action) => this.onPlaybackControl?.(action)
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),

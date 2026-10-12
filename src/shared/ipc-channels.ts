@@ -36,6 +36,8 @@ export const IPC = {
   directorSend: 'director:send',
   /** main → renderer：主播汇报/请示消息 */
   directorEvent: 'director:event',
+  /** main → renderer：播报控制（主播工具 pause_broadcast/resume_broadcast/skip_current 触发） */
+  playbackControlEvent: 'playback:control',
 
   // 人设卡
   personaGet: 'persona:get',
@@ -100,6 +102,8 @@ export const IPC = {
   planPreflight: 'plan:preflight',
   /** 启动场次：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */
   planLaunch: 'plan:launch',
+  /** 切场景：跳剧本场景 + 装载新场景话术库 */
+  planGotoScene: 'plan:goto-scene',
 
   // 话术库（场次底稿）
   utteranceList: 'utterance:list',

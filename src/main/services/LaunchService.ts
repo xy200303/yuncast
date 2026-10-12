@@ -217,6 +217,18 @@ export class LaunchService {
     return this.loadSceneUtterances(activePlanId)
   }
 
+  /** 切场景（直播台按钮 / goto_scene 工具）：跳过去并把新场景话术库载入池 */
+  gotoScene(planId: string, index: number): { ok: boolean; loaded: number; title?: string; error?: string } {
+    const plan = this.storage.planList().find((p) => p.id === planId) ?? null
+    if (!plan) return { ok: false, loaded: 0, error: '场次不存在' }
+    if (this.storage.getConfig().live.activePlanId !== plan.id) this.script.setActivePlan(plan.id)
+    const target = this.script.gotoScene(index)
+    if (!target) return { ok: false, loaded: 0, error: '没有这个场景' }
+    this.agent.notifySceneChanged()
+    const loaded = this.loadSceneUtterances(plan.id)
+    return { ok: true, loaded, title: target.scene.title }
+  }
+
   private sceneIndex(plan: { currentSceneIdx: number }, totalScenes: number): number {
     if (totalScenes === 0) return 0
     return Math.min(Math.max(plan.currentSceneIdx, 0), totalScenes - 1)

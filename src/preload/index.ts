@@ -15,6 +15,7 @@ import type {
   LaunchResult,
   PartialDeep,
   Persona,
+  PlaybackControlAction,
   PoolResult,
   PoolSayInput,
   PoolSnapshot,
@@ -102,6 +103,16 @@ const api = {
       ipcRenderer.on(IPC.directorEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.directorEvent, listener)
+      }
+    }
+  },
+  /** 订阅播报控制（主播工具 pause/resume/skip 触发），返回取消订阅函数 */
+  playback: {
+    onControl: (cb: (action: PlaybackControlAction) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, action: PlaybackControlAction) => cb(action)
+      ipcRenderer.on(IPC.playbackControlEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.playbackControlEvent, listener)
       }
     }
   },
@@ -214,7 +225,15 @@ const api = {
     /** 开播前预检：检查项清单（阻断/警告） */
     preflight: (id: string) => ipcRenderer.invoke(IPC.planPreflight, id) as Promise<PreflightItem[]>,
     /** 启动场次：加载配置 + 应用人设音色 + 装载话术库 + 启动主播 */
-    launch: (id: string) => ipcRenderer.invoke(IPC.planLaunch, id) as Promise<LaunchResult>
+    launch: (id: string) => ipcRenderer.invoke(IPC.planLaunch, id) as Promise<LaunchResult>,
+    /** 切场景：跳剧本场景 + 装载该场景话术库 */
+    gotoScene: (planId: string, index: number) =>
+      ipcRenderer.invoke(IPC.planGotoScene, planId, index) as Promise<{
+        ok: boolean
+        loaded: number
+        title?: string
+        error?: string
+      }>
   },
   utterance: {
     list: (planId: string) => ipcRenderer.invoke(IPC.utteranceList, planId) as Promise<Utterance[]>,

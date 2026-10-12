@@ -35,7 +35,7 @@ const MODE_BADGE_VARIANT: Record<TriggerMode, 'outline' | 'secondary' | 'default
 
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
-/** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。M3 单主播，多张卡后续里程碑再做。 */
+/** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由场次带着切换）。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
   const llmReady = useAppStore((s) => s.config.llm.apiKey !== '')

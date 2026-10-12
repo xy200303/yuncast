@@ -669,21 +669,85 @@ export interface Script {
 
 export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
 
-// ---------- 场次（docs/01 §5 场次页） ----------
+// ---------- 场次（docs/01 §5 场次页；docs/07 §8.5 场次=开播单元） ----------
+
+/** 场次话术库生成配置（docs/07 §4 ①） */
+export interface PlanGenConfig {
+  /** 每场景变体数 */
+  variantsPerScene: number
+  /** 语气指令（注入生成 Agent） */
+  toneHint: string
+  /** 单条长度上限（字） */
+  maxLen: number
+}
+
+export const DEFAULT_PLAN_GEN_CONFIG: PlanGenConfig = {
+  variantsPerScene: 3,
+  toneHint: '',
+  maxLen: 60
+}
+
+/** 场次知识库范围：'*' = 全部，否则是 id 白名单（docs/07 §3 plan_knowledge） */
+export interface PlanKnowledgeScope {
+  products: '*' | string[]
+  files: '*' | string[]
+}
+
+export const DEFAULT_PLAN_KNOWLEDGE_SCOPE: PlanKnowledgeScope = { products: '*', files: '*' }
 
 export interface LivePlan {
   id: string
   name: string
   /** 本场主题/方向（注入主播 system prompt） */
   theme: string
+  /** 绑定人设卡（开播时应用为当前主播，docs/07 §8.5 ②） */
+  personaId: string | null
+  /** 演出形式提示（单口/对口相声/幽默/朗诵…，注入 system prompt；docs/07 §5.6） */
+  styleHint: string
   scriptId: string | null
   /** 剧本推进进度（断播续播用），advance_scene 更新 */
   currentSceneIdx: number
+  genConfig: PlanGenConfig
+  knowledgeScope: PlanKnowledgeScope
+  /** 场次指定音色（四层优先级最高：场次 > 角色 > 人设 > TTS 默认）；空 = 不覆盖 */
+  voiceId: string
   createdAt: number
   updatedAt: number
 }
 
 export type LivePlanInput = Omit<LivePlan, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
+
+// ---------- 话术库（docs/07 §3 utterances：场次底稿库，与运行态 speech_items 分工） ----------
+
+export type UtteranceStatus = 'pending' | 'synthesizing' | 'ready' | 'failed'
+
+/** 话术来源引用（审阅可追溯；url 类型高亮"外部信息需确认"） */
+export interface UtteranceSource {
+  type: 'file' | 'url' | 'product'
+  id: string
+  name: string
+  snippet: string
+}
+
+export interface Utterance {
+  id: string
+  planId: string
+  /** 所属场景 id；'' = 全场通用（暖场/兜底） */
+  sceneId: string
+  variantIdx: number
+  text: string
+  /** 空 = 用场次/人设/TTS 默认音色 */
+  voiceId: string
+  audioPath: string | null
+  status: UtteranceStatus
+  error?: string
+  /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
+  source: 'initial' | 'adopted'
+  sources: UtteranceSource[]
+  createdAt: number
+}
+
+export type UtteranceInput = Omit<Utterance, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error'>
 
 // ---------- 人设卡角色（编剧模式多音色，docs/01 §3.1） ----------
 

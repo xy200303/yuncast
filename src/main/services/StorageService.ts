@@ -4,12 +4,16 @@ import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import {
   DEFAULT_CONFIG,
+  DEFAULT_PLAN_GEN_CONFIG,
+  DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   parseAppConfig,
   type AppConfig,
   type EpisodeSummary,
   type KnowledgeFile,
   type PartialDeep,
   type Persona,
+  type PlanGenConfig,
+  type PlanKnowledgeScope,
   type Product,
   type Script,
   type LivePlan,
@@ -19,6 +23,8 @@ import {
   type SpeechStatus,
   type Trigger,
   type LiveEvent,
+  type Utterance,
+  type UtteranceStatus,
   type ViewerProfile,
   type VoiceRecord
 } from '../../shared/types'
@@ -107,6 +113,17 @@ function str(value: unknown): string {
 
 function num(value: unknown): number | undefined {
   return typeof value === 'number' ? value : undefined
+}
+
+/** JSON 列容错解析：坏了/空了都回落默认值，不让一行脏数据炸掉整张表 */
+function parseJson<T>(value: unknown, fallback: T): T {
+  const raw = str(value)
+  if (!raw) return fallback
+  try {
+    return JSON.parse(raw) as T
+  } catch {
+    return fallback
+  }
 }
 
 function rowToItem(row: SpeechRow): SpeechItem {
@@ -290,6 +307,30 @@ export class StorageService {
     this.ensureColumn('agents', 'roles', "TEXT NOT NULL DEFAULT '[]'")
     // 多张人设卡（主播团）：active=1 的那张是当前主播
     this.ensureColumn('agents', 'active', 'INTEGER NOT NULL DEFAULT 0')
+    // 场次 = 开播单元（docs/07 §8.5）：人设/形式/生成配置/知识库范围/场次音色
+    this.ensureColumn('live_plans', 'persona_id', 'TEXT')
+    this.ensureColumn('live_plans', 'style_hint', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('live_plans', 'gen_config', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
+    this.ensureColumn('live_plans', 'voice_id', "TEXT NOT NULL DEFAULT ''")
+    // 场次话术库（docs/07 §3 utterances：底稿库，与运行态 speech_items 分工）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS utterances (
+        id TEXT PRIMARY KEY,
+        plan_id TEXT NOT NULL,
+        scene_id TEXT NOT NULL DEFAULT '',
+        variant_idx INTEGER NOT NULL DEFAULT 0,
+        text TEXT NOT NULL,
+        voice_id TEXT NOT NULL DEFAULT '',
+        audio_path TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        error TEXT,
+        source TEXT NOT NULL DEFAULT 'initial',
+        sources TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS utterances_plan ON utterances(plan_id, scene_id, status)')
     // 实时合成条目标记（M9）
     this.ensureColumn('speech_items', 'stream', 'INTEGER NOT NULL DEFAULT 0')
     // 语音稿（显示稿与念法分离）
@@ -839,8 +880,16 @@ export class StorageService {
           id: str(r.id),
           name: str(r.name),
           theme: str(r.theme),
+          personaId: str(r.persona_id) || null,
+          styleHint: str(r.style_hint),
           scriptId: str(r.script_id) || null,
           currentSceneIdx: num(r.current_scene_idx) ?? 0,
+          genConfig: { ...DEFAULT_PLAN_GEN_CONFIG, ...parseJson<Partial<PlanGenConfig>>(r.gen_config, {}) },
+          knowledgeScope: {
+            ...DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+            ...parseJson<Partial<PlanKnowledgeScope>>(r.knowledge_scope, {})
+          },
+          voiceId: str(r.voice_id),
           createdAt: num(r.created_at) ?? 0,
           updatedAt: num(r.updated_at) ?? 0
         }
@@ -850,17 +899,35 @@ export class StorageService {
   planSave(plan: LivePlan): void {
     this.db
       .prepare(
-        `INSERT INTO live_plans (id, name, theme, script_id, current_scene_idx, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO live_plans (id, name, theme, persona_id, style_hint, script_id, current_scene_idx,
+                                 gen_config, knowledge_scope, voice_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, theme = excluded.theme,
-           script_id = excluded.script_id, updated_at = excluded.updated_at`
+           persona_id = excluded.persona_id, style_hint = excluded.style_hint,
+           script_id = excluded.script_id, gen_config = excluded.gen_config,
+           knowledge_scope = excluded.knowledge_scope, voice_id = excluded.voice_id,
+           updated_at = excluded.updated_at`
       )
-      .run(plan.id, plan.name, plan.theme, plan.scriptId ?? null, plan.currentSceneIdx, plan.createdAt, plan.updatedAt)
+      .run(
+        plan.id,
+        plan.name,
+        plan.theme,
+        plan.personaId ?? null,
+        plan.styleHint,
+        plan.scriptId ?? null,
+        plan.currentSceneIdx,
+        JSON.stringify(plan.genConfig),
+        JSON.stringify(plan.knowledgeScope),
+        plan.voiceId,
+        plan.createdAt,
+        plan.updatedAt
+      )
   }
 
   planDelete(id: string): void {
     this.db.prepare('DELETE FROM live_plans WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM utterances WHERE plan_id = ?').run(id)
   }
 
   /** 场景推进进度落库（断播能续） */
@@ -868,8 +935,82 @@ export class StorageService {
     this.db.prepare('UPDATE live_plans SET current_scene_idx = ? WHERE id = ?').run(idx, id)
   }
 
+  // ---------- 话术库（utterances） ----------
+
+  utteranceList(planId: string): Utterance[] {
+    return this.db
+      .prepare('SELECT * FROM utterances WHERE plan_id = ? ORDER BY scene_id ASC, variant_idx ASC, created_at ASC')
+      .all(planId)
+      .map((row) => rowToUtterance(row as Record<string, unknown>))
+  }
+
+  utteranceSave(u: Utterance): void {
+    this.db
+      .prepare(
+        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, text, voice_id, audio_path,
+                                 status, error, source, sources, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           scene_id = excluded.scene_id, variant_idx = excluded.variant_idx,
+           text = excluded.text, voice_id = excluded.voice_id, audio_path = excluded.audio_path,
+           status = excluded.status, error = excluded.error, source = excluded.source,
+           sources = excluded.sources`
+      )
+      .run(
+        u.id,
+        u.planId,
+        u.sceneId,
+        u.variantIdx,
+        u.text,
+        u.voiceId,
+        u.audioPath ?? null,
+        u.status,
+        u.error ?? null,
+        u.source,
+        JSON.stringify(u.sources),
+        u.createdAt
+      )
+  }
+
+  utteranceDelete(id: string): void {
+    this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id)
+  }
+
+  /** 批量删除（重生成某场景/清空场次话术库用） */
+  utteranceDeleteWhere(planId: string, sceneId?: string): void {
+    if (sceneId === undefined) {
+      this.db.prepare('DELETE FROM utterances WHERE plan_id = ?').run(planId)
+    } else {
+      this.db.prepare('DELETE FROM utterances WHERE plan_id = ? AND scene_id = ?').run(planId, sceneId)
+    }
+  }
+
+  /** 预合成状态推进（批量合成时逐条更新） */
+  utteranceSetAudio(id: string, status: UtteranceStatus, audioPath: string | null, error?: string): void {
+    this.db
+      .prepare('UPDATE utterances SET status = ?, audio_path = ?, error = ? WHERE id = ?')
+      .run(status, audioPath, error ?? null, id)
+  }
+
   close(): void {
     this.db.close()
+  }
+}
+
+function rowToUtterance(r: Record<string, unknown>): Utterance {
+  return {
+    id: str(r.id),
+    planId: str(r.plan_id),
+    sceneId: str(r.scene_id),
+    variantIdx: num(r.variant_idx) ?? 0,
+    text: str(r.text),
+    voiceId: str(r.voice_id),
+    audioPath: str(r.audio_path) || null,
+    status: (str(r.status) || 'pending') as Utterance['status'],
+    error: str(r.error) || undefined,
+    source: str(r.source) === 'adopted' ? 'adopted' : 'initial',
+    sources: parseJson<Utterance['sources']>(r.sources, []),
+    createdAt: num(r.created_at) ?? 0
   }
 }
 

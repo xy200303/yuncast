@@ -15,7 +15,13 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useAppStore } from '../stores/useAppStore'
-import type { LivePlan, LivePlanInput, Script } from '../../../shared/types'
+import {
+  DEFAULT_PLAN_GEN_CONFIG,
+  DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  type LivePlan,
+  type LivePlanInput,
+  type Script
+} from '../../../shared/types'
 
 /** 场次：一场直播的完整配置（主题 + 剧本）。当前场次持久化，主播启动时注入 system prompt。 */
 export function SessionsPage() {
@@ -182,7 +188,12 @@ function PlanDialog({
   const [form, setForm] = useState<LivePlanInput>({
     name: plan?.name ?? '',
     theme: plan?.theme ?? '',
-    scriptId: plan?.scriptId ?? null
+    personaId: plan?.personaId ?? null,
+    styleHint: plan?.styleHint ?? '',
+    scriptId: plan?.scriptId ?? null,
+    genConfig: plan?.genConfig ?? DEFAULT_PLAN_GEN_CONFIG,
+    knowledgeScope: plan?.knowledgeScope ?? DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+    voiceId: plan?.voiceId ?? ''
   })
   const [busy, setBusy] = useState(false)
 

@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import type { LivePlan, LivePlanInput, Script, ScriptInput, ScriptScene } from '../../shared/types'
+import {
+  DEFAULT_PLAN_GEN_CONFIG,
+  DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  type LivePlan,
+  type LivePlanInput,
+  type Script,
+  type ScriptInput,
+  type ScriptScene
+} from '../../shared/types'
 import type { StorageService } from './StorageService'
 
 /**
@@ -62,8 +70,13 @@ export class ScriptService {
       id: id ?? `plan-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       name: input.name.trim(),
       theme: input.theme.trim(),
+      personaId: input.personaId ?? null,
+      styleHint: input.styleHint?.trim() ?? '',
       scriptId: input.scriptId,
       currentSceneIdx: existing?.currentSceneIdx ?? 0,
+      genConfig: { ...DEFAULT_PLAN_GEN_CONFIG, ...input.genConfig },
+      knowledgeScope: { ...DEFAULT_PLAN_KNOWLEDGE_SCOPE, ...input.knowledgeScope },
+      voiceId: input.voiceId?.trim() ?? '',
       createdAt: existing?.createdAt ?? Date.now(),
       updatedAt: Date.now()
     }
@@ -106,6 +119,15 @@ export class ScriptService {
     if (next >= script.scenes.length) return null
     this.storage.planSetSceneIdx(plan.id, next)
     return { scene: script.scenes[next], index: next, total: script.scenes.length }
+  }
+
+  /** 跳转到指定场景（goto_scene 工具 / 直播台切场景按钮的后端）；越界返回 null */
+  gotoScene(idx: number): { scene: ScriptScene; index: number; total: number } | null {
+    const { plan, script } = this.getActive()
+    if (!plan || !script || script.scenes.length === 0) return null
+    if (idx < 0 || idx >= script.scenes.length) return null
+    this.storage.planSetSceneIdx(plan.id, idx)
+    return { scene: script.scenes[idx], index: idx, total: script.scenes.length }
   }
 
   /** 场景进度复位（重新开播时可用） */

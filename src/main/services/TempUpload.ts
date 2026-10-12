@@ -1,5 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
-import { basename, extname } from 'node:path'
+import { basename, extname, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { ensureCloneSample, sampleFormat } from './audio/sampleAudio'
 
 /**
  * 临时文件托管：把本地样本上传到一个匿名临时文件站，换回一个公网直链。
@@ -23,11 +25,12 @@ export interface TempUploadResult {
   provider?: string
   /** 有效期描述（展示用） */
   expiresIn?: string
+  /** 上传前为了兼容复刻接口做过转码（webm → mp3） */
+  converted?: boolean
   error?: string
 }
 
-/** 百炼复刻的音频要求：WAV(16bit)/MP3/M4A，≤10MB，建议 10-20 秒 */
-const ALLOWED_EXT = ['.mp3', '.wav', '.m4a', '.mp4', '.aac', '.ogg', '.flac', '.webm']
+/** 百炼复刻的音频要求：≤10MB，建议 10-20 秒（格式统一在 sampleAudio 里归一） */
 const MAX_BYTES = 10 * 1024 * 1024
 
 interface Provider {
@@ -103,21 +106,32 @@ export class TempUploadService {
       }
     }
 
-    const fileName = basename(filePath)
-    const ext = extname(fileName).toLowerCase()
-    if (!ALLOWED_EXT.includes(ext)) {
-      return {
-        ok: false,
-        error: `不支持的样本格式 ${ext || '（无扩展名）'}：百炼复刻收 WAV(16bit) / MP3 / M4A`
+    // 复刻接口只收 WAV/MP3/M4A：录出来的 webm 之类先转成 mp3 再上传，用户不用管格式
+    let uploadPath = filePath
+    let uploadFile = file
+    if (!['mp3', 'wav', 'm4a'].includes(sampleFormat(filePath))) {
+      const prepared = await ensureCloneSample(filePath, join(tmpdir(), 'agent-anchor-upload'))
+      if (!prepared.ok || !prepared.path) {
+        return { ok: false, error: prepared.error ?? '样本转码失败' }
       }
+      uploadPath = prepared.path
+      uploadFile = await readFile(prepared.path)
     }
+
+    const fileName = basename(uploadPath)
     const mime = mimeOf(fileName)
 
     const failures: string[] = []
     for (const provider of PROVIDERS) {
       try {
-        const url = await provider.upload(file, fileName, mime)
-        return { ok: true, url, provider: provider.name, expiresIn: provider.expiresIn }
+        const url = await provider.upload(uploadFile, fileName, mime)
+        return {
+          ok: true,
+          url,
+          provider: provider.name,
+          expiresIn: provider.expiresIn,
+          converted: uploadPath !== filePath
+        }
       } catch (error) {
         failures.push(`${provider.name}：${error instanceof Error ? error.message : String(error)}`)
       }

@@ -470,7 +470,9 @@ function NewVoiceDialog({
       const result = await window.api.voice.uploadTemp(samplePath)
       if (result.ok && result.url) {
         setSampleUrl(result.url)
-        setUploadInfo(`已上传到${result.provider ?? '临时文件站'}（${result.expiresIn ?? '临时'}后失效）`)
+        setUploadInfo(
+          `已上传到${result.provider ?? '临时文件站'}（${result.expiresIn ?? '临时'}后失效${result.converted ? '，已自动转成 mp3' : ''}）`
+        )
       } else {
         toast.error('上传失败', { description: result.error })
       }
@@ -604,6 +606,11 @@ function NewVoiceDialog({
                 {samplePath ? samplePath.split(/[\/]/).pop() : '尚未选择样本'}
               </span>
             </div>
+            {samplePath && !/\.(mp3|wav|m4a)$/i.test(samplePath) && (
+              <p className="mt-1 text-xs text-amber-600">
+                复刻接口收 WAV / MP3 / M4A：提交或上传时会自动把这个样本转成 mp3
+              </p>
+            )}
           </div>
 
           {provider === 'bailian' && (

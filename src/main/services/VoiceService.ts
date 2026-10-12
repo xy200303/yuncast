@@ -1,4 +1,5 @@
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { ensureCloneSample } from './audio/sampleAudio'
 import { existsSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { app } from 'electron'
@@ -125,14 +126,12 @@ export class VoiceService {
     if (!input.samplePath || !existsSync(input.samplePath)) {
       return { ok: false, error: '样本文件不存在，请重新上传或录制' }
     }
-    const format = extname(input.samplePath).replace('.', '').toLowerCase()
-    if (!VOLCANO_CLONE_FORMATS.has(format)) {
-      return {
-        ok: false,
-        error: `样本格式 ${format || '未知'} 火山复刻不支持（支持 wav / mp3 / ogg / m4a / aac / pcm）：请换这些格式的音频`
-      }
+    // 录出来的 webm 之类火山/百炼都不收：这里统一转成 mp3 再提交（用户不用管格式）
+    const prepared = await ensureCloneSample(input.samplePath, this.sampleDir())
+    if (!prepared.ok || !prepared.path) {
+      return { ok: false, error: prepared.error ?? '样本处理失败：换个 wav / mp3 / m4a 试试' }
     }
-    const samplePath = await this.archiveSample(input.samplePath)
+    const samplePath = await this.archiveSample(prepared.path)
     if (!samplePath) return { ok: false, error: '样本归档失败：检查文件是否可读写' }
 
     const now = Date.now()

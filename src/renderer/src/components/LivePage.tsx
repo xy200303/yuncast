@@ -149,8 +149,7 @@ export function LivePage() {
           <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
             <Radio className="size-4 text-primary" />
             <h1 className="text-sm font-medium">直播台</h1>
-            {/* 唯一开播入口：选场次 → 启动场次（docs/07 §8.5） */}
-            <PlanLauncher />
+            {/* 开播控制贴最右：顶部居中的 toast 不会再盖住「启动/暂停」按钮 */}
             <div className="ml-auto flex items-center gap-3">
               <StreamIndicator />
               {/* 主输出电平 */}
@@ -162,6 +161,8 @@ export function LivePage() {
                   />
                 </div>
               </div>
+              {/* 唯一开播入口：选场次 → 启动场次（docs/07 §8.5） */}
+              <PlanLauncher />
             </div>
           </header>
           <div className="shrink-0 border-b px-4 py-3">
@@ -340,6 +341,11 @@ function PlanLauncher() {
 
   return (
     <div className="flex items-center gap-2">
+      {activePlan && !running && (
+        <span className="hidden text-xs text-muted-foreground lg:inline">
+          {activePlan.theme || '（未设主题）'}
+        </span>
+      )}
       <Select
         value={activePlanId || undefined}
         onValueChange={(v) => void switchPlan(v)}
@@ -395,12 +401,6 @@ function PlanLauncher() {
           {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
           启动场次
         </Button>
-      )}
-
-      {activePlan && !running && (
-        <span className="hidden text-xs text-muted-foreground lg:inline">
-          {activePlan.theme || '（未设主题）'}
-        </span>
       )}
 
       {/* 开播预检（docs/07 §8.5）：阻断项拦住开播，警告项自己判断 */}

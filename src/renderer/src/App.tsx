@@ -53,12 +53,22 @@ export default function App() {
   useEffect(() => {
     if (!('api' in window)) return
     audioEngine.init({ onLevels: setLevels, onHumanSpeaking: () => {} })
+    /** 本轮连续失败计数：TTS 凭据不通时会十几条连环失败，提示合成一条，别把界面糊住 */
+    let failedBurst = 0
     const offSnapshot = window.api.pool.onSnapshot((snapshot) => {
       const prevFailed = new Set(useAppStore.getState().pool.failed.map((item) => item.id))
-      for (const item of snapshot.failed) {
-        if (!prevFailed.has(item.id)) {
-          toast.error('合成失败', { description: `${item.text.slice(0, 40)}：${item.error ?? '未知原因'}` })
-        }
+      const fresh = snapshot.failed.filter((item) => !prevFailed.has(item.id))
+      if (snapshot.failed.length === 0) failedBurst = 0
+      if (fresh.length > 0) {
+        failedBurst += fresh.length
+        const latest = fresh[fresh.length - 1]
+        toast.error('合成失败', {
+          // 固定 id：同一条提示就地更新，不叠一摞盖住顶栏
+          id: 'tts-failed',
+          description:
+            (failedBurst > 1 ? `连续 ${failedBurst} 条：` : `${latest.text.slice(0, 24)}：`) +
+            (latest.error ?? '未知原因')
+        })
       }
       setPool(snapshot)
       playbackLoop.kick()

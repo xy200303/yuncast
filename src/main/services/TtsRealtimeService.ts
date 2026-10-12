@@ -34,12 +34,12 @@ export class TtsRealtimeService {
   constructor(private readonly storage: StorageService) {}
 
   /**
-   * 实时通道用的凭据：按实时配置**自己的服务商**从该服务商的接入里取
+   * 实时通道用的凭据：按实时配置**自己的服务商**取该服务商的默认接入
    * （与「语音合成」共用同一份接入，不需要再填一遍 API Key）。
    */
   connectionParams(): Record<string, string | number | boolean> | null {
     const provider = this.storage.getConfig().ttsRealtime.provider
-    return this.storage.ttsConnectionGetByProvider(provider)?.params ?? null
+    return this.storage.ttsConnectionGetDefault(provider)?.params ?? null
   }
 
   /** 实时通道是否可用（配置齐 + 凭据那条接入在 + 协议已核对）。协议未核对期间恒为 false，池会降级到流式通道。 */

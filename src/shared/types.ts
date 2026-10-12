@@ -27,6 +27,58 @@ export const TTS_PROVIDER_SHORT: Record<TtsProvider, string> = {
   bailian: '阿里云百炼'
 }
 
+// ---------- TTS 模型目录与音色目录（provider manifest 的 models 段，经 IPC 交给渲染层） ----------
+
+/** 目录里的一个系统音色 */
+export interface VoiceSpec {
+  /** 合成请求里的音色标识（火山 voice_type / 百炼 voice） */
+  id: string
+  /** 中文名 */
+  name: string
+  /** 场景/风格描述 */
+  desc?: string
+}
+
+/** 目录分组（按官方文档的分组原样收录） */
+export interface VoiceGroup {
+  label: string
+  voices: VoiceSpec[]
+}
+
+/** 模型级可调参数声明：默认值 ← 接入 models[].params 覆盖 ← 调用级覆盖 */
+export interface ParamSpec {
+  key: string
+  label: string
+  type: 'number' | 'select' | 'text'
+  min?: number
+  max?: number
+  step?: number
+  options?: { value: string; label: string }[]
+  default?: string | number
+  help?: string
+}
+
+/** 服务商下的一个模型（manifest 静态内置，含系统音色目录） */
+export interface TtsModelSpec {
+  id: string
+  label: string
+  note?: string
+  /** tts=普通合成；clone=复刻/ICL 模型（只吃克隆音色）；realtime 暂不进选择器 */
+  kind: 'tts' | 'clone' | 'realtime'
+  /** 端点需要业务空间 ID（百炼 maas 系） */
+  needsWorkspace?: boolean
+  /** 该模型支持 SSE/流式合成 */
+  streaming?: boolean
+  /** 该模型支持语气指令（调用级覆盖，不进模型 params）；缺省视为不支持 */
+  instruction?: boolean
+  /** 模型级可调参数 */
+  params: ParamSpec[]
+  /** 系统音色静态目录；空数组 = 官方未给目录，手动输入兜底 */
+  voices: VoiceGroup[]
+  /** 可作为复刻 target_model */
+  cloneTarget?: boolean
+}
+
 /**
  * 语音合成的**通用偏好**：与「哪家的凭据」无关，两家共用。
  * 凭据本身不在这里——它按服务商存在 tts_connections 接入列表里（一条 = 一家），
@@ -55,15 +107,15 @@ export interface TtsConfig {
   workspaceId: string
   /** 默认音色（火山 voice_type / 百炼 voice） */
   voiceId: string
-  /** 语速倍率（仅火山生效） */
+  /** @deprecated 迁移用：已折入接入默认模型的 models[].params（speech_rate），新代码不再读 */
   speed: number
   /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
   realtime: boolean
   /** 语气指令（instruction，≤100 字符）：自然语言描述语音表现，如「语速稍快，语气热情」 */
   instruction: string
-  /** 输出音频格式：mp3 兼容性最好；pcm 适合流式（无需解码，直接喂播放器/混音器） */
+  /** @deprecated 迁移用：已折入接入模型的 models[].params（format），新代码不再读 */
   format: 'mp3' | 'wav' | 'pcm'
-  /** 输出采样率（Hz） */
+  /** @deprecated 迁移用：已折入接入模型的 models[].params（sample_rate），新代码不再读 */
   sampleRate: number
   /** 上次「测试发音」成功的时间戳（预检里提示凭据可能失效，docs/07 §8.5） */
   lastTestAt: number
@@ -89,19 +141,49 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   lastTestAt: 0
 }
 
-// ---------- 语音合成的供应商接入（与 model_connections 同构：一条 = 一个服务商 + 一份凭据） ----------
+// ---------- 语音合成的供应商接入（与 model_connections 同构：一条 = 一个服务商 + 一份凭据 + 一串启用模型） ----------
+
+/** 接入里启用的一个模型及其参数覆盖（参数键由 manifest 里该模型的 ParamSpec 声明） */
+export interface TtsConnectionModel {
+  id: string
+  /** 覆盖 manifest ParamSpec 默认值；缺省用默认 */
+  params: Record<string, string | number | boolean>
+}
 
 export interface TtsConnection {
   id: string
   providerId: TtsProvider
+  /** 显示名，默认取服务商 label，可改 */
+  name: string
   /** 该服务商的凭据（按 provider manifest 的 configFields；secret 字段落盘加密） */
   params: Record<string, string | number | boolean>
+  /** 启用的模型及其参数覆盖 */
+  models: TtsConnectionModel[]
+  /** 默认模型，必须是 models 里的一员 */
+  defaultModel: string
+  /** 每个 provider 恰好一条为 true（首条自动；删默认时提升最老的一条） */
+  isDefault: boolean
   createdAt: number
   updatedAt: number
 }
 
-/** 给渲染层用的接入：密钥字段的值置空，只留「填没填过」与「能不能用」两个标记 */
-export type TtsConnectionSafe = TtsConnection & { hasSecret: boolean; ready: boolean }
+/** 新建/编辑接入入参：密钥字段留空表示不修改（沿用已保存的那个） */
+export interface TtsConnectionInput {
+  id?: string
+  providerId: TtsProvider
+  name: string
+  params: Record<string, string | number | boolean>
+  models: TtsConnectionModel[]
+  defaultModel: string
+}
+
+/** 给渲染层用的接入：密钥字段的值置空，只留「填没填过」「能不能用」与「哪些模型可用」 */
+export type TtsConnectionSafe = TtsConnection & {
+  hasSecret: boolean
+  ready: boolean
+  /** 启用的模型里现在真能合成的那些（缺业务空间 ID 等前置条件的模型不在这里） */
+  usableModels: string[]
+}
 
 /** 某家服务商是否已配好接入（有这条接入且必填项齐）：音色提示、筛选标记与预检都按它判断 */
 export function ttsProviderConfigured(
@@ -626,9 +708,13 @@ export interface VoiceRecord {
   id: string
   name: string
   provider: VoiceProvider
-  /** 克隆完成后的音色标识（火山 S_xxx / 百炼 voice 名），训练完成前为空 */
+  /** 克隆完成后的音色标识（火山 speaker_id / 百炼 voice_id），训练完成前为空 */
   voiceType: string
-  /** 样本音频文件路径（userData/voices/） */
+  /** 克隆目标模型（定死，不可跨模型）：火山 seed-icl-x / 百炼 target_model */
+  model: string
+  /** 克隆时用的接入 id（合成路由优先走它；失效回退该 provider 默认接入） */
+  connectionId: string
+  /** 样本音频文件路径（userData/voices/）；百炼公网 URL 克隆时为空 */
   samplePath: string
   status: VoiceStatus
   /** 失败原因（中文） */

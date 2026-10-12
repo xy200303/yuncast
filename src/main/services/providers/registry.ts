@@ -1,4 +1,9 @@
-import type { ModelConnection, TtsConnection, TtsProvider } from '../../../shared/types'
+import type {
+  ModelConnection,
+  TtsConnection,
+  TtsModelSpec,
+  TtsProvider
+} from '../../../shared/types'
 import { piCloudProviders } from './llm/piCloud'
 import { localOpenAiProvider } from './llm/localOpenAi'
 import { volcanoTtsProvider } from './tts/volcano'
@@ -26,11 +31,6 @@ export interface FieldSpec {
   required?: boolean
   /** 占满整行（端点、业务空间 ID 这类长字段） */
   wide?: boolean
-  /**
-   * 语音合成专有：该字段属于「通用偏好」（存在 config.tts 上，两家共用），
-   * 而不是某条接入的凭据——设置页据此把字段分到「接入弹窗」与「通用偏好」两块
-   */
-  preference?: boolean
 }
 
 export interface LlmProviderDef {
@@ -133,14 +133,15 @@ export function isModelConnectionReady(
 }
 
 /**
- * 语音合成服务商 manifest（与 LLM 侧同一套 FieldSpec）。
+ * 语音合成服务商 manifest（与 LLM 侧同一套 FieldSpec 声明凭据字段）。
  *
- * `configFields` 里带 `preference` 的是**通用偏好**（默认音色/语速/语气指令/输出格式，
- * 存在 config.tts 上、两家共用）；其余是该服务商**接入**的凭据字段，存进 tts_connections。
+ * 一条接入 = 一套凭据（configFields，存 tts_connections.params）+ 启用的模型数组
+ * （models 里挑，参数覆盖存 tts_connections.models[].params）。
+ * `models` 是静态内置的模型目录：每个模型带参数声明（ParamSpec）与系统音色目录
+ * （VoiceGroup[]，官方文档解析收录；空数组 = 官方未给目录，手动输入兜底）。
  * 能力位决定「实时合成」开关能不能开、音色克隆入口显不显示：
- *   streaming —— 该服务商是否已接入真流式（docs/06 附录：百炼 Qwen-TTS 已核实，火山待核对）
- *   clone     —— 是否支持音色克隆（docs/06：火山已实现、百炼复刻未实现）
- *   instruction / formats —— 合成请求里实际支持的参数与输出格式
+ *   streaming —— 该服务商是否已接入真流式（百炼 Qwen-TTS / maas 系 SSE）
+ *   clone     —— 是否支持音色克隆（火山 V3 voice_clone / 百炼 voice-enrollment）
  * 纯数据，可直接经 IPC 交给渲染层。
  */
 export interface TtsProviderManifest {
@@ -158,10 +159,12 @@ export interface TtsProviderManifest {
     clone: boolean
     /** 语气指令 */
     instruction: boolean
-    formats: ('mp3' | 'wav' | 'pcm')[]
+    formats: ('mp3' | 'wav' | 'pcm' | 'ogg_opus')[]
   }
-  /** 该服务商的接入凭据字段 + 通用偏好字段（`preference: true` 的是后者） */
+  /** 该服务商的接入凭据字段 */
   configFields: FieldSpec[]
+  /** 模型目录（含每模型的参数声明与系统音色目录） */
+  models: TtsModelSpec[]
   /** 「默认音色」字段的说法 */
   voiceHint: { label: string; placeholder: string; help?: string }
   links: { label: string; url: string }[]
@@ -177,9 +180,9 @@ export function getTtsProvider(id: string): TtsProviderManifest | undefined {
   return TTS_PROVIDER_DEFS.find((def) => def.id === id)
 }
 
-/** 该服务商**接入**要填的字段（凭据）；通用偏好不在其中 */
+/** 该服务商**接入**要填的字段（凭据） */
 export function ttsConnectionFields(providerId: string): FieldSpec[] {
-  return (getTtsProvider(providerId)?.configFields ?? []).filter((field) => !field.preference)
+  return getTtsProvider(providerId)?.configFields ?? []
 }
 
 /** provider 的密钥字段清单（落盘加密、编辑回填都用它） */
@@ -189,8 +192,62 @@ export function ttsSecretFieldKeys(providerId: string): string[] {
     .map((field) => field.key)
 }
 
-/** 接入是否配得齐：manifest 里必填的凭据字段都有值（有这条接入 ≠ 配齐了） */
-export function isTtsConnectionReady(
+/** 查某服务商的某个模型 spec */
+export function ttsModelSpec(providerId: string, modelId: string): TtsModelSpec | undefined {
+  return getTtsProvider(providerId)?.models.find((model) => model.id === modelId)
+}
+
+/**
+ * 接入实际生效的默认模型：default_model（得在启用列表里）→ 第一个启用模型
+ * → manifest 第一个 tts 模型。路由、测试都走它，保证「测的是哪条」和「跑的是哪条」一致。
+ */
+export function ttsConnectionDefaultModel(
+  connection: Pick<TtsConnection, 'models' | 'defaultModel'>,
+  def: TtsProviderManifest | undefined
+): string {
+  const ids = connection.models.map((model) => model.id).filter((id) => id.trim())
+  const preferred = connection.defaultModel.trim()
+  if (preferred && ids.includes(preferred)) return preferred
+  return ids[0] ?? def?.models.find((model) => model.kind === 'tts')?.id ?? def?.models[0]?.id ?? ''
+}
+
+/** 合并某接入某模型的最终参数：manifest ParamSpec 默认值 ← 接入 models[].params 覆盖 */
+export function ttsModelParams(
+  connection: Pick<TtsConnection, 'models'>,
+  spec: TtsModelSpec | undefined,
+  modelId: string
+): Record<string, string | number | boolean> {
+  const out: Record<string, string | number | boolean> = {}
+  for (const param of spec?.params ?? []) {
+    if (param.default !== undefined) out[param.key] = param.default
+  }
+  const override = connection.models.find((model) => model.id === modelId)?.params ?? {}
+  for (const [key, value] of Object.entries(override)) out[key] = value
+  return out
+}
+
+/**
+ * 系统音色目录反查：这个音色 id 被哪些服务商的哪些模型目录收录
+ * （可能多个模型含同名音色，如 longanyang 同属 v3-plus / v3-flash；路由据此挑接入与模型）。
+ */
+export function findTtsCatalogVoice(
+  voiceId: string
+): { providerId: TtsProvider; model: TtsModelSpec }[] {
+  const id = voiceId.trim()
+  if (!id) return []
+  const hits: { providerId: TtsProvider; model: TtsModelSpec }[] = []
+  for (const def of TTS_PROVIDER_DEFS) {
+    for (const model of def.models) {
+      if (model.voices.some((group) => group.voices.some((voice) => voice.id === id))) {
+        hits.push({ providerId: def.id, model })
+      }
+    }
+  }
+  return hits
+}
+
+/** 凭据齐不齐：manifest 里标了 required 的字段都有值 */
+export function ttsCredentialsOk(
   connection: Pick<TtsConnection, 'params'>,
   def: TtsProviderManifest | undefined
 ): boolean {
@@ -199,4 +256,52 @@ export function isTtsConnectionReady(
     if (!field.required) return true
     return String(connection.params[field.key] ?? '').trim().length > 0
   })
+}
+
+/**
+ * 这条接入里的**某个模型**现在能不能用：被启用 + 凭据齐 + 该模型自己的前置条件满足
+ * （needsWorkspace 的模型要业务空间 ID）。
+ * 逐模型判定是必须的：一家接入里 qwen3-tts 能用、qwen-audio 缺业务空间 ID 不能用，是常态，
+ * 拿整条接入的 ready 去判断会把能用的模型一起废掉。
+ */
+export function isTtsModelUsable(
+  connection: Pick<TtsConnection, 'params' | 'models'>,
+  def: TtsProviderManifest | undefined,
+  modelId: string
+): boolean {
+  return ttsModelBlocker(connection, def, modelId) === null
+}
+
+/** 这个模型为什么不能用（中文原因，设置页与路由共用文案）；能用返回 null */
+export function ttsModelBlocker(
+  connection: Pick<TtsConnection, 'params' | 'models'>,
+  def: TtsProviderManifest | undefined,
+  modelId: string
+): string | null {
+  if (!def) return '这条接入的服务商不在语音合成目录里'
+  const spec = ttsModelSpec(def.id, modelId)
+  if (!spec) return `模型 ${modelId} 不在${def.label}目录里`
+  if (!connection.models.some((model) => model.id === modelId)) {
+    return `接入没启用模型「${spec.label}」`
+  }
+  const missing = ttsConnectionFields(def.id).filter(
+    (field) => field.required && !String(connection.params[field.key] ?? '').trim()
+  )
+  if (missing.length > 0) {
+    return `接入缺必填凭据：${missing.map((field) => field.label).join(' / ')}`
+  }
+  if (spec.needsWorkspace && !String(connection.params.workspaceId ?? '').trim()) {
+    return `模型「${spec.label}」需要业务空间 ID`
+  }
+  return null
+}
+
+/** 接入是否可以一用：至少有一个启用模型可用（卡片徽章、预检这类粗粒度判断用它） */
+export function isTtsConnectionReady(
+  connection: Pick<TtsConnection, 'params' | 'models'>,
+  def: TtsProviderManifest | undefined
+): boolean {
+  if (!def) return false
+  if (connection.models.filter((model) => model.id.trim()).length === 0) return false
+  return connection.models.some((model) => isTtsModelUsable(connection, def, model.id))
 }

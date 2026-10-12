@@ -212,12 +212,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setPersona: (persona) => set({ persona })
 }))
 
-/** TTS 是否已配置（状态栏徽章用）：默认服务商那条接入配齐了才算 */
+/** TTS 是否已配置（状态栏徽章用）：存在任一凭据齐全且启用了模型的接入就算 */
 export function selectTtsReady(
   config: AppConfig,
   connections: TtsConnectionSafe[]
 ): boolean {
-  return ttsProviderConfigured(connections, config.tts.providerId)
+  void config // 不再按「默认服务商」判定：任何一家配好了主播都能出声（音色路由自会找过去）
+  return connections.some((connection) => connection.ready)
 }
 
 /** 当前主播卡的语言模型是否就绪（状态栏徽章用）：卡上选的接入与模型都可用才算 */

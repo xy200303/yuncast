@@ -17,6 +17,7 @@ import {
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -24,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
+import { cloneVoiceHint, flattenModelCatalog, systemVoiceUsable, type CatalogModel } from '@/lib/voice'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { VoicePickerDialog } from '@/components/AnchorsPage'
 import {
@@ -41,6 +43,7 @@ import {
   type AppAccent,
   type AppTheme,
   type ModelConnectionSafe,
+  type ParamSpec,
   type StreamConfig,
   type StreamMode,
   type TtsConfig,
@@ -1155,60 +1158,62 @@ function readTtsField(tts: TtsConfig, key: string): string | number | boolean {
   return (tts as unknown as Record<string, string | number | boolean>)[key] ?? ''
 }
 
-/** 接入里的凭据字段（通用偏好不属于任何一家接入） */
+/** 接入里的凭据字段（manifest 的 configFields 全部是凭据） */
 function credentialFields(def: TtsProviderManifest): ProviderFieldSpec[] {
-  return def.configFields.filter((field) => !field.preference)
+  return def.configFields
 }
 
-/** 接入摘要：密钥值不回渲染层，只给能认出「是哪一份凭据」的线索 */
+/** 接入摘要：密钥值不回渲染层，只给能认出「是哪一份凭据」的线索（接入名单独显示，这里不重复） */
 function credentialSummary(connection: TtsConnectionSafe): string {
   const parts: string[] = []
-  const appId = String(connection.params.appId ?? '')
-  if (appId) parts.push(`AppId ${appId.length > 4 ? `…${appId.slice(-4)}` : appId}`)
-  const model = String(connection.params.model ?? '')
-  if (model) parts.push(model)
   parts.push(connection.hasSecret ? '密钥已保存' : '密钥未填')
   return parts.join(' · ')
 }
 
+/** 模型 id → 目录里的显示名 */
+function ttsModelLabel(catalog: CatalogModel[], provider: TtsProvider, modelId: string): string {
+  const hit = catalog.find((entry) => entry.provider === provider && entry.model.id === modelId)
+  return hit?.model.label ?? (modelId || '—')
+}
+
 /**
  * 语音合成（火山引擎 / 阿里云百炼）：
- * ① 接入列表：**一家一条凭据**，音色自带服务商归属，合成时按归属路由到对应接入
- *    —— 所以两家的音色可以同时用，不存在「当前配的是哪家，另一家就用不了」；
- * ② 通用偏好：默认服务商 / 默认音色 / 语速 / 语气指令 / 输出格式，两家共用（按 manifest 的能力位显示）。
+ * ① 接入列表：**一家可以有多条接入**（不同账号 / 不同参数），一条 = 一份凭据 + 启用哪些模型 + 默认模型；
+ * ② 通用偏好：默认服务商（兜底路由）/ 默认音色 / 语气指令 / 实时合成，两家共用；
+ * ③ 音色严格绑定模型（不可跨模型）：选音色即隐含选模型与接入。
  */
 function TtsSection() {
   const config = useAppStore((s) => s.config)
   const providers = useAppStore((s) => s.ttsProviders)
   const connections = useAppStore((s) => s.ttsConnections)
   const setConnections = useAppStore((s) => s.setTtsConnections)
+  const voices = useAppStore((s) => s.voices)
   const saveConfig = useAppStore((s) => s.saveConfig)
   const [form, setForm] = useState<TtsConfig>({ ...config.tts })
   const [saving, setSaving] = useState(false)
-  /** 正在编辑哪家的接入（打开凭据弹窗） */
-  const [editing, setEditing] = useState<TtsProviderManifest | null>(null)
-  /** 待清除的接入（清除前确认） */
-  const [clearing, setClearing] = useState<TtsProviderManifest | null>(null)
-  /** 正在测哪家（' ' 以外都算忙） */
-  const [testing, setTesting] = useState('')
+  /** 「添加接入」第一步：选服务商 */
+  const [adding, setAdding] = useState(false)
+  /** 正在编辑/新建的接入（新建时 connection 为空，只是带着服务商进来） */
+  const [editing, setEditing] = useState<{ providerId: TtsProvider; connection?: TtsConnectionSafe } | null>(
+    null
+  )
+  /** 待删除的接入 */
+  const [deleting, setDeleting] = useState<TtsConnectionSafe | null>(null)
+  /** 正在测试的接入（弹窗里逐模型测） */
+  const [testing, setTesting] = useState<TtsConnectionSafe | null>(null)
   const [pickerOpen, setPickerOpen] = useState(false)
 
+  const catalog = flattenModelCatalog(providers)
   const def = providers.find((item) => item.id === form.providerId)
   const dirty = JSON.stringify(form) !== JSON.stringify(config.tts)
-  const connectionOf = (providerId: TtsProvider) =>
-    connections.find((connection) => connection.providerId === providerId)
 
-  /** 待保存的偏好：只写偏好字段，旧配置里那些迁移用的凭据字段不动 */
-  const preferencePatch = (): Partial<TtsConfig> => {
-    const patch: Record<string, string | number | boolean> = {
-      providerId: form.providerId,
-      realtime: form.realtime
-    }
-    for (const field of def?.configFields ?? []) {
-      if (field.preference) patch[field.key] = readTtsField(form, field.key)
-    }
-    return patch as Partial<TtsConfig>
-  }
+  /** 待保存的偏好：旧配置里那些迁移用的凭据字段不动 */
+  const preferencePatch = (): Partial<TtsConfig> => ({
+    providerId: form.providerId,
+    realtime: form.realtime,
+    voiceId: form.voiceId,
+    instruction: form.instruction
+  })
 
   const patchField = (key: string, value: string | number | boolean) =>
     setForm((prev) => {
@@ -1243,39 +1248,34 @@ function TtsSection() {
       .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
   }
 
-  /** 测某条接入：偏好有改动先存（测试用的是已保存的配置），再合成一小段播放 */
-  const test = async (providerId: TtsProvider): Promise<void> => {
-    if (testing) return
-    setTesting(providerId)
-    try {
-      if (dirty) {
-        await save()
-        toast.message('配置已顺带保存')
-      }
-      const result = await window.api.tts.test(
-        '你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。',
-        providerId
-      )
-      if (result.ok && result.audioPath) {
-        toast.success('合成成功，正在播放')
-        await audioEngine.playTts(result.audioPath)
-      } else {
-        toast.error('合成失败', { description: result.error })
-      }
-    } catch (error) {
-      toast.error('测试失败', { description: error instanceof Error ? error.message : String(error) })
-    } finally {
-      setTesting('')
-    }
-  }
-
-  const clear = (providerId: TtsProvider) => {
-    setClearing(null)
-    void window.api.tts.removeConnection(providerId).then((result) => {
+  const useAsDefault = (connection: TtsConnectionSafe) => {
+    void window.api.tts.setDefaultConnection(connection.id).then((result) => {
       setConnections(result.connections)
-      toast.success('接入已清除')
+      toast.success(`「${connection.name}」已设为默认接入`)
     })
   }
+
+  const removeConnection = () => {
+    const target = deleting
+    setDeleting(null)
+    if (!target) return
+    void window.api.tts.removeConnection(target.id).then((result) => {
+      setConnections(result.connections)
+      toast.success(`已删除「${target.name}」`)
+    })
+  }
+
+  /** 当前默认音色能不能合成：克隆音色看它那条接入，系统音色看有没有启用它所属模型的接入 */
+  const defaultVoiceHint = ((): { ok: boolean; hint: string } | null => {
+    const id = form.voiceId.trim()
+    if (!id) return null
+    const clone = voices.find((voice) => voice.voiceType === id)
+    if (clone) return cloneVoiceHint(clone, connections)
+    const check = systemVoiceUsable(catalog, connections, id)
+    return check.usable ? null : { ok: false, hint: check.hint ?? '' }
+  })()
+
+  const boundVoices = deleting ? voices.filter((voice) => voice.connectionId === deleting.id).length : 0
 
   const capabilities = def
     ? [
@@ -1289,67 +1289,102 @@ function TtsSection() {
   return (
     <div className="flex flex-col gap-3">
       <div className="rounded-lg border bg-card px-4 py-4">
-        <p className="text-[13px] font-medium">服务商接入</p>
-        <p className="text-xs text-muted-foreground">
-          一家一条凭据，只填一次。音色自带服务商归属，合成时路由到对应接入——两家的音色可以同时用
-        </p>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <p className="text-[13px] font-medium">服务商接入</p>
+            <p className="text-xs text-muted-foreground">
+              一条接入 = 一份凭据 + 启用哪些模型 + 默认模型；同一家可以加多条（不同账号 / 不同参数）。
+              音色严格绑定模型，合成时按音色路由到对应接入
+            </p>
+          </div>
+          <Button size="sm" className="shrink-0" onClick={() => setAdding(true)}>
+            <Plus />
+            添加接入
+          </Button>
+        </div>
 
-        <div className="mt-3 flex flex-col gap-2">
-          {providers.map((item) => {
-            const connection = connectionOf(item.id)
-            return (
-              <div
-                key={item.id}
-                className="flex items-center gap-3 rounded-lg border bg-background px-3 py-2"
-              >
-                <ProviderIcon providerId={item.icon} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="truncate text-[13px] font-medium">{item.label}</span>
-                    <Badge variant={connection?.ready ? 'secondary' : 'outline'} className="shrink-0">
-                      {connection?.ready ? '已配置' : '未配置'}
-                    </Badge>
+        <div className="mt-4 flex flex-col gap-2">
+          {connections.length === 0 ? (
+            <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+              还没有接入。添加一条（选服务商、填一次密钥、勾上这家要用的模型），音色才有地方合成。
+            </p>
+          ) : (
+            connections.map((connection) => {
+              const provider = providers.find((item) => item.id === connection.providerId)
+              const defaultUnusable = !connection.usableModels.includes(connection.defaultModel)
+              return (
+                <div
+                  key={connection.id}
+                  className="flex items-center gap-3 rounded-lg border bg-background px-3 py-2"
+                >
+                  <ProviderIcon providerId={connection.providerId} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="truncate text-[13px] font-medium">{connection.name}</span>
+                      {connection.isDefault && (
+                        <Badge variant="secondary" className="shrink-0">
+                          默认
+                        </Badge>
+                      )}
+                      {!connection.ready && (
+                        <Badge variant="outline" className="shrink-0 text-muted-foreground">
+                          未配齐
+                        </Badge>
+                      )}
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {provider?.label ?? connection.providerId} · {connection.models.length} 个模型（
+                      {connection.usableModels.length} 个可用）· 默认{' '}
+                      {ttsModelLabel(catalog, connection.providerId, connection.defaultModel)}
+                      {defaultUnusable ? '（缺前置条件）' : ''} · {credentialSummary(connection)}
+                    </p>
                   </div>
-                  <p className="truncate text-xs text-muted-foreground">
-                    {connection ? credentialSummary(connection) : item.note}
-                  </p>
-                </div>
-                <div className="flex shrink-0 items-center gap-1">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setEditing(item)}
-                  >
-                    {connection ? '配置' : '添加'}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    disabled={!connection || testing !== ''}
-                    onClick={() => void test(item.id)}
-                  >
-                    {testing === item.id ? '合成中…' : '测试'}
-                  </Button>
-                  {connection && (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 text-xs"
+                      disabled={connection.models.length === 0}
+                      onClick={() => setTesting(connection)}
+                    >
+                      测试
+                    </Button>
                     <Button
                       variant="ghost"
-                      size="sm"
-                      className="h-7 text-xs text-muted-foreground"
-                      onClick={() => setClearing(item)}
+                      size="icon-sm"
+                      title="编辑"
+                      onClick={() => setEditing({ providerId: connection.providerId, connection })}
                     >
-                      清除
+                      <Pencil />
                     </Button>
-                  )}
+                    {!connection.isDefault && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-7 text-xs text-muted-foreground"
+                        onClick={() => useAsDefault(connection)}
+                      >
+                        设为默认
+                      </Button>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="删除"
+                      onClick={() => setDeleting(connection)}
+                    >
+                      <Trash2 />
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            )
-          })}
+              )
+            })
+          )}
         </div>
 
         <p className="mt-3 text-xs text-muted-foreground">
-          密钥落盘加密（safeStorage），界面拿不到密钥本身，只能看到「已保存」。
+          密钥落盘加密（safeStorage），界面拿不到密钥本身，只能看到「已保存」；每家服务商有且只有一条「默认接入」，
+          系统音色没指定接入时走它。
         </p>
       </div>
 
@@ -1358,27 +1393,17 @@ function TtsSection() {
           <div>
             <p className="text-[13px] font-medium">通用偏好</p>
             <p className="text-xs text-muted-foreground">
-              与凭据无关，两家共用；换默认服务商不用重填这些
+              与凭据无关，两家共用；模型级参数（语速 / 音量 / 格式…）在接入弹窗里逐个模型配
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={testing !== ''}
-              onClick={() => void test(form.providerId)}
-            >
-              {testing === form.providerId ? '合成中…' : '测试发音'}
-            </Button>
-            <Button size="sm" disabled={!dirty || saving} onClick={savePreferences}>
-              {saving ? '保存中…' : dirty ? '保存' : '已保存'}
-            </Button>
-          </div>
+          <Button size="sm" disabled={!dirty || saving} onClick={savePreferences}>
+            {saving ? '保存中…' : dirty ? '保存' : '已保存'}
+          </Button>
         </div>
 
         <div className="mt-4 grid grid-cols-2 gap-3">
           <div className="col-span-2">
-            <Label className="mb-1">默认服务商</Label>
+            <Label className="mb-1">默认服务商（兜底路由）</Label>
             <Select value={form.providerId} onValueChange={(v) => changeProvider(v as TtsProvider)}>
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -1395,47 +1420,51 @@ function TtsSection() {
               </SelectContent>
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              克隆音色按归属走它自己那家的接入；只有没指定音色（或音色是服务商自带的系统音色）时才用这个默认值
+              克隆音色按它自己那条接入走；只有音色既不在目录里也不是克隆音色时，才用这个默认值兜底
             </p>
             {capabilities && <p className="mt-1 text-xs text-muted-foreground">能力：{capabilities}</p>}
           </div>
 
           <div className="col-span-2">
             <div className="mb-1 flex items-center justify-between">
-              <Label>{def?.voiceHint.label ?? '默认音色'}</Label>
+              <Label>默认音色</Label>
               <Button
                 variant="outline"
                 size="sm"
                 className="h-6 text-xs"
                 onClick={() => setPickerOpen(true)}
               >
-                从音色库选择
+                选择音色
               </Button>
             </div>
             <Input
               value={form.voiceId}
               onChange={(e) => patchField('voiceId', e.target.value)}
-              placeholder={def?.voiceHint.placeholder}
+              placeholder="音色 id，例如 Cherry / zh_female_vv_uranus_bigtts"
             />
-            {def?.voiceHint.help && (
-              <p className="mt-1 text-xs text-muted-foreground">{def.voiceHint.help}</p>
+            {defaultVoiceHint && (
+              <p
+                className={cn(
+                  'mt-1 text-xs',
+                  defaultVoiceHint.ok ? 'text-muted-foreground' : 'text-destructive'
+                )}
+              >
+                {defaultVoiceHint.hint}
+              </p>
             )}
           </div>
 
-          {(def?.configFields ?? [])
-            .filter((field) => field.preference && field.key !== 'voiceId')
-            .map((field) => (
-              <div key={field.key} className={field.wide ? 'col-span-2' : undefined}>
-                <Label className="mb-1">{field.label}</Label>
-                <ProviderField
-                  field={field}
-                  value={readTtsField(form, field.key)}
-                  secretSaved={false}
-                  onChange={(value) => patchField(field.key, value)}
-                />
-                {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
-              </div>
-            ))}
+          <div className="col-span-2">
+            <Label className="mb-1">语气指令 instruction（可选，≤100 字）</Label>
+            <Input
+              value={form.instruction}
+              onChange={(e) => patchField('instruction', e.target.value)}
+              placeholder="例如：语速稍快，语气热情，像直播间卖货"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              自然语言描述语音表现；只发给支持语气指令的模型（cosyvoice-v1 等不支持的模型会忽略它）
+            </p>
+          </div>
         </div>
 
         <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
@@ -1456,80 +1485,224 @@ function TtsSection() {
         </div>
       </div>
 
+      {adding && (
+        <TtsProviderPickerDialog
+          providers={providers}
+          onClose={() => setAdding(false)}
+          onPick={(providerId) => {
+            setAdding(false)
+            setEditing({ providerId })
+          }}
+        />
+      )}
+
       {editing && (
-        <TtsConnectionDialog
-          key={editing.id}
-          def={editing}
-          connection={connectionOf(editing.id)}
+        <TtsConnectionEditorDialog
+          key={editing.connection?.id ?? `new-${editing.providerId}`}
+          providerId={editing.providerId}
+          connection={editing.connection}
           onClose={() => setEditing(null)}
         />
       )}
 
-      <VoicePickerDialog
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        onPick={(voiceType) => patchField('voiceId', voiceType)}
-      />
+      {testing && <TtsTestDialog connection={testing} onClose={() => setTesting(null)} />}
 
-      <Dialog open={clearing !== null} onOpenChange={(open) => !open && setClearing(null)}>
+      <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>清除接入</DialogTitle>
+            <DialogTitle>删除接入</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确认清除 {clearing?.label} 的这条接入？合成要按音色的归属取凭据，清掉后这家复刻的音色就用不了了
-            （音色记录本身不受影响）。
+            确认删除「{deleting?.name}」？
+            {boundVoices > 0
+              ? `这条接入下有 ${boundVoices} 个克隆音色，删掉后它们会回退到该服务商的默认接入（音色记录本身不受影响）。`
+              : '音色记录本身不受影响。'}
           </p>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setClearing(null)}>
+            <Button variant="ghost" onClick={() => setDeleting(null)}>
               取消
             </Button>
-            <Button variant="destructive" onClick={() => clearing && clear(clearing.id)}>
-              清除
+            <Button variant="destructive" onClick={removeConnection}>
+              删除
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <VoicePickerDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onPick={(voiceId) => {
+          patchField('voiceId', voiceId)
+          setPickerOpen(false)
+          toast.success('已选择音色', { description: '保存后生效' })
+        }}
+      />
+    </div>
+  )
+}
+
+/** 「添加接入」第一步：选服务商（一家可以有多条接入，所以每次都从服务商开始） */
+function TtsProviderPickerDialog({
+  providers,
+  onPick,
+  onClose
+}: {
+  providers: TtsProviderManifest[]
+  onPick: (providerId: TtsProvider) => void
+  onClose: () => void
+}) {
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>添加语音合成接入</DialogTitle>
+        </DialogHeader>
+        <p className="text-xs text-muted-foreground">
+          选服务商 → 填一次密钥 → 勾上这家要用的模型。同一家可以加多条接入（不同账号 / 不同参数）。
+        </p>
+        <div className="flex flex-col gap-2">
+          {providers.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              className="flex items-start gap-3 rounded-lg border bg-card px-3 py-2 text-left hover:bg-accent"
+              onClick={() => onPick(item.id)}
+            >
+              <ProviderIcon providerId={item.icon} />
+              <div className="min-w-0 flex-1">
+                <p className="text-[13px] font-medium">{item.label}</p>
+                <p className="text-xs text-muted-foreground">{item.note}</p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {item.models.filter((model) => model.kind !== 'realtime').length} 个模型可用 ·{' '}
+                  {item.capabilities.clone ? '支持声音复刻' : '不支持复刻'}
+                </p>
+              </div>
+            </button>
+          ))}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            取消
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 按模型的参数声明渲染参数表单；留空 = 用官方默认值（落盘时键会去掉） */
+function TtsParamForm({
+  specs,
+  values,
+  onChange
+}: {
+  specs: ParamSpec[]
+  values: Record<string, string | number | boolean>
+  onChange: (key: string, value: string | number | boolean) => void
+}) {
+  const valueOf = (spec: ParamSpec): string | number | boolean =>
+    values[spec.key] !== undefined ? values[spec.key] : (spec.default ?? '')
+
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      {specs.map((spec) => (
+        <div key={spec.key}>
+          <Label className="mb-1 text-xs">{spec.label}</Label>
+          {spec.type === 'select' ? (
+            <Select value={String(valueOf(spec))} onValueChange={(value) => onChange(spec.key, value)}>
+              <SelectTrigger className="h-7 w-full text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(spec.options ?? []).map((option) => (
+                  <SelectItem key={option.value} value={option.value}>
+                    {option.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          ) : (
+            <Input
+              className="h-7 text-xs"
+              type={spec.type === 'number' ? 'number' : 'text'}
+              min={spec.min}
+              max={spec.max}
+              step={spec.step}
+              value={String(valueOf(spec))}
+              onChange={(e) => {
+                const raw = e.target.value
+                if (raw === '') return onChange(spec.key, '')
+                onChange(spec.key, spec.type === 'number' ? Number(raw) : raw)
+              }}
+            />
+          )}
+          {spec.help && <p className="mt-1 text-[11px] text-muted-foreground">{spec.help}</p>}
+        </div>
+      ))}
     </div>
   )
 }
 
 /**
- * 语音合成接入弹窗：字段按该服务商 manifest 的**凭据字段**渲染（与「语言模型」的接入弹窗同构）。
- * 密钥字段已保存时留空表示不修改。
+ * 接入测试弹窗：选一个已启用的模型 + 它的音色，合成一句听。
+ * 不直接测默认模型：同一家的模型可用性常常不一致（比如没填业务空间 ID 的模型必然失败），得能单独验。
  */
-function TtsConnectionDialog({
-  def,
+function TtsTestDialog({
   connection,
   onClose
 }: {
-  def: TtsProviderManifest
-  connection?: TtsConnectionSafe
+  connection: TtsConnectionSafe
   onClose: () => void
 }) {
-  const setConnections = useAppStore((s) => s.setTtsConnections)
-  const fields = credentialFields(def)
-  const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
-    const initial: Record<string, string | number | boolean> = { ...(connection?.params ?? {}) }
-    for (const field of fields) {
-      if (initial[field.key] === undefined && field.default !== undefined) initial[field.key] = field.default
-    }
-    return initial
-  })
+  const providers = useAppStore((s) => s.ttsProviders)
+  const voices = useAppStore((s) => s.voices)
+  const catalog = flattenModelCatalog(providers)
+  const [modelId, setModelId] = useState(connection.defaultModel || connection.models[0]?.id || '')
+  const [voice, setVoice] = useState('')
+  const [text, setText] = useState('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
   const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{
+    ok: boolean
+    error?: string
+    latencyMs?: number
+    audioPath?: string
+  } | null>(null)
 
-  const save = async (): Promise<void> => {
+  const entry = catalog.find(
+    (item) => item.provider === connection.providerId && item.model.id === modelId
+  )
+  const voiceGroups = entry?.model.voices ?? []
+  const clones = voices.filter(
+    (item) =>
+      item.status === 'ready' &&
+      Boolean(item.voiceType) &&
+      item.model === modelId &&
+      item.connectionId === connection.id
+  )
+  const firstCatalogVoice = voiceGroups[0]?.voices[0]?.id ?? ''
+
+  useEffect(() => {
+    setVoice(firstCatalogVoice || clones[0]?.voiceType || '')
+    setResult(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelId])
+
+  const run = async () => {
     if (busy) return
     setBusy(true)
+    setResult(null)
     try {
-      const result = await window.api.tts.saveConnection(def.id, params)
-      if (!result.ok) {
-        toast.error('保存失败', { description: result.error })
-        return
-      }
-      setConnections(result.connections)
-      toast.success(`${def.label}的接入已保存`, { description: '启动中的主播重启后使用新凭据' })
-      onClose()
+      const res = await window.api.tts.test({
+        connectionId: connection.id,
+        model: modelId,
+        voice: voice.trim() || undefined,
+        text
+      })
+      setResult(res)
+      if (res.ok && res.audioPath) await audioEngine.playTts(res.audioPath)
+    } catch (error) {
+      setResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
     } finally {
       setBusy(false)
     }
@@ -1537,16 +1710,223 @@ function TtsConnectionDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-xl">
+      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <ProviderIcon providerId={def.icon} />
-            {def.label} · 接入
+            <ProviderIcon providerId={connection.providerId} />
+            测试「{connection.name}」
           </DialogTitle>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-          <p className="text-xs text-muted-foreground">{def.note}</p>
+          <div>
+            <Label className="mb-1 text-xs">模型（这条接入已启用的）</Label>
+            <Select value={modelId} onValueChange={setModelId}>
+              <SelectTrigger className="h-8 w-full text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {connection.models.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    {ttsModelLabel(catalog, connection.providerId, item.id)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div>
+            <Label className="mb-1 text-xs">音色（留空用该模型目录第一个）</Label>
+            <Input
+              className="h-8 text-xs"
+              value={voice}
+              onChange={(e) => setVoice(e.target.value)}
+              placeholder="音色 id"
+            />
+            {clones.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {clones.map((item) => (
+                  <Button
+                    key={item.id}
+                    variant={voice === item.voiceType ? 'secondary' : 'outline'}
+                    size="sm"
+                    className="h-6 text-xs"
+                    onClick={() => setVoice(item.voiceType)}
+                  >
+                    {item.name}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {voiceGroups.length > 0 && (
+              <div className="mt-2 flex max-h-44 flex-col gap-2 overflow-y-auto rounded-lg border px-2 py-2">
+                {voiceGroups.map((group) => (
+                  <div key={group.label} className="flex flex-col gap-1">
+                    <span className="text-[11px] text-muted-foreground">{group.label}</span>
+                    <div className="flex flex-wrap gap-1">
+                      {group.voices.map((spec) => (
+                        <Button
+                          key={spec.id}
+                          variant={voice === spec.id ? 'secondary' : 'ghost'}
+                          size="sm"
+                          className="h-6 text-xs"
+                          title={spec.id}
+                          onClick={() => setVoice(spec.id)}
+                        >
+                          {spec.name}
+                        </Button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {voiceGroups.length === 0 && clones.length === 0 && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                这个模型没有内置音色目录：复刻模型用音色库里绑它的克隆音色，或在上面手填音色 id。
+              </p>
+            )}
+          </div>
+
+          <div>
+            <Label className="mb-1 text-xs">测试文本</Label>
+            <Input className="h-8 text-xs" value={text} onChange={(e) => setText(e.target.value)} />
+          </div>
+
+          {result &&
+            (result.ok ? (
+              <p className="text-xs text-emerald-600">
+                合成成功{result.latencyMs ? ` · ${result.latencyMs} ms` : ''}
+                {result.audioPath ? ' · 正在播放' : ''}
+              </p>
+            ) : (
+              <p className="text-xs text-destructive">{result.error}</p>
+            ))}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            关闭
+          </Button>
+          <Button disabled={busy || !modelId} onClick={() => void run()}>
+            {busy ? '合成中…' : '测试合成'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** 新建/编辑语音合成接入：凭据按 manifest 渲染，模型列表勾选启用，逐个模型配参数 */
+function TtsConnectionEditorDialog({
+  providerId,
+  connection,
+  onClose
+}: {
+  providerId: TtsProvider
+  connection?: TtsConnectionSafe
+  onClose: () => void
+}) {
+  const providers = useAppStore((s) => s.ttsProviders)
+  const setConnections = useAppStore((s) => s.setTtsConnections)
+  const def = providers.find((item) => item.id === providerId)
+  const specs = (def?.models ?? []).filter((spec) => spec.kind !== 'realtime')
+  const fields = def ? credentialFields(def) : []
+  const firstTts = specs.find((spec) => spec.kind === 'tts')?.id ?? specs[0]?.id ?? ''
+  const [name, setName] = useState(connection?.name ?? def?.label ?? '')
+  const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
+    const initial: Record<string, string | number | boolean> = { ...(connection?.params ?? {}) }
+    for (const field of def?.configFields ?? []) {
+      if (initial[field.key] === undefined && field.default !== undefined) initial[field.key] = field.default
+    }
+    return initial
+  })
+  const [enabled, setEnabled] = useState<string[]>(
+    () => connection?.models.map((item) => item.id) ?? (firstTts ? [firstTts] : [])
+  )
+  const [modelParams, setModelParams] = useState<Record<string, Record<string, string | number | boolean>>>(
+    () => Object.fromEntries((connection?.models ?? []).map((item) => [item.id, { ...item.params }]))
+  )
+  const [defaultModel, setDefaultModel] = useState(connection?.defaultModel || firstTts)
+  const [expanded, setExpanded] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const toggleModel = (id: string, on: boolean) => {
+    const next = on ? [...enabled, id] : enabled.filter((item) => item !== id)
+    setEnabled(next)
+    // 停用正好是默认模型：默认位跟着挪到还启用的第一个，别留一个空的默认
+    if (!next.includes(defaultModel)) setDefaultModel(next[0] ?? '')
+  }
+
+  const patchModelParam = (id: string, key: string, value: string | number | boolean) =>
+    setModelParams((prev) => {
+      const current = { ...(prev[id] ?? {}) }
+      // 清空 = 回到官方默认：键直接去掉，别把空值落盘
+      if (value === '') delete current[key]
+      else current[key] = value
+      return { ...prev, [id]: current }
+    })
+
+  const save = async () => {
+    if (busy) return
+    if (!name.trim()) {
+      toast.warning('先给这条接入起个名字')
+      return
+    }
+    if (enabled.length === 0) {
+      toast.warning('至少启用一个模型', { description: '勾上这家要用的模型，音色才有地方合成' })
+      return
+    }
+    if (!enabled.includes(defaultModel)) {
+      toast.warning('默认模型要在启用列表里', { description: '点模型行右侧的「设为默认」指定一个' })
+      return
+    }
+    setBusy(true)
+    try {
+      const result = await window.api.tts.saveConnection({
+        id: connection?.id,
+        providerId,
+        name,
+        params,
+        models: enabled.map((id) => ({ id, params: modelParams[id] ?? {} })),
+        defaultModel
+      })
+      if (!result.ok) {
+        toast.error('保存失败', { description: result.error })
+        return
+      }
+      setConnections(result.connections)
+      toast.success(connection ? '接入已保存' : '接入已新建', { description: '启动中的主播重启后使用新凭据' })
+      onClose()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (!def) return null
+  const workspaceMissing = def.models.some((spec) => spec.needsWorkspace) && !String(params.workspaceId ?? '').trim()
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <ProviderIcon providerId={def.icon} />
+            {connection ? `${def.label} · ${connection.name}` : `新建${def.label}接入`}
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div>
+            <Label className="mb-1">接入名</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={`如：${def.label} 主号 / 备用账号`}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">{def.note}</p>
+          </div>
+
           {fields.map((field) => (
             <div key={field.key}>
               <Label className="mb-1">{field.label}</Label>
@@ -1559,6 +1939,84 @@ function TtsConnectionDialog({
               {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
             </div>
           ))}
+
+          <div>
+            <Label className="mb-1">模型（勾上这家要用的，右侧指定默认模型；展开可配这个模型的参数）</Label>
+            <div className="flex flex-col gap-1.5">
+              {specs.map((spec) => {
+                const on = enabled.includes(spec.id)
+                const missingWorkspace = Boolean(spec.needsWorkspace) && !String(params.workspaceId ?? '').trim()
+                const paramCount = Object.keys(modelParams[spec.id] ?? {}).length
+                return (
+                  <div key={spec.id} className="rounded-lg border bg-background">
+                    <div className="flex items-center gap-2 px-3 py-2">
+                      <Checkbox
+                        checked={on}
+                        onCheckedChange={(value) => toggleModel(spec.id, value === true)}
+                        aria-label={`启用 ${spec.label}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate text-[13px]">{spec.label}</span>
+                          {spec.kind === 'clone' && (
+                            <Badge variant="outline" className="shrink-0 text-[10px]">
+                              复刻模型 · 只吃克隆音色
+                            </Badge>
+                          )}
+                          {missingWorkspace && (
+                            <Badge variant="outline" className="shrink-0 text-[10px] text-amber-600">
+                              需要业务空间 ID
+                            </Badge>
+                          )}
+                        </div>
+                        {spec.note && (
+                          <p className="truncate text-xs text-muted-foreground">{spec.note}</p>
+                        )}
+                      </div>
+                      {spec.params.length > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-6 shrink-0 text-xs text-muted-foreground"
+                          disabled={!on}
+                          onClick={() => setExpanded(expanded === spec.id ? '' : spec.id)}
+                        >
+                          参数{paramCount > 0 ? `（${paramCount}）` : ''}
+                        </Button>
+                      )}
+                      <Button
+                        variant={defaultModel === spec.id ? 'secondary' : 'ghost'}
+                        size="sm"
+                        className="h-6 shrink-0 text-xs"
+                        disabled={!on}
+                        onClick={() => setDefaultModel(spec.id)}
+                      >
+                        {defaultModel === spec.id ? '默认' : '设为默认'}
+                      </Button>
+                    </div>
+                    {on && expanded === spec.id && spec.params.length > 0 && (
+                      <div className="border-t px-3 py-2">
+                        <TtsParamForm
+                          specs={spec.params}
+                          values={modelParams[spec.id] ?? {}}
+                          onChange={(key, value) => patchModelParam(spec.id, key, value)}
+                        />
+                        <p className="mt-1 text-[11px] text-muted-foreground">
+                          清空某一项 = 用官方默认值
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            {workspaceMissing && (
+              <p className="mt-1 text-xs text-amber-600">
+                这家有模型需要「业务空间 ID」：填上之后那些模型才能合成（qwen3-tts-flash 不需要）。
+              </p>
+            )}
+          </div>
+
           <DocLinks items={def.links} />
         </div>
 

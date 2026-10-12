@@ -29,6 +29,8 @@ import {
   type Trigger,
   type LiveEvent,
   type TtsConnection,
+  type TtsConnectionInput,
+  type TtsConnectionModel,
   type TtsConnectionSafe,
   type Utterance,
   type UtteranceStatus,
@@ -40,9 +42,11 @@ import {
   getLlmProvider,
   isModelConnectionReady,
   isTtsConnectionReady,
+  isTtsModelUsable,
   getTtsProvider,
   secretFieldKeys,
   ttsConnectionFields,
+  ttsModelSpec,
   ttsSecretFieldKeys
 } from './providers/registry'
 
@@ -396,17 +400,26 @@ export class StorageService {
     // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     this.ensureColumn('agents', 'model_connection_id', 'TEXT')
     this.ensureColumn('agents', 'model', "TEXT NOT NULL DEFAULT ''")
-    // 语音合成的供应商接入（设置 → 语音合成）：一条 = 一个服务商 + 一份凭据
-    // 音色自带服务商归属，合成时按音色的归属路由到对应接入，所以一家只能有一条
+    // 语音合成的供应商接入（设置 → 语音合成）：一条 = 一个服务商 + 一份凭据 + 一串启用模型
+    // 同一服务商允许多条（不同账号/参数）；is_default 每个 provider 恰好一条（首条自动，删默认提升最老的）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS tts_connections (
         id TEXT PRIMARY KEY,
-        provider_id TEXT NOT NULL UNIQUE,
+        provider_id TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
         params TEXT NOT NULL DEFAULT '{}',
+        models TEXT NOT NULL DEFAULT '[]',
+        default_model TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
+    this.migrateTtsConnections()
+    // 克隆音色绑定目标模型与克隆时的接入（合成路由按它反推，定死不可跨模型）
+    this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
+    this.backfillVoiceBindings()
     this.migrateModelProfiles()
     this.migrateLegacyLlm()
     this.migratePersonaBrains()
@@ -426,6 +439,8 @@ export class StorageService {
           name: String(r.name),
           provider: r.provider as VoiceRecord['provider'],
           voiceType: String(r.voice_type ?? ''),
+          model: String(r.model ?? ''),
+          connectionId: String(r.connection_id ?? ''),
           samplePath: String(r.sample_path ?? ''),
           status: r.status as VoiceRecord['status'],
           error: String(r.error ?? ''),
@@ -440,10 +455,10 @@ export class StorageService {
   saveVoice(voice: VoiceRecord): void {
     this.db
       .prepare(
-        `INSERT INTO voices (id, name, provider, voice_type, sample_path, status, error, authorized, authorized_at, created_at, updated_at)
-         VALUES (@id, @name, @provider, @voiceType, @samplePath, @status, @error, @authorized, @authorizedAt, @createdAt, @updatedAt)
+        `INSERT INTO voices (id, name, provider, voice_type, model, connection_id, sample_path, status, error, authorized, authorized_at, created_at, updated_at)
+         VALUES (@id, @name, @provider, @voiceType, @model, @connectionId, @samplePath, @status, @error, @authorized, @authorizedAt, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
-           name=@name, provider=@provider, voice_type=@voiceType, sample_path=@samplePath,
+           name=@name, provider=@provider, voice_type=@voiceType, model=@model, connection_id=@connectionId, sample_path=@samplePath,
            status=@status, error=@error, authorized=@authorized, authorized_at=@authorizedAt, updated_at=@updatedAt`
       )
       .run({
@@ -564,19 +579,29 @@ export class StorageService {
       .map((row) => this.toTtsConnection(row as Record<string, unknown>))
   }
 
-  /** 按服务商取接入：合成时按音色的归属找它（一家一条，找不到 = 这家没配） */
-  ttsConnectionGetByProvider(providerId: string): TtsConnection | null {
-    const row = this.db.prepare('SELECT * FROM tts_connections WHERE provider_id = ?').get(providerId)
+  ttsConnectionGet(id: string): TtsConnection | null {
+    const row = this.db.prepare('SELECT * FROM tts_connections WHERE id = ?').get(id)
     return row ? this.toTtsConnection(row as Record<string, unknown>) : null
   }
 
-  /** 新建/更新接入（一家一条，按 provider UPSERT）。密钥字段留空表示不修改（沿用已保存的那个） */
-  ttsConnectionSave(input: {
-    providerId: string
-    params: Record<string, string | number | boolean>
-  }): TtsConnection {
+  /** 该服务商的默认接入（路由主入口）；没标默认时兜底最老的一条 */
+  ttsConnectionGetDefault(providerId: string): TtsConnection | null {
+    const row = this.db
+      .prepare(
+        'SELECT * FROM tts_connections WHERE provider_id = ? ORDER BY is_default DESC, created_at ASC LIMIT 1'
+      )
+      .get(providerId)
+    return row ? this.toTtsConnection(row as Record<string, unknown>) : null
+  }
+
+  /**
+   * 新建/更新接入（按 id UPSERT；id 空则新建）。密钥字段留空表示不修改（沿用已保存的那个）。
+   * 新建时该 provider 还没有接入 → 自动成为默认；默认模型不在启用列表里 → 回落第一个。
+   */
+  ttsConnectionSave(input: TtsConnectionInput): TtsConnection {
     const now = Date.now()
-    const existing = this.ttsConnectionGetByProvider(input.providerId)
+    const id = input.id || `tts-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    const existing = this.ttsConnectionGet(id)
     const secrets = ttsSecretFieldKeys(input.providerId)
     const params: TtsConnection['params'] = {}
     for (const [key, value] of Object.entries(input.params ?? {})) {
@@ -590,25 +615,73 @@ export class StorageService {
       if (!(key in params)) params[key] = existing?.params[key] ?? ''
     }
 
+    // 启用模型：去空去重，只保留 manifest 里声明过的模型 id
+    const def = getTtsProvider(input.providerId)
+    const seen = new Set<string>()
+    const models: TtsConnectionModel[] = []
+    for (const model of input.models ?? []) {
+      const modelId = model.id.trim()
+      if (!modelId || seen.has(modelId)) continue
+      if (def && !def.models.some((spec) => spec.id === modelId)) continue
+      seen.add(modelId)
+      models.push({ id: modelId, params: model.params ?? {} })
+    }
+    const preferred = input.defaultModel.trim()
+    const defaultModel = models.some((model) => model.id === preferred)
+      ? preferred
+      : (models[0]?.id ?? '')
+
+    // 每个 provider 恰好一条默认：新建首条自动默认；已有接入不动默认位（用 ttsConnectionSetDefault 换）
+    const siblings = this.db
+      .prepare('SELECT COUNT(*) AS n FROM tts_connections WHERE provider_id = ? AND id != ?')
+      .get(input.providerId, id) as { n?: unknown } | undefined
+    const isDefault = existing ? existing.isDefault : Number(siblings?.n ?? 0) === 0
+
     this.db
       .prepare(
-        `INSERT INTO tts_connections (id, provider_id, params, created_at, updated_at)
-         VALUES (@id, @providerId, @params, @createdAt, @updatedAt)
-         ON CONFLICT(provider_id) DO UPDATE SET params = @params, updated_at = @updatedAt`
+        `INSERT INTO tts_connections (id, provider_id, name, params, models, default_model, is_default, created_at, updated_at)
+         VALUES (@id, @providerId, @name, @params, @models, @defaultModel, @isDefault, @createdAt, @updatedAt)
+         ON CONFLICT(id) DO UPDATE SET
+           name = @name, provider_id = @providerId, params = @params,
+           models = @models, default_model = @defaultModel, updated_at = @updatedAt`
       )
       .run({
-        id: existing?.id ?? `tts-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        id,
         providerId: input.providerId,
+        name: input.name.trim() || def?.label || '未命名接入',
         params: JSON.stringify(this.encryptTtsParams(params, input.providerId)),
+        models: JSON.stringify(models),
+        defaultModel,
+        isDefault: isDefault ? 1 : 0,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
 
-    return this.ttsConnectionGetByProvider(input.providerId) as TtsConnection
+    return this.ttsConnectionGet(id) as TtsConnection
   }
 
-  ttsConnectionDelete(providerId: string): void {
-    this.db.prepare('DELETE FROM tts_connections WHERE provider_id = ?').run(providerId)
+  /** 删除接入；删的是默认那条时，提升该 provider 最老的一条为默认 */
+  ttsConnectionDelete(id: string): void {
+    const existing = this.ttsConnectionGet(id)
+    if (!existing) return
+    this.db.prepare('DELETE FROM tts_connections WHERE id = ?').run(id)
+    if (!existing.isDefault) return
+    const oldest = this.db
+      .prepare('SELECT id FROM tts_connections WHERE provider_id = ? ORDER BY created_at ASC LIMIT 1')
+      .get(existing.providerId) as Record<string, unknown> | undefined
+    if (oldest) {
+      this.db.prepare('UPDATE tts_connections SET is_default = 1 WHERE id = ?').run(str(oldest.id))
+    }
+  }
+
+  /** 把某条接入设为该 provider 的默认（同 provider 其余全部清掉） */
+  ttsConnectionSetDefault(id: string): void {
+    const existing = this.ttsConnectionGet(id)
+    if (!existing) return
+    this.db
+      .prepare('UPDATE tts_connections SET is_default = 0 WHERE provider_id = ?')
+      .run(existing.providerId)
+    this.db.prepare('UPDATE tts_connections SET is_default = 1 WHERE id = ?').run(id)
   }
 
   /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
@@ -618,21 +691,43 @@ export class StorageService {
       const hasSecret = secrets.some((key) => String(connection.params[key] ?? '').trim().length > 0)
       const params = { ...connection.params }
       for (const key of secrets) params[key] = ''
+      const def = getTtsProvider(connection.providerId)
       return {
         ...connection,
         params,
         hasSecret,
-        ready: isTtsConnectionReady(connection, getTtsProvider(connection.providerId))
+        ready: isTtsConnectionReady(connection, def),
+        // 逐模型给可用性：界面据此只禁用「这个模型不能用」，而不是整条接入一起废掉
+        usableModels: connection.models
+          .map((model) => model.id)
+          .filter((id) => isTtsModelUsable(connection, def, id))
       }
     })
   }
 
   private toTtsConnection(r: Record<string, unknown>): TtsConnection {
     const providerId = str(r.provider_id) as TtsConnection['providerId']
+    const rawModels = parseJson<unknown>(r.models, [])
+    const models: TtsConnectionModel[] = Array.isArray(rawModels)
+      ? rawModels
+          .map((item) => {
+            const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+            const params =
+              row.params && typeof row.params === 'object'
+                ? (row.params as TtsConnectionModel['params'])
+                : {}
+            return { id: String(row.id ?? ''), params }
+          })
+          .filter((model) => model.id.trim().length > 0)
+      : []
     return {
       id: str(r.id),
       providerId,
+      name: str(r.name),
       params: this.decryptTtsParams(r.params, providerId),
+      models,
+      defaultModel: str(r.default_model),
+      isDefault: Number(r.is_default) === 1,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -791,9 +886,102 @@ export class StorageService {
   }
 
   /**
-   * 旧配置迁移：接入表为空且旧的 config.tts 填过凭据时，把**当前服务商那家**的凭据抽成一条接入。
-   * 平铺在 config.tts 里的凭据字段自此不再使用（保留字段：加密路径与这次迁移还要读它们），
-   * 所以老用户升级后声音照旧能出来，不会因为「凭据看起来空了」而哑掉。
+   * tts_connections 结构迁移：旧表（provider_id UNIQUE、params 平铺凭据与模型单值）
+   * → 新表（一家可多条：name/models/default_model/is_default，凭据只剩 configFields）。
+   * SQLite 去不了 UNIQUE 约束，按 读旧行 → DROP → 建新表 → 逐条转换插入 走。
+   * 百炼旧行：params.model → models=[{id, params}]、default_model；languageType 匹配目标模型
+   * ParamSpec 的 language_type 选项才保留，否则丢弃；baseUrl 非官方默认才留。
+   * 火山旧行是 V1 凭据（appId/token/cluster），V3 已放弃 → 凭据清空（API Key 待用户补填），
+   * 模型预置全部、默认 seed-tts-2.0。新库（新 schema 直接建成）无 models 列缺失，直接跳过。
+   */
+  private migrateTtsConnections(): void {
+    const columns = this.db.prepare('PRAGMA table_info(tts_connections)').all()
+    if (columns.some((row) => (row as Record<string, unknown>).name === 'models')) return
+    const rows = this.db
+      .prepare('SELECT * FROM tts_connections ORDER BY created_at ASC')
+      .all()
+      .map((row) => row as Record<string, unknown>)
+    this.db.exec('DROP TABLE tts_connections')
+    this.db.exec(`
+      CREATE TABLE tts_connections (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL,
+        name TEXT NOT NULL DEFAULT '',
+        params TEXT NOT NULL DEFAULT '{}',
+        models TEXT NOT NULL DEFAULT '[]',
+        default_model TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
+    for (const row of rows) {
+      const providerId = str(row.provider_id)
+      const legacy = this.decryptTtsParams(row.params, providerId)
+      const def = getTtsProvider(providerId)
+      const credentials: Record<string, string | number | boolean> = {}
+      let models: TtsConnectionModel[] = []
+      let defaultModel = ''
+      if (providerId === 'bailian') {
+        credentials.apiKey = String(legacy.apiKey ?? '')
+        credentials.workspaceId = String(legacy.workspaceId ?? '')
+        const baseUrl = String(legacy.baseUrl ?? '').trim()
+        if (baseUrl && baseUrl !== 'https://dashscope.aliyuncs.com/api/v1') {
+          credentials.baseUrl = baseUrl
+        }
+        const modelId = String(legacy.model ?? '').trim() || 'qwen3-tts-flash'
+        const modelParams: TtsConnectionModel['params'] = {}
+        const languageType = String(legacy.languageType ?? '').trim()
+        const langSpec = ttsModelSpec(providerId, modelId)?.params.find(
+          (param) => param.key === 'language_type'
+        )
+        if (languageType && langSpec?.options?.some((option) => option.value === languageType)) {
+          modelParams.language_type = languageType
+        }
+        models = [{ id: modelId, params: modelParams }]
+        defaultModel = modelId
+      } else {
+        // 火山（及未知 provider）：V1 凭据放弃，凭据字段置空，模型预置全部
+        for (const field of ttsConnectionFields(providerId)) credentials[field.key] = ''
+        models = (def?.models ?? []).map((spec) => ({ id: spec.id, params: {} }))
+        defaultModel = def?.models.find((spec) => spec.kind === 'tts')?.id ?? models[0]?.id ?? ''
+      }
+      this.ttsConnectionSave({
+        id: str(row.id),
+        providerId: providerId as TtsConnection['providerId'],
+        name: def?.label ?? providerId,
+        params: credentials,
+        models,
+        defaultModel
+      })
+    }
+  }
+
+  /**
+   * 老库克隆音色回填绑定（voices.model / connection_id）：
+   * 火山复刻音色统一挂 seed-icl-2.0 + 火山默认接入（V1 复刻音色在 V3 的可用性待真机验证，
+   * 但绑定语义不变：它们是 ICL 模型吃的 speaker_id）。百炼老库无克隆产物（当时未实现），不留空。
+   */
+  private backfillVoiceBindings(): void {
+    const rows = this.db
+      .prepare("SELECT id, provider FROM voices WHERE model = ''")
+      .all()
+      .map((row) => row as Record<string, unknown>)
+    if (rows.length === 0) return
+    const volcanoDefault = this.ttsConnectionGetDefault('volcano')
+    for (const row of rows) {
+      if (str(row.provider) !== 'volcano') continue
+      this.db
+        .prepare('UPDATE voices SET model = ?, connection_id = ? WHERE id = ?')
+        .run('seed-icl-2.0', volcanoDefault?.id ?? '', str(row.id))
+    }
+  }
+
+  /**
+   * 旧配置迁移：接入表为空且旧的 config.tts 填过凭据时，把**当前服务商那家**抽成一条接入（新结构）。
+   * 全局偏好 speed/format/sampleRate 折入默认模型的 models[].params（仅当目标模型 ParamSpec
+   * 有对应键且值在选项里；speed=1 丢弃）。平铺在 config.tts 里的凭据字段自此不再使用
+   * （保留字段：加密路径与这次迁移还要读它们）。
    */
   private migrateLegacyTts(): void {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM tts_connections').get() as
@@ -803,12 +991,64 @@ export class StorageService {
     const { tts } = this.config
     const providerId = tts.providerId
     if (!ttsProviderHasCredentials(tts, providerId)) return
+    const def = getTtsProvider(providerId)
+    if (!def) return
     const legacy = tts as unknown as Record<string, string | number | boolean>
-    const params: Record<string, string | number | boolean> = {}
+    const credentials: Record<string, string | number | boolean> = {}
     for (const field of ttsConnectionFields(providerId)) {
-      params[field.key] = legacy[field.key] ?? field.default ?? ''
+      credentials[field.key] = legacy[field.key] ?? field.default ?? ''
     }
-    this.ttsConnectionSave({ providerId, params })
+    if (providerId === 'volcano') {
+      // 旧 appId/accessToken/cluster 是 V1 凭据，V3 用不了：API Key 留空待用户补填
+      credentials.apiKey = ''
+    }
+    if (providerId === 'bailian' && credentials.baseUrl === 'https://dashscope.aliyuncs.com/api/v1') {
+      delete credentials.baseUrl
+    }
+
+    let models: TtsConnectionModel[]
+    let defaultModel: string
+    const legacyModel = String(legacy.model ?? '').trim()
+    if (providerId === 'bailian' && legacyModel && def.models.some((spec) => spec.id === legacyModel)) {
+      models = [{ id: legacyModel, params: {} }]
+      defaultModel = legacyModel
+      const languageType = String(legacy.languageType ?? '').trim()
+      const langSpec = ttsModelSpec(providerId, legacyModel)?.params.find(
+        (param) => param.key === 'language_type'
+      )
+      if (languageType && langSpec?.options?.some((option) => option.value === languageType)) {
+        models[0].params.language_type = languageType
+      }
+    } else {
+      models = def.models.map((spec) => ({ id: spec.id, params: {} }))
+      defaultModel = def.models.find((spec) => spec.kind === 'tts')?.id ?? models[0]?.id ?? ''
+    }
+
+    // 全局偏好折入默认模型参数（键存在且值合法才写）
+    const spec = ttsModelSpec(providerId, defaultModel)
+    const target = models.find((model) => model.id === defaultModel)
+    if (spec && target) {
+      if (tts.speed !== 1 && spec.params.some((param) => param.key === 'speech_rate')) {
+        target.params.speech_rate = Math.round((tts.speed - 1) * 100)
+      }
+      const formatSpec = spec.params.find((param) => param.key === 'format')
+      if (formatSpec?.options?.some((option) => option.value === tts.format)) {
+        target.params.format = tts.format
+      }
+      const sampleRate = String(tts.sampleRate)
+      const rateSpec = spec.params.find((param) => param.key === 'sample_rate')
+      if (rateSpec?.options?.some((option) => option.value === sampleRate)) {
+        target.params.sample_rate = sampleRate
+      }
+    }
+
+    this.ttsConnectionSave({
+      providerId,
+      name: def.label,
+      params: credentials,
+      models,
+      defaultModel
+    })
   }
 
   /**

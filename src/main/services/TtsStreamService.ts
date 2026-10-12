@@ -90,12 +90,13 @@ export class TtsStreamService {
     voiceId: string | undefined,
     signal: AbortSignal
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    // 路由到百炼的音色直接用它的 SSE 真流式（接口已按官方文档核实）
-    if (this.tts.providerForVoice(voiceId) === 'bailian') {
+    // 路由到百炼且模型标了 streaming 的音色直接用它的 SSE 真流式（接口已按官方文档核实）
+    const route = this.tts.routeForVoice(voiceId)
+    if (route.provider === 'bailian' && route.model.streaming) {
       yield* this.tts.synthesizeBailianStream(text, voiceId, signal)
       return
     }
-    // 其余情况（火山流式协议未核对）：整段合成 → 解码 → 按真实速率切片，管线仍是流式的
+    // 其余情况（火山整段合成 / 模型未开放流式）：整段合成 → 解码 → 按真实速率切片，管线仍是流式的
     yield* this.chunkedFallback(text, voiceId, signal)
   }
 

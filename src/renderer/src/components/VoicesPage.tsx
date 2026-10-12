@@ -15,9 +15,10 @@ import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { ProviderIcon } from '@/components/ProviderIcon'
+import { cn } from '@/lib/utils'
+import { cloneVoiceHint, flattenModelCatalog, type CatalogModel } from '@/lib/voice'
 import { audioEngine } from '../audio/engine'
 import { useAppStore } from '../stores/useAppStore'
-import { missingConnectionHint } from '../../../shared/voiceProvider'
 import {
   TTS_PROVIDERS,
   TTS_PROVIDER_SHORT,
@@ -36,13 +37,17 @@ type VoiceFilter = 'all' | TtsProvider
 
 /** 音色库：克隆音色的管理、试听与引用关系。
  *  克隆在服务商侧异步训练，本页接收广播更新状态；「设为默认音色」写 config.tts.voiceId。
- *  各家音色都能看能选能合成（合成时按音色的归属路由到那家的接入），只提示那家的接入配没配。 */
+ *  克隆音色绑定「它克隆时那条接入 + 目标模型」（不可跨模型），合成时按这个绑定路由。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
   const tts = useAppStore((s) => s.config.tts)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
+  const catalog = flattenModelCatalog(ttsProviders)
   const defaultVoiceId = tts.voiceId
   const [filter, setFilter] = useState<VoiceFilter>('all')
+  /** 再按接入筛一层：一家可以有多条接入，音色属于哪条得能分开看 */
+  const [connectionFilter, setConnectionFilter] = useState('all')
   const [adding, setAdding] = useState(false)
   const [deleting, setDeleting] = useState<VoiceRecord | null>(null)
   const [renaming, setRenaming] = useState<VoiceRecord | null>(null)
@@ -69,7 +74,11 @@ export function VoicesPage() {
 
   const countOf = (id: VoiceFilter) =>
     id === 'all' ? voices.length : voices.filter((voice) => voice.provider === id).length
-  const shown = voices.filter((voice) => filter === 'all' || voice.provider === filter)
+  const shown = voices.filter(
+    (voice) =>
+      (filter === 'all' || voice.provider === filter) &&
+      (connectionFilter === 'all' || voice.connectionId === connectionFilter)
+  )
   const filters: VoiceFilter[] = ['all', ...TTS_PROVIDERS]
 
   const preview = (voice: VoiceRecord) => {
@@ -116,6 +125,21 @@ export function VoicesPage() {
             )
           })}
         </div>
+        {ttsConnections.length > 0 && (
+          <Select value={connectionFilter} onValueChange={setConnectionFilter}>
+            <SelectTrigger className="ml-1 h-7 w-48 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">全部接入</SelectItem>
+              {ttsConnections.map((connection) => (
+                <SelectItem key={connection.id} value={connection.id}>
+                  {TTS_PROVIDER_SHORT[connection.providerId]} · {connection.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={reload}>
             刷新
@@ -141,8 +165,12 @@ export function VoicesPage() {
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {shown.map((voice) => {
               const isDefault = voice.status === 'ready' && voice.voiceType === defaultVoiceId
-              const configured = ttsProviderConfigured(ttsConnections, voice.provider)
               const owner = TTS_PROVIDER_SHORT[voice.provider]
+              const connection = ttsConnections.find((item) => item.id === voice.connectionId)
+              const spec = catalog.find(
+                (entry) => entry.provider === voice.provider && entry.model.id === voice.model
+              )
+              const hint = cloneVoiceHint(voice, ttsConnections)
               const usage = usages[voice.id]
               return (
                 <div key={voice.id} className="flex flex-col gap-2 rounded-lg border bg-card px-4 py-3">
@@ -174,14 +202,20 @@ export function VoicesPage() {
                       音色标识：{voice.voiceType}
                     </p>
                   )}
+                  <p className="truncate text-xs text-muted-foreground" title={voice.model}>
+                    目标模型：{spec?.model.label ?? (voice.model || '—')}
+                    {connection ? ` · 接入「${connection.name}」` : ''}
+                  </p>
                   {voice.status === 'failed' && voice.error && (
                     <p className="text-xs text-destructive">{voice.error}</p>
                   )}
                   <p className="text-xs text-muted-foreground">
                     {usage ? usageSummary(usage) : '统计引用关系…'}
                   </p>
-                  {!configured && (
-                    <p className="text-xs text-destructive">{missingConnectionHint(voice.provider)}</p>
+                  {hint.hint && (
+                    <p className={cn('text-xs', hint.ok ? 'text-muted-foreground' : 'text-destructive')}>
+                      {hint.hint}
+                    </p>
                   )}
 
                   <div className="mt-auto flex flex-wrap justify-end gap-1.5 pt-1">
@@ -373,7 +407,7 @@ function RenameVoiceDialog({
   )
 }
 
-/** 新建音色：先选服务商 → 上传音频或现场录音 → 勾选授权 → 提交复刻 */
+/** 新建音色：选接入 → 选目标模型（音色与模型绑死，不可跨模型）→ 上传样本 → 勾选授权 → 提交复刻 */
 function NewVoiceDialog({
   open,
   onOpenChange,
@@ -384,9 +418,14 @@ function NewVoiceDialog({
   onDone: () => void
 }) {
   const ttsConnections = useAppStore((s) => s.ttsConnections)
-  const [provider, setProvider] = useState<TtsProvider>('volcano')
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
+  const catalog = flattenModelCatalog(ttsProviders)
+  const readyConnections = ttsConnections.filter((item) => item.ready)
+  const [connectionId, setConnectionId] = useState('')
+  const [model, setModel] = useState('')
   const [name, setName] = useState('')
   const [samplePath, setSamplePath] = useState('')
+  const [sampleUrl, setSampleUrl] = useState('')
   const [authorized, setAuthorized] = useState(false)
   const [busy, setBusy] = useState(false)
   const [recording, setRecording] = useState(false)
@@ -398,9 +437,10 @@ function NewVoiceDialog({
 
   useEffect(() => {
     if (open) {
-      setProvider('volcano')
+      setConnectionId(readyConnections[0]?.id ?? '')
       setName('')
       setSamplePath('')
+      setSampleUrl('')
       setAuthorized(false)
       setSeconds(0)
     } else {
@@ -408,6 +448,22 @@ function NewVoiceDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
+
+  const connection = readyConnections.find((item) => item.id === connectionId) ?? readyConnections[0]
+  const provider = connection?.providerId ?? 'volcano'
+  /** 这条接入启用、且官方允许作为复刻目标的模型（音色创建时就绑死它，不能跨模型） */
+  const cloneTargets = (connection?.models ?? [])
+    .map((item) =>
+      catalog.find((entry) => entry.provider === connection?.providerId && entry.model.id === item.id)
+    )
+    .filter((entry): entry is CatalogModel => Boolean(entry?.model.cloneTarget))
+
+  useEffect(() => {
+    if (!cloneTargets.some((entry) => entry.model.id === model)) {
+      setModel(cloneTargets[0]?.model.id ?? '')
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId, open])
 
   const pickFile = async () => {
     const path = await window.api.dialog.pickFile('音频文件', ['wav', 'mp3', 'm4a', 'flac', 'ogg', 'webm'])
@@ -461,13 +517,36 @@ function NewVoiceDialog({
 
   const submit = () => {
     if (busy) return
-    if (!samplePath) {
+    if (!connection) {
+      toast.warning('还没有可用的接入：到设置 → 语音合成添加一条')
+      return
+    }
+    if (!model) {
+      toast.warning('这条接入里没有可复刻的模型', { description: '复刻目标模型得先在接入里勾上' })
+      return
+    }
+    if (!name.trim()) {
+      toast.warning('先给音色起个名字')
+      return
+    }
+    if (provider === 'volcano' && !samplePath) {
       toast.warning('请先上传或录制样本音频')
+      return
+    }
+    if (provider === 'bailian' && !sampleUrl.trim()) {
+      toast.warning('请粘贴公网可访问的样本音频地址')
       return
     }
     setBusy(true)
     void window.api.voice
-      .clone({ name, samplePath, authorized, provider })
+      .clone({
+        name,
+        samplePath: samplePath || undefined,
+        sampleUrl: sampleUrl.trim() || undefined,
+        authorized,
+        connectionId: connection.id,
+        model
+      })
       .then((result) => {
         if (result.ok) {
           toast.success('克隆任务已提交', { description: '训练完成后音色卡片会变为「就绪」' })
@@ -489,30 +568,51 @@ function NewVoiceDialog({
 
         <div className="flex flex-col gap-3">
           <div>
-            <Label className="mb-1">服务商（复刻在它那边做，用它的接入）</Label>
-            <Select value={provider} onValueChange={(v) => setProvider(v as TtsProvider)}>
+            <Label className="mb-1">接入（复刻在它那边做，用它的凭据）</Label>
+            <Select value={connection?.id ?? ''} onValueChange={setConnectionId}>
               <SelectTrigger className="w-full">
-                <SelectValue />
+                <SelectValue placeholder="选一条已配齐的接入" />
               </SelectTrigger>
               <SelectContent>
-                {TTS_PROVIDERS.map((id) => (
-                  <SelectItem key={id} value={id}>
+                {readyConnections.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
                     <span className="flex items-center gap-2">
-                      <ProviderIcon providerId={id} size="sm" />
-                      {TTS_PROVIDER_SHORT[id]}
+                      <ProviderIcon providerId={item.providerId} size="sm" />
+                      {TTS_PROVIDER_SHORT[item.providerId]} · {item.name}
                     </span>
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {provider === 'bailian' ? (
+            {readyConnections.length === 0 ? (
               <p className="mt-1 text-xs text-destructive">
-                阿里云百炼音色复刻还没实现（接口核对中）：先选火山引擎
+                还没有配齐的接入：到设置 → 语音合成添加一条（填密钥、勾上复刻模型）
               </p>
             ) : (
-              !ttsProviderConfigured(ttsConnections, 'volcano') && (
-                <p className="mt-1 text-xs text-destructive">{missingConnectionHint('volcano')}</p>
-              )
+              <p className="mt-1 text-xs text-muted-foreground">
+                克隆出来的音色绑死这条接入 + 下面的目标模型，之后合成也走它们
+              </p>
+            )}
+          </div>
+
+          <div>
+            <Label className="mb-1">目标模型（音色不能跨模型用）</Label>
+            <Select value={model} onValueChange={setModel}>
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder="选一个可复刻的模型" />
+              </SelectTrigger>
+              <SelectContent>
+                {cloneTargets.map((entry) => (
+                  <SelectItem key={entry.model.id} value={entry.model.id}>
+                    {entry.model.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {connection && cloneTargets.length === 0 && (
+              <p className="mt-1 text-xs text-destructive">
+                这条接入里没有可复刻的模型：编辑接入，勾上「复刻模型」（火山 seed-icl-1.0/2.0、百炼 cosyvoice 各版 / qwen-audio）
+              </p>
             )}
           </div>
 
@@ -521,26 +621,40 @@ function NewVoiceDialog({
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="如：店主本人 / 小助理" />
           </div>
 
-          <div>
-            <Label className="mb-1">声音样本（建议 10-30 秒清晰人声，无背景音乐）</Label>
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => void pickFile()}>
-                <Upload />
-                上传音频
-              </Button>
-              <Button
-                variant={recording ? 'destructive' : 'outline'}
-                size="sm"
-                onClick={() => (recording ? stopRecording() : void startRecording())}
-              >
-                {recording ? <Square /> : <Mic />}
-                {recording ? `停止录音（${seconds}s）` : '现场录音'}
-              </Button>
-              <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-                {samplePath ? samplePath.split(/[\\/]/).pop() : '尚未选择样本'}
-              </span>
+          {provider === 'bailian' ? (
+            <div>
+              <Label className="mb-1">样本音频的公网地址（百炼复刻只认 URL）</Label>
+              <Input
+                value={sampleUrl}
+                onChange={(e) => setSampleUrl(e.target.value)}
+                placeholder="https://…（把样本传到可访问的 URL 后粘贴）"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                百炼的复刻接口只接受公网可访问的音频地址，本地文件传不上去
+              </p>
             </div>
-          </div>
+          ) : (
+            <div>
+              <Label className="mb-1">声音样本（建议 10-30 秒清晰人声，无背景音乐）</Label>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => void pickFile()}>
+                  <Upload />
+                  上传音频
+                </Button>
+                <Button
+                  variant={recording ? 'destructive' : 'outline'}
+                  size="sm"
+                  onClick={() => (recording ? stopRecording() : void startRecording())}
+                >
+                  {recording ? <Square /> : <Mic />}
+                  {recording ? `停止录音（${seconds}s）` : '现场录音'}
+                </Button>
+                <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                  {samplePath ? samplePath.split(/[\\/]/).pop() : '尚未选择样本'}
+                </span>
+              </div>
+            </div>
+          )}
 
           <label className="flex cursor-pointer items-start gap-2 text-xs">
             <Checkbox
@@ -557,8 +671,8 @@ function NewVoiceDialog({
 
           <p className="text-xs text-muted-foreground">
             {provider === 'volcano'
-              ? '提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」权限。'
-              : '阿里云百炼音色复刻还没实现（接口核对中），先选火山引擎提交。'}
+              ? '提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」；样本支持 wav / mp3 / ogg / m4a / aac / pcm，录音产物（webm）要先转码。火山复刻走后付费音色：首次正式合成即转正收费，试听 7 天未正式调用会被删除。'
+              : '百炼复刻创建即完成（无异步训练），音色长期有效；创建时绑定的目标模型之后不能改。'}
           </p>
         </div>
 
@@ -567,7 +681,14 @@ function NewVoiceDialog({
             取消
           </Button>
           <Button
-            disabled={busy || provider !== 'volcano' || !name.trim() || !samplePath || !authorized}
+            disabled={
+              busy ||
+              !connection ||
+              !model ||
+              !name.trim() ||
+              !authorized ||
+              (provider === 'volcano' ? !samplePath : !sampleUrl.trim())
+            }
             onClick={submit}
           >
             {busy ? '提交中…' : '提交克隆'}

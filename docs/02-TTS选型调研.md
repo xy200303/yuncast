@@ -92,11 +92,18 @@
 | Qwen-Audio-TTS / CosyVoice | `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer` |
 | MiniMax | `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation` |
 
-后两类只在北京地域可用，且需要业务空间 ID（已加入配置）。音色与模型不通用：`qwen3-tts-flash` 用 Cherry 等，
-`qwen-audio-3.0-tts-flash` 用 longanhuan_v3.6 等，`cosyvoice-v3-flash` 用 longanyang/longanhuan_v3 等。
+后两类只在北京地域可用，且需要业务空间 ID（已加入配置）。音色严格绑定模型（不可跨模型）：
+`qwen3-tts-flash` 用 Cherry 等 48 个英文名音色，`cosyvoice-v3-flash` 用 longanyang/longanhuan_v3 等 88 个，
+`cosyvoice-v3-plus` 只有 2 个标杆音色，`cosyvoice-v3.5-*` 与 `qwen-audio-3.x` 官方未公布系统音色目录
+（用复刻音色或手动输入）。模型谱系（2026-10 刷新，静态内置于 provider manifest 的 models 目录）：
+qwen3-tts-flash；qwen-audio-3.0-tts-plus / 3.0-tts-flash / 3.1-tts-flash；
+cosyvoice-v1 / v2 / v3-plus / v3-flash / v3.5-plus / v3.5-flash（v3.5 为新一代；复刻 target_model 不含 cosyvoice-v1）。
+
+**可用性逐模型判定**：一条接入可以启用多个模型，某个模型缺自己的前置条件（典型是 maas 系缺业务空间 ID）
+只挡它自己——同一条接入里的 `qwen3-tts-flash` 照常能用（`isTtsModelUsable` / `ttsModelBlocker`）。
+接入卡片上的「N 个可用」与音色选择器的置灰都按这个判定，不再拿整条接入「配没配齐」一刀切。
 
 **可用于直播的表达力能力**（值得后续用起来）：
-
 - `instruction` 语气指令（≤100 字，如「语速稍快，语气热情」）——已进配置
 - 情感/拟声标签（仅 qwen-audio-3.x）：文本里写 `[excited]`、`[laughing]`、`[sighing]` 直接改变语气
 - 方言：部分系统音色原生支持；复刻音色可用 instruction 指定（如「请用河南话表达」）

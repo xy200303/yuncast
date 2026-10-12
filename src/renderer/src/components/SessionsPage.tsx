@@ -33,7 +33,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
-import { groupVoicesByProvider } from '../lib/voice'
+import { flattenModelCatalog, groupCloneVoices } from '../lib/voice'
 import { useAppStore } from '../stores/useAppStore'
 import {
   DEFAULT_PLAN_GEN_CONFIG,
@@ -293,6 +293,7 @@ function PlanDialog({
     voiceId: plan?.voiceId ?? ''
   })
   const ttsConnections = useAppStore((s) => s.ttsConnections)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
   const [busy, setBusy] = useState(false)
 
   const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
@@ -418,27 +419,25 @@ function PlanDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">不覆盖</SelectItem>
-                  {groupVoicesByProvider(
+                  {groupCloneVoices(
                     voices.filter((v) => v.status === 'ready' && v.voiceType),
-                    ttsConnections
-                  ).map((group) =>
-                    group.voices.length === 0 ? null : (
-                      <SelectGroup key={group.provider}>
-                        <SelectLabel className="flex items-center gap-2">
-                          <ProviderIcon providerId={group.provider} size="sm" />
-                          <span>
-                            {group.label}
-                            {group.configured ? '' : '（未配置）'}
-                          </span>
-                        </SelectLabel>
-                        {group.voices.map((voice) => (
-                          <SelectItem key={voice.id} value={voice.voiceType}>
-                            {voice.name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    )
-                  )}
+                    ttsConnections,
+                    flattenModelCatalog(ttsProviders)
+                  ).map((group) => (
+                    <SelectGroup key={group.key}>
+                      <SelectLabel className="flex items-center gap-2">
+                        <ProviderIcon providerId={group.provider} size="sm" />
+                        <span>
+                          {group.connectionLabel} · {group.modelLabel}
+                        </span>
+                      </SelectLabel>
+                      {group.voices.map((voice) => (
+                        <SelectItem key={voice.id} value={voice.voiceType}>
+                          {voice.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
                 </SelectContent>
               </Select>
               <p className="mt-1 text-xs text-muted-foreground">

@@ -24,13 +24,13 @@ import {
   type SpeechLane,
   type StreamStats,
   type TriggerInput,
-  type TtsProvider,
+  type TtsConnectionInput,
   type Utterance,
   type UtteranceInput,
   type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
-import { TtsService } from './services/TtsService'
+import { TtsService, type TtsTestInput } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
 import { PersonaService } from './services/PersonaService'
 import { AgentService } from './services/AgentService'
@@ -41,7 +41,7 @@ import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
 import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
-import { VoiceService } from './services/VoiceService'
+import { VoiceService, type VoiceCloneInput } from './services/VoiceService'
 import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
@@ -347,27 +347,47 @@ function registerIpc(
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 
   // ---------- TTS ----------
-  ipcMain.handle(IPC.ttsTest, (_e, text: string, providerId?: string) =>
-    tts.test(String(text ?? '').slice(0, 200), providerId as TtsProvider | undefined)
+  ipcMain.handle(IPC.ttsTest, (_e, input: TtsTestInput) =>
+    tts.test({
+      connectionId: String(input?.connectionId ?? ''),
+      model: String(input?.model ?? ''),
+      voice: input?.voice ? String(input.voice) : undefined,
+      text: input?.text ? String(input.text).slice(0, 200) : undefined
+    })
   )
 
   // ---------- 语音合成的供应商接入（设置 → 语音合成） ----------
   ipcMain.handle(IPC.ttsConnectionList, () => storage.ttsConnectionListSafe())
-  ipcMain.handle(
-    IPC.ttsConnectionSave,
-    (_e, providerId: string, params: Record<string, string | number | boolean>) => {
-      try {
-        const id = String(providerId ?? '')
-        if (!getTtsProvider(id)) return { ok: false, error: '服务商不认识：重新选一家' }
-        storage.ttsConnectionSave({ providerId: id, params: params ?? {} })
-        return { ok: true, connections: storage.ttsConnectionListSafe() }
-      } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) }
-      }
+  ipcMain.handle(IPC.ttsConnectionSave, (_e, input: TtsConnectionInput) => {
+    try {
+      const providerId = String(input?.providerId ?? '')
+      if (!getTtsProvider(providerId)) return { ok: false, error: '服务商不认识：重新选一家' }
+      const models = (input?.models ?? [])
+        .map((model) => ({
+          id: String(model?.id ?? '').trim(),
+          params: model?.params && typeof model.params === 'object' ? model.params : {}
+        }))
+        .filter((model) => model.id)
+      if (models.length === 0) return { ok: false, error: '至少启用一个模型：合成要靠它出声' }
+      storage.ttsConnectionSave({
+        id: input?.id ? String(input.id) : undefined,
+        providerId: providerId as TtsConnectionInput['providerId'],
+        name: String(input?.name ?? ''),
+        params: input?.params ?? {},
+        models,
+        defaultModel: String(input?.defaultModel ?? '')
+      })
+      return { ok: true, connections: storage.ttsConnectionListSafe() }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
-  )
-  ipcMain.handle(IPC.ttsConnectionRemove, (_e, providerId: string) => {
-    storage.ttsConnectionDelete(String(providerId ?? ''))
+  })
+  ipcMain.handle(IPC.ttsConnectionRemove, (_e, id: string) => {
+    storage.ttsConnectionDelete(String(id ?? ''))
+    return { ok: true, connections: storage.ttsConnectionListSafe() }
+  })
+  ipcMain.handle(IPC.ttsConnectionSetDefault, (_e, id: string) => {
+    storage.ttsConnectionSetDefault(String(id ?? ''))
     return { ok: true, connections: storage.ttsConnectionListSafe() }
   })
 
@@ -486,7 +506,7 @@ function registerIpc(
   ipcMain.handle(IPC.voiceList, () => voiceSvc?.list() ?? [])
   ipcMain.handle(
     IPC.voiceClone,
-    (_e, input: { name: string; samplePath: string; authorized: boolean; provider: TtsProvider }) =>
+    (_e, input: VoiceCloneInput) =>
       voiceSvc?.clone(input) ?? { ok: false, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceRemove, (_e, id: string) => voiceSvc?.remove(id) ?? { ok: false, error: '音色服务未初始化' })
@@ -718,7 +738,7 @@ if (!single) {
     // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）+ 场次启动（§8.5）
     const utterances = new UtteranceService(storage, tts, persona)
     const generation = new GenerationService(storage, knowledge, utterances, persona, script, broadcastGeneration)
-    const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc)
+    const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
     // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
     agent.onSceneAdvanced = () => {
       const loaded = launch.loadActiveSceneUtterances()

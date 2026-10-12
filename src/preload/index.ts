@@ -29,7 +29,7 @@ import type {
   ScriptInput,
   SpeechItem,
   SpeechLane,
-  TtsProvider,
+  TtsConnectionInput,
   TtsConnectionSafe,
   Utterance,
   UtteranceInput,
@@ -42,6 +42,8 @@ import type {
 } from '../shared/types'
 import type { GenerationProgress } from '../main/services/GenerationService'
 import type { LlmProviderManifest, TtsProviderManifest } from '../main/services/providers/registry'
+import type { TtsTestInput, TtsTestResult } from '../main/services/TtsService'
+import type { VoiceCloneInput } from '../main/services/VoiceService'
 
 /**
  * 渲染进程唯一可见的 API 白名单。
@@ -84,25 +86,27 @@ const api = {
     }
   },
   tts: {
-    /** 测试发音：用指定那条接入（不传 = 默认服务商那条）合成一小段 */
-    test: (text: string, providerId?: TtsProvider) =>
-      ipcRenderer.invoke(IPC.ttsTest, text, providerId) as Promise<{
-        ok: boolean
-        error?: string
-        audioPath?: string
-      }>,
+    /** 测试发音：用指定的接入 + 模型合成一小段（voice 空 → 模型目录第一个音色或该接入 + 模型的克隆音色） */
+    test: (input: TtsTestInput) => ipcRenderer.invoke(IPC.ttsTest, input) as Promise<TtsTestResult>,
     /**
-     * 语音合成的供应商接入（设置 → 语音合成）：一家一条，音色按归属路由到对应接入。
+     * 语音合成的供应商接入（设置 → 语音合成）：一家可多条（不同账号/参数）。
      * 密钥字段的值不出主进程，只有 hasSecret / ready 两个标记。
      */
     connections: () => ipcRenderer.invoke(IPC.ttsConnectionList) as Promise<TtsConnectionSafe[]>,
-    saveConnection: (providerId: TtsProvider, params: Record<string, string | number | boolean>) =>
-      ipcRenderer.invoke(IPC.ttsConnectionSave, providerId, params) as Promise<
+    /** 新建/编辑接入（id 空则新建；新建时该服务商首条自动成为默认）。密钥字段留空 = 不修改 */
+    saveConnection: (input: TtsConnectionInput) =>
+      ipcRenderer.invoke(IPC.ttsConnectionSave, input) as Promise<
         { ok: true; connections: TtsConnectionSafe[] } | { ok: false; error: string }
       >,
-    /** 清除该服务商的接入（合成时按音色归属找接入，清掉后那家的音色就用不了了） */
-    removeConnection: (providerId: TtsProvider) =>
-      ipcRenderer.invoke(IPC.ttsConnectionRemove, providerId) as Promise<{
+    /** 删除接入（删默认自动提升该服务商最老的一条） */
+    removeConnection: (id: string) =>
+      ipcRenderer.invoke(IPC.ttsConnectionRemove, id) as Promise<{
+        ok: true
+        connections: TtsConnectionSafe[]
+      }>,
+    /** 把某条接入设为该服务商的默认（合成路由的主入口） */
+    setDefaultConnection: (id: string) =>
+      ipcRenderer.invoke(IPC.ttsConnectionSetDefault, id) as Promise<{
         ok: true
         connections: TtsConnectionSafe[]
       }>
@@ -207,8 +211,8 @@ const api = {
   },
   voice: {
     list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,
-    /** provider = 这次复刻交给哪家（新建弹窗里选，用那家接入的凭据） */
-    clone: (input: { name: string; samplePath: string; authorized: boolean; provider: TtsProvider }) =>
+    /** 克隆到指定接入 + 模型（火山要本地样本 samplePath；百炼要公网音频地址 sampleUrl） */
+    clone: (input: VoiceCloneInput) =>
       ipcRenderer.invoke(IPC.voiceClone, input) as Promise<{ ok: boolean; error?: string }>,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,

@@ -1,19 +1,30 @@
-import { ttsProviderConfigured } from '../../../shared/types'
-import { findCloneVoice, missingConnectionHint } from '../../../shared/voiceProvider'
 import { useAppStore } from '../stores/useAppStore'
+import { cloneVoiceHint, flattenModelCatalog, systemVoiceUsable } from '../lib/voice'
 
 /**
- * 音色归属提示：手打或已选的音色命中克隆音色时，就地说明它能不能合成。
- * 现在合成按音色归属路由到那家的接入，所以判断只剩一件事：**这条接入配没配**。
- * 系统音色（库里没记录）归默认服务商，由开播预检负责提示。
+ * 音色可用性提示：就地说明当前这个音色能不能合成。
+ * 克隆音色看它绑定的接入（接入删了会回退到默认接入，那是提示不是错）；
+ * 系统音色看有没有哪条接入启用了它所属的模型。
  */
 export function VoiceProviderHint({ voiceId }: { voiceId: string }) {
   const voices = useAppStore((s) => s.voices)
   const connections = useAppStore((s) => s.ttsConnections)
+  const manifests = useAppStore((s) => s.ttsProviders)
+  const id = voiceId.trim()
+  if (!id) return null
 
-  const clone = findCloneVoice(voices, voiceId)
-  if (!clone) return null
-  if (ttsProviderConfigured(connections, clone.provider)) return null
+  const clone = voices.find((voice) => voice.voiceType === id)
+  if (clone) {
+    const hint = cloneVoiceHint(clone, connections)
+    if (!hint.hint) return null
+    return (
+      <p className={hint.ok ? 'mt-1 text-xs text-muted-foreground' : 'mt-1 text-xs text-destructive'}>
+        {hint.hint}
+      </p>
+    )
+  }
 
-  return <p className="mt-1 text-xs text-destructive">{missingConnectionHint(clone.provider)}</p>
+  const check = systemVoiceUsable(flattenModelCatalog(manifests), connections, id)
+  if (check.usable) return null
+  return <p className="mt-1 text-xs text-destructive">{check.hint}</p>
 }

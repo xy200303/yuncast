@@ -25,10 +25,12 @@ export const IPC = {
 
   // TTS
   ttsTest: 'tts:test',
-  /** 语音合成的供应商接入（设置 → 语音合成）：一家一条，音色按归属路由到对应接入 */
+  /** 语音合成的供应商接入（设置 → 语音合成）：一家可多条，合成时按音色路由到接入 + 模型 */
   ttsConnectionList: 'tts:connection-list',
   ttsConnectionSave: 'tts:connection-save',
   ttsConnectionRemove: 'tts:connection-remove',
+  /** 把某条接入设为该服务商的默认（路由主入口） */
+  ttsConnectionSetDefault: 'tts:connection-set-default',
 
   // 语言模型（供应商接入 + 服务商注册表）
   modelList: 'model:list',

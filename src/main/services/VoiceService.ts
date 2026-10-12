@@ -1,38 +1,60 @@
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
-import { getTtsProvider, isTtsConnectionReady } from './providers/registry'
-import { TTS_PROVIDER_SHORT, type TtsProvider, type VoiceRecord, type VoiceUsage } from '../../shared/types'
-import { voiceConnectionError } from '../../shared/voiceProvider'
+import {
+  getTtsProvider,
+  isTtsConnectionReady,
+  ttsModelSpec
+} from './providers/registry'
+import {
+  type TtsConnection,
+  type VoiceRecord,
+  type VoiceUsage
+} from '../../shared/types'
 
 /**
  * 音色库 / 声音克隆（M8）。
  *
- * 火山引擎「声音复刻」：上传样本 → 异步训练 → 轮询状态 → 得到 speaker_id（voice_type，S_ 前缀）。
- * ⚠ 下面的端点、字段与状态码按火山历史文档（mega_tts 一系）实现，**尚未对照当前官方文档逐字核对**（
- *   见 docs/06-TTS克隆接口核对.md 的核对清单）。核对时只需要改本文件顶部的常量与 parseVolcanoResponse。
+ * 火山引擎「声音复刻」V3：POST /api/v3/tts/voice_clone（X-Api-Key 鉴权）→ 轮询
+ * /api/v3/tts/get_voice（status 2 Success / 4 Active 可合成）。用后付费 custom_speaker_id
+ * 模式自助注册（预付费音色槽需控制台下单，不在本流程内）。
+ * ⚠ 后付费音色「首次合成即转正收费」，详情见官方《声音复刻下单及使用指南》。
+ *
+ * 阿里云百炼「声音复刻」voice-enrollment：POST {workspaceId}.maas…/audio/tts/customization，
+ * target_model 绑定模型（ cosyvoice-v2/v3/v3.5、qwen-audio-3.x；官方不含 cosyvoice-v1 ），
+ * 音频必须公网可访问 URL（sampleUrl），创建即完成（无异步训练）。
  *
  * 合规：克隆必须由调用方确认「已获得录音人授权」（docs/02-TTS选型调研 §合规），授权时间入库留痕。
  */
 
-const VOLCANO_UPLOAD_URL = 'https://openspeech.bytedance.com/api/v1/mega_tts/audio/upload'
-const VOLCANO_STATUS_URL = 'https://openspeech.bytedance.com/api/v1/mega_tts/status'
-/** 复刻集群名（与合成用的 volcano_tts 不同） */
-const VOLCANO_CLONE_CLUSTER = 'volc_mega_tts'
-/** 新版接口要求带 Resource-Id；缺失时服务端会拒绝，保留常量便于核对时调整 */
-const VOLCANO_RESOURCE_ID = 'volc.megatts.voiceclone'
+const VOLCANO_V3_CLONE_URL = 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
+const VOLCANO_V3_GET_VOICE_URL = 'https://openspeech.bytedance.com/api/v3/tts/get_voice'
+/** 火山 V3 复刻支持的样本格式（audio.format；webm 不在其列，录音产物要先转码） */
+const VOLCANO_CLONE_FORMATS = new Set(['wav', 'mp3', 'ogg', 'm4a', 'aac', 'pcm'])
+
+const MAAS_CLONE_PATH = '/services/audio/tts/customization'
+const MAAS_BASE = '.cn-beijing.maas.aliyuncs.com/api/v1'
 
 const POLL_INTERVAL_MS = 5000
 /** 最多轮询 5 分钟（官方称秒级完成，留足异步余量） */
 const POLL_MAX_TRIES = 60
-const REQUEST_TIMEOUT_MS = 30000
+const REQUEST_TIMEOUT_MS = 60000
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
+export interface VoiceCloneInput {
+  name: string
+  /** 本地样本路径（火山必填；百炼可选——仅作归档留痕，API 用 sampleUrl） */
+  samplePath?: string
+  /** 公网可访问的样本地址（百炼必填） */
+  sampleUrl?: string
+  authorized: boolean
+  /** 用哪条接入的凭据克隆（决定 provider） */
+  connectionId: string
+  /** 克隆目标模型（火山 seed-icl-x / 百炼 target_model） */
+  model: string
 }
 
 export class VoiceService {
@@ -61,51 +83,64 @@ export class VoiceService {
     return file
   }
 
-  /** 提交克隆。authorized 必须为 true（合规底线）；provider = 这次复刻交给哪家（新建弹窗里选的）。 */
-  async clone(input: {
-    name: string
-    samplePath: string
-    authorized: boolean
-    provider: TtsProvider
-  }): Promise<{ ok: true; voice: VoiceRecord } | { ok: false; error: string }> {
+  /** 提交克隆。authorized 必须为 true（合规底线）；克隆到哪条接入 + 哪个模型由调用方指定。 */
+  async clone(input: VoiceCloneInput): Promise<{ ok: true; voice: VoiceRecord } | { ok: false; error: string }> {
     const name = input.name.trim()
     if (!name) return { ok: false, error: '请填写音色名称' }
     if (!input.authorized) return { ok: false, error: '请先勾选「已获得录音人授权」' }
 
-    const provider = input.provider
-    // 能力位驱动：只有火山实现了复刻（百炼 CosyVoice 复刻待核对是否支持本地音频直传，见 docs/06）
-    // 放在样本校验之前：不能克隆的理由先于「样本没传」给出来
-    if (!getTtsProvider(provider)?.capabilities.clone) {
-      return { ok: false, error: `${TTS_PROVIDER_SHORT[provider]}音色复刻还没实现（接口核对中）：先选火山引擎` }
+    const connection = this.storage.ttsConnectionGet(input.connectionId)
+    if (!connection) return { ok: false, error: '接入不存在（可能已被删除）：刷新设置页重选' }
+    const provider = connection.providerId
+    const def = getTtsProvider(provider)
+    const spec = ttsModelSpec(provider, input.model)
+    if (!def || !spec) {
+      return { ok: false, error: `模型 ${input.model} 不在${def?.label ?? provider}目录里` }
     }
+    if (!spec.cloneTarget) {
+      return { ok: false, error: `模型 ${spec.label} 不支持声音复刻：换支持复刻的模型` }
+    }
+    if (!isTtsConnectionReady(connection, def)) {
+      return {
+        ok: false,
+        error: `接入「${connection.name}」还没配齐：到设置 → 语音合成补齐凭据（克隆要用它的凭据）`
+      }
+    }
+
+    if (provider === 'volcano') {
+      return this.cloneVolcano(name, input, connection)
+    }
+    return this.cloneBailian(name, input, connection)
+  }
+
+  // ---------- 火山 V3 声音复刻 ----------
+
+  private async cloneVolcano(
+    name: string,
+    input: VoiceCloneInput,
+    connection: TtsConnection
+  ): Promise<{ ok: true; voice: VoiceRecord } | { ok: false; error: string }> {
     if (!input.samplePath || !existsSync(input.samplePath)) {
       return { ok: false, error: '样本文件不存在，请重新上传或录制' }
     }
-    // 复刻走**所选那家**的接入（用的是那家的 appId / accessToken，与谁在当默认服务商无关）
-    const connection = this.storage.ttsConnectionGetByProvider(provider)
-    if (!connection || !isTtsConnectionReady(connection, getTtsProvider(provider))) {
+    const format = extname(input.samplePath).replace('.', '').toLowerCase()
+    if (!VOLCANO_CLONE_FORMATS.has(format)) {
       return {
         ok: false,
-        error: `还没配置${TTS_PROVIDER_SHORT[provider]}接入：到设置 → 语音合成加上（克隆要用那家的凭据）`
+        error: `样本格式 ${format || '未知'} 火山复刻不支持（支持 wav / mp3 / ogg / m4a / aac / pcm）：请换这些格式的音频`
       }
     }
-    const appId = String(connection.params.appId ?? '')
-    const accessToken = String(connection.params.accessToken ?? '')
-
-    // 样本统一复制进音色目录，避免用户原始文件被移动/删除
-    const samplePath = join(this.sampleDir(), basename(input.samplePath))
-    try {
-      if (input.samplePath !== samplePath) await copyFile(input.samplePath, samplePath)
-    } catch (error) {
-      return { ok: false, error: `样本归档失败：${error instanceof Error ? error.message : String(error)}` }
-    }
+    const samplePath = await this.archiveSample(input.samplePath)
+    if (!samplePath) return { ok: false, error: '样本归档失败：检查文件是否可读写' }
 
     const now = Date.now()
     const voice: VoiceRecord = {
       id: randomUUID(),
       name,
-      provider,
+      provider: 'volcano',
       voiceType: '',
+      model: input.model,
+      connectionId: connection.id,
       samplePath,
       status: 'training',
       error: '',
@@ -117,23 +152,68 @@ export class VoiceService {
     this.storage.saveVoice(voice)
     this.emitChanged()
 
+    const apiKey = String(connection.params.apiKey ?? '')
     try {
-      await this.submitVolcanoClone(voice, appId, accessToken)
+      await this.submitVolcanoClone(voice, apiKey)
     } catch (error) {
       this.fail(voice.id, error instanceof Error ? error.message : String(error))
       return { ok: false, error: '克隆任务提交失败，详见音色卡片' }
     }
 
-    this.startPolling(voice.id, appId, accessToken)
-    return { ok: true, voice }
+    this.startPolling(voice.id, apiKey)
+    return { ok: true, voice: this.list().find((item) => item.id === voice.id) ?? voice }
+  }
+
+  /**
+   * 提交 V3 复刻：后付费 custom_speaker_id 模式（自助注册，无需控制台下单）。
+   * 自定义音色代号规则：长度 [8,256]、字母开头、仅数字字母 -_、首尾不可 -_。
+   */
+  private async submitVolcanoClone(voice: VoiceRecord, apiKey: string): Promise<void> {
+    const audio = await readFile(voice.samplePath)
+    const format = extname(voice.samplePath).replace('.', '').toLowerCase()
+    const customSpeakerId = `anchor${randomUUID().replace(/-/g, '')}`
+    const res = await fetch(VOLCANO_V3_CLONE_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Api-Key': apiKey,
+        'X-Api-Request-Id': randomUUID()
+      },
+      body: JSON.stringify({
+        speaker_id: 'custom_speaker_id',
+        custom_speaker_id: customSpeakerId,
+        audio: { data: audio.toString('base64'), format },
+        language: 0,
+        extra_params: {}
+      }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+    const data = (await res.json().catch(() => ({}))) as {
+      code?: number
+      message?: string
+      status?: number
+    }
+    if (!res.ok) {
+      throw new Error(volcanoCloneError(data.code, data.message, res.status))
+    }
+    // 提交即可能 Success（秒级）；没完成的交给轮询
+    const state = parseVolcanoCloneState(data.status)
+    const next: VoiceRecord = { ...voice, voiceType: customSpeakerId, updatedAt: Date.now() }
+    if (state === 'ready') next.status = 'ready'
+    if (state === 'failed') {
+      this.storage.saveVoice(next)
+      throw new Error('平台侧复刻失败：检查样本质量（清晰人声、无伴奏），或到火山控制台查看原因')
+    }
+    this.storage.saveVoice(next)
+    this.emitChanged()
   }
 
   /** 轮询训练状态，直到 ready / failed / 超时 */
-  private startPolling(id: string, appId: string, accessToken: string): void {
+  private startPolling(id: string, apiKey: string): void {
     let tries = 0
     const timer = setInterval(() => {
       tries += 1
-      void this.pollOnce(id, appId, accessToken).then((done) => {
+      void this.pollOnce(id, apiKey).then((done) => {
         if (done || tries >= POLL_MAX_TRIES) {
           clearInterval(timer)
           this.timers.delete(id)
@@ -145,17 +225,27 @@ export class VoiceService {
   }
 
   /** 返回 true 表示已到终态（ready/failed） */
-  private async pollOnce(id: string, appId: string, accessToken: string): Promise<boolean> {
+  private async pollOnce(id: string, apiKey: string): Promise<boolean> {
     const voice = this.storage.listVoices().find((v) => v.id === id)
     if (!voice || voice.status !== 'training') return true
     try {
-      const res = await this.requestVolcano(VOLCANO_STATUS_URL, accessToken, {
-        app: { appid: appId, token: accessToken, cluster: VOLCANO_CLONE_CLUSTER },
-        speaker_id: voice.voiceType || id
+      const res = await fetch(VOLCANO_V3_GET_VOICE_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': apiKey,
+          'X-Api-Request-Id': randomUUID()
+        },
+        body: JSON.stringify({
+          speaker_id: 'custom_speaker_id',
+          custom_speaker_id: voice.voiceType
+        }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       })
-      const state = parseVolcanoState(res)
+      const data = (await res.json().catch(() => ({}))) as { status?: number }
+      const state = parseVolcanoCloneState(data.status)
       if (state === 'ready') {
-        this.storage.saveVoice({ ...voice, status: 'ready', voiceType: res.speaker_id ?? voice.voiceType, updatedAt: Date.now() })
+        this.storage.saveVoice({ ...voice, status: 'ready', updatedAt: Date.now() })
         this.emitChanged()
         return true
       }
@@ -170,57 +260,123 @@ export class VoiceService {
     }
   }
 
-  /** 提交复刻训练（具体字段见文件头注释：待与官方文档逐字核对） */
-  private async submitVolcanoClone(voice: VoiceRecord, appId: string, accessToken: string): Promise<void> {
-    const { readFile } = await import('node:fs/promises')
-    const audio = await readFile(voice.samplePath)
-    const format = extname(voice.samplePath).replace('.', '') || 'wav'
-    const payload = {
-      app: { appid: appId, token: accessToken, cluster: VOLCANO_CLONE_CLUSTER },
-      speaker_id: voice.id,
-      audios: [{ audio_bytes: audio.toString('base64'), audio_format: format }],
-      source: 2
+  // ---------- 百炼 voice-enrollment 复刻 ----------
+
+  /**
+   * 百炼复刻是同步接口（创建即完成，音色长期有效），不需要轮询。
+   * 音频必须公网可访问 URL——本地文件给中文报错引导（UI 下个代理做，参数已留好）。
+   */
+  private async cloneBailian(
+    name: string,
+    input: VoiceCloneInput,
+    connection: TtsConnection
+  ): Promise<{ ok: true; voice: VoiceRecord } | { ok: false; error: string }> {
+    const sampleUrl = input.sampleUrl?.trim() ?? ''
+    if (!sampleUrl) {
+      return {
+        ok: false,
+        error: '百炼复刻需要公网可访问的音频地址：把样本传到可访问的 URL 后粘贴'
+      }
     }
-    const res = await this.requestVolcano(VOLCANO_UPLOAD_URL, accessToken, payload)
-    const state = parseVolcanoState(res)
-    if (state === 'failed') {
-      throw new Error(res.BaseResp?.StatusMessage ?? res.message ?? '平台拒绝复刻请求')
+    const workspaceId = String(connection.params.workspaceId ?? '')
+    if (!workspaceId) {
+      return {
+        ok: false,
+        error: '百炼复刻需要「业务空间 ID」：到设置 → 语音合成给这条接入填上'
+      }
     }
-    // 平台返回的 speaker_id 可能与提交不同，以返回为准
-    if (res.speaker_id && res.speaker_id !== voice.id) {
-      this.storage.saveVoice({ ...voice, voiceType: res.speaker_id, updatedAt: Date.now() })
-    } else {
-      this.storage.saveVoice({ ...voice, voiceType: voice.id, updatedAt: Date.now() })
+    // 本地样本可选归档（留痕用，API 只认 URL）
+    let samplePath = ''
+    if (input.samplePath && existsSync(input.samplePath)) {
+      samplePath = (await this.archiveSample(input.samplePath)) ?? ''
     }
+
+    const now = Date.now()
+    const voice: VoiceRecord = {
+      id: randomUUID(),
+      name,
+      provider: 'bailian',
+      voiceType: '',
+      model: input.model,
+      connectionId: connection.id,
+      samplePath,
+      status: 'training',
+      error: '',
+      authorized: true,
+      authorizedAt: now,
+      createdAt: now,
+      updatedAt: now
+    }
+    this.storage.saveVoice(voice)
     this.emitChanged()
+
+    try {
+      const voiceId = await this.submitBailianClone(input.model, sampleUrl, name, connection)
+      this.storage.saveVoice({
+        ...voice,
+        voiceType: voiceId,
+        status: 'ready',
+        updatedAt: Date.now()
+      })
+      this.emitChanged()
+      return { ok: true, voice: this.list().find((item) => item.id === voice.id) ?? voice }
+    } catch (error) {
+      this.fail(voice.id, error instanceof Error ? error.message : String(error))
+      return { ok: false, error: '复刻失败，详见音色卡片' }
+    }
   }
 
-  private async requestVolcano(
-    url: string,
-    accessToken: string,
-    body: Record<string, unknown>
-  ): Promise<VolcanoResponse> {
-    const res = await fetch(url, {
+  private async submitBailianClone(
+    targetModel: string,
+    sampleUrl: string,
+    name: string,
+    connection: TtsConnection
+  ): Promise<string> {
+    const workspaceId = String(connection.params.workspaceId ?? '')
+    const apiKey = String(connection.params.apiKey ?? '')
+    const res = await fetch(`https://${workspaceId}${MAAS_BASE}${MAAS_CLONE_PATH}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer;${accessToken}`,
-        'Resource-Id': VOLCANO_RESOURCE_ID
+        Authorization: `Bearer ${apiKey}`
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        model: 'voice-enrollment',
+        input: {
+          action: 'create_voice',
+          target_model: targetModel,
+          prefix: bailianVoicePrefix(name),
+          url: sampleUrl
+        }
+      }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     })
-    if (res.status === 401 || res.status === 403) {
-      throw new Error('火山鉴权失败：请检查 Access Token，或该账号未开通「声音复刻」权限')
+    const data = (await res.json().catch(() => ({}))) as {
+      output?: { voice_id?: string }
+      code?: string
+      message?: string
     }
-    if (!res.ok) throw new Error(`火山接口返回 ${res.status}`)
-    const data = (await res.json()) as VolcanoResponse
-    const code = data.BaseResp?.StatusCode
-    // 0 表示成功；其余按业务状态处理（不同版本号段可能不同，核对时确认）
-    if (code !== undefined && code !== 0 && code !== 3000) {
-      throw new Error(data.BaseResp?.StatusMessage ?? `火山接口错误码 ${code}`)
+    if (!res.ok) {
+      throw new Error(`百炼复刻接口返回 ${res.status}${data.message ? `：${data.message}` : ''}`)
     }
-    return data
+    const voiceId = data.output?.voice_id
+    if (!voiceId) {
+      throw new Error(`百炼复刻未返回 voice_id${data.message ? `：${data.message}` : ''}`)
+    }
+    return voiceId
+  }
+
+  // ---------- 通用 ----------
+
+  /** 样本统一复制进音色目录，避免用户原始文件被移动/删除；失败返回空串 */
+  private async archiveSample(source: string): Promise<string> {
+    const target = join(this.sampleDir(), basename(source))
+    try {
+      if (source !== target) await copyFile(source, target)
+      return target
+    } catch {
+      return ''
+    }
   }
 
   async remove(id: string): Promise<{ ok: boolean; error?: string }> {
@@ -303,18 +459,14 @@ export class VoiceService {
   }
 
   /**
-   * 试听：用该音色**自己那家**的接入合成一句固定文案，返回缓存文件路径（渲染层 media:// 播放）。
-   * 那家的接入没配置就没法试听（合成时会撞上同一个路由，这里先给出带音色名的中文原因）。
+   * 试听：合成路由自己解决「这个音色走哪条接入哪个模型」（voices.model + connection_id），
+   * 路由抛出的中文原因直接透传给渲染层。
    */
   async preview(id: string): Promise<{ ok: true; audioPath: string } | { ok: false; error: string }> {
     const voice = this.storage.listVoices().find((v) => v.id === id)
     if (!voice) return { ok: false, error: '音色不存在' }
     if (voice.status !== 'ready' || !voice.voiceType) {
       return { ok: false, error: '该音色还没训练完成，暂时没法试听' }
-    }
-    const connection = this.storage.ttsConnectionGetByProvider(voice.provider)
-    if (!connection || !isTtsConnectionReady(connection, getTtsProvider(voice.provider))) {
-      return { ok: false, error: voiceConnectionError(voice) }
     }
     try {
       const audioPath = await this.tts.synthesize(
@@ -333,20 +485,34 @@ export class VoiceService {
   }
 }
 
-interface VolcanoResponse {
-  speaker_id?: string
-  status?: number
-  message?: string
-  BaseResp?: { StatusCode?: number; StatusMessage?: string }
-}
-
-/**
- * 训练状态映射（火山历史文档口径，核对时确认）：
- * 0 不存在 / 1 训练中 / 2 训练成功 / 3 训练失败 / 4 已激活
- */
-function parseVolcanoState(res: VolcanoResponse): 'training' | 'ready' | 'failed' {
-  const status = res.status
+/** 训练状态映射：0 NotFound / 1 Training / 2 Success / 3 Failed / 4 Active（2、4 可合成） */
+function parseVolcanoCloneState(status: number | undefined): 'training' | 'ready' | 'failed' {
   if (status === 2 || status === 4) return 'ready'
   if (status === 3) return 'failed'
   return 'training'
+}
+
+/** V3 复刻常见错误码的中文说法（其余原样透出 code + message） */
+function volcanoCloneError(code: number | undefined, message: string | undefined, httpStatus: number): string {
+  if (httpStatus === 401 || httpStatus === 403) {
+    return '火山鉴权失败：检查 API Key，或该账号未开通「声音复刻」'
+  }
+  const known: Record<number, string> = {
+    45001104: '声纹校验未通过：换一段更清晰、无伴奏的人声样本',
+    45001109: '样本文本校验未通过（WER 过高）：样本里说话要清晰、与语种一致',
+    45001122: '样本里没检测到有效人声：换一段有说话声的音频',
+    45001123: '复刻次数已达上限：到火山控制台查看额度'
+  }
+  if (code !== undefined && known[code]) return known[code]
+  return `火山复刻失败${code !== undefined ? `（${code}）` : ''}${message ? `：${message}` : ''}`
+}
+
+/** 百炼复刻 prefix：小写字母数字、字母开头、≤10 字符（不合规的名字收敛成 anchor+序号感） */
+function bailianVoicePrefix(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .replace(/^[^a-z]+/, '')
+    .slice(0, 10)
+  return slug || `anchor${Math.floor(Math.random() * 100)}`
 }

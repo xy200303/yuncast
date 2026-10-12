@@ -10,10 +10,11 @@ import type { ScriptService } from './ScriptService'
 import type { SpeechPool } from './SpeechPool'
 import type { StorageService } from './StorageService'
 import type { StreamService } from './stream/StreamService'
+import type { TtsService } from './TtsService'
 import type { UtteranceService } from './UtteranceService'
 import { resolveModelForPersona } from './llmModel'
 import { getLlmProvider } from './providers/registry'
-import { defaultProviderConnectionError, findCloneVoice, voiceConnectionError } from '../../shared/voiceProvider'
+import { findCloneVoice } from '../../shared/voiceProvider'
 
 /** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
 const LIBRARY_SOURCE_ID = 'library'
@@ -34,7 +35,8 @@ export class LaunchService {
     private readonly pool: SpeechPool,
     private readonly agent: AgentService,
     private readonly connector: ConnectorService,
-    private readonly stream: StreamService
+    private readonly stream: StreamService,
+    private readonly tts: TtsService
   ) {}
 
   /** 开播前预检：阻断项拦住开播，警告项交给导演判断（UI 里红色/黄色分列） */
@@ -107,39 +109,45 @@ export class LaunchService {
         })
       }
     }
-    // ②a 语音合成：凭据按服务商存在接入里，生效音色（场次 > 人设 > TTS 默认）决定用哪条接入
+    // ②a 语音合成：生效音色（场次 > 人设 > TTS 默认）走和运行时完全相同的合成路由
     const effectiveVoice = (plan.voiceId || persona?.voiceId || cfg.tts.voiceId).trim()
-    const clone = findCloneVoice(this.storage.listVoices(), effectiveVoice)
-    const routingProvider = clone ? clone.provider : cfg.tts.providerId
-    const ttsConnection = this.storage.ttsConnectionGetByProvider(routingProvider)
-    if (!ttsConnection) {
-      items.push(
-        clone
-          ? {
-              level: 'block',
-              label: voiceConnectionError(clone),
-              detail: `这条接入要填的是${TTS_PROVIDER_SHORT[routingProvider]}的凭据，或把音色换成已配置那家的`
-            }
-          : {
-              level: 'block',
-              label: defaultProviderConnectionError(routingProvider),
-              detail: '设置 → 语音合成：点那家接入的「配置」填凭据（不然主播没声音）'
-            }
-      )
+    let ttsReady = false
+    if (effectiveVoice) {
+      try {
+        const route = this.tts.routeForVoice(effectiveVoice)
+        ttsReady = true
+        const clone = findCloneVoice(this.storage.listVoices(), route.voice)
+        items.push({
+          level: 'ok',
+          label: `语音合成：${TTS_PROVIDER_SHORT[route.provider]} / ${route.model.label} / ${route.voice}${
+            clone ? `（${clone.name} · 克隆音色）` : ''
+          }`
+        })
+      } catch (error) {
+        items.push({
+          level: 'block',
+          label: '语音合成不可用',
+          detail: error instanceof Error ? error.message : String(error)
+        })
+      }
     } else {
-      items.push({
-        level: 'ok',
-        label: `语音合成：${TTS_PROVIDER_SHORT[routingProvider]} / ${effectiveVoice || '默认音色'}${
-          clone ? `（${clone.name} · 克隆音色）` : ''
-        }`
-      })
-      if (!effectiveVoice) {
+      ttsReady = this.storage.ttsConnectionListSafe().some((connection) => connection.ready)
+      if (ttsReady) {
+        items.push({ level: 'ok', label: '语音合成：接入已配置' })
         items.push({
           level: 'warn',
           label: '还没指定默认音色',
           detail: '设置 → 语音合成填「默认音色」，或在人设卡 / 场次里指定'
         })
+      } else {
+        items.push({
+          level: 'block',
+          label: '没有可用的语音合成接入',
+          detail: '设置 → 语音合成：配一条接入（凭据齐全 + 至少启用一个模型），不然主播没声音'
+        })
       }
+    }
+    if (ttsReady) {
       if (cfg.tts.lastTestAt === 0) {
         items.push({
           level: 'warn',

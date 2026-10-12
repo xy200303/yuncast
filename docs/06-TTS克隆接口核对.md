@@ -1,70 +1,71 @@
 # 06 · TTS 克隆接口核对清单
 
-> 状态：**待核对** · 2026-10-11
-> 背景：M8 音色库实现了火山引擎「声音复刻」调用，但实现时联网检索额度用尽，**端点/字段/状态码均按历史文档口径编写，未逐字对照当前官方文档**。
-> 核对开销极小：全部假设集中在 `src/main/services/VoiceService.ts` 顶部常量与 `parseVolcanoState` / `parseVolcanoResponse` 三处。
+> 状态：**已核对（火山已切 V3，V1 放弃）** · 2026-10-12
+> 结论：火山「声音复刻」与合成都已迁到 V3 体系（`X-Api-Key` 鉴权），旧 V1（appId + token + cluster、
+> mega_tts 一系）整体放弃。百炼复刻已实现（voice-enrollment，公网 URL 样本）。
+> 以下清单按 V3 官方文档逐条给出答案（文档缓存：C:\tmp\md_2227958.md / md_1598757.md，真机联调后可删）。
 
-## 待核对项（逐条打勾）
+## 原待核对项的 V3 答案
 
-端点与鉴权（VoiceService.ts 顶部）：
+端点与鉴权：
 
-- [ ] 上传训练端点：`POST https://openspeech.bytedance.com/api/v1/mega_tts/audio/upload` —— 是否已被新的大模型复刻接口取代？（可能是 `/api/v1/mega_tts/audio/upload` 的新版本或 `…/voice/clone` 一系）
-- [ ] 状态查询端点：`POST https://openspeech.bytedance.com/api/v1/mega_tts/status`
-- [ ] 鉴权头：`Authorization: Bearer;<access_token>`（分号分隔，历史写法）是否仍有效
-- [ ] `Resource-Id: volc.megatts.voiceclone` 是否必填、取值是否正确
-- [ ] 复刻集群名 `volc_mega_tts` 是否正确（与合成用的 `volcano_tts` 不同）
+- [x] 上传训练端点：V1 `mega_tts/audio/upload` 已被取代 → **`POST /api/v3/tts/voice_clone`**（VoiceService.submitVolcanoClone）
+- [x] 状态查询端点：V1 `mega_tts/status` 已被取代 → **`POST /api/v3/tts/get_voice`**（VoiceService.pollOnce）
+- [x] 鉴权头：`Authorization: Bearer;<token>` 是 V1 写法，已放弃 → V3 用 **`X-Api-Key` + `X-Api-Request-Id`**（新版控制台 API Key）
+- [x] `Resource-Id: volc.megatts.voiceclone`：V3 复刻不需要；**合成**需要 `X-Api-Resource-Id`（= 模型名，如 seed-tts-2.0）
+- [x] 复刻集群名 `volc_mega_tts`：V1 概念，V3 无 cluster
 
 请求体（submitVolcanoClone）：
 
-- [ ] `audios[].audio_bytes` 是否接受 base64 直传；`audio_format` 允许的取值
-- [ ] `source: 2` 的含义与取值
-- [ ] `speaker_id` 是否允许自定义（当前用本地 UUID）
-- [ ] 样本要求：时长下限/上限、采样率、格式（当前只做前端提示 10-30 秒）
+- [x] 音频直传：`audio.data`（base64）+ `audio.format`；格式支持 **wav / mp3 / ogg / m4a / aac / pcm**（pcm 仅 24k 单声道；**webm 不支持**，录音产物要先转码）；文件 ≤10MB
+- [x] `source: 2`：V1 字段，V3 不存在
+- [x] `speaker_id` 自定义：后付费用固定值 `speaker_id: "custom_speaker_id"` + `custom_speaker_id`（规则：长度 [8,256]、字母开头、仅数字字母 `-_`、首尾不可 `-_`）；预付费音色槽需控制台下单（不在本流程内）
+- [x] 样本要求：官方建议 10-20 秒清晰人声；`extra_params` 可控降噪/音质检测等（默认即可）
 
-响应与状态机（parseVolcanoState）：
+响应与状态机：
 
-- [ ] `status` 数值语义：0 不存在 / 1 训练中 / 2 成功 / 3 失败 / 4 已激活 —— 是否正确
-- [ ] 是否需要额外的「激活」调用（历史版本复刻后需激活才能合成）
-- [ ] 训练成功后的音色标识字段名（当前按 `speaker_id`，合成时作为 voice_type 使用）
-- [ ] `BaseResp.StatusCode` 的成功值（当前兼容 0 与 3000）
+- [x] `status` 语义确认：**0 NotFound / 1 Training / 2 Success / 3 Failed / 4 Active，2 与 4 都可合成**
+- [x] 不需要额外「激活」调用（V3 无此步骤）
+- [x] 音色标识：训练后音色 = `custom_speaker_id`，V3 合成 `req_params.speaker` 直接用它（模型 seed-icl-x）
+- [x] 错误码：HTTP 非 200 时 body 带 `code`/`message`；常见：45001104 声纹未通过 / 45001109 WER 过高 / 45001122 无人声 / 45001123 次数上限（VoiceService.volcanoCloneError 已映射中文）
+
+合成（一并核对）：
+
+- [x] 合成端点：**`POST /api/v3/tts/unidirectional`**（HTTP Chunked，逐行 JSON：code=0 带 base64 音频、code=20000000 结束）
+- [x] 请求体：`{user:{uid}, req_params:{text, speaker, model?, audio_params:{format, sample_rate, speech_rate, loudness_rate, emotion, emotion_scale}, additions}}`；`model`（standard/expressive）仅复刻 2.0 有效；pitch 走 `additions.post_process.pitch`
 
 ## 已实现但未真实联调的行为
 
 - 训练状态轮询：5 秒一次，最多 5 分钟，超时标失败（`POLL_INTERVAL_MS` / `POLL_MAX_TRIES`）
 - 401/403 一律映射为「鉴权失败或未开通声音复刻权限」
-- 百炼 CosyVoice 复刻**未实现**：需先确认是否支持本地音频直传（若只支持公网 URL，则要加样本上传托管），当前返回明确中文提示
+- 百炼复刻**已实现**（voice-enrollment）：`POST {workspaceId}.cn-beijing.maas.aliyuncs.com/api/v1/services/audio/tts/customization`，
+  `{model:'voice-enrollment', input:{action:'create_voice', target_model, prefix, url}}`，创建即完成、音色长期有效。
+  **样本必须公网可访问 URL**（无本地文件直传途径），本地文件返回中文引导；target_model 不含 cosyvoice-v1（V1 不能作为复刻目标）
+- 火山后付费音色「首次合成即转正收费」，复刻后 7 天未合成自动删除——UI 应提示（下个代理）
 
-## 核对方法
+## 核对方法（真机）
 
-1. 打开火山引擎语音技术控制台 → 声音复刻文档，对照上表逐条修正 VoiceService.ts
-2. 用真实账号跑一次「新建音色」，观察日志与卡片状态流转
-3. 成功后到「设置 → 语音合成」把默认音色设为该克隆音色，测发音验证
+1. 设置 → 语音合成：给火山接入填新版控制台 API Key，测发音（V3 合成链路）
+2. 音色库新建音色跑一遍「上传样本 → 训练 → 就绪」，观察卡片状态流转
+3. 把默认音色设为该克隆音色，测发音验证 seed-icl-2.0 合成
 
+## 附：实时 TTS（流式合成）· 2026-10-12 更新
 
-## 附：实时 TTS（流式合成）· 2026-10-11
-
-### 已核实并实现：百炼 Qwen-TTS 真流式（SSE）
+### 已核实并实现：百炼 Qwen-TTS / maas 系真流式（SSE）
 
 依据官方文档（help.aliyun.com/zh/model-studio/qwen-tts-api）实测口径：
 - 端点与鉴权同非流式，**加请求头 `X-DashScope-SSE: enable`** 即进入流式
 - 服务端按 SSE 返回多个 chunk：中间帧 `output.audio.data` 为 base64 音频片段；末帧 `finish_reason = "stop"`、`data` 为空
-- **流式音频为 PCM 16bit 单声道 24kHz**（官方 Python/Java 示例的采样率）
+- **流式音频为 PCM 16bit 单声道**（采样率跟随模型参数 sample_rate，默认 24000）
 - 文本上限 600 字符
 
-实现：`TtsService.synthesizeBailianStream()` → `TtsStreamService`（百炼走真流式，其余回退切片）→
+实现：`TtsService.synthesizeBailianStream()` → `TtsStreamService`（路由的模型标了 `streaming` 才走真流式，其余回退切片）→
 渲染进程 `streamPlayer`（AudioBuffer 按块采样率建buffer，WebAudio 自动重采样播放）→
 直推模式另有一条 `resampleTo48k()`（线性插值）喂混音器。
 
-### 仍待核对：火山流式协议
+### 仍待核对：火山流式接线
 
-M9 实现了"边合成边播"的**完整管线**（PCM 分块 → 渲染进程 WebAudio 无缝排播 → 混音器直通），
-但**取数方式仍是"整段合成后按真实速率切片"**（`TtsStreamService.streamChunks`），并非服务商真流式。
-替换为真流式时需要核对：
-
-- [ ] 火山大模型语音合成流式接口：WS 二进制协议（`wss://openspeech.bytedance.com/api/v1/tts/ws_binary`）
-      的握手头、事件号（StartConnection/StartSession/TaskRequest/FinishSession）、返回 PCM 格式与采样率
-- [ ] 或 HTTP 分块流式端点（若存在，优先——比 WS 二进制简单得多）
-- [ ] 百炼 Qwen-TTS 的 stream 参数与 SSE 音频块格式
-- [ ] 流式返回的音频采样率/声道是否与混音器口径（48k mono s16le）一致；不一致要在 `TtsStreamService` 里重采样
-
-替换点只有一处：`TtsStreamService.streamChunks()` 的取数方式，下游（渲染进程 streamPlayer、混音器 pushTtsPcm）不用改。
+火山 V3 `/api/v3/tts/unidirectional` 本身就是 HTTP Chunked 流式（边收边出），当前实现**整段累积后落盘**
+（预合成场景足够）。要接「边合成边播」时，把 `TtsService.synthesizeVolcano` 的逐行解析改成边收边 yield、
+在 `TtsStreamService.streamChunks` 接出即可，下游（渲染进程 streamPlayer、混音器 pushTtsPcm）不用改。
+注意流式格式建议用 pcm（免解码），采样率与混音器口径（48k mono s16le）不一致时要重采样。

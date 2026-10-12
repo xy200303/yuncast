@@ -144,7 +144,7 @@ export function LivePage() {
 
   return (
     <div className="flex min-h-0 flex-1">
-        {/* 左栏 = 播报区。header（场次 + 开播控制）只属于主区，右栏从窗口顶部铺到底，不留空带 */}
+        {/* 左栏 = 队列 / 评论流。「正在播什么」在右栏对话区底部的常驻状态行（一处就够） */}
         <section className="flex min-w-0 flex-1 flex-col">
           <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
             <Radio className="size-4 text-primary" />
@@ -165,20 +165,11 @@ export function LivePage() {
               <PlanLauncher />
             </div>
           </header>
-          <div className="shrink-0 border-b px-4 py-3">
-            <SceneLine />
-            <AgentDraft />
-            {playing ? (
-              <TeleprompterCurrent item={playing} />
-            ) : (
-              <p className="text-xs text-muted-foreground">当前没有在播的话术</p>
-            )}
-          </div>
           <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
             <div className="shrink-0 border-b px-4 pt-2">
               <TabsList variant="line">
                 <TabsTrigger value="pool" className="px-3 text-xs">
-                  话术池队列 · {pool.items.length}
+                  话术池队列 · {groups.reduce((n, group) => n + group.items.length, 0)}
                 </TabsTrigger>
                 <TabsTrigger value="comments" className="px-3 text-xs">
                   评论流 · {comments.length}
@@ -190,7 +181,9 @@ export function LivePage() {
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                   <Radio className="size-10" strokeWidth={1.25} />
                   <p className="text-sm">
-                    {playing ? '队列空了，正在播的就是上面这条' : '话术池是空的，从右侧操作面板发起人工播报'}
+                    {playing
+                      ? '队列空了，正在播的那句在右侧对话区底部'
+                      : '话术池是空的，从右侧操作面板发起人工播报'}
                   </p>
                 </div>
               ) : (
@@ -560,13 +553,21 @@ function PoolRow({ item }: { item: SpeechItem }) {
   )
 }
 
-/** 提词器当前播报：句级高亮（按播放进度推进，简化版） */
-function TeleprompterCurrent({ item }: { item: SpeechItem }) {
-  const sentences = useMemo(() => splitSentences(item.text), [item.text])
+/**
+ * 播报状态行（对话区底部常驻，不随消息滚动跑掉）：主播此刻在说什么 / 在生成什么 / 第几场。
+ * 跟对话消息一起看：上面是它汇报和请示，最下面是它正在说的这句，句级高亮跟音频进度走。
+ */
+function NowPlayingBar() {
+  const pool = useAppStore((s) => s.pool)
+  const agent = useAppStore((s) => s.agent)
+  const playing = pool.items.find((item) => item.status === 'playing') ?? null
+  const queued = pool.items.filter((item) => item.status !== 'playing').length
+  const sentences = useMemo(() => (playing ? splitSentences(playing.text) : []), [playing?.text])
   const [active, setActive] = useState(0)
 
   useEffect(() => {
     setActive(0)
+    if (!playing) return
     const timer = setInterval(() => {
       const progress = audioEngine.getTtsProgress()
       if (progress !== null) {
@@ -574,35 +575,50 @@ function TeleprompterCurrent({ item }: { item: SpeechItem }) {
       }
     }, 200)
     return () => clearInterval(timer)
-  }, [item.id, sentences.length])
+  }, [playing?.id, sentences.length])
 
   return (
-    <div className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-3">
-      <div className="mb-2 flex items-center gap-1.5">
-        <Badge>播报中</Badge>
-        {item.voiceId && <Badge variant="outline">{item.voiceId}</Badge>}
+    <div className="shrink-0 border-t px-3 py-2">
+      <div className="flex items-center gap-1.5 text-[11px]">
+        <span className={cn('size-1.5 shrink-0 rounded-full', playing ? 'bg-primary' : 'bg-muted-foreground/40')} />
+        <span className={cn('font-medium', playing ? 'text-primary' : 'text-muted-foreground')}>
+          {playing ? '播报中' : agent.state === 'running' ? '空闲' : '未开播'}
+        </span>
+        {agent.scene && (
+          <span className="truncate text-muted-foreground">
+            第 {agent.scene.index + 1}/{agent.scene.total} 场 · {agent.scene.title}
+          </span>
+        )}
+        {queued > 0 && <span className="ml-auto shrink-0 font-mono text-muted-foreground">待播 {queued}</span>}
       </div>
-      <p className="text-sm leading-6">
-        {sentences.map((sentence, index) => (
-          <Fragment key={index}>
-            <span className={index === active ? 'text-primary font-medium' : index < active ? 'text-muted-foreground' : ''}>
-              {sentence}
-            </span>
-          </Fragment>
-        ))}
-      </p>
+      {playing ? (
+        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[18px]">
+          {sentences.map((sentence, index) => (
+            <Fragment key={index}>
+              <span
+                className={cn(
+                  index === active
+                    ? 'font-medium text-primary'
+                    : index < active
+                      ? 'text-muted-foreground/50'
+                      : 'text-muted-foreground'
+                )}
+              >
+                {sentence}
+              </span>
+            </Fragment>
+          ))}
+        </p>
+      ) : agent.draft ? (
+        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[18px] text-muted-foreground/80">
+          生成中：{agent.draft}
+        </p>
+      ) : (
+        <p className="mt-0.5 text-[12px] leading-[18px] text-muted-foreground/70">
+          {agent.state === 'running' ? '主播在跑，队列空了它自己补' : '选好场次点「启动场次」开播'}
+        </p>
+      )}
     </div>
-  )
-}
-
-/** 当前场景小字（主播状态广播带来），无剧本不显示 */
-function SceneLine() {
-  const scene = useAppStore((s) => s.agent.scene)
-  if (!scene) return null
-  return (
-    <p className="mb-2 text-xs text-muted-foreground">
-      当前场景：<span className="text-foreground">{scene.title}</span>（第 {scene.index + 1}/{scene.total} 场）
-    </p>
   )
 }
 
@@ -622,22 +638,6 @@ function StreamIndicator() {
           ? `推流中 · ${stream.bitrateKbps}kbps · ${duration}`
           : `伴侣模式 · ${duration}`}
     </Badge>
-  )
-}
-
-/** AI 正在组织语言：text_delta 实时预览（品牌色），入池即消失 */
-function AgentDraft() {
-  const draft = useAppStore((s) => s.agent.draft)
-  if (!draft) return null
-  return (
-    <div className="mb-3 rounded-lg border border-primary/30 bg-primary/5 px-3 py-3">
-      <div className="mb-1.5 flex items-center gap-1.5">
-        <Badge variant="outline" className="text-primary border-primary/40">
-          AI 正在组织语言…
-        </Badge>
-      </div>
-      <p className="text-sm leading-6 text-primary">{draft}</p>
-    </div>
   )
 }
 
@@ -932,6 +932,9 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           )
         )}
       </div>
+
+      {/* 播报状态行：对话区底部常驻，主播正在说的那句就在这儿（句级高亮） */}
+      <NowPlayingBar />
 
       {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
       <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">

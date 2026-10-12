@@ -31,6 +31,7 @@ const PAGES: Record<NavPage, ComponentType> = {
 export default function App() {
   const page = useAppStore((s) => s.page)
   const loadConfig = useAppStore((s) => s.loadConfig)
+  const loadModelLibrary = useAppStore((s) => s.loadModelLibrary)
   const syncSystemTheme = useAppStore((s) => s.syncSystemTheme)
   const setPool = useAppStore((s) => s.setPool)
   const setLevels = useAppStore((s) => s.setLevels)
@@ -43,11 +44,12 @@ export default function App() {
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
     loadConfig()
+    void loadModelLibrary()
     const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
     const onTheme = () => syncSystemTheme()
     themeQuery.addEventListener('change', onTheme)
     return () => themeQuery.removeEventListener('change', onTheme)
-  }, [loadConfig, syncSystemTheme])
+  }, [loadConfig, loadModelLibrary, syncSystemTheme])
 
   // 音频引擎 + 话术池订阅 + 播放循环（应用级单例，挂载即运行）
   useEffect(() => {

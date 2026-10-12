@@ -7,12 +7,17 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '../stores/useAppStore'
-import type { Persona, Trigger, TriggerMode } from '../../../shared/types'
+import { ProviderIcon } from '@/components/ProviderIcon'
+import { providerLabel, selectLlmReady, useAppStore } from '../stores/useAppStore'
+import type { ModelProfileSafe, Persona, Trigger, TriggerMode } from '../../../shared/types'
+
+/** 「大脑」下拉里表示「不指定、用默认条目」的哨兵值（Select 不接受空串 value） */
+const DEFAULT_MODEL_VALUE = '__default__'
 
 const AGENT_STATE_LABEL: Record<string, string> = {
   stopped: '未启动',
@@ -35,10 +40,24 @@ const MODE_BADGE_VARIANT: Record<TriggerMode, 'outline' | 'secondary' | 'default
 
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
+/** 卡片摘要里的「大脑」：绑了条目显示条目名，没绑（或条目已删）显示默认条目名 */
+function modelNameOf(
+  models: ModelProfileSafe[],
+  modelProfileId: string | null,
+  fallback?: ModelProfileSafe
+): string {
+  const bound = modelProfileId ? models.find((item) => item.id === modelProfileId) : undefined
+  if (bound) return bound.name
+  return fallback ? `默认（${fallback.name}）` : '未配置'
+}
+
 /** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由场次带着切换）。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
-  const llmReady = useAppStore((s) => s.config.llm.apiKey !== '')
+  const config = useAppStore((s) => s.config)
+  const models = useAppStore((s) => s.models)
+  const llmReady = selectLlmReady(models, config)
+  const defaultProfile = models.find((item) => item.isDefault)
   const [personas, setPersonas] = useState<Persona[]>([])
   const [activeId, setActiveId] = useState('')
   const [busy, setBusy] = useState(false)
@@ -105,7 +124,7 @@ export function AnchorsPage() {
             size="sm"
             disabled={busy}
             onClick={() => void toggleAgent()}
-            title={llmReady ? undefined : '先到「设置 → 接入」配置 LLM'}
+            title={llmReady ? undefined : '先到「设置 → 语言模型」添加一个模型条目'}
           >
             {busy ? (
               <Loader2 className="animate-spin" />
@@ -166,6 +185,10 @@ export function AnchorsPage() {
                   <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
                     {item.personality || '（还没写性格）'}
                   </p>
+                  <p className="truncate text-[11px] text-muted-foreground">
+                    大脑：{modelNameOf(models, item.modelProfileId, defaultProfile)} · 嗓子：
+                    {item.voiceId || 'TTS 默认'}
+                  </p>
                   <div className="flex flex-wrap gap-1">
                     {item.roles.slice(0, 2).map((role) => (
                       <Badge key={role.name} variant="outline" className="text-[11px]">
@@ -224,6 +247,9 @@ function PersonaEditorDialog({
 }) {
   const open = editing !== null
   const source = editing?.persona
+  const models = useAppStore((s) => s.models)
+  const providers = useAppStore((s) => s.llmProviders)
+  const defaultProfile = models.find((item) => item.isDefault)
   const [form, setForm] = useState<PersonaForm>(() => ({
     name: source?.name ?? '',
     personality: source?.personality ?? '',
@@ -231,6 +257,7 @@ function PersonaEditorDialog({
     background: source?.background ?? '',
     taboos: source?.taboos ?? '',
     voiceId: source?.voiceId ?? '',
+    modelProfileId: source?.modelProfileId ?? null,
     roles: source?.roles ?? []
   }))
   const [busy, setBusy] = useState(false)
@@ -281,6 +308,46 @@ function PersonaEditorDialog({
                 placeholder="voiceId"
               />
             </div>
+          </div>
+
+          <div>
+            <Label className="mb-1">大脑（模型）</Label>
+            {models.length === 0 ? (
+              <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                还没有模型，去「设置 → 语言模型」添加一个（主播开机时按它选模型）。
+              </p>
+            ) : (
+              <Select
+                value={form.modelProfileId ?? DEFAULT_MODEL_VALUE}
+                onValueChange={(value) =>
+                  patch({ modelProfileId: value === DEFAULT_MODEL_VALUE ? null : value })
+                }
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={DEFAULT_MODEL_VALUE}>
+                    <span className="flex items-center gap-2">
+                      <ProviderIcon providerId={defaultProfile?.providerId ?? ''} size="sm" />
+                      用默认（{defaultProfile?.name ?? '无默认条目'}）
+                    </span>
+                  </SelectItem>
+                  {models.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      <span className="flex items-center gap-2">
+                        <ProviderIcon providerId={item.providerId} size="sm" />
+                        {item.name}
+                        <span className="text-muted-foreground">
+                          · {providerLabel(providers, item.providerId)}
+                          {item.ready ? '' : '（未配齐）'}
+                        </span>
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <div>

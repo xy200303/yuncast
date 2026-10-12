@@ -113,8 +113,46 @@ export const DEFAULT_LLM_CONFIG: LlmConfig = {
   baseUrl: ''
 }
 
-export function llmConfigured(llm: LlmConfig): boolean {
+/** 旧的单体 LLM 配置是否还能用。模型条目库为空时的兜底（迁移期保留，不删字段）。 */
+export function legacyLlmConfigured(llm: LlmConfig): boolean {
   return Boolean(llm.apiKey && (llm.model || LLM_PROVIDER_META[llm.provider].defaultModel))
+}
+
+// ---------- 模型条目库（一条 = 一次可用的模型接入：服务商 + 自有参数 + 模型名） ----------
+
+export interface ModelProfile {
+  id: string
+  name: string
+  providerId: string
+  /** 各家自有参数（键由 provider 的 configFields 声明）；密钥字段落盘加密 */
+  params: Record<string, string | number | boolean>
+  model: string
+  isDefault: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+/** 给渲染层用的条目：密钥字段的值置为空串，只留「填没填过」与「能不能用」两个标记 */
+export interface ModelProfileSafe extends ModelProfile {
+  /** 是否已保存过密钥（渲染层不拿密钥本身） */
+  hasSecret: boolean
+  /** 主进程按 provider manifest 判定的可用性：有模型名且凭据齐备（密钥可空的服务商不要求密钥） */
+  ready: boolean
+}
+
+/** 新建/编辑条目入参：密钥字段留空表示不修改（沿用已保存的那个） */
+export interface ModelProfileInput {
+  id?: string
+  name: string
+  providerId: string
+  params: Record<string, string | number | boolean>
+  model: string
+  isDefault?: boolean
+}
+
+/** 是否有可用的语言模型（UI 徽章用）：条目库里有可用条目，或旧的 config.llm 还兜底着 */
+export function llmReady(models: ModelProfileSafe[], llm: LlmConfig): boolean {
+  return models.some((model) => model.ready) || legacyLlmConfigured(llm)
 }
 
 // ---------- 应用配置 ----------
@@ -452,6 +490,11 @@ export interface Persona {
   taboos: string
   /** 默认音色（对应 config.tts 的 voiceId 体系） */
   voiceId: string
+  /**
+   * 大脑：绑定的模型条目 id（ModelProfile.id）。
+   * null = 不指定，按「全局默认条目 → 旧的 config.llm」回退
+   */
+  modelProfileId: string | null
   /** 编剧模式角色：主播一个脑子写多个角色的台词，按 voiceId 路由音色 */
   roles: PersonaRole[]
   updatedAt: number
@@ -464,6 +507,7 @@ export const DEFAULT_PERSONA: Omit<Persona, 'id' | 'updatedAt'> = {
   background: '做了三年直播带货，熟悉各种家居好物，对成分和材质很有研究',
   taboos: '不承诺绝对最低价；不贬低其它品牌；不谈论政治和隐私话题；不夸大功效',
   voiceId: '',
+  modelProfileId: null,
   roles: []
 }
 

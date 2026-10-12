@@ -9,10 +9,8 @@ import {
   type ResourceLoader
 } from '@earendil-works/pi-coding-agent'
 import {
-  llmConfigured,
   type AgentStatus,
   type LiveComment,
-  type LlmConfig,
   type PlaybackControlAction
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
@@ -22,7 +20,8 @@ import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
 import { ANCHOR_TOOL_NAMES, buildAnchorTools } from './anchorTools'
-import { prepareLlmModel } from './llmModel'
+import { prepareLlmModel, resolveModelForPersona } from './llmModel'
+import type { ResolvedModel } from './providers/registry'
 
 /**
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
@@ -97,16 +96,14 @@ export class AgentService {
     }
   }
 
-  /** 启动主播会话。未配置 LLM 时抛清晰中文错误（UI 弹 toast + 引导去设置页）。 */
+  /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。 */
   async start(): Promise<void> {
     if (this.session) return
-    const llm = this.storage.getConfig().llm
-    if (!llmConfigured(llm)) {
-      throw new Error('LLM 未配置：先到「设置 → 接入」填 API Key 和模型')
-    }
+    // 模型按「这张卡的绑定 → 全局默认条目 → 旧的 config.llm」解析，解析不出就明确报错
+    const resolved = resolveModelForPersona(this.storage, this.persona.get())
     this.setState('starting')
     try {
-      this.session = await this.createSession(llm)
+      this.session = await this.createSession(resolved)
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error))
       throw error
@@ -264,9 +261,9 @@ export class AgentService {
     if (summary) this.memory.saveEpisodeSummary(this.startedAt, endedAt, summary)
   }
 
-  private async createSession(llm: LlmConfig): Promise<AgentSession> {
+  private async createSession(resolved: ResolvedModel): Promise<AgentSession> {
     const agentDir = join(app.getPath('userData'), 'pi')
-    const { model, modelRuntime, modelLabel } = await prepareLlmModel(llm, agentDir)
+    const { model, modelRuntime, modelLabel } = await prepareLlmModel(resolved, agentDir)
     this.modelLabel = modelLabel
 
     const persona = this.persona.get()

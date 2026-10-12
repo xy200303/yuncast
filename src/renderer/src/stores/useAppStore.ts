@@ -4,13 +4,14 @@ import {
   APP_THEMES,
   DEFAULT_CONFIG,
   INITIAL_STREAM_STATS,
-  llmConfigured,
+  llmReady,
   ttsConfigured,
   type AgentStatus,
   type AppAccent,
   type AppConfig,
   type AppTheme,
   type ConnectorStatus,
+  type ModelProfileSafe,
   type PartialDeep,
   type PoolSnapshot,
   type VoiceRecord,
@@ -27,6 +28,9 @@ import {
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
 export const NAV_PAGES = ['live', 'sessions', 'anchors', 'knowledge', 'voices', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
+
+/** 服务商清单的纯数据形态：类型从 preload 暴露的 API 反推，渲染层不 import 主进程模块 */
+export type LlmProviderManifest = Awaited<ReturnType<typeof window.api.providers.llmList>>[number]
 
 // 启动时先用 localStorage 缓存的主题，避免等 IPC 回来闪一下白/黑
 const bootTheme = readCachedTheme()
@@ -78,6 +82,12 @@ interface AppState {
   /** 音色库（主进程广播驱动，训练状态实时更新） */
   voices: VoiceRecord[]
   setVoices: (voices: VoiceRecord[]) => void
+
+  /** 模型条目库 + 服务商清单（设置 → 语言模型；状态栏徽章与主播卡的「大脑」下拉都读它） */
+  models: ModelProfileSafe[]
+  llmProviders: LlmProviderManifest[]
+  loadModelLibrary: () => Promise<void>
+  setModels: (models: ModelProfileSafe[]) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -159,7 +169,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setConnector: (connector) => set({ connector }),
 
   voices: [],
-  setVoices: (voices) => set({ voices })
+  setVoices: (voices) => set({ voices }),
+
+  models: [],
+  llmProviders: [],
+  loadModelLibrary: async () => {
+    if (!('api' in window)) return
+    const [models, llmProviders] = await Promise.all([
+      window.api.model.list(),
+      window.api.providers.llmList()
+    ])
+    set({ models, llmProviders })
+  },
+  setModels: (models) => set({ models })
 }))
 
 /** TTS 是否已配置（状态栏徽章用） */
@@ -167,7 +189,12 @@ export function selectTtsReady(config: AppConfig): boolean {
   return ttsConfigured(config.tts)
 }
 
-/** LLM 是否已配置（状态栏徽章用） */
-export function selectLlmReady(config: AppConfig): boolean {
-  return llmConfigured(config.llm)
+/** 是否有可用的语言模型（状态栏徽章用）：条目库里有可用条目，或旧的 config.llm 还兜底着 */
+export function selectLlmReady(models: ModelProfileSafe[], config: AppConfig): boolean {
+  return llmReady(models, config.llm)
+}
+
+/** 服务商显示名（拿不到 manifest 就退回 id） */
+export function providerLabel(providers: LlmProviderManifest[], providerId: string): string {
+  return providers.find((item) => item.id === providerId)?.label ?? providerId
 }

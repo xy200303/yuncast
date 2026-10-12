@@ -6,10 +6,14 @@ import {
   DEFAULT_CONFIG,
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  LLM_PROVIDER_META,
   parseAppConfig,
   type AppConfig,
   type EpisodeSummary,
   type KnowledgeFile,
+  type ModelProfile,
+  type ModelProfileInput,
+  type ModelProfileSafe,
   type PartialDeep,
   type Persona,
   type PlanGenConfig,
@@ -28,6 +32,7 @@ import {
   type ViewerProfile,
   type VoiceRecord
 } from '../../shared/types'
+import { getLlmProvider, isModelProfileReady, secretFieldKeys } from './providers/registry'
 
 /**
  * 持久化层：
@@ -357,6 +362,22 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
+    // 模型条目库（设置 → 语言模型）：一条 = 一次可用的模型接入
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS model_profiles (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        provider_id TEXT NOT NULL,
+        params TEXT NOT NULL DEFAULT '{}',
+        model TEXT NOT NULL DEFAULT '',
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
+    // 人设卡的「大脑」：引用一条模型条目，空 = 用全局默认条目
+    this.ensureColumn('agents', 'model_profile_id', 'TEXT')
+    this.migrateLegacyLlm()
   }
 
   // ---------- 音色库（M8） ----------
@@ -400,6 +421,169 @@ export class StorageService {
 
   deleteVoice(id: string): void {
     this.db.prepare('DELETE FROM voices WHERE id = ?').run(id)
+  }
+
+  // ---------- 模型条目库（设置 → 语言模型） ----------
+
+  /** 读出全部条目（密钥字段已解密） */
+  modelProfileList(): ModelProfile[] {
+    return this.db
+      .prepare('SELECT * FROM model_profiles ORDER BY is_default DESC, created_at ASC')
+      .all()
+      .map((row) => this.toModelProfile(row as Record<string, unknown>))
+  }
+
+  modelProfileGet(id: string): ModelProfile | null {
+    const row = this.db.prepare('SELECT * FROM model_profiles WHERE id = ?').get(id)
+    return row ? this.toModelProfile(row as Record<string, unknown>) : null
+  }
+
+  /**
+   * 新建/更新条目。密钥字段留空表示不修改（沿用已保存的那个）；
+   * 库里的第一条自动成为默认，保证「默认条目」不会空着。
+   */
+  modelProfileSave(input: ModelProfileInput): ModelProfile {
+    const now = Date.now()
+    const id = input.id || `model-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    const existing = input.id ? this.modelProfileGet(input.id) : null
+    const secrets = secretFieldKeys(input.providerId)
+    const params: ModelProfile['params'] = {}
+    for (const [key, value] of Object.entries(input.params ?? {})) {
+      if (secrets.includes(key) && String(value ?? '') === '' && existing) {
+        params[key] = existing.params[key] ?? ''
+        continue
+      }
+      params[key] = value
+    }
+    for (const key of secrets) {
+      if (!(key in params)) params[key] = existing?.params[key] ?? ''
+    }
+    const isDefault = input.isDefault ?? existing?.isDefault ?? false
+
+    this.db
+      .prepare(
+        `INSERT INTO model_profiles (id, name, provider_id, params, model, is_default, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @model, @isDefault, @createdAt, @updatedAt)
+         ON CONFLICT(id) DO UPDATE SET
+           name = @name, provider_id = @providerId, params = @params,
+           model = @model, is_default = @isDefault, updated_at = @updatedAt`
+      )
+      .run({
+        id,
+        name: input.name.trim() || '未命名模型',
+        providerId: input.providerId,
+        params: JSON.stringify(this.encryptParams(params, input.providerId)),
+        model: input.model.trim(),
+        isDefault: isDefault ? 1 : 0,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      })
+
+    const total = Number(
+      (this.db.prepare('SELECT COUNT(*) AS n FROM model_profiles').get() as { n?: unknown } | undefined)?.n ?? 0
+    )
+    if (isDefault || total === 1) this.setDefaultModelProfile(id)
+    return this.modelProfileGet(id) as ModelProfile
+  }
+
+  modelProfileDelete(id: string): void {
+    const wasDefault = this.modelProfileGet(id)?.isDefault ?? false
+    this.db.prepare('DELETE FROM model_profiles WHERE id = ?').run(id)
+    // 删掉的正好是默认条目：让剩下最早的一个接手，别把库留在「没有默认」的中间态
+    if (wasDefault) {
+      const next = this.modelProfileList()[0]
+      if (next) this.setDefaultModelProfile(next.id)
+    }
+  }
+
+  /** 设为默认（互斥：全表先清零再置一） */
+  setDefaultModelProfile(id: string): void {
+    this.db.prepare('UPDATE model_profiles SET is_default = 0').run()
+    this.db.prepare('UPDATE model_profiles SET is_default = 1 WHERE id = ?').run(id)
+  }
+
+  /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
+  modelProfileListSafe(): ModelProfileSafe[] {
+    return this.modelProfileList().map((profile) => {
+      const secrets = secretFieldKeys(profile.providerId)
+      const hasSecret = secrets.some((key) => String(profile.params[key] ?? '').trim().length > 0)
+      const params = { ...profile.params }
+      for (const key of secrets) params[key] = ''
+      return {
+        ...profile,
+        params,
+        hasSecret,
+        ready: isModelProfileReady(profile, getLlmProvider(profile.providerId))
+      }
+    })
+  }
+
+  private toModelProfile(r: Record<string, unknown>): ModelProfile {
+    const providerId = str(r.provider_id)
+    return {
+      id: str(r.id),
+      name: str(r.name),
+      providerId,
+      params: this.decryptParams(r.params, providerId),
+      model: str(r.model),
+      isDefault: num(r.is_default) === 1,
+      createdAt: num(r.created_at) ?? 0,
+      updatedAt: num(r.updated_at) ?? 0
+    }
+  }
+
+  /** 密钥字段按 {"__enc": base64} 加密后内联进 params，与 config.json 用同一套写法 */
+  private encryptParams(
+    params: ModelProfile['params'],
+    providerId: string
+  ): Record<string, string | number | boolean | { __enc: string }> {
+    const secrets = secretFieldKeys(providerId)
+    const out: Record<string, string | number | boolean | { __enc: string }> = {}
+    const canEncrypt = safeStorage.isEncryptionAvailable()
+    for (const [key, value] of Object.entries(params)) {
+      if (secrets.includes(key) && canEncrypt && typeof value === 'string' && value.length > 0) {
+        out[key] = { __enc: safeStorage.encryptString(value).toString('base64') }
+        continue
+      }
+      out[key] = value
+    }
+    return out
+  }
+
+  private decryptParams(raw: unknown, providerId: string): ModelProfile['params'] {
+    const parsed = parseJson<Record<string, unknown>>(raw, {})
+    const secrets = secretFieldKeys(providerId)
+    const out: ModelProfile['params'] = {}
+    for (const [key, value] of Object.entries(parsed)) {
+      if (secrets.includes(key) && value && typeof value === 'object' && '__enc' in value) {
+        try {
+          out[key] = safeStorage.decryptString(Buffer.from(String((value as { __enc: unknown }).__enc), 'base64'))
+        } catch {
+          out[key] = ''
+        }
+        continue
+      }
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') out[key] = value
+    }
+    return out
+  }
+
+  /**
+   * 旧配置迁移：模型条目库为空且旧的 config.llm 填过密钥时，用它建一个默认条目。
+   * 旧的 config.llm 保留不动，仍作为解析链的最后一档兜底。
+   */
+  private migrateLegacyLlm(): void {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM model_profiles').get() as { n?: unknown } | undefined
+    if (Number(row?.n ?? 0) > 0) return
+    const { llm } = this.config
+    if (!llm.apiKey) return
+    this.modelProfileSave({
+      name: `${LLM_PROVIDER_META[llm.provider].label} · 默认`,
+      providerId: llm.provider,
+      params: { apiKey: llm.apiKey, baseUrl: llm.baseUrl },
+      model: llm.model,
+      isDefault: true
+    })
   }
 
   /** 兼容老库的加列 */
@@ -632,6 +816,7 @@ export class StorageService {
       background: str(r.background),
       taboos: str(r.taboos),
       voiceId: str(r.voice_id),
+      modelProfileId: str(r.model_profile_id) || null,
       roles,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -640,12 +825,13 @@ export class StorageService {
   personaSave(persona: Persona): void {
     this.db
       .prepare(
-        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, roles, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO agents (id, name, personality, catchphrases, background, taboos, voice_id, model_profile_id, roles, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, personality = excluded.personality,
            catchphrases = excluded.catchphrases, background = excluded.background,
            taboos = excluded.taboos, voice_id = excluded.voice_id,
+           model_profile_id = excluded.model_profile_id,
            roles = excluded.roles, updated_at = excluded.updated_at`
       )
       .run(
@@ -656,6 +842,7 @@ export class StorageService {
         persona.background,
         persona.taboos,
         persona.voiceId,
+        persona.modelProfileId ?? null,
         JSON.stringify(persona.roles),
         persona.updatedAt
       )

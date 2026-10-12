@@ -1,5 +1,4 @@
 import {
-  llmConfigured,
   ttsConfigured,
   type LaunchResult,
   type PreflightItem
@@ -12,6 +11,8 @@ import type { SpeechPool } from './SpeechPool'
 import type { StorageService } from './StorageService'
 import type { StreamService } from './stream/StreamService'
 import type { UtteranceService } from './UtteranceService'
+import { resolveModelForPersona } from './llmModel'
+import { getLlmProvider } from './providers/registry'
 
 /** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
 const LIBRARY_SOURCE_ID = 'library'
@@ -55,12 +56,19 @@ export class LaunchService {
       items.push({ level: 'ok', label: `人设：${persona.name}${roles}` })
     }
 
-    // ② 大脑与声音的凭据
-    items.push(
-      llmConfigured(cfg.llm)
-        ? { level: 'ok', label: `语言模型：${cfg.llm.provider} / ${cfg.llm.model}` }
-        : { level: 'block', label: '语言模型未配置', detail: '设置 → 语言模型：填 API Key 与模型' }
-    )
+    // ② 大脑与声音的凭据（模型按主播卡 → 默认条目 → 旧配置解析，和开播时用的完全是同一处逻辑）
+    try {
+      const resolved = resolveModelForPersona(this.storage, persona)
+      const label = getLlmProvider(resolved.providerId)?.label ?? resolved.providerId
+      const model = resolved.model || getLlmProvider(resolved.providerId)?.defaultModel || ''
+      items.push({ level: 'ok', label: `语言模型：${label} / ${model}` })
+    } catch (error) {
+      items.push({
+        level: 'block',
+        label: '没有可用的语言模型',
+        detail: error instanceof Error ? error.message : String(error)
+      })
+    }
     const ttsOk = ttsConfigured(cfg.tts)
     items.push(
       ttsOk

@@ -11,6 +11,7 @@ import {
   type ConnectorStatus,
   type DirectorMessage,
   type LiveComment,
+  type ModelProfileInput,
   type PartialDeep,
   type Persona,
   type PoolResult,
@@ -45,6 +46,8 @@ import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
 import { GenerationService, type GenerationProgress } from './services/GenerationService'
 import { LaunchService } from './services/LaunchService'
+import { testModelProfile } from './services/llmModel'
+import { listLlmProviders } from './services/providers/registry'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -344,6 +347,38 @@ function registerIpc(
 
   // ---------- TTS ----------
   ipcMain.handle(IPC.ttsTest, (_e, text: string) => tts.test(String(text ?? '').slice(0, 200)))
+
+  // ---------- 语言模型（模型条目库，设置 → 语言模型） ----------
+  ipcMain.handle(IPC.modelList, () => storage.modelProfileListSafe())
+  ipcMain.handle(IPC.modelSave, (_e, input: ModelProfileInput) => {
+    try {
+      storage.modelProfileSave({
+        id: input?.id,
+        name: String(input?.name ?? ''),
+        providerId: String(input?.providerId ?? ''),
+        params: input?.params ?? {},
+        model: String(input?.model ?? ''),
+        isDefault: Boolean(input?.isDefault)
+      })
+      return { ok: true, models: storage.modelProfileListSafe() }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC.modelRemove, (_e, id: string) => {
+    storage.modelProfileDelete(String(id ?? ''))
+    return { ok: true, models: storage.modelProfileListSafe() }
+  })
+  ipcMain.handle(IPC.modelSetDefault, (_e, id: string) => {
+    storage.setDefaultModelProfile(String(id ?? ''))
+    return { ok: true, models: storage.modelProfileListSafe() }
+  })
+  ipcMain.handle(IPC.modelTest, async (_e, id: string) => {
+    const profile = storage.modelProfileGet(String(id ?? ''))
+    if (!profile) return { ok: false, error: '条目不存在（可能刚被删掉）' }
+    return testModelProfile(profile)
+  })
+  ipcMain.handle(IPC.providersLlmList, () => listLlmProviders())
 
   // ---------- 主播 Agent ----------
   ipcMain.handle(IPC.agentStart, async () => {

@@ -1,27 +1,40 @@
 import { useState } from 'react'
-import { AudioLines, Brain, Cable, ExternalLink, MessageSquareText, Monitor, Moon, Palette, Radio, Sun } from 'lucide-react'
+import {
+  AudioLines,
+  Brain,
+  Cable,
+  ExternalLink,
+  MessageSquareText,
+  Monitor,
+  Moon,
+  Palette,
+  Pencil,
+  Plus,
+  Radio,
+  Star,
+  Sun,
+  Trash2
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '../stores/useAppStore'
+import { ProviderIcon } from '@/components/ProviderIcon'
+import { providerLabel, useAppStore, type LlmProviderManifest } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import {
   APP_ACCENTS,
   APP_ACCENT_META,
-  LLM_PROVIDER_META,
-  LLM_PROVIDERS,
   ttsConfigured,
   type AppAccent,
   type AppTheme,
-  type LlmConfig,
-  type LlmProvider,
+  type ModelProfileSafe,
   type StreamConfig,
   type StreamMode,
   type TtsConfig,
@@ -46,8 +59,8 @@ const THEME_OPTIONS: { id: AppTheme; label: string; icon: typeof Sun }[] = [
   { id: 'system', label: '跟随系统', icon: Monitor }
 ]
 
-/** 各家服务商的控制台与文档直达入口（凭据去哪儿拿） */
-const LLM_LINKS: Record<LlmProvider, { console: string; docs: string }> = {
+/** 各家服务商的控制台与文档直达入口（凭据去哪儿拿）；本地服务没有控制台，故可以没有 */
+const LLM_LINKS: Record<string, { console: string; docs: string } | undefined> = {
   deepseek: {
     console: 'https://platform.deepseek.com/api_keys',
     docs: 'https://api-docs.deepseek.com/zh-cn/'
@@ -139,7 +152,7 @@ export function SettingsDialog() {
           </nav>
           <div className="min-h-0 flex-1 overflow-y-auto p-5">
             {pane === 'appearance' && <AppearancePane />}
-            {pane === 'llm' && <div className="max-w-xl"><LlmSection /></div>}
+            {pane === 'llm' && <div className="max-w-2xl"><LlmSection /></div>}
             {pane === 'tts' && <div className="max-w-xl"><TtsSection /></div>}
             {pane === 'realtime' && <div className="max-w-xl"><RealtimeSection /></div>}
             {pane === 'stream' && <div className="max-w-xl"><StreamSection /></div>}
@@ -383,23 +396,54 @@ function CommentGatewayCard() {
   )
 }
 
-/** LLM 表单：主播 Agent 的大脑。provider 切换时带出默认模型和默认地址 */
+/**
+ * 语言模型：模型条目库（设置 = 库和默认值）。
+ * 一条条目 = 服务商 + 自有参数 + 模型名；字段由 provider 的 configFields 动态渲染，
+ * 加一家服务商不用改这里。密钥字段只在落盘时加密，渲染层只看得到「填没填过」。
+ */
 function LlmSection() {
-  const config = useAppStore((s) => s.config)
-  const saveConfig = useAppStore((s) => s.saveConfig)
-  const [form, setForm] = useState<LlmConfig>({ ...config.llm })
-  const [saving, setSaving] = useState(false)
+  const models = useAppStore((s) => s.models)
+  const providers = useAppStore((s) => s.llmProviders)
+  const setModels = useAppStore((s) => s.setModels)
+  const [editing, setEditing] = useState<{ profile?: ModelProfileSafe } | null>(null)
+  const [deleting, setDeleting] = useState<ModelProfileSafe | null>(null)
+  /** 待删条目被几张主播卡引用（删除前查一次，用于提示） */
+  const [usedBy, setUsedBy] = useState(0)
+  const [testingId, setTestingId] = useState('')
 
-  const dirty = JSON.stringify(form) !== JSON.stringify(config.llm)
-  const patch = (part: Partial<LlmConfig>) => setForm((prev) => ({ ...prev, ...part }))
-  const meta = LLM_PROVIDER_META[form.provider]
+  const test = async (profile: ModelProfileSafe) => {
+    if (testingId) return
+    setTestingId(profile.id)
+    try {
+      const result = await window.api.model.test(profile.id)
+      if (result.ok) toast.success(`「${profile.name}」连通正常`)
+      else toast.error('测试失败', { description: result.error })
+    } finally {
+      setTestingId('')
+    }
+  }
 
-  const save = () => {
-    setSaving(true)
-    saveConfig({ llm: form })
-      .then(() => toast.success('LLM 配置已保存', { description: '已启动的主播重启后使用新配置' }))
-      .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
-      .finally(() => setSaving(false))
+  const setDefault = (profile: ModelProfileSafe) => {
+    void window.api.model.setDefault(profile.id).then((result) => {
+      setModels(result.models)
+      toast.success(`「${profile.name}」已设为默认条目`)
+    })
+  }
+
+  const askDelete = async (profile: ModelProfileSafe) => {
+    const personas = await window.api.persona.list()
+    setUsedBy(personas.filter((item) => item.modelProfileId === profile.id).length)
+    setDeleting(profile)
+  }
+
+  const remove = () => {
+    const profile = deleting
+    if (!profile) return
+    setDeleting(null)
+    void window.api.model.remove(profile.id).then((result) => {
+      setModels(result.models)
+      toast.success(`已删除「${profile.name}」`)
+    })
   }
 
   return (
@@ -407,74 +451,349 @@ function LlmSection() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[13px] font-medium">语言模型（LLM）</p>
-          <p className="text-xs text-muted-foreground">主播 Agent 的大脑，DeepSeek / 通义 / 豆包 / Kimi / 智谱</p>
+          <p className="text-xs text-muted-foreground">
+            主播 Agent 的大脑。一条 = 一次可用的接入；人设卡可以各自指定，没指定就走默认条目
+          </p>
         </div>
-        <Button size="sm" disabled={!dirty || saving} onClick={save}>
-          {saving ? '保存中…' : dirty ? '保存' : '已保存'}
+        <Button size="sm" onClick={() => setEditing({})}>
+          <Plus />
+          新建条目
         </Button>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="col-span-2">
-          <Label className="mb-1">服务商</Label>
-          <Select
-            value={form.provider}
-            onValueChange={(v) => {
-              const provider = v as LlmProvider
-              // 切换服务商时如果模型还是上一个服务商的默认值，跟随换默认值
-              const followDefault =
-                !form.model || form.model === LLM_PROVIDER_META[form.provider].defaultModel
-              patch({
-                provider,
-                model: followDefault ? LLM_PROVIDER_META[provider].defaultModel : form.model
-              })
-            }}
-          >
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {LLM_PROVIDERS.map((id) => (
-                <SelectItem key={id} value={id}>
-                  {LLM_PROVIDER_META[id].label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <DocLinks
-            items={[
-              { label: `去 ${meta.label} 控制台拿 API Key`, url: LLM_LINKS[form.provider].console },
-              { label: '查看接入文档', url: LLM_LINKS[form.provider].docs }
-            ]}
-          />
-        </div>
-        <Field
-          label="API Key"
-          value={form.apiKey}
-          onChange={(v) => patch({ apiKey: v })}
-          type="password"
-          placeholder="sk-…"
-        />
-        <Field
-          label="模型"
-          value={form.model}
-          onChange={(v) => patch({ model: v })}
-          placeholder={meta.defaultModel}
-        />
-        <div className="col-span-2">
-          <Field
-            label="自定义 API 地址（留空走默认）"
-            value={form.baseUrl}
-            onChange={(v) => patch({ baseUrl: v })}
-            placeholder={meta.defaultBaseUrl}
-          />
-        </div>
+      <div className="mt-4 flex flex-col gap-2">
+        {models.length === 0 ? (
+          <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+            还没有模型条目。新建一个（选服务商、填 API Key 和模型名），主播才有大脑。
+          </p>
+        ) : (
+          models.map((profile) => {
+            const def = providers.find((item) => item.id === profile.providerId)
+            const modelName = profile.model || def?.defaultModel || '（用服务商默认模型）'
+            return (
+              <div
+                key={profile.id}
+                className="flex items-center gap-3 rounded-lg border bg-background px-3 py-2"
+              >
+                <ProviderIcon providerId={profile.providerId} />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-[13px] font-medium">{profile.name}</span>
+                    {profile.isDefault && (
+                      <Badge variant="secondary" className="shrink-0">
+                        默认
+                      </Badge>
+                    )}
+                    {!profile.ready && (
+                      <Badge variant="outline" className="shrink-0 text-muted-foreground">
+                        未配齐
+                      </Badge>
+                    )}
+                  </div>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {providerLabel(providers, profile.providerId)} · {modelName}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    disabled={testingId === profile.id}
+                    onClick={() => void test(profile)}
+                  >
+                    {testingId === profile.id ? '测试中…' : '测试'}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    title="编辑"
+                    onClick={() => setEditing({ profile })}
+                  >
+                    <Pencil />
+                  </Button>
+                  {!profile.isDefault && (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="设为默认"
+                      onClick={() => setDefault(profile)}
+                    >
+                      <Star />
+                    </Button>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    title="删除"
+                    onClick={() => void askDelete(profile)}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              </div>
+            )
+          })
+        )}
       </div>
 
-      {!form.apiKey && (
-        <p className="mt-3 text-xs text-muted-foreground">填好 API Key 后，到「主播团」启动主播</p>
+      <p className="mt-3 text-xs text-muted-foreground">
+        密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；条目没指定给谁就作全站默认。
+      </p>
+
+      {editing && (
+        <ModelEditorDialog
+          key={editing.profile?.id ?? 'new'}
+          profile={editing.profile}
+          providers={providers}
+          onClose={() => setEditing(null)}
+        />
       )}
+
+      <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>删除模型条目</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {usedBy > 0
+              ? `「${deleting?.name}」正被 ${usedBy} 张主播卡使用，删掉后它们会回落到默认条目。`
+              : `确认删除「${deleting?.name}」？`}
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeleting(null)}>
+              取消
+            </Button>
+            <Button variant="destructive" onClick={remove}>
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
+  )
+}
+
+/** 新建/编辑模型条目：服务商参数按 manifest 的 configFields 渲染，密钥字段用密码框 */
+function ModelEditorDialog({
+  profile,
+  providers,
+  onClose
+}: {
+  profile?: ModelProfileSafe
+  providers: LlmProviderManifest[]
+  onClose: () => void
+}) {
+  const setModels = useAppStore((s) => s.setModels)
+  const [providerId, setProviderId] = useState(profile?.providerId ?? providers[0]?.id ?? 'deepseek')
+  const [name, setName] = useState(profile?.name ?? '')
+  const [model, setModel] = useState(profile?.model ?? '')
+  const [isDefault, setIsDefault] = useState(profile?.isDefault ?? false)
+  const [busy, setBusy] = useState(false)
+  const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
+    const def = providers.find((item) => item.id === profile?.providerId) ?? providers[0]
+    const initial: Record<string, string | number | boolean> = { ...(profile?.params ?? {}) }
+    for (const field of def?.configFields ?? []) {
+      if (initial[field.key] === undefined && field.default !== undefined) initial[field.key] = field.default
+    }
+    return initial
+  })
+
+  const def = providers.find((item) => item.id === providerId)
+  const links = LLM_LINKS[providerId]
+  const patch = (part: { key: string; value: string | number | boolean }) =>
+    setParams((prev) => ({ ...prev, [part.key]: part.value }))
+
+  /** 换服务商：按新服务商的字段重排参数，同名字段（apiKey / baseUrl）保留已填的值 */
+  const changeProvider = (next: string) => {
+    setProviderId(next)
+    const nextDef = providers.find((item) => item.id === next)
+    const nextParams: Record<string, string | number | boolean> = {}
+    for (const field of nextDef?.configFields ?? []) {
+      const current = params[field.key]
+      nextParams[field.key] = current !== undefined ? current : (field.default ?? '')
+    }
+    setParams(nextParams)
+  }
+
+  const save = async () => {
+    if (busy) return
+    if (!name.trim()) {
+      toast.warning('先给这个条目起个名字')
+      return
+    }
+    setBusy(true)
+    try {
+      const result = await window.api.model.save({
+        id: profile?.id,
+        name,
+        providerId,
+        params,
+        model,
+        isDefault
+      })
+      if (!result.ok) {
+        toast.error('保存失败', { description: result.error })
+        return
+      }
+      setModels(result.models)
+      toast.success(profile ? '条目已保存' : '条目已新建', {
+        description: '已启动的主播重启后使用新模型'
+      })
+      onClose()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>{profile ? `模型条目 · ${profile.name || '未命名'}` : '新建模型条目'}</DialogTitle>
+        </DialogHeader>
+
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="mb-1">名称</Label>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder={def ? `如：${def.label} 主号` : '如：DeepSeek 主号'}
+              />
+            </div>
+            <div>
+              <Label className="mb-1">服务商</Label>
+              <Select value={providerId} onValueChange={changeProvider}>
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {providers.map((item) => (
+                    <SelectItem key={item.id} value={item.id}>
+                      <span className="flex items-center gap-2">
+                        <ProviderIcon providerId={item.id} size="sm" />
+                        {item.label}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          {def && <p className="-mt-1 text-xs text-muted-foreground">{def.note}</p>}
+
+          <div className="flex flex-col gap-3">
+            {(def?.configFields ?? []).map((field) => (
+              <div key={field.key}>
+                <Label className="mb-1">{field.label}</Label>
+                <ProviderField
+                  field={field}
+                  value={params[field.key] ?? ''}
+                  secretSaved={Boolean(profile?.hasSecret && field.secret)}
+                  onChange={(value) => patch({ key: field.key, value })}
+                />
+                {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <Label className="mb-1">模型名（留空用服务商默认模型）</Label>
+            <Input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={def?.defaultModel || '本地服务填已有的模型名，例如 qwen3:8b'}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2">
+            <div>
+              <p className="text-[13px]">设为默认条目</p>
+              <p className="text-xs text-muted-foreground">没绑定模型的场景与主播卡都用它</p>
+            </div>
+            <Switch checked={isDefault} onCheckedChange={setIsDefault} aria-label="设为默认条目" />
+          </div>
+
+          {links && (
+            <DocLinks
+              items={[
+                { label: `去 ${def?.label ?? providerId} 控制台拿 API Key`, url: links.console },
+                { label: '查看接入文档', url: links.docs }
+              ]}
+            />
+          )}
+        </div>
+
+        <DialogFooter className="gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            取消
+          </Button>
+          <Button disabled={busy} onClick={() => void save()}>
+            {busy ? '保存中…' : '保存'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** manifest 驱动的单个配置字段：type 映射到现有控件，secret 用密码框 */
+function ProviderField({
+  field,
+  value,
+  secretSaved,
+  onChange
+}: {
+  field: LlmProviderManifest['configFields'][number]
+  value: string | number | boolean
+  secretSaved: boolean
+  onChange: (value: string | number | boolean) => void
+}) {
+  if (field.type === 'switch') {
+    return (
+      <Switch
+        checked={Boolean(value)}
+        onCheckedChange={onChange}
+        aria-label={field.label}
+      />
+    )
+  }
+  if (field.type === 'select') {
+    return (
+      <Select value={String(value ?? '')} onValueChange={onChange}>
+        <SelectTrigger className="w-full">
+          <SelectValue placeholder={field.placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {(field.options ?? []).map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (field.type === 'number') {
+    return (
+      <Input
+        type="number"
+        value={String(value ?? '')}
+        placeholder={field.placeholder}
+        onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+      />
+    )
+  }
+  return (
+    <Input
+      type={field.type === 'password' ? 'password' : 'text'}
+      value={String(value ?? '')}
+      placeholder={secretSaved ? '已保存，留空表示不修改' : field.placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
   )
 }
 

@@ -10,9 +10,7 @@ import {
   type ToolDefinition
 } from '@earendil-works/pi-coding-agent'
 import {
-  llmConfigured,
   type LivePlan,
-  type LlmConfig,
   type Persona,
   type Script,
   type ScriptScene
@@ -23,7 +21,8 @@ import type { UtteranceService } from './UtteranceService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
 import { GENERATION_TOOL_NAMES, buildGenerationTools } from './generationTools'
-import { prepareLlmModel } from './llmModel'
+import { prepareLlmModel, resolveModelForPersona } from './llmModel'
+import type { ResolvedModel } from './providers/registry'
 
 /** 生成进度（main → renderer 广播，驱动场次页生成状态） */
 export interface GenerationProgress {
@@ -64,18 +63,19 @@ export class GenerationService {
   /** 启动生成：校验同步抛错（UI 立即反馈）；会话创建与逐场景循环在后台跑，进度走广播 */
   start(planId: string): void {
     if (this.running) throw new Error('已有生成任务在跑，等它完成或先取消')
-    const llm = this.storage.getConfig().llm
-    if (!llmConfigured(llm)) throw new Error('LLM 未配置：先到「设置 → 接入」填 API Key 和模型')
     const plan = this.storage.planList().find((p) => p.id === planId)
     if (!plan) throw new Error('场次不存在')
     const script = this.script.getScript(plan.scriptId)
     if (!script || script.scenes.length === 0) {
       throw new Error('先给场次绑定剧本——生成按场景逐场产出')
     }
-    void this.run(plan, script, llm)
+    // 模型：场次绑了主播卡就用那张卡的，没绑就用全局默认条目
+    const bound = plan.personaId ? (this.persona.list().find((p) => p.id === plan.personaId) ?? null) : null
+    const resolved = resolveModelForPersona(this.storage, bound)
+    void this.run(plan, script, resolved)
   }
 
-  private async run(plan: LivePlan, script: Script, llm: LlmConfig): Promise<void> {
+  private async run(plan: LivePlan, script: Script, resolved: ResolvedModel): Promise<void> {
     const planId = plan.id
     // 人设：场次绑定的优先，否则用当前人设
     const persona = plan.personaId
@@ -95,7 +95,7 @@ export class GenerationService {
 
     let session: AgentSession
     try {
-      session = await this.createSession(llm, plan, persona, script, tools)
+      session = await this.createSession(resolved, plan, persona, script, tools)
     } catch (error) {
       this.broadcast({
         planId,
@@ -159,14 +159,14 @@ export class GenerationService {
   }
 
   private async createSession(
-    llm: LlmConfig,
+    resolved: ResolvedModel,
     plan: LivePlan,
     persona: Persona,
     script: Script,
     tools: ToolDefinition[]
   ): Promise<AgentSession> {
     const agentDir = join(app.getPath('userData'), 'pi-generate')
-    const { model, modelRuntime } = await prepareLlmModel(llm, agentDir)
+    const { model, modelRuntime } = await prepareLlmModel(resolved, agentDir)
 
     const resourceLoader: ResourceLoader = {
       getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),

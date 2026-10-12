@@ -26,6 +26,16 @@ export const IPC = {
   // TTS
   ttsTest: 'tts:test',
 
+  // 语言模型（模型条目库 + 服务商注册表）
+  modelList: 'model:list',
+  modelSave: 'model:save',
+  modelRemove: 'model:remove',
+  modelSetDefault: 'model:set-default',
+  /** 连通性测试：对该条目发一个最小请求 */
+  modelTest: 'model:test',
+  /** 服务商能力与配置字段清单（设置页据此动态渲染表单） */
+  providersLlmList: 'providers:llm-list',
+
   // 主播 Agent
   agentStart: 'agent:start',
   agentStop: 'agent:stop',

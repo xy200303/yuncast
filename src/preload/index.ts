@@ -13,6 +13,8 @@ import type {
   LivePlan,
   LivePlanInput,
   LaunchResult,
+  ModelProfileInput,
+  ModelProfileSafe,
   PartialDeep,
   Persona,
   PlaybackControlAction,
@@ -36,6 +38,7 @@ import type {
   ViewerProfile
 } from '../shared/types'
 import type { GenerationProgress } from '../main/services/GenerationService'
+import type { LlmProviderManifest } from '../main/services/providers/registry'
 
 /**
  * 渲染进程唯一可见的 API 白名单。
@@ -80,6 +83,25 @@ const api = {
   tts: {
     test: (text: string) =>
       ipcRenderer.invoke(IPC.ttsTest, text) as Promise<{ ok: boolean; error?: string; audioPath?: string }>
+  },
+  /** 语言模型条目库（设置 → 语言模型）。密钥字段的值不出主进程，只有 hasSecret / ready 两个标记 */
+  model: {
+    list: () => ipcRenderer.invoke(IPC.modelList) as Promise<ModelProfileSafe[]>,
+    save: (input: ModelProfileInput) =>
+      ipcRenderer.invoke(IPC.modelSave, input) as Promise<
+        { ok: true; models: ModelProfileSafe[] } | { ok: false; error: string }
+      >,
+    remove: (id: string) =>
+      ipcRenderer.invoke(IPC.modelRemove, id) as Promise<{ ok: true; models: ModelProfileSafe[] }>,
+    setDefault: (id: string) =>
+      ipcRenderer.invoke(IPC.modelSetDefault, id) as Promise<{ ok: true; models: ModelProfileSafe[] }>,
+    /** 连通性测试（对条目发一个最小请求） */
+    test: (id: string) =>
+      ipcRenderer.invoke(IPC.modelTest, id) as Promise<{ ok: boolean; error?: string }>
+  },
+  providers: {
+    /** 服务商能力与配置字段（表单由 manifest 驱动渲染） */
+    llmList: () => ipcRenderer.invoke(IPC.providersLlmList) as Promise<LlmProviderManifest[]>
   },
   agent: {
     start: () => ipcRenderer.invoke(IPC.agentStart) as Promise<{ ok: boolean; error?: string }>,

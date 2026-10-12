@@ -6,6 +6,7 @@ import { NAV_ITEMS } from './Sidebar'
 export function StatusBar() {
   const page = useAppStore((s) => s.page)
   const config = useAppStore((s) => s.config)
+  const models = useAppStore((s) => s.models)
   const pool = useAppStore((s) => s.pool)
   const agentState = useAppStore((s) => s.agent.state)
   const stream = useAppStore((s) => s.stream)
@@ -13,7 +14,7 @@ export function StatusBar() {
   const current = NAV_ITEMS.find((item) => item.id === page)
   const playing = pool.items.find((item) => item.status === 'playing')
   const ttsReady = selectTtsReady(config)
-  const llmReady = selectLlmReady(config)
+  const llmReady = selectLlmReady(models, config)
 
   const streamBadge =
     stream.state === 'live'

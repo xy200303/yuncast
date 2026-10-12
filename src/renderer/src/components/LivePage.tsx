@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   Bot,
   CheckCircle2,
+  ChevronRight,
   Clapperboard,
   Loader2,
   Megaphone,
@@ -640,21 +641,24 @@ type ChatEntry =
     }
   | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
 
-/** 工具卡片：工具名 + 参数一行 + 状态（运行中转圈 / 成功 / 失败）+ 结果摘要 */
+/** 工具卡片：单行（图标 + 工具名 + 参数截断 + 时长/状态），点开看完整参数与结果 */
 function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
+  const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-lg border bg-muted/40 px-2.5 py-1.5">
-      <div className="flex items-center gap-1.5 font-mono text-[11px]">
+    <div className="rounded-lg border border-border/60 bg-muted/30">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-muted/50"
+        onClick={() => setOpen((prev) => !prev)}
+      >
         <Wrench className="size-3 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 text-foreground/80">{entry.name}</span>
+        <span className="shrink-0 font-mono text-[11px] text-foreground/80">{entry.name}</span>
         {entry.args && (
-          <span className="min-w-0 truncate text-muted-foreground" title={entry.args}>
-            {entry.args}
-          </span>
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{entry.args}</span>
         )}
-        <span className="ml-auto flex shrink-0 items-center gap-1">
+        <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {entry.durationMs !== undefined && (
-            <span className="text-[10px] text-muted-foreground/60">{Math.round(entry.durationMs)}ms</span>
+            <span className="font-mono text-[10px] text-muted-foreground/60">{Math.round(entry.durationMs)}ms</span>
           )}
           {entry.status === 'running' ? (
             <Loader2 className="size-3 animate-spin text-muted-foreground" />
@@ -663,18 +667,18 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
           ) : (
             <XCircle className="size-3 text-destructive" />
           )}
+          <ChevronRight className={cn('size-3 text-muted-foreground/60 transition-transform', open && 'rotate-90')} />
         </span>
-      </div>
-      {entry.result && (
-        <p
-          className={cn(
-            'mt-0.5 truncate pl-[18px] text-[11px]',
-            entry.status === 'error' ? 'text-destructive/80' : 'text-muted-foreground'
+      </button>
+      {open && (
+        <div className="flex flex-col gap-1 border-t border-border/60 px-2 py-1.5 font-mono text-[11px] leading-[17px]">
+          {entry.args && <p className="whitespace-pre-wrap break-all text-muted-foreground">{entry.args}</p>}
+          {entry.result && (
+            <p className={cn('whitespace-pre-wrap break-all', entry.status === 'error' ? 'text-destructive' : 'text-foreground/80')}>
+              {entry.result}
+            </p>
           )}
-          title={entry.result}
-        >
-          {entry.result}
-        </p>
+        </div>
       )}
     </div>
   )
@@ -872,7 +876,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     <div className="flex min-h-0 flex-1 flex-col">
       <div
         ref={listRef}
-        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2"
+        className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-2"
         onScroll={(e) => {
           const el = e.currentTarget
           stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
@@ -891,12 +895,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           entries.map((entry, index) => {
             const prev = entries[index - 1]
             const dayBreak = prev ? new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString() : false
-            // 主播连着一串产出（文本/工具/请示）只在第一条显示头像
-            const aiRun = entry.type !== 'director' && prev?.type === 'director'
-            /**
-             * 「最终回复」标签只在本轮出现过中间内容（工具卡片 / 别的文本）时才加：
-             * 一轮从头到尾只有一段文本时，这个标签没有对照物，反而让人以为是重复的第二条回复。
-             */
+            /** 「最终回复」标签只在本轮出现过中间内容（工具卡片 / 别的文本）时才加，避免看起来像重复 */
             const showFinalLabel =
               entry.type === 'text' &&
               entry.final &&
@@ -906,17 +905,6 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                   (item.type === 'text' || item.type === 'tool') &&
                   item.turnId === entry.turnId
               )
-            const avatar = (
-              <span
-                className={cn(
-                  'mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary',
-                  aiRun ? '' : 'opacity-0'
-                )}
-                aria-hidden={!aiRun}
-              >
-                <Bot className="size-3.5" />
-              </span>
-            )
             return (
               <Fragment key={entry.id}>
                 {dayBreak && (
@@ -943,40 +931,29 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                     </div>
                     <span className="px-1 font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
                   </div>
-                ) : (
-                  <div className="flex max-w-[92%] gap-2">
-                    {avatar}
-                    <div className="min-w-0 flex-1">
-                      {entry.type === 'text' && !entry.final ? (
-                        // 中间文本：不套气泡，淡色小字就行（流式追加时不会跳成多块）
-                        <p className="whitespace-pre-wrap px-1 text-[13px] leading-[21px] text-muted-foreground">
-                          {entry.text}
-                          {agent.state === 'running' && index === entries.length - 1 && (
-                            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
-                          )}
-                        </p>
-                      ) : entry.type === 'text' ? (
-                        <div>
-                          <div className="mb-1 flex items-center gap-2">
-                            <span className="text-[12px] font-medium">主播</span>
-                            {showFinalLabel && (
-                              <span className="rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground">
-                                最终回复
-                              </span>
-                            )}
-                            <span className="font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
-                          </div>
-                          <div className="rounded-2xl rounded-tl-sm bg-muted px-3 py-2">
-                            <MiniMarkdown text={entry.text} />
-                          </div>
-                        </div>
-                      ) : entry.type === 'tool' ? (
-                        <ToolCard entry={entry} />
-                      ) : (
-                        <AskCard message={entry.message} now={now} onAnswer={answerAsk} />
+                ) : entry.type === 'text' && !entry.final ? (
+                  // 中间文本：淡色、不套气泡、铺满宽度（流式追加时不会跳成多块）
+                  <p className="whitespace-pre-wrap text-[13px] leading-[21px] text-muted-foreground">
+                    {entry.text}
+                    {agent.state === 'running' && index === entries.length - 1 && (
+                      <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
+                    )}
+                  </p>
+                ) : entry.type === 'text' ? (
+                  // 最终回复：正常前景色，同样铺满宽度；只有在轮内有中间内容时才标"最终回复"
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      {showFinalLabel && (
+                        <span className="font-mono text-[10px] text-muted-foreground/70">最终回复</span>
                       )}
+                      <span className="font-mono text-[10px] text-muted-foreground/50">{clock(entry.ts)}</span>
                     </div>
+                    <MiniMarkdown text={entry.text} />
                   </div>
+                ) : entry.type === 'tool' ? (
+                  <ToolCard entry={entry} />
+                ) : (
+                  <AskCard message={entry.message} now={now} onAnswer={answerAsk} />
                 )}
               </Fragment>
             )

@@ -641,40 +641,41 @@ type ChatEntry =
     }
   | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
 
-/** 工具卡片：单行（图标 + 工具名 + 参数截断 + 时长/状态），点开看完整参数与结果 */
+/**
+ * 工具调用：做成一行"日志行"——浅灰等宽字 + 小图标，不套边框卡片，好让文本穿插其间时读起来连贯。
+ * 点一下展开完整参数与结果。
+ */
 function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
   const [open, setOpen] = useState(false)
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/30">
+    <div className="flex flex-col">
       <button
         type="button"
-        className="flex w-full items-center gap-1.5 px-2 py-1 text-left hover:bg-muted/50"
+        className="group flex w-full items-center gap-1.5 rounded px-0.5 py-0.5 text-left text-muted-foreground hover:bg-muted/40 hover:text-foreground"
         onClick={() => setOpen((prev) => !prev)}
       >
-        <Wrench className="size-3 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 font-mono text-[11px] text-foreground/80">{entry.name}</span>
-        {entry.args && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{entry.args}</span>
-        )}
+        <Wrench className="size-3 shrink-0 opacity-60" />
+        <span className="shrink-0 font-mono text-[11px]">{entry.name}</span>
+        {entry.args && <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-75">{entry.args}</span>}
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
           {entry.durationMs !== undefined && (
-            <span className="font-mono text-[10px] text-muted-foreground/60">{Math.round(entry.durationMs)}ms</span>
+            <span className="font-mono text-[10px] opacity-50">{Math.round(entry.durationMs)}ms</span>
           )}
           {entry.status === 'running' ? (
-            <Loader2 className="size-3 animate-spin text-muted-foreground" />
+            <Loader2 className="size-3 animate-spin opacity-60" />
           ) : entry.status === 'ok' ? (
-            <CheckCircle2 className="size-3 text-emerald-600" />
+            <CheckCircle2 className="size-3 text-emerald-600/70" />
           ) : (
-            <XCircle className="size-3 text-destructive" />
+            <XCircle className="size-3 text-destructive/80" />
           )}
-          <ChevronRight className={cn('size-3 text-muted-foreground/60 transition-transform', open && 'rotate-90')} />
+          <ChevronRight className={cn('size-3 opacity-40 transition-transform', open && 'rotate-90')} />
         </span>
       </button>
       {open && (
-        <div className="flex flex-col gap-1 border-t border-border/60 px-2 py-1.5 font-mono text-[11px] leading-[17px]">
-          {entry.args && <p className="whitespace-pre-wrap break-all text-muted-foreground">{entry.args}</p>}
+        <div className="mt-0.5 flex flex-col gap-1 border-l border-border/70 py-0.5 pl-3 font-mono text-[11px] leading-[17px] text-muted-foreground">
+          {entry.args && <p className="whitespace-pre-wrap break-all opacity-80">{entry.args}</p>}
           {entry.result && (
-            <p className={cn('whitespace-pre-wrap break-all', entry.status === 'error' ? 'text-destructive' : 'text-foreground/80')}>
+            <p className={cn('whitespace-pre-wrap break-all', entry.status === 'error' ? 'text-destructive' : 'opacity-90')}>
               {entry.result}
             </p>
           )}

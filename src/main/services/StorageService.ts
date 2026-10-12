@@ -66,7 +66,6 @@ type StoredValue = string | { __enc: string }
 const SECRET_KEYS = [
   'tts.accessToken',
   'tts.apiKey',
-  'ttsRealtime.apiKey',
   'llm.apiKey',
   'stream.streamKey',
   'comment.connectorToken'

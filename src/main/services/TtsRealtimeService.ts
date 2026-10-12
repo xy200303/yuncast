@@ -1,20 +1,19 @@
 import type { StorageService } from './StorageService'
-import { TTS_PROVIDER_SHORT } from '../../shared/types'
+import type { TtsService } from './TtsService'
 
 /**
- * 实时语音通道（双向 WebSocket 的 Realtime 模型）。
+ * 实时语音通道（双向 WebSocket 的 Realtime 模型）——**不是另一套配置，而是语音接入的另一种通道**。
  *
- * 与「语音合成」通道的区别（见 docs/02-TTS选型调研 §三档）：
- *   语音合成：HTTP 批量（预合成）或 HTTP+SSE 流式输出 —— 文本整段给入
- *   实时语音：WebSocket 双向 —— 文本可流式喂入，进一步压首包延迟；未来可承载双向语音对话
- * 二者模型、端点、鉴权口径都不同（百炼实时端点形如
- *   wss://{workspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference），
- * 因此配置上分成两组（config.tts 与 config.ttsRealtime）。
+ * 三种通道（都在同一条接入下）：
+ *   HTTP 整段（预合成成文件）→ 文本已知的剧本/暖场话术，播出零延迟
+ *   HTTP + SSE 流式        → 动态内容的默认通道，边合成边播
+ *   WebSocket 双向实时      → 文本可流式喂入，首包更低；未来承载双向语音对话
+ * 通道由引擎按内容挑（见 SpeechPool），用户在接入上只回答「动态内容要不要边走边合成」。
+ * 凭据、模型、参数全都来自该音色路由到的那条接入，这里不单独配置任何东西。
  *
  * ⚠ 协议状态：端点与模型名已按官方文档（help.aliyun.com/zh/model-studio/qwen-tts-realtime）确认，
- * 但**WS 事件帧的具体格式（握手/文本帧/音频帧/结束帧）尚未核对**（该页指向的 Realtime API 文档未取到）。
- * 因此本文件把协议细节集中在 `connect()` 内并明确抛错，由上层降级到 SSE 流式通道——
- * 核对文档后只需补齐 `connect()` 与帧解析，其余（配置、路由、降级、播放）都已就位。
+ * 但 **WS 事件帧的具体格式尚未核对**，所以 `available()` 恒为 false，上层降级到 SSE 流式。
+ * 核对文档后只需补齐 `connect()` 与帧解析，其余（路由、降级、播放）都已就位。
  */
 
 export interface RealtimeChunk {
@@ -31,36 +30,36 @@ export interface RealtimeHandlers {
 export class TtsRealtimeService {
   private sockets = new Map<string, WebSocket>()
 
-  constructor(private readonly storage: StorageService) {}
+  constructor(
+    private readonly storage: StorageService,
+    private readonly tts: TtsService
+  ) {}
 
   /**
-   * 实时通道用的凭据：按实时配置**自己的服务商**取该服务商最早建的那条接入
-   * （与「语音合成」共用同一份凭据，不需要再填一遍 API Key）。
-   * 这里没有「默认接入」：实时通道本身就是接入级策略（realtime 开关 + 这条接入的凭据）。
+   * 实时通道用的凭据：这条音色路由到的那条接入（与语音合成同一份凭据，不用再填一遍）。
+   * 没有音色或路由不通就返回 null。
    */
-  connectionParams(): Record<string, string | number | boolean> | null {
-    const provider = this.storage.getConfig().ttsRealtime.provider
-    return this.storage.ttsConnectionFirstOf(provider)?.params ?? null
+  connectionParams(voiceId?: string): Record<string, string | number | boolean> | null {
+    try {
+      return this.tts.routeForVoice(voiceId).connection.params
+    } catch {
+      return null
+    }
   }
 
-  /** 实时通道是否可用（配置齐 + 凭据那条接入在 + 协议已核对）。协议未核对期间恒为 false，池会降级到流式通道。 */
-  available(): boolean {
-    const cfg = this.storage.getConfig().ttsRealtime
-    if (!cfg.enabled) return false
-    if (!this.connectionParams()) return false
+  /** 实时通道是否可用（协议已核对 + 凭据齐）。协议未核对期间恒为 false，池会降级到 SSE 流式。 */
+  available(voiceId?: string): boolean {
+    if (!this.connectionParams(voiceId)) return false
     // TODO(协议核对后置为 true)：见文件头说明
     return false
   }
 
-  /** 不可用原因（给 UI/日志用的人话） */
-  unavailableReason(): string {
-    const cfg = this.storage.getConfig().ttsRealtime
-    if (!cfg.enabled) return '未启用实时语音'
-    if (!cfg.wsUrl) return '实时语音端点未配置（需要带业务空间 ID 的 wss 地址）'
-    if (!this.connectionParams()) {
-      return `${TTS_PROVIDER_SHORT[cfg.provider]}的接入未配置：到设置 → 语音合成加上（实时语音与语音合成共用凭据）`
+  /** 不可用原因（给诊断/日志用的人话） */
+  unavailableReason(voiceId?: string): string {
+    if (!this.connectionParams(voiceId)) {
+      return '这条音色还没有可用的接入（凭据不齐）：动态内容走整段或流式合成'
     }
-    return '实时语音协议尚未核对（已隔离在 TtsRealtimeService，核对后即可启用）'
+    return '实时通道协议尚未核对（已隔离在 TtsRealtimeService）；动态内容降级到流式合成'
   }
 
   /**

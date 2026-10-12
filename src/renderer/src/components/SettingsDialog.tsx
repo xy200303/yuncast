@@ -10,7 +10,6 @@ import {
   Palette,
   Pencil,
   Plus,
-  Radio,
   Sun,
   Trash2
 } from 'lucide-react'
@@ -45,17 +44,15 @@ import {
   type StreamConfig,
   type StreamMode,
   type TtsConnectionSafe,
-  type TtsRealtimeConfig,
   type TtsProvider
 } from '../../../shared/types'
 
-type Pane = 'appearance' | 'llm' | 'tts' | 'realtime' | 'stream' | 'comment'
+type Pane = 'appearance' | 'llm' | 'tts' | 'stream' | 'comment'
 
 const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'llm', label: '语言模型', icon: Brain },
   { id: 'tts', label: '语音合成', icon: AudioLines },
-  { id: 'realtime', label: '实时语音', icon: Radio },
   { id: 'stream', label: '推流', icon: Cable },
   { id: 'comment', label: '连接器', icon: MessageSquareText }
 ]
@@ -150,7 +147,6 @@ export function SettingsDialog() {
             {pane === 'appearance' && <AppearancePane />}
             {pane === 'llm' && <div className="max-w-2xl"><LlmSection /></div>}
             {pane === 'tts' && <div className="max-w-3xl"><TtsSection /></div>}
-            {pane === 'realtime' && <div className="max-w-xl"><RealtimeSection /></div>}
             {pane === 'stream' && <div className="max-w-xl"><StreamSection /></div>}
             {pane === 'comment' && <div className="max-w-xl"><CommentGatewayCard /></div>}
           </div>
@@ -1026,105 +1022,6 @@ function ProviderField({
   )
 }
 
-/** 实时语音（Realtime 模型，双向 WS）：与「语音合成」是两套模型/协议/端点，故独立成栏 */
-function RealtimeSection() {
-  const config = useAppStore((s) => s.config)
-  const saveConfig = useAppStore((s) => s.saveConfig)
-  const [form, setForm] = useState<TtsRealtimeConfig>({ ...config.ttsRealtime })
-  const [saving, setSaving] = useState(false)
-
-  const dirty = JSON.stringify(form) !== JSON.stringify(config.ttsRealtime)
-  const patch = (part: Partial<TtsRealtimeConfig>) => setForm((prev) => ({ ...prev, ...part }))
-
-  const save = () => {
-    setSaving(true)
-    saveConfig({ ttsRealtime: form })
-      .then(() => toast.success('实时语音配置已保存', { description: '动态内容将优先走实时通道' }))
-      .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
-      .finally(() => setSaving(false))
-  }
-
-  return (
-    <div className="rounded-lg border bg-card px-4 py-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[13px] font-medium">实时语音（Realtime 模型）</p>
-          <p className="text-xs text-muted-foreground">
-            双向 WebSocket 的实时语音模型：文本可流式喂入、首包更低；与「语音合成」是不同的模型与协议
-          </p>
-        </div>
-        <Button size="sm" disabled={!dirty || saving} onClick={save}>
-          {saving ? '保存中…' : dirty ? '保存' : '已保存'}
-        </Button>
-      </div>
-
-      <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
-        <div>
-          <p className="text-[13px]">启用实时语音通道</p>
-          <p className="text-xs text-muted-foreground">
-            关闭时动态内容走「语音合成」的流式（SSE）；开启后优先走实时通道，未配置或异常时自动降级
-          </p>
-        </div>
-        <Switch checked={form.enabled} onCheckedChange={(v) => patch({ enabled: v })} aria-label="实时语音开关" />
-      </div>
-
-      <div className="mt-3 grid grid-cols-2 gap-3">
-        <div className="col-span-2">
-          <Label className="mb-1">服务商</Label>
-          <Select value={form.provider} onValueChange={(v) => patch({ provider: v as TtsRealtimeConfig['provider'] })}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="bailian">阿里云百炼（Qwen-Audio-TTS / CosyVoice）</SelectItem>
-              <SelectItem value="volcano">火山引擎（实时对话）</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <Field label="模型" value={form.model} onChange={(v) => patch({ model: v })} placeholder="qwen-audio-3.0-tts-flash" />
-        <Field label="音色" value={form.voiceId} onChange={(v) => patch({ voiceId: v })} placeholder="longanhuan_v3.6 / Cherry" />
-        <div className="col-span-2">
-          <Field
-            label="WebSocket 端点（百炼需带业务空间 ID）"
-            value={form.wsUrl}
-            onChange={(v) => patch({ wsUrl: v })}
-            placeholder="wss://{workspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference"
-          />
-        </div>
-        <div className="col-span-2">
-          <Field
-            label="API Key（不用填：凭据取自「语音合成」里对应服务商的接入）"
-            value={form.apiKey}
-            onChange={(v) => patch({ apiKey: v })}
-            type="password"
-            placeholder="留空即可"
-          />
-        </div>
-        <div className="col-span-2">
-          <Field
-            label="指令控制（可选，自然语言描述语音表现）"
-            value={form.instruction}
-            onChange={(v) => patch({ instruction: v })}
-            placeholder="例如：语速稍快，语气热情，像直播间卖货"
-          />
-        </div>
-      </div>
-
-      <DocLinks
-        items={[
-          { label: '实时语音合成文档', url: 'https://help.aliyun.com/zh/model-studio/qwen-tts-realtime' },
-          { label: '去百炼控制台拿 API Key', url: 'https://bailian.console.aliyun.com/?tab=model#/api-key' }
-        ]}
-      />
-
-      <p className="mt-3 text-xs text-muted-foreground">
-        状态：端点与模型名已按官方文档配置；<span className="text-foreground">WS 事件帧协议尚待核对</span>，
-        核对完成前动态内容会自动降级为「语音合成」的流式播报。
-      </p>
-    </div>
-  )
-}
-
 /** 接入里的凭据字段（manifest 的 configFields 全部是凭据） */
 function credentialFields(def: TtsProviderManifest): ProviderFieldSpec[] {
   return def.configFields
@@ -1748,7 +1645,7 @@ function TtsConnectionEditorDialog({
               <p className="text-sm">实时合成</p>
               <p className="mt-0.5 text-xs text-muted-foreground">
                 {restreamable
-                  ? '动态内容（评论回复等）边合成边播，首包更快；剧本类话术照旧提前预合成'
+                  ? '动态内容（评论回复等）边合成边播，首包更快；剧本类话术照旧提前预合成。双向实时通道协议核对中，暂时走 SSE 流式'
                   : '勾上的模型都不支持流式，开不了'}
               </p>
             </div>

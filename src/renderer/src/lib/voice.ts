@@ -23,7 +23,7 @@ export interface CatalogModel {
   model: TtsModelSpec
 }
 
-/** 扁平模型目录：跳过硬实时模型（那是「实时语音」栏的事，不进合成选择器） */
+/** 扁平模型目录：跳过纯实时模型（它们不进合成选择器，通道由接入的实时合成开关决定） */
 export function flattenModelCatalog(manifests: ManifestLike[]): CatalogModel[] {
   const list: CatalogModel[] = []
   for (const manifest of manifests) {

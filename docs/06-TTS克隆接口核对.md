@@ -51,6 +51,10 @@
 
 ## 附：实时 TTS（流式合成）· 2026-10-12 更新
 
+> 配置口径（2026-10-12 晚）：独立的「实时语音」设置栏已删除。实时/流式是**接入的通道**，
+> 由接入里的「实时合成」开关 + 模型能力位决定；`TtsRealtimeService` 只剩协议实现位（`available()` 恒 false 期间
+> 动态内容走 SSE 流式）。
+
 ### 已核实并实现：百炼 Qwen-TTS / maas 系真流式（SSE）
 
 依据官方文档（help.aliyun.com/zh/model-studio/qwen-tts-api）实测口径：

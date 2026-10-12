@@ -57,10 +57,10 @@ function errorMessage(error: unknown): string {
  * 实时合成开启后仍然预合成的话术类型：文本在入池时就已确定（剧本/暖场），
  * 提前合成好则播出零延迟；动态生成的回复类内容才值得为"最快首包"牺牲预合成。
  */
-/** 实时语音通道的最小探针接口（避免与 TtsRealtimeService 强耦合，便于测试替身） */
+/** 实时通道（双向 WS）的最小探针接口（避免与 TtsRealtimeService 强耦合，便于测试替身） */
 export interface RealtimeChannelProbe {
-  available(): boolean
-  unavailableReason(): string
+  available(voiceId?: string): boolean
+  unavailableReason(voiceId?: string): string
 }
 
 const PRE_SYNTH_KINDS: SpeechItem['source']['kind'][] = ['scene', 'filler']
@@ -76,8 +76,11 @@ export class SpeechPool {
     private readonly storage: StorageService,
     private readonly tts: TtsService,
     private readonly broadcast: (snapshot: PoolSnapshot) => void,
-    /** 实时语音通道（双向 WS）；不可用时动态内容降级到流式合成 */
-    private readonly realtime: RealtimeChannelProbe = { available: () => false, unavailableReason: () => '实时语音未接入' }
+    /** 实时通道（双向 WS）；协议未核对期间恒不可用，动态内容走 SSE 流式 */
+    private readonly realtime: RealtimeChannelProbe = {
+      available: () => false,
+      unavailableReason: () => '实时通道未接入'
+    }
   ) {
     // 重启后上次留下的未播完条目全部作废——音频可能还在但播放上下文没了
     for (const item of this.storage.speechActive()) {
@@ -326,15 +329,10 @@ export class SpeechPool {
   }
 
   private async synthesize(item: SpeechItem): Promise<void> {
-    // 混合策略（接入开了「实时合成」时）：
+    // 通道按内容挑（用户在接入上只开了「实时合成」这一个开关，不是选通道）：
     // - 文本已知的剧情/暖场话术 → 照常预合成成文件（提前备好，播出零延迟）
-    // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时流式合成（首包延迟最低）
-    // 开关按接入走：这条话术会走哪条接入、那个模型支不支持流式，路由说了算
-    const cfg = this.storage.getConfig()
-    if (cfg.ttsRealtime.enabled && !this.realtime.available()) {
-      // 实时语音通道不可用：记一次原因，动态内容降级到「语音合成」的流式
-      this.lastRealtimeFallback = this.realtime.unavailableReason()
-    }
+    // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时边走边合成（首包延迟最低）
+    // 走哪条接入、那个模型支不支持流式，全由这条话术的音色路由决定
     const streamable = (() => {
       if (PRE_SYNTH_KINDS.includes(item.source.kind)) return false
       try {
@@ -345,7 +343,11 @@ export class SpeechPool {
         return false
       }
     })()
-    if (streamable || (this.realtime.available() && !PRE_SYNTH_KINDS.includes(item.source.kind))) {
+    if (streamable && !this.realtime.available(item.voiceId || undefined)) {
+      // 真正的双向实时通道还没接（协议待核对），这里走 SSE 流式；记一次原因便于诊断
+      this.lastRealtimeFallback = this.realtime.unavailableReason(item.voiceId || undefined)
+    }
+    if (streamable) {
       // 修订后的条目同样走这里：无需合成，只要文本已是新的（revise 已改），标 ready 即可
       this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
       this.broadcast(this.snapshot())

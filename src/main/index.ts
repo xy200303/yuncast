@@ -689,7 +689,7 @@ if (!single) {
 
     const storage = new StorageService()
     const tts = new TtsService(storage)
-    ttsRealtime = new TtsRealtimeService(storage)
+    ttsRealtime = new TtsRealtimeService(storage, tts)
     pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime)
     const persona = new PersonaService(storage)
     const knowledge = new KnowledgeService(storage)

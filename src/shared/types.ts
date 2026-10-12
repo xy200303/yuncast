@@ -340,48 +340,11 @@ function parseBgm(input: unknown): BgmConfig {
   }
 }
 
-/**
- * 实时语音（双向 WS 的 Realtime 模型）配置——与上面的 `tts` 分开：
- * 两者是不同的模型、不同的协议（HTTP/SSE vs WebSocket 双向）、不同的端点与鉴权口径。
- * 当前只有百炼（Qwen-Audio-TTS / CosyVoice realtime）走这条路，参考：
- * help.aliyun.com/zh/model-studio/qwen-tts-realtime（WS 端点含业务空间 ID）
- */
-export interface TtsRealtimeConfig {
-  /** 启用后，动态内容（评论回复等）走实时语音通道 */
-  enabled: boolean
-  provider: 'bailian' | 'volcano'
-  /** 模型名，例如 qwen-audio-3.0-tts-flash */
-  model: string
-  /** WS 端点（百炼含业务空间 ID）：wss://{workspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference */
-  wsUrl: string
-  voiceId: string
-  /** 不用填：实时通道的凭据取自「语音合成」里对应服务商的接入（TtsRealtimeService.connectionParams） */
-  apiKey: string
-  /** 指令控制（自然语言描述语音表现，例如「语速稍快、语气热情」） */
-  instruction: string
-}
-
-export const DEFAULT_TTS_REALTIME_CONFIG: TtsRealtimeConfig = {
-  enabled: false,
-  provider: 'bailian',
-  model: 'qwen-audio-3.0-tts-flash',
-  wsUrl: '',
-  voiceId: '',
-  apiKey: '',
-  instruction: ''
-}
-
-export function realtimeTtsConfigured(cfg: TtsRealtimeConfig): boolean {
-  return Boolean(cfg.enabled && cfg.wsUrl && cfg.model)
-}
-
 /** 持久化到 userData/config.json 的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
   /** 配色主题（点缀色） */
   accent: AppAccent
-  /** 实时语音（Realtime 模型）通道配置 */
-  ttsRealtime: TtsRealtimeConfig
   tts: TtsConfig
   llm: LlmConfig
   trigger: TriggerConfig
@@ -394,7 +357,6 @@ export interface AppConfig {
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
   accent: 'clay',
-  ttsRealtime: DEFAULT_TTS_REALTIME_CONFIG,
   tts: DEFAULT_TTS_CONFIG,
   llm: DEFAULT_LLM_CONFIG,
   trigger: DEFAULT_TRIGGER_CONFIG,
@@ -407,20 +369,6 @@ export const DEFAULT_CONFIG: AppConfig = {
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
 export type PartialDeep<T> = {
   [K in keyof T]?: T[K] extends object ? PartialDeep<T[K]> : T[K]
-}
-
-function parseTtsRealtime(input: unknown): TtsRealtimeConfig {
-  const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
-  const d = DEFAULT_TTS_REALTIME_CONFIG
-  return {
-    enabled: row.enabled === true,
-    provider: row.provider === 'volcano' ? 'volcano' : 'bailian',
-    model: typeof row.model === 'string' ? row.model : d.model,
-    wsUrl: typeof row.wsUrl === 'string' ? row.wsUrl : '',
-    voiceId: typeof row.voiceId === 'string' ? row.voiceId : '',
-    apiKey: typeof row.apiKey === 'string' ? row.apiKey : '',
-    instruction: typeof row.instruction === 'string' ? row.instruction : ''
-  }
 }
 
 export function parseAppConfig(input: unknown): AppConfig {
@@ -475,7 +423,6 @@ export function parseAppConfig(input: unknown): AppConfig {
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     accent: APP_ACCENTS.find((id) => id === row.accent) ?? DEFAULT_CONFIG.accent,
-    ttsRealtime: parseTtsRealtime(row.ttsRealtime),
     tts,
     llm,
     trigger,

@@ -23,6 +23,8 @@ import {
   type SpeechLane,
   type StreamStats,
   type TriggerInput,
+  type Utterance,
+  type UtteranceInput,
   type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
@@ -40,6 +42,8 @@ import { ConnectorService } from './services/ConnectorService'
 import { VoiceService } from './services/VoiceService'
 import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
+import { UtteranceService } from './services/UtteranceService'
+import { GenerationService, type GenerationProgress } from './services/GenerationService'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -197,6 +201,41 @@ function broadcastDirector(message: DirectorMessage): void {
   }
 }
 
+/** 话术库单条状态变化广播（预合成进度） */
+function broadcastUtterance(utterance: Utterance): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.utteranceEvent, utterance)
+  }
+}
+
+/** 批量预合成结束：发一条特殊事件（id='' 表示批次结束，UI 刷新列表） */
+function broadcastUtteranceDone(planId: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(IPC.utteranceEvent, {
+        id: '',
+        planId,
+        sceneId: '',
+        variantIdx: 0,
+        text: '',
+        voiceId: '',
+        audioPath: null,
+        status: 'ready',
+        source: 'initial',
+        sources: [],
+        createdAt: Date.now()
+      } satisfies Utterance)
+    }
+  }
+}
+
+/** 话术库生成进度广播 */
+function broadcastGeneration(progress: GenerationProgress): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.generationEvent, progress)
+  }
+}
+
 /** 推流状态广播 */
 function broadcastStream(stats: StreamStats): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -271,7 +310,9 @@ function registerIpc(
   triggers: TriggerRuntime,
   script: ScriptService,
   stream: StreamService,
-  connector: ConnectorService
+  connector: ConnectorService,
+  utterances: UtteranceService,
+  generation: GenerationService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -457,6 +498,35 @@ function registerIpc(
     return storage.getConfig().live.activePlanId
   })
 
+  // ---------- 话术库（场次底稿） ----------
+  ipcMain.handle(IPC.utteranceList, (_e, planId: string) => utterances.list(String(planId)))
+  ipcMain.handle(IPC.utteranceSave, (_e, input: UtteranceInput, id?: string) =>
+    guard(() => utterances.save(input, id))
+  )
+  ipcMain.handle(IPC.utteranceDelete, (_e, id: string) => guard(() => utterances.remove(id)))
+  ipcMain.handle(IPC.utteranceClear, (_e, planId: string, sceneId?: string) =>
+    guard(() => utterances.clear(String(planId), sceneId))
+  )
+  ipcMain.handle(IPC.utterancePresynth, async (_e, planId: string) => {
+    // 批量预合成：异步跑，逐条进度走 utteranceEvent；这里只回启动结果
+    void utterances
+      .synthesizeAll(String(planId), broadcastUtterance)
+      .then(() => broadcastUtteranceDone(String(planId)))
+      .catch(() => broadcastUtteranceDone(String(planId)))
+    return { ok: true }
+  })
+
+  // ---------- 话术库生成 Agent ----------
+  ipcMain.handle(IPC.generationStart, (_e, planId: string) => {
+    try {
+      generation.start(String(planId))
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC.generationCancel, () => generation.cancel())
+
   // ---------- 系统对话框 ----------
   ipcMain.handle(IPC.dialogPickFile, async (_e, filtersName: string, extensions: string[]) => {
     const win = BrowserWindow.getFocusedWindow() ?? mainWindow
@@ -554,6 +624,10 @@ if (!single) {
     // 音色库（M8 声音克隆）：训练状态变化推给渲染进程
     voiceSvc = new VoiceService(storage, broadcastVoices)
 
+    // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）
+    const utterances = new UtteranceService(storage, tts)
+    const generation = new GenerationService(storage, knowledge, utterances, persona, script, broadcastGeneration)
+
     // 实时 TTS：流式合成（当前=整段合成后按真实速率分块吐，管线真流式；供应商流式接口见 docs/06）
     ttsStream = new TtsStreamService(tts)
 
@@ -586,7 +660,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector)
+    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, generation)
     createWindow(storage)
 
     app.on('activate', () => {

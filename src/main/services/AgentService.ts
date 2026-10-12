@@ -1,17 +1,14 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import {
   createAgentSession,
   createExtensionRuntime,
-  ModelRuntime,
   SessionManager,
   SettingsManager,
   type AgentSession,
   type ResourceLoader
 } from '@earendil-works/pi-coding-agent'
 import {
-  LLM_PROVIDER_META,
   llmConfigured,
   type AgentStatus,
   type LiveComment,
@@ -24,6 +21,7 @@ import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
 import { ANCHOR_TOOL_NAMES, buildAnchorTools } from './anchorTools'
+import { prepareLlmModel } from './llmModel'
 
 /**
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
@@ -33,13 +31,6 @@ import { ANCHOR_TOOL_NAMES, buildAnchorTools } from './anchorTools'
  * - text_delta 累积成"AI 正在组织语言"预览广播给渲染进程，入池（工具执行）即清
  * - 当前场次的主题/剧本场景随 system prompt 注入；每次对话带当前场景上下文
  */
-
-/** pi 内置服务商映射；qwen/doubao 走 OpenAI 兼容，写进 models.json */
-const BUILTIN_PROVIDERS: Partial<Record<LlmConfig['provider'], string>> = {
-  deepseek: 'deepseek',
-  kimi: 'moonshotai-cn',
-  zai: 'zai'
-}
 
 export class AgentService {
   private session: AgentSession | null = null
@@ -239,44 +230,8 @@ export class AgentService {
 
   private async createSession(llm: LlmConfig): Promise<AgentSession> {
     const agentDir = join(app.getPath('userData'), 'pi')
-    mkdirSync(agentDir, { recursive: true })
-
-    const meta = LLM_PROVIDER_META[llm.provider]
-    const providerId = BUILTIN_PROVIDERS[llm.provider] ?? llm.provider
-    const modelId = llm.model || meta.defaultModel
-    const baseUrl = llm.baseUrl.trim() || meta.defaultBaseUrl
-
-    // qwen/doubao 是 pi 不内置的 OpenAI 兼容端点，写 models.json 自定义 provider；
-    // 内置服务商自定义了 baseUrl 时也写 provider 级覆盖。
-    const isBuiltin = llm.provider in BUILTIN_PROVIDERS
-    const needModelsJson = !isBuiltin || baseUrl !== meta.defaultBaseUrl
-    const modelsPath = join(agentDir, 'models.json')
-    if (needModelsJson) {
-      const providerEntry: Record<string, unknown> = isBuiltin
-        ? { baseUrl }
-        : { baseUrl, api: 'openai-completions', models: [{ id: modelId }] }
-      writeFileSync(
-        modelsPath,
-        JSON.stringify({ providers: { [providerId]: providerEntry } }, null, 2),
-        'utf8'
-      )
-    } else {
-      // 配置回退到默认时清掉旧的自定义文件，避免残留旧端点
-      writeFileSync(modelsPath, JSON.stringify({ providers: {} }, null, 2), 'utf8')
-    }
-
-    const modelRuntime = await ModelRuntime.create({
-      authPath: join(agentDir, 'auth.json'),
-      modelsPath
-    })
-    // 凭据运行时注入，不落 pi 的 auth.json
-    await modelRuntime.setRuntimeApiKey(providerId, llm.apiKey)
-
-    const model = modelRuntime.getModel(providerId, modelId)
-    if (!model) {
-      throw new Error(`模型不可用：${providerId}/${modelId}（检查设置页的模型名）`)
-    }
-    this.modelLabel = `${meta.label} · ${modelId}`
+    const { model, modelRuntime, modelLabel } = await prepareLlmModel(llm, agentDir)
+    this.modelLabel = modelLabel
 
     const persona = this.persona.get()
     const { plan, script } = this.script.getActive()

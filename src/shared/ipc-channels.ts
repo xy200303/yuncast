@@ -97,6 +97,22 @@ export const IPC = {
   planDelete: 'plan:delete',
   planSetActive: 'plan:set-active',
 
+  // 话术库（场次底稿）
+  utteranceList: 'utterance:list',
+  utteranceSave: 'utterance:save',
+  utteranceDelete: 'utterance:delete',
+  utteranceClear: 'utterance:clear',
+  /** 批量预合成（异步，进度走 utteranceEvent） */
+  utterancePresynth: 'utterance:presynth',
+  /** main → renderer：单条话术状态变化（预合成进度） */
+  utteranceEvent: 'utterance:event',
+
+  // 话术库生成 Agent
+  generationStart: 'generation:start',
+  generationCancel: 'generation:cancel',
+  /** main → renderer：生成进度（逐场景） */
+  generationEvent: 'generation:event',
+
   // 系统对话框
   dialogPickFile: 'dialog:pick-file',
 

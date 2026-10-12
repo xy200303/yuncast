@@ -24,12 +24,15 @@ import type {
   ScriptInput,
   SpeechItem,
   SpeechLane,
+  Utterance,
+  UtteranceInput,
   VoiceRecord,
   StreamStats,
   Trigger,
   TriggerInput,
   ViewerProfile
 } from '../shared/types'
+import type { GenerationProgress } from '../main/services/GenerationService'
 
 /**
  * 渲染进程唯一可见的 API 白名单。
@@ -206,6 +209,35 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke(IPC.planDelete, id) as Promise<PoolResult>,
     /** 设为当前场次，返回生效的 activePlanId */
     setActive: (id: string) => ipcRenderer.invoke(IPC.planSetActive, id) as Promise<string>
+  },
+  utterance: {
+    list: (planId: string) => ipcRenderer.invoke(IPC.utteranceList, planId) as Promise<Utterance[]>,
+    save: (input: UtteranceInput, id?: string) =>
+      ipcRenderer.invoke(IPC.utteranceSave, input, id) as Promise<PoolResult<Utterance>>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.utteranceDelete, id) as Promise<PoolResult>,
+    clear: (planId: string, sceneId?: string) =>
+      ipcRenderer.invoke(IPC.utteranceClear, planId, sceneId) as Promise<PoolResult>,
+    /** 批量预合成（异步启动，进度走 onEvent；id='' 表示批次结束） */
+    presynth: (planId: string) => ipcRenderer.invoke(IPC.utterancePresynth, planId) as Promise<{ ok: boolean }>,
+    onEvent: (cb: (utterance: Utterance) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, utterance: Utterance) => cb(utterance)
+      ipcRenderer.on(IPC.utteranceEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.utteranceEvent, listener)
+      }
+    }
+  },
+  generation: {
+    start: (planId: string) =>
+      ipcRenderer.invoke(IPC.generationStart, planId) as Promise<{ ok: boolean; error?: string }>,
+    cancel: () => ipcRenderer.invoke(IPC.generationCancel) as Promise<void>,
+    onEvent: (cb: (progress: GenerationProgress) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, progress: GenerationProgress) => cb(progress)
+      ipcRenderer.on(IPC.generationEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.generationEvent, listener)
+      }
+    }
   },
   stream: {
     start: () => ipcRenderer.invoke(IPC.streamStart) as Promise<{ ok: boolean; error?: string }>,

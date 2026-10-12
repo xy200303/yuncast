@@ -15,7 +15,7 @@ import type { ScriptService } from './ScriptService'
 /** 主播的来源 id（话术池限流按来源算） */
 export const AGENT_SOURCE_ID = 'anchor'
 
-/** 编剧模式：role 名 → 角色音色。音色优先级（docs/07 §8.5）：显式 voice > 场次音色 > 角色音色 > 人设音色 > TTS 默认。都没有返回 undefined */
+/** 编剧模式：role 名 → 角色音色。音色优先级（docs/07 §8.5）：显式 voice > 场次音色 > 角色音色 > 人设卡音色。都没有返回 undefined（合成路由会因此报错，不兜底） */
 export function resolveVoice(
   persona: Persona,
   role?: string,
@@ -97,7 +97,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
         '说一句常规话术，排进话术池队列等待播出。每次只说一句完整的话（40 字以内最佳），口语化。role 参数用于编剧模式：以某个角色的口吻写台词。',
       parameters: Type.Object({
         text: Type.String({ description: '要说的话，一句' }),
-        voice: Type.Optional(Type.String({ description: '音色 id，不传用默认音色' })),
+        voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
         role: Type.Optional(Type.String({ description: '角色名（编剧模式），台词按该角色音色播出' }))
       }),
       execute: async (_id, params) =>
@@ -119,7 +119,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       description: '插播一句话：当前正在播的内容播完后立即播这条。只在回复观众评论或紧急情况使用。',
       parameters: Type.Object({
         text: Type.String({ description: '要插播的话，一句' }),
-        voice: Type.Optional(Type.String({ description: '音色 id，不传用默认音色' })),
+        voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
         role: Type.Optional(Type.String({ description: '角色名（编剧模式）' }))
       }),
       execute: async (_id, params) =>
@@ -331,15 +331,15 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       name: 'set_voice',
       label: '换音色',
       description:
-        '把本场音色换成另一个（voiceId 从音色库来；传空字符串回到人设默认）。换完之后新说出的每一句都用新音色，已经在池里的旧音频不受影响。',
+        '把本场音色换成另一个（voiceId 从音色库来；传空字符串回到人设卡音色）。换完之后新说出的每一句都用新音色，已经在池里的旧音频不受影响。',
       parameters: Type.Object({
-        voiceId: Type.String({ description: '音色 id，留空 = 回到人设/TTS 默认音色' })
+        voiceId: Type.String({ description: '音色 id，留空 = 回到人设卡音色' })
       }),
       execute: async (_id, params) =>
         guardTool(() => {
           const voiceId = String(params.voiceId ?? '').trim()
           setPlanVoice?.(voiceId)
-          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它` : '已清掉场次音色，回到人设默认音色'
+          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它` : '已清掉场次音色，回到人设卡的音色'
         })
     }),
     defineTool({

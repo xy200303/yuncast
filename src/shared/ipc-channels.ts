@@ -29,14 +29,12 @@ export const IPC = {
   ttsConnectionList: 'tts:connection-list',
   ttsConnectionSave: 'tts:connection-save',
   ttsConnectionRemove: 'tts:connection-remove',
-  /** 把某条接入设为该服务商的默认（路由主入口） */
-  ttsConnectionSetDefault: 'tts:connection-set-default',
 
   // 语言模型（供应商接入 + 服务商注册表）
   modelList: 'model:list',
   modelSave: 'model:save',
   modelRemove: 'model:remove',
-  /** 连通性测试：用该接入的默认模型发一个最小请求 */
+  /** 连通性测试：不传模型就用该接入模型列表的第一个发最小请求 */
   modelTest: 'model:test',
   /** 服务商能力与配置字段清单（设置页据此动态渲染表单） */
   providersLlmList: 'providers:llm-list',
@@ -81,7 +79,6 @@ export const IPC = {
   voiceList: 'voice:list',
   voiceClone: 'voice:clone',
   voiceRemove: 'voice:remove',
-  voiceSetDefault: 'voice:set-default',
   voiceUploadSample: 'voice:upload-sample',
   /** 用该音色合成一句固定文案试听（用该音色自己那家的接入，那条接入没配就返回中文错误） */
   voicePreview: 'voice:preview',

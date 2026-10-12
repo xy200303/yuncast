@@ -375,7 +375,8 @@ function registerIpc(
         name: String(input?.name ?? ''),
         params: input?.params ?? {},
         models,
-        defaultModel: String(input?.defaultModel ?? '')
+        // 不传就沿用已保存的那条（编辑时不碰开关不该把它关掉）
+        realtime: typeof input?.realtime === 'boolean' ? input.realtime : undefined
       })
       return { ok: true, connections: storage.ttsConnectionListSafe() }
     } catch (error) {
@@ -384,10 +385,6 @@ function registerIpc(
   })
   ipcMain.handle(IPC.ttsConnectionRemove, (_e, id: string) => {
     storage.ttsConnectionDelete(String(id ?? ''))
-    return { ok: true, connections: storage.ttsConnectionListSafe() }
-  })
-  ipcMain.handle(IPC.ttsConnectionSetDefault, (_e, id: string) => {
-    storage.ttsConnectionSetDefault(String(id ?? ''))
     return { ok: true, connections: storage.ttsConnectionListSafe() }
   })
 
@@ -404,8 +401,7 @@ function registerIpc(
         name: String(input?.name ?? ''),
         providerId,
         params: input?.params ?? {},
-        models,
-        defaultModel: String(input?.defaultModel ?? '')
+        models
       })
       return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {
@@ -510,7 +506,6 @@ function registerIpc(
       voiceSvc?.clone(input) ?? { ok: false, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceRemove, (_e, id: string) => voiceSvc?.remove(id) ?? { ok: false, error: '音色服务未初始化' })
-  ipcMain.handle(IPC.voiceSetDefault, (_e, id: string) => voiceSvc?.setDefault(id) ?? { ok: false, error: '音色服务未初始化' })
   ipcMain.handle(IPC.voiceRename, (_e, id: string, name: string) =>
     voiceSvc?.rename(String(id ?? ''), String(name ?? '')) ?? { ok: false, error: '音色服务未初始化' }
   )

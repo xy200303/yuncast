@@ -4,7 +4,7 @@ import { app } from 'electron'
 import { ModelRuntime } from '@earendil-works/pi-coding-agent'
 import { legacyLlmConfigured, type ModelConnection, type Persona } from '../../shared/types'
 import {
-  connectionModel,
+  connectionFirstModel,
   getLlmProvider,
   isModelConnectionReady,
   type ResolvedModel
@@ -60,9 +60,10 @@ export async function listProviderModels(providerId: string): Promise<string[]> 
 }
 
 /**
- * 解析一个人设卡该用哪个模型（开播路径）：这张卡选的接入与模型 → 旧的 config.llm 临时兜底。
- * 卡上没选全（或选的接入没配齐）时不再有「全局默认接入」这一档，只能靠旧配置顶着并带 fallback 说明；
- * 旧配置也没有就抛中文错误，调用方直接把 message 给 UI（预检会把它列成阻断项）。
+ * 解析一个人设卡该用哪个模型（开播路径）：这张卡选的接入 + 模型 → 旧的 config.llm 临时兜底。
+ * 卡上没选全（或选的接入没配齐、选的模型不在接入列表里）时没有「接入的默认模型」这一档，
+ * 只能靠旧配置顶着并带 fallback 说明；旧配置也没有就抛中文错误，
+ * 调用方直接把 message 给 UI（预检会把它列成阻断项）。
  */
 export function resolveModelForPersona(
   storage: StorageService,
@@ -122,7 +123,11 @@ function boundConnectionOf(
   return persona?.modelConnectionId ? storage.connectionGet(persona.modelConnectionId) : null
 }
 
-/** 卡上接入与模型都选好且接入可用时的结果；否则 null（交给调用方决定兜底还是报错） */
+/**
+ * 卡上接入与模型都选好、接入可用、且选的模型还在接入列表里时的结果；否则 null
+ * （交给调用方决定是旧配置兜底还是报错）。没有「接入的默认模型」这一档：
+ * 指定的模型不在列表里就等于没选，不做任何替换。
+ */
 function selectedModelOf(
   bound: ModelConnection | null,
   persona: Persona | null | undefined
@@ -131,16 +136,12 @@ function selectedModelOf(
   const requested = (persona?.model ?? '').trim()
   if (!requested) return null
   if (!isModelConnectionReady(bound, getLlmProvider(bound.providerId))) return null
-  const listed = bound.models.includes(requested)
-  const model = listed ? requested : connectionModel(bound, getLlmProvider(bound.providerId))
+  if (!bound.models.includes(requested)) return null
   return {
     connectionId: bound.id,
     providerId: bound.providerId,
     params: bound.params,
-    model,
-    fallback: listed
-      ? undefined
-      : { kind: 'model', requested, used: model, connectionName: bound.name }
+    model: requested
   }
 }
 
@@ -196,8 +197,9 @@ export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string)
 }
 
 /**
- * 接入连通性测试：用该接入的默认模型（没指定就用列表第一个）打 {baseUrl}/chat/completions，
- * 发一个 max_tokens=1 的最小请求。不走 pi（那里没有「测试」入口），错误翻成中文给 UI。
+ * 接入连通性测试：打 {baseUrl}/chat/completions 发一个 max_tokens=1 的最小请求。
+ * 调用方一般逐个模型测（界面就是这么做的）；没指定就用列表第一个。
+ * 不走 pi（那里没有「测试」入口），错误翻成中文给 UI。
  */
 export async function testModelConnection(
   connection: ModelConnection,
@@ -205,8 +207,7 @@ export async function testModelConnection(
 ): Promise<{ ok: boolean; error?: string; latencyMs?: number }> {
   const def = getLlmProvider(connection.providerId)
   if (!def) return { ok: false, error: `不认识的服务商：${connection.providerId}` }
-  // 测试指定模型优先：模型列表里逐个验，比只测默认模型有用
-  const target = (model ?? '').trim() || connectionModel(connection, def)
+  const target = (model ?? '').trim() || connectionFirstModel(connection, def)
   const cfg = def.toModelConfig(connection.params, target)
   if (!cfg.model) return { ok: false, error: `还没有模型（${def.label}）：先加一个模型再测` }
 

@@ -62,7 +62,7 @@ export class PersonaService {
   }
 
   /**
-   * 本场生效的音色（docs/07 §8.5 四层优先级）：场次 > 显式 voice > 角色 > 人设 > TTS 默认。
+   * 本场生效的音色（docs/07 §8.5 四层优先级）：场次 > 显式 voice > 角色 > 人设卡。
    * 话术库预合成与开播装载共用它，保证「音频是用哪把声音合成的」两边判断一致。
    */
   resolvePlanVoice(plan: LivePlan | null | undefined, role?: string, voice?: string): string | undefined {
@@ -72,11 +72,10 @@ export class PersonaService {
   /** 组装主播 Agent 的 system prompt（人设 + 场次/剧本 + 角色 + 池操作约定） */
   buildSystemPrompt(
     persona: Persona,
-    defaultVoiceId: string,
     plan?: LivePlan | null,
     script?: Script | null
   ): string {
-    const voice = persona.voiceId || defaultVoiceId
+    const voice = persona.voiceId
 
     const rolesSection =
       persona.roles.length > 0

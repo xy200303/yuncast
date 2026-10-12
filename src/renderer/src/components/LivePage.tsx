@@ -1091,7 +1091,6 @@ function ManualBroadcastDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const defaultVoice = useAppStore((s) => s.ttsConnections.find((item) => item.isDefault)?.defaultVoice ?? '')
   const [text, setText] = useState('')
   const [lane, setLane] = useState<'normal' | 'next'>('normal')
   const [voice, setVoice] = useState('')
@@ -1161,7 +1160,7 @@ function ManualBroadcastDialog({
             <Input
               value={voice}
               onChange={(e) => setVoice(e.target.value)}
-              placeholder={defaultVoice ? `留空用默认（${defaultVoice}）` : '留空用默认音色'}
+              placeholder="留空用主播自己的音色"
               className="h-7 text-xs"
             />
           </div>

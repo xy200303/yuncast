@@ -7,7 +7,6 @@ import {
   findTtsCatalogVoice,
   getTtsProvider,
   isTtsModelUsable,
-  ttsConnectionDefaultModel,
   ttsModelBlocker,
   ttsModelParams,
   ttsModelSpec
@@ -19,7 +18,11 @@ import {
   type TtsProvider,
   type VoiceRecord
 } from '../../shared/types'
-import { findCloneVoice } from '../../shared/voiceProvider'
+import {
+  findCloneVoice,
+  parseManualVoice,
+  type ManualVoiceRef
+} from '../../shared/voiceProvider'
 
 /**
  * TTS 双通道合成。
@@ -29,10 +32,12 @@ import { findCloneVoice } from '../../shared/voiceProvider'
  *   SSE 真流式见 synthesizeBailianStream。
  * 预合成产物写入 userData/audio-cache。
  *
- * 凭据按接入存在 tts_connections（一家可多条，每条 = 凭据 + 启用模型 + 默认模型）。
- * 合成路由（route）：克隆音色按 voices.model + connection_id 反推接入与模型；
- * 系统音色在 manifest 静态目录里反查归属模型，在该 provider 的接入里挑启用了它的；
- * 目录查不到的（手动输入）走 config.tts.providerId 的默认接入 + 默认模型原样透传。
+ * 凭据按接入存在 tts_connections（一条 = 一个服务商账号：凭据 + 启用模型 + 实时开关），
+ * 没有默认模型 / 默认音色 / 默认接入——用哪条接入的哪个模型完全由音色自己决定。
+ * 合成路由（route）：克隆音色按 voices.connection_id + voices.model 反推接入与模型；
+ * 系统音色在 manifest 静态目录里反查归属模型，在启用了该模型的接入里取最早建的一条；
+ * 目录查不到的（手动输入的）用 `接入id::模型id::音色` 复合串显式指定接入与模型。
+ * 路由挑不出来就抛中文原因指路，不做任何兜底。
  */
 
 const VOLCANO_V3_URL = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
@@ -56,7 +61,7 @@ const REQUEST_TIMEOUT_MS = 30000
 export interface TtsRoute {
   provider: TtsProvider
   connection: TtsConnection
-  /** 生效模型 id（克隆音色 = voices.model；系统音色 = 目录反查；未知音色 = 接入默认模型） */
+  /** 生效模型 id（克隆音色 = voices.model；系统音色 = 目录反查；手动音色 = 复合串里的那一段） */
   modelId: string
   /** manifest 里的模型 spec；未知模型（手动输入场景以外的异常）为 undefined 时 route 已报错，这里必有值 */
   model: TtsModelSpec
@@ -106,20 +111,17 @@ export class TtsService {
   }
 
   /**
-   * 合成路由：输入 voiceId（可空 → 用默认接入的默认音色），输出接入 + 模型 + 音色 + 合并参数。
-   * 1. 克隆音色命中（voices 表，按 voiceType 或 name）→ 接入 = connection_id 指向的那条
-   *    （失效回退该服务商默认接入）；模型 = voices.model；接入没启用该模型 → 中文报错指路。
-   * 2. 系统音色 → manifest 目录反查（可能多个模型含同名音色）：优先全站默认接入能服务的，
-   *    其次该服务商其它接入；都没有 → 中文报错指路。
-   * 3. 目录查不到（手动输入的音色）→ 全站默认接入 + 其默认模型，原样透传。
+   * 合成路由：输入 voiceId，输出接入 + 模型 + 音色 + 合并参数。没有兜底——空音色直接报错。
+   * 1. 克隆音色命中（voices 表，按 voiceType 或 name）→ 接入 = connection_id 指向的那条，
+   *    模型 = voices.model；接入没了 / 没启用该模型 → 中文报错指路。
+   * 2. 手动音色（`接入id::模型id::音色`）→ 前缀里的接入与模型，接入必须存在且能启用该模型。
+   * 3. 系统音色 → manifest 目录反查，在启用了该模型的接入里按 created_at ASC 取第一条。
+   * 4. 目录查不到、也不是手动写法 → 中文报错指路。
    */
   private route(voiceId?: string): TtsRoute {
-    const { tts } = this.storage.getConfig()
-    const fallback = this.storage.ttsConnectionGetDefaultAny()
-    // 音色兜底顺序：调用方给的 → 旧配置里的全局默认（迁移遗留）→ 默认接入的默认音色
-    const voice = (voiceId || tts.voiceId || fallback?.defaultVoice || '').trim()
+    const voice = (voiceId ?? '').trim()
     if (!voice) {
-      throw new Error('还没选音色：到主播团给人设卡挑一个，或在设置 → 语音合成的默认接入里指定')
+      throw new Error('这条话术没有音色：到主播团给人设卡选一个音色')
     }
     const voices = this.storage.listVoices()
     const clone =
@@ -142,11 +144,12 @@ export class TtsService {
     if (!spec) {
       throw new Error(`音色「${clone.name}」绑定的模型 ${modelId} 不在${def?.label ?? provider}目录里`)
     }
-    const byId = clone.connectionId ? this.storage.ttsConnectionGet(clone.connectionId) : null
-    const connection = byId ?? this.storage.ttsConnectionGetDefault(provider)
+    const connection = clone.connectionId ? this.storage.ttsConnectionGet(clone.connectionId) : null
     const owner = TTS_PROVIDER_SHORT[provider]
     if (!connection) {
-      throw new Error(`音色「${clone.name}」属于${owner}，但没有这条接入：到设置 → 语音合成加上`)
+      throw new Error(
+        `音色「${clone.name}」克隆时用的${owner}接入已经没了：到设置 → 语音合成把这条接入加回来（音色绑定不跨接入），或到音色库用现有接入重新克隆一个`
+      )
     }
     const blocker = ttsModelBlocker(connection, def, modelId)
     if (blocker) {
@@ -166,97 +169,74 @@ export class TtsService {
   }
 
   private routeSystem(voice: string): TtsRoute {
-    const defaultConnection = this.storage.ttsConnectionGetDefaultAny()
+    // 手动音色：`接入id::模型id::音色`，接入与模型都写在前缀里，不猜
+    const manual = parseManualVoice(voice)
+    if (manual) return this.routeManual(manual)
+
     const hits = findTtsCatalogVoice(voice)
-    if (hits.length > 0) {
-      // 全站默认接入所在服务商的命中优先，其次按 manifest 顺序
-      const defaultProvider = defaultConnection?.providerId
-      const ordered = [...hits].sort((a, b) => {
-        const ap = a.providerId === defaultProvider ? 0 : 1
-        const bp = b.providerId === defaultProvider ? 0 : 1
-        return ap - bp
-      })
-      for (const hit of ordered) {
-        const route = this.tryResolveCatalogHit(voice, hit.providerId, hit.model)
-        if (route) return route
-      }
-      const first = ordered[0]
-      // 报错带上具体原因：命中模型的默认接入为什么不放行（缺业务空间 ID / 没启用模型 / 没凭据）
-      const firstConnection = this.storage.ttsConnectionGetDefault(first.providerId)
-      const firstDef = getTtsProvider(first.providerId)
-      const blocker = firstConnection
-        ? ttsModelBlocker(firstConnection, firstDef, first.model.id)
-        : `没有${TTS_PROVIDER_SHORT[first.providerId]}接入`
+    if (hits.length === 0) {
       throw new Error(
-        `音色 ${voice} 属于${TTS_PROVIDER_SHORT[first.providerId]}模型「${first.model.label}」，但现在用不了：${blocker}：到设置 → 语音合成处理`
+        `音色 ${voice} 不在模型目录里：到主播团选一个带接入与模型的音色（手动输入的音色要写成 接入id::模型id::音色）`
       )
     }
-    // 目录查不到（手动输入的音色）：全站默认接入 + 它的默认模型，原样透传
-    if (!defaultConnection) {
-      throw new Error('还没有语音合成接入：到设置 → 语音合成加一条（填密钥、勾上要用的模型）')
+    // 同名音色可能属于多个模型（如 longanyang 同属 v3-plus / v3-flash）：按 manifest 顺序逐家试
+    for (const providerId of [...new Set(hits.map((hit) => hit.providerId))]) {
+      const route = this.tryResolveCatalogHit(voice, hits, providerId)
+      if (route) return route
     }
-    const def = getTtsProvider(defaultConnection.providerId)
-    const modelId = ttsConnectionDefaultModel(defaultConnection, def)
-    const blocker = ttsModelBlocker(defaultConnection, def, modelId)
-    if (blocker) {
-      throw new Error(`默认接入「${defaultConnection.name}」现在用不了：${blocker}：到设置 → 语音合成处理`)
-    }
-    const spec = ttsModelSpec(defaultConnection.providerId, modelId)
-    if (!spec) {
-      throw new Error(
-        `默认接入「${defaultConnection.name}」的默认模型 ${modelId} 不在目录里：到设置 → 语音合成重选默认模型`
+    // 都没落上：报第一条命中为什么用不了（缺凭据 / 没启用模型 / 缺业务空间 ID / 根本没这条接入）
+    const first = hits[0]
+    const short = TTS_PROVIDER_SHORT[first.providerId]
+    const here = hits.filter((hit) => hit.providerId === first.providerId)
+    const labels = [...new Set(here.map((hit) => hit.model.label))].join(' / ')
+    const modelIds = here.map((hit) => hit.model.id)
+    const owner = this.storage
+      .ttsConnectionList()
+      .filter(
+        (connection) =>
+          connection.providerId === first.providerId &&
+          connection.models.some((model) => modelIds.includes(model.id))
       )
+      .sort((a, b) => a.createdAt - b.createdAt)[0]
+    let blocker: string
+    if (!owner) {
+      blocker = `没有启用了这个模型的${short}接入`
+    } else {
+      const modelId = owner.models.map((model) => model.id).find((id) => modelIds.includes(id)) ?? ''
+      const reason = ttsModelBlocker(owner, getTtsProvider(first.providerId), modelId)
+      blocker = `接入「${owner.name}」现在用不了${reason ? `：${reason}` : ''}`
     }
-    return {
-      provider: defaultConnection.providerId,
-      connection: defaultConnection,
-      modelId,
-      model: spec,
-      voice,
-      isClone: false,
-      params: ttsModelParams(defaultConnection, spec, modelId)
-    }
+    throw new Error(
+      `音色 ${voice} 属于${short}模型「${labels}」，但现在没有能用的接入（${blocker}）：到设置 → 语音合成处理`
+    )
   }
 
   /**
-   * 目录命中落到具体接入：该 provider 默认接入里启用了含此音色模型的（优先默认模型）→ 用它；
-   * 默认接入没有 → 其它凭据齐全且启用了该模型的接入。都落空返回 null（调用方换下一个命中）。
+   * 目录命中落到具体接入：该服务商的接入里，启用了含此音色的模型、且这个模型现在真能用的，
+   * 按 created_at ASC 取第一条。一条都没有返回 null（调用方换下一家 / 报错）。
+   * 这里没有「默认接入」这一档：挑不出来就让用户去设置页把接入补齐。
    */
   private tryResolveCatalogHit(
     voice: string,
-    provider: TtsProvider,
-    hitModel: TtsModelSpec
+    hits: { providerId: TtsProvider; model: TtsModelSpec }[],
+    providerId: TtsProvider
   ): TtsRoute | null {
-    const def = getTtsProvider(provider)
+    const def = getTtsProvider(providerId)
+    const modelIds = hits.filter((hit) => hit.providerId === providerId).map((hit) => hit.model.id)
     const candidates = this.storage
       .ttsConnectionList()
-      .filter((connection) => connection.providerId === provider)
-      // 全站默认接入优先，其次该服务商标了默认的，然后按建立时间
-      .sort(
-        (a, b) =>
-          Number(b.isDefault) - Number(a.isDefault) || Number(a.createdAt) - Number(b.createdAt)
-      )
+      .filter((connection) => connection.providerId === providerId)
+      .sort((a, b) => a.createdAt - b.createdAt)
     for (const connection of candidates) {
       const enabled = connection.models.map((model) => model.id)
-      // 默认接入里挑模型：优先接入默认模型（若它也含此音色），其次本次命中的模型
-      const preferred = ttsConnectionDefaultModel(connection, def)
-      const hitsHere = findTtsCatalogVoice(voice).filter((hit) => hit.providerId === provider)
-      let modelId = ''
-      if (enabled.includes(preferred) && hitsHere.some((hit) => hit.model.id === preferred)) {
-        modelId = preferred
-      } else if (enabled.includes(hitModel.id)) {
-        modelId = hitModel.id
-      } else {
-        const other = hitsHere.find((hit) => enabled.includes(hit.model.id))
-        modelId = other?.model.id ?? ''
-      }
+      const modelId = modelIds.find((id) => enabled.includes(id)) ?? ''
       if (!modelId) continue
-      const spec = ttsModelSpec(provider, modelId)
+      const spec = ttsModelSpec(providerId, modelId)
       if (!spec) continue
       // 逐模型判定：这条接入缺业务空间 ID 只挡它自己的 maas 系模型，别把 mp3 里能用的 qwen3 一起挡了
       if (!isTtsModelUsable(connection, def, modelId)) continue
       return {
-        provider,
+        provider: providerId,
         connection,
         modelId,
         model: spec,
@@ -266,6 +246,42 @@ export class TtsService {
       }
     }
     return null
+  }
+
+  /**
+   * 手动音色：官方没给系统音色目录的模型（qwen-audio-3.x / cosyvoice-v3.5）走这条。
+   * 复合串里的接入必须存在，模型必须在目录里，且这条接入启用了它、该模型的前置条件也满足
+   * （ttsModelBlocker 会一并挡下缺业务空间 ID 这类情况）。
+   */
+  private routeManual(ref: ManualVoiceRef): TtsRoute {
+    const connection = this.storage.ttsConnectionGet(ref.connectionId)
+    if (!connection) {
+      throw new Error(
+        `手动音色里的接入（${ref.connectionId}）不存在：到主播团重新选一个带接入与模型的音色`
+      )
+    }
+    const def = getTtsProvider(connection.providerId)
+    const spec = ttsModelSpec(connection.providerId, ref.modelId)
+    if (!spec) {
+      throw new Error(
+        `手动音色里的模型 ${ref.modelId} 不在${def?.label ?? connection.providerId}目录里：到主播团重新选一个带接入与模型的音色`
+      )
+    }
+    const blocker = ttsModelBlocker(connection, def, ref.modelId)
+    if (blocker) {
+      throw new Error(
+        `手动音色现在用不了：${blocker}（接入「${connection.name}」）：到设置 → 语音合成处理`
+      )
+    }
+    return {
+      provider: connection.providerId,
+      connection,
+      modelId: ref.modelId,
+      model: spec,
+      voice: ref.voice,
+      isClone: false,
+      params: ttsModelParams(connection, spec, ref.modelId)
+    }
   }
 
   /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。 */

@@ -15,7 +15,7 @@ export function StatusBar() {
   const connector = useAppStore((s) => s.connector)
   const current = NAV_ITEMS.find((item) => item.id === page)
   const playing = pool.items.find((item) => item.status === 'playing')
-  const ttsReady = selectTtsReady(config, ttsConnections)
+  const ttsReady = selectTtsReady(ttsConnections)
   const llmReady = selectLlmReady(connections, persona)
 
   const streamBadge =

@@ -16,3 +16,32 @@ export function findCloneVoice<T extends { voiceType: string }>(
   if (!id) return undefined
   return voices.find((voice) => voice.voiceType === id)
 }
+
+/**
+ * 手动音色（官方没给系统音色目录的模型，如 qwen-audio-3.x / cosyvoice-v3.5）：
+ * 选择器里现选「接入 + 模型 + 音色」，存成复合字符串 `接入id::模型id::音色`。
+ * 接入 id 与模型 id 里不会出现 `::`，所以按 `::` 切开不会有歧义。
+ * 没有默认接入也没有默认模型：模型由这个前缀显式指定（见 TtsService.routeSystem）。
+ */
+export const MANUAL_VOICE_SEP = '::'
+
+export interface ManualVoiceRef {
+  connectionId: string
+  modelId: string
+  voice: string
+}
+
+/** 组装手动音色的复合字符串；三段缺一不可 */
+export function formatManualVoice(ref: ManualVoiceRef): string {
+  return [ref.connectionId.trim(), ref.modelId.trim(), ref.voice.trim()].join(MANUAL_VOICE_SEP)
+}
+
+/** 解析手动音色；不是复合写法（段数不足或段位为空）返回 null */
+export function parseManualVoice(value: string): ManualVoiceRef | null {
+  const parts = value.trim().split(MANUAL_VOICE_SEP)
+  if (parts.length < 3) return null
+  const [connectionId, modelId, ...rest] = parts
+  const voice = rest.join(MANUAL_VOICE_SEP).trim()
+  if (!connectionId.trim() || !modelId.trim() || !voice) return null
+  return { connectionId: connectionId.trim(), modelId: modelId.trim(), voice }
+}

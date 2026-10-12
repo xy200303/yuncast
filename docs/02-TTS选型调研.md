@@ -103,6 +103,11 @@ cosyvoice-v1 / v2 / v3-plus / v3-flash / v3.5-plus / v3.5-flash（v3.5 为新一
 只挡它自己——同一条接入里的 `qwen3-tts-flash` 照常能用（`isTtsModelUsable` / `ttsModelBlocker`）。
 接入卡片上的「N 个模型缺配置」与音色选择器的置灰都按这个判定，不再拿整条接入「配没配齐」一刀切。
 
+**接入不再有默认模型 / 默认音色**：模型由音色决定（克隆音色带 `connection_id + model`；系统音色在模型目录
+里反查所属模型，在启用了该模型的接入里按 `created_at ASC` 取第一条；官方没给音色目录的模型用
+`接入id::模型id::音色` 的手动音色复合串显式指定）。人设卡的音色是必选项，空音色或目录外音色由
+`TtsService.route` 直接抛中文原因指路，不往任何「默认」上兜。
+
 **可用于直播的表达力能力**（值得后续用起来）：
 - `instruction` 语气指令（≤100 字，如「语速稍快，语气热情」）——已进配置
 - 情感/拟声标签（仅 qwen-audio-3.x）：文本里写 `[excited]`、`[laughing]`、`[sighing]` 直接改变语气

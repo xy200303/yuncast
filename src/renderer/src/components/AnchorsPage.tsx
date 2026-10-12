@@ -16,12 +16,8 @@ import { AssetStaleBanner } from '@/components/AssetStaleBanner'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { connectionsWithModel, flattenModelCatalog, groupCloneVoices } from '../lib/voice'
-import {
-  effectiveModel,
-  selectLlmReady,
-  useAppStore,
-  type LlmProviderManifest
-} from '../stores/useAppStore'
+import { selectLlmReady, useAppStore } from '../stores/useAppStore'
+import { MANUAL_VOICE_SEP, formatManualVoice } from '../../../shared/voiceProvider'
 import {
   TTS_PROVIDER_SHORT,
   type ModelConnectionSafe,
@@ -30,19 +26,17 @@ import {
   type TriggerMode
 } from '../../../shared/types'
 
-/** 下拉里「接入 + 模型」两级值的分隔符（接入 id 里不会有冒号） */
-const MODEL_VALUE_SEP = '::'
-
+/** 下拉里「接入 + 模型」两级值：与手动音色的复合串共用同一个分隔符（接入/模型 id 里不会有冒号） */
 function brainValue(connectionId: string, model: string): string {
-  return `${connectionId}${MODEL_VALUE_SEP}${model}`
+  return `${connectionId}${MANUAL_VOICE_SEP}${model}`
 }
 
 function parseBrainValue(value: string): { modelConnectionId: string; model: string } {
-  const index = value.indexOf(MODEL_VALUE_SEP)
+  const index = value.indexOf(MANUAL_VOICE_SEP)
   if (index < 0) return { modelConnectionId: '', model: '' }
   return {
     modelConnectionId: value.slice(0, index),
-    model: value.slice(index + MODEL_VALUE_SEP.length)
+    model: value.slice(index + MANUAL_VOICE_SEP.length)
   }
 }
 
@@ -210,9 +204,8 @@ export function AnchorsPage() {
                   <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
                     {item.personality || '（还没写性格）'}
                   </p>
-                  <p className="truncate text-[11px] text-muted-foreground">
-                    大脑：{brainLabelOf(connections, item)} · 嗓子：
-                    {item.voiceId || 'TTS 默认'}
+                  <p className="truncate text-[13px] text-muted-foreground">
+                    大脑：{brainLabelOf(connections, item)} · 嗓子：{item.voiceId || '还没选（必选）'}
                   </p>
                   <VoiceProviderHint voiceId={item.voiceId} />
                   <div className="flex flex-wrap gap-1">
@@ -274,7 +267,6 @@ function PersonaEditorDialog({
   const open = editing !== null
   const source = editing?.persona
   const connections = useAppStore((s) => s.connections)
-  const providers = useAppStore((s) => s.llmProviders)
   const [form, setForm] = useState<PersonaForm>(() => ({
     name: source?.name ?? '',
     personality: source?.personality ?? '',
@@ -309,6 +301,10 @@ function PersonaEditorDialog({
       toast.warning('给这张卡选个大脑：选一个接入和模型')
       return
     }
+    if (!form.voiceId.trim()) {
+      toast.warning('给这张卡选个音色', { description: '没选音色主播没声音（或让场次覆盖一个）' })
+      return
+    }
     setBusy(true)
     try {
       const saved = await window.api.persona.save(form, source?.id)
@@ -334,22 +330,30 @@ function PersonaEditorDialog({
             </div>
             <div>
               <div className="mb-1 flex items-center justify-between">
-                <Label>默认音色（留空用 TTS 默认）</Label>
+                <Label>
+                  音色<span className="ml-0.5 text-destructive">*</span>
+                </Label>
                 <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setVoicePickerOpen(true)}>
-                  从音色库选择
+                  选择音色
                 </Button>
               </div>
               <Input
                 value={form.voiceId}
                 onChange={(e) => patch({ voiceId: e.target.value })}
-                placeholder="voiceId"
+                placeholder="音色 id，或 接入::模型::音色"
               />
-              <VoiceProviderHint voiceId={form.voiceId} />
+              {form.voiceId.trim() ? (
+                <VoiceProviderHint voiceId={form.voiceId} />
+              ) : (
+                <p className="mt-1 text-xs text-destructive">必选：没选音色主播没声音</p>
+              )}
             </div>
           </div>
 
           <div>
-            <Label className="mb-1">大脑（模型）</Label>
+            <Label className="mb-1">
+              大脑（模型）<span className="ml-0.5 text-destructive">*</span>
+            </Label>
             {connections.length === 0 ? (
               <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
                 还没有供应商接入，去「设置 → 语言模型」加一条（选服务商、填一次密钥、把那家能用的模型放进列表）。
@@ -376,12 +380,7 @@ function PersonaEditorDialog({
                       ) : (
                         item.models.map((model) => (
                           <SelectItem key={model} value={brainValue(item.id, model)}>
-                            <span className="flex items-center gap-2">
-                              <span className="truncate">{model}</span>
-                              {model === effectiveModel(item, providers) && (
-                                <span className="text-muted-foreground">· 接入默认</span>
-                              )}
-                            </span>
+                            <span className="truncate">{model}</span>
                           </SelectItem>
                         ))
                       )}
@@ -555,9 +554,12 @@ function PersonaEditorDialog({
 }
 
 /**
- * 选音色：克隆音色按「接入 · 模型」分组，系统音色按「服务商 → 模型」分组。
- * 返回的只是一个音色 id——音色严格绑定模型，所以它已经隐含了模型与接入，调用方存法不用变。
- * 所属模型没有启用接入的系统音色置灰（合成时找不到凭据，选它等于埋一个必然失败的音色）。
+ * 选音色（三种入口，都没有默认兜底）：
+ * - 克隆音色：按「接入 · 模型」分组——克隆只认克隆时那条接入与那个模型，返回它的 voiceType；
+ * - 系统音色：按「服务商 → 模型 → 场景分组」列出，所属模型没有可用接入的置灰（选了必然合不出声）；
+ * - 手动输入：官方没给音色目录的模型（qwen-audio-3.x / cosyvoice-v3.5）用——先选接入，再选它启用的模型，
+ *   再填音色，产出 `接入id::模型id::音色`（合成路由按这个前缀找接入与模型）。
+ * 目录里选中的音色只返回一个 id：音色严格绑定模型，id 本身已经隐含接入与模型。
  */
 export function VoicePickerDialog({
   open,
@@ -572,10 +574,39 @@ export function VoicePickerDialog({
   const connections = useAppStore((s) => s.ttsConnections)
   const manifests = useAppStore((s) => s.ttsProviders)
   const [keyword, setKeyword] = useState('')
+  const [mode, setMode] = useState<'catalog' | 'manual'>('catalog')
+  /** 手动输入的三段：接入 → 该接入启用的模型 → 音色（合成时会反过来按前缀找接入与模型） */
+  const [manualConnection, setManualConnection] = useState('')
+  const [manualModel, setManualModel] = useState('')
+  const [manualVoice, setManualVoice] = useState('')
   const catalog = flattenModelCatalog(manifests)
 
   const kw = keyword.trim().toLowerCase()
   const hit = (...fields: string[]) => !kw || fields.some((field) => field.toLowerCase().includes(kw))
+
+  const manualOwner = connections.find((item) => item.id === manualConnection)
+  // 只能用这条接入现在真能合成的模型（缺业务空间 ID 这类会被挡在外面，选了也合不出声）
+  const manualModels = manualOwner?.usableModels ?? []
+  const manualValue =
+    manualOwner && manualModel && manualVoice.trim()
+      ? formatManualVoice({
+          connectionId: manualConnection,
+          modelId: manualModel,
+          voice: manualVoice
+        })
+      : ''
+  // 这条接入里「官方没给音色目录」的可用模型：手填音色主要就是为它们准备的
+  const noCatalogModels = manualOwner
+    ? manualOwner.models
+        .map((model) => model.id)
+        .filter(
+          (id) =>
+            manualModels.includes(id) &&
+            (catalog.find(
+              (entry) => entry.provider === manualOwner.providerId && entry.model.id === id
+            )?.model.voices.length ?? 0) === 0
+        )
+    : []
 
   const cloneGroups = groupCloneVoices(
     voices.filter((voice) => voice.status === 'ready' && voice.voiceType),
@@ -611,97 +642,212 @@ export function VoicePickerDialog({
           <DialogTitle>选择音色</DialogTitle>
         </DialogHeader>
 
-        <div className="relative">
-          <Search className="absolute top-2.5 left-2.5 size-3.5 text-muted-foreground" />
-          <Input
-            value={keyword}
-            onChange={(e) => setKeyword(e.target.value)}
-            placeholder="搜索音色名 / id / 描述"
-            className="h-8 pl-8 text-xs"
-          />
-        </div>
+        <Tabs
+          value={mode}
+          onValueChange={(value) => setMode(value as 'catalog' | 'manual')}
+          className="flex min-h-0 flex-1 flex-col gap-3"
+        >
+          <TabsList variant="line">
+            <TabsTrigger value="catalog" className="px-3">
+              从目录选
+            </TabsTrigger>
+            <TabsTrigger value="manual" className="px-3">
+              手动输入
+            </TabsTrigger>
+          </TabsList>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-          {cloneGroups.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <p className="text-[13px] font-medium text-muted-foreground">克隆音色（绑死接入与模型）</p>
-              {cloneGroups.map((group) => (
-                <div key={group.key} className="flex flex-col gap-1">
-                  <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-                    <ProviderIcon providerId={group.provider} size="sm" />
-                    <span>
-                      {group.connectionLabel} · {group.modelLabel}
-                      {group.ready ? '' : '（接入未配齐）'}
-                    </span>
-                  </div>
-                  {group.voices.map((voice) => (
-                    <button
-                      key={voice.id}
-                      type="button"
-                      className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent"
-                      onClick={() => onPick(voice.voiceType)}
-                    >
-                      <span className="min-w-0 truncate">{voice.name}</span>
-                      <Badge variant="outline">{voice.voiceType.slice(0, 12)}…</Badge>
-                    </button>
-                  ))}
-                </div>
-              ))}
+          <TabsContent value="catalog" className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+            <div className="relative">
+              <Search className="absolute top-2.5 left-2.5 size-3.5 text-muted-foreground" />
+              <Input
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="搜索音色名 / id / 描述"
+                className="h-8 pl-8 text-xs"
+              />
             </div>
-          )}
 
-          {systemGroups.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <p className="text-[13px] font-medium text-muted-foreground">系统音色（服务商自带，按模型分组）</p>
-              {systemGroups.map(({ entry, groups }) => {
-                const enabled = connectionsWithModel(connections, entry.provider, entry.model.id).length > 0
-                return (
-                  <div key={`${entry.provider}-${entry.model.id}`} className="flex flex-col gap-1">
+            {cloneGroups.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <p className="text-[13px] font-medium">克隆音色（绑死接入与模型）</p>
+                {cloneGroups.map((group) => (
+                  <div key={group.key} className="flex flex-col gap-1">
                     <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-                      <ProviderIcon providerId={entry.provider} size="sm" />
+                      <ProviderIcon providerId={group.provider} size="sm" />
                       <span>
-                        {TTS_PROVIDER_SHORT[entry.provider]} · {entry.model.label}
-                        {enabled ? '' : '（没有启用这个模型的接入）'}
+                        {group.connectionLabel} · {group.modelLabel}
+                        {group.ready ? '' : '（接入现在用不了）'}
                       </span>
                     </div>
-                    {groups.map((group) => (
-                      <div key={group.label} className="flex flex-col gap-1 pl-5">
-                        <span className="text-[11px] text-muted-foreground">{group.label}</span>
-                        <div className="flex flex-wrap gap-1">
-                          {group.voices.map((voice) => (
-                            <Button
-                              key={voice.id}
-                              variant="outline"
-                              size="sm"
-                              className="h-6 text-xs"
-                              disabled={!enabled}
-                              title={
-                                enabled
-                                  ? `${voice.id}${voice.desc ? ` · ${voice.desc}` : ''}`
-                                  : `没有启用模型「${entry.model.label}」的接入：到设置 → 语音合成启用它`
-                              }
-                              onClick={() => onPick(voice.id)}
-                            >
-                              {voice.name}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
+                    {group.voices.map((voice) => (
+                      <button
+                        key={voice.id}
+                        type="button"
+                        className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent"
+                        onClick={() => onPick(voice.voiceType)}
+                      >
+                        <span className="min-w-0 truncate">{voice.name}</span>
+                        <Badge variant="outline">{voice.voiceType.slice(0, 12)}…</Badge>
+                      </button>
                     ))}
                   </div>
-                )
-              })}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
 
-          {empty && (
-            <p className="py-6 text-center text-sm text-muted-foreground">
-              {keyword.trim()
-                ? '没有匹配的音色。也可以直接把音色 id 手打进输入框。'
-                : '音色库还没有就绪的克隆音色。到「音色库」新建一个（训练完成后即可选）。'}
+            {systemGroups.length > 0 && (
+              <div className="flex flex-col gap-2">
+                <p className="text-[13px] font-medium">
+                  系统音色（服务商自带，按 服务商 → 模型 → 场景 分组）
+                </p>
+                {systemGroups.map(({ entry, groups }) => {
+                  const enabled = connectionsWithModel(connections, entry.provider, entry.model.id).length > 0
+                  return (
+                    <div key={`${entry.provider}-${entry.model.id}`} className="flex flex-col gap-1">
+                      <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+                        <ProviderIcon providerId={entry.provider} size="sm" />
+                        <span>
+                          {TTS_PROVIDER_SHORT[entry.provider]} · {entry.model.label}
+                          {enabled ? '' : '（没有能用的接入启用它）'}
+                        </span>
+                      </div>
+                      {groups.map((group) => (
+                        <div key={group.label} className="flex flex-col gap-1 pl-5">
+                          <span className="text-[13px] text-muted-foreground">{group.label}</span>
+                          <div className="flex flex-wrap gap-1">
+                            {group.voices.map((voice) => (
+                              <Button
+                                key={voice.id}
+                                variant="outline"
+                                size="sm"
+                                className="h-6 text-xs"
+                                disabled={!enabled}
+                                title={
+                                  enabled
+                                    ? `${voice.id}${voice.desc ? ` · ${voice.desc}` : ''}`
+                                    : `没有启用模型「${entry.model.label}」的可用接入：到设置 → 语音合成启用它`
+                                }
+                                onClick={() => onPick(voice.id)}
+                              >
+                                {voice.name}
+                              </Button>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {empty && (
+              <p className="py-6 text-center text-[13px] text-muted-foreground">
+                {keyword.trim()
+                  ? '没有匹配的音色。换个关键词，或到「手动输入」里自己指定接入、模型与音色。'
+                  : '目录里还没有可选的音色（没有就绪的克隆音色，也没有启用模型的系统音色目录）：到「手动输入」里自己指定接入、模型与音色。'}
+              </p>
+            )}
+          </TabsContent>
+
+          <TabsContent value="manual" className="flex flex-col gap-3 overflow-y-auto pr-1">
+            <p className="text-[13px] text-muted-foreground">
+              官方没给音色目录的模型（qwen-audio-3.x / cosyvoice-v3.5 等）走这里：选好接入与模型再填音色，
+              存成「接入::模型::音色」，合成时按它找接入与模型。
             </p>
-          )}
-        </div>
+
+            <div>
+              <Label className="mb-1 text-[13px]">接入</Label>
+              {connections.length === 0 ? (
+                <p className="rounded-lg border border-dashed px-3 py-2 text-[13px] text-muted-foreground">
+                  还没有接入。到设置 → 语音合成添加一条（填一次密钥、勾上要用的模型）。
+                </p>
+              ) : (
+                <Select
+                  value={manualConnection}
+                  onValueChange={(value) => {
+                    setManualConnection(value)
+                    setManualModel('')
+                    setManualVoice('')
+                  }}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="选择一条接入" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {connections.map((item) => (
+                      <SelectItem key={item.id} value={item.id}>
+                        <span className="flex items-center gap-2">
+                          <ProviderIcon providerId={item.providerId} size="sm" />
+                          <span className="truncate">
+                            {item.name}（{TTS_PROVIDER_SHORT[item.providerId]}）
+                          </span>
+                        </span>
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            </div>
+
+            {manualOwner && (
+              <div>
+                <Label className="mb-1 text-[13px]">模型（这条接入启用的）</Label>
+                {manualModels.length === 0 ? (
+                  <p className="rounded-lg border border-dashed px-3 py-2 text-[13px] text-muted-foreground">
+                    这条接入现在没有能用的模型：到设置 → 语音合成勾上模型、补齐凭据与业务空间 ID。
+                  </p>
+                ) : (
+                  <Select value={manualModel} onValueChange={setManualModel}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="选择模型" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {manualModels.map((id) => (
+                        <SelectItem key={id} value={id}>
+                          {catalog.find(
+                            (entry) => entry.provider === manualOwner.providerId && entry.model.id === id
+                          )?.model.label ?? id}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                {noCatalogModels.length > 0 && (
+                  <p className="mt-1 text-[13px] text-muted-foreground">
+                    其中 {noCatalogModels.join(' / ')} 官方没给音色目录，音色只能手填
+                  </p>
+                )}
+              </div>
+            )}
+
+            <div>
+              <Label className="mb-1 text-[13px]">音色</Label>
+              <Input
+                value={manualVoice}
+                onChange={(e) => setManualVoice(e.target.value)}
+                placeholder="音色 id：火山 speaker_id / 百炼 voice"
+                className="h-8 text-xs"
+              />
+            </div>
+
+            {manualValue && (
+              <p className="break-all text-[13px] text-muted-foreground">将存成：{manualValue}</p>
+            )}
+
+            <div className="flex justify-end">
+              <Button
+                disabled={!manualValue}
+                onClick={() => {
+                  if (!manualValue) return
+                  onPick(manualValue)
+                }}
+              >
+                用这个音色
+              </Button>
+            </div>
+          </TabsContent>
+        </Tabs>
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>

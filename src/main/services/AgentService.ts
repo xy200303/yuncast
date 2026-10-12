@@ -45,7 +45,7 @@ export class AgentService {
   private startedAt = 0
   /** 本场发生过几轮对话（没对话就不写总结） */
   private exchanges = 0
-  /** 本场运行态音色（场次指定；set_voice 工具可热改；空 = 回落人设/TTS 默认） */
+  /** 本场运行态音色（场次指定；set_voice 工具可热改；空 = 用当前人设卡的音色） */
   private planVoiceId = ''
   /** 播报是否被暂停：暂停时评论/触发器不再派给 LLM，say 也说不出去（统一开播控制里的「暂停」） */
   private speakingPaused = false
@@ -128,7 +128,7 @@ export class AgentService {
         ],
         // 接入自身的改动（换密钥、改模型列表）同样要让会话作废
         connection: connection
-          ? [connection.providerId, connection.models, connection.defaultModel, connection.params]
+          ? [connection.providerId, connection.models, connection.params]
           : null,
         legacy: [llm.provider, llm.model, llm.apiKey, llm.baseUrl],
         plan: [plan?.id, plan?.personaId, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
@@ -312,13 +312,8 @@ export class AgentService {
 
     const persona = this.persona.get()
     const { plan, script } = this.script.getActive()
-    const systemPrompt = this.persona.buildSystemPrompt(
-      persona,
-      // 人设卡的音色即主播的嗓子；没填就用默认接入的默认音色（不再有跨服务商的全局默认音色）
-      persona.voiceId || this.storage.ttsConnectionGetDefaultAny()?.defaultVoice || '',
-      plan,
-      script
-    )
+    // 人设卡的音色即主播的嗓子，必选；没选时不留兜底，合成路由会直接报错（预检也会拦下）
+    const systemPrompt = this.persona.buildSystemPrompt(persona, plan, script)
 
     // 全自定义 ResourceLoader：不读 ~/.pi，不发现项目资源，system prompt 就是人设卡 + 场次
     const resourceLoader: ResourceLoader = {

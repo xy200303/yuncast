@@ -212,12 +212,8 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setPersona: (persona) => set({ persona })
 }))
 
-/** TTS 是否已配置（状态栏徽章用）：存在任一凭据齐全且启用了模型的接入就算 */
-export function selectTtsReady(
-  config: AppConfig,
-  connections: TtsConnectionSafe[]
-): boolean {
-  void config // 不再按「默认服务商」判定：任何一家配好了主播都能出声（音色路由自会找过去）
+/** TTS 是否已配置（状态栏徽章用）：存在任一可用接入（凭据齐全 + 至少一个模型能用）就算 */
+export function selectTtsReady(connections: TtsConnectionSafe[]): boolean {
   return connections.some((connection) => connection.ready)
 }
 
@@ -232,17 +228,4 @@ export function selectLlmReady(
 /** 服务商显示名（拿不到 manifest 就退回 id） */
 export function providerLabel(providers: LlmProviderManifest[], providerId: string): string {
   return providers.find((item) => item.id === providerId)?.label ?? providerId
-}
-
-/** 接入实际用的模型（默认模型 → 列表第一个 → 服务商默认模型），与主进程的取用口径一致 */
-export function effectiveModel(
-  connection: ModelConnectionSafe,
-  providers: LlmProviderManifest[]
-): string {
-  if (connection.defaultModel) return connection.defaultModel
-  return (
-    connection.models[0] ??
-    providers.find((item) => item.id === connection.providerId)?.defaultModel ??
-    ''
-  )
 }

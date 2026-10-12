@@ -72,7 +72,10 @@ export function catalogVoiceName(catalog: CatalogModel[], voiceId: string): stri
   return voiceId
 }
 
-/** 系统音色能不能用：找到至少一条启用了它所属模型的接入才算可用 */
+/**
+ * 系统音色能不能用：得有一条启用了它所属模型的可用接入（合成时就近取最早建的那条）。
+ * 目录外的手动音色（`接入::模型::音色` 复合串）不看这里——它的接入与模型写在串里。
+ */
 export function systemVoiceUsable(
   catalog: CatalogModel[],
   connections: TtsConnectionSafe[],
@@ -85,7 +88,7 @@ export function systemVoiceUsable(
   const entry = owners[0]
   return {
     usable: false,
-    hint: `没有启用模型「${entry.model.label}」的${TTS_PROVIDER_SHORT[entry.provider]}接入：到设置 → 语音合成启用它`
+    hint: `没有启用模型「${entry.model.label}」的可用${TTS_PROVIDER_SHORT[entry.provider]}接入：到设置 → 语音合成启用它`
   }
 }
 
@@ -129,8 +132,8 @@ export function groupCloneVoices(
 }
 
 /**
- * 克隆音色的可用性提示：接入被删了不是错，合成时会回退到该服务商的默认接入；
- * 连能用的接入都没有才是真要处理（解释为什么这个音色现在合不出声）。
+ * 克隆音色的可用性提示。克隆音色只吃「克隆时那条接入 + 那个模型」，绑定不跨接入、也不跨模型：
+ * 没有回退（没有默认接入可回退），接入没了就是合不出声，得把接入加回来或用现有接入重新克隆。
  */
 export function cloneVoiceHint(
   voice: VoiceRecord,
@@ -138,29 +141,18 @@ export function cloneVoiceHint(
 ): { ok: boolean; hint: string } {
   const mine = connections.find((item) => item.id === voice.connectionId)
   const providerLabel = TTS_PROVIDER_SHORT[voice.provider]
-  if (mine) {
-    if (mine.usableModels.includes(voice.model)) return { ok: true, hint: '' }
-    const enabled = mine.models.some((model) => model.id === voice.model)
+  if (!mine) {
     return {
       ok: false,
-      hint: enabled
-        ? `接入「${mine.name}」的这个模型现在用不了（多半缺业务空间 ID）：到设置 → 语音合成看看`
-        : `接入「${mine.name}」没启用模型「${voice.model}」：到设置 → 语音合成勾上它`
+      hint: `克隆时用的${providerLabel}接入已删除：到设置 → 语音合成把这条接入加回来，或用现有接入重新克隆一个`
     }
   }
-  const fallback = connections.some(
-    (item) => item.providerId === voice.provider && item.usableModels.includes(voice.model)
-  )
-  if (fallback) {
-    return {
-      ok: true,
-      hint: voice.connectionId
-        ? '原接入已删除，合成时走这家服务商的默认接入'
-        : `合成时走${providerLabel}的默认接入`
-    }
-  }
+  if (mine.usableModels.includes(voice.model)) return { ok: true, hint: '' }
+  const enabled = mine.models.some((model) => model.id === voice.model)
   return {
     ok: false,
-    hint: `没有能用的${providerLabel}接入（缺这条接入，或没启用模型「${voice.model}」）：到设置 → 语音合成处理`
+    hint: enabled
+      ? `接入「${mine.name}」的这个模型现在用不了（多半缺业务空间 ID）：到设置 → 语音合成看看`
+      : `接入「${mine.name}」没启用模型「${voice.model}」：到设置 → 语音合成勾上它`
   }
 }

@@ -93,20 +93,14 @@ const api = {
      * 密钥字段的值不出主进程，只有 hasSecret / ready 两个标记。
      */
     connections: () => ipcRenderer.invoke(IPC.ttsConnectionList) as Promise<TtsConnectionSafe[]>,
-    /** 新建/编辑接入（id 空则新建；新建时该服务商首条自动成为默认）。密钥字段留空 = 不修改 */
+    /** 新建/编辑接入（id 空则新建）。密钥字段留空 = 不修改；没有默认模型/默认音色，音色自带接入与模型 */
     saveConnection: (input: TtsConnectionInput) =>
       ipcRenderer.invoke(IPC.ttsConnectionSave, input) as Promise<
         { ok: true; connections: TtsConnectionSafe[] } | { ok: false; error: string }
       >,
-    /** 删除接入（删默认自动提升该服务商最老的一条） */
+    /** 删除接入（音色路由按接入 id 找接入：绑它的克隆音色会报错，界面提示补回） */
     removeConnection: (id: string) =>
       ipcRenderer.invoke(IPC.ttsConnectionRemove, id) as Promise<{
-        ok: true
-        connections: TtsConnectionSafe[]
-      }>,
-    /** 把某条接入设为该服务商的默认（合成路由的主入口） */
-    setDefaultConnection: (id: string) =>
-      ipcRenderer.invoke(IPC.ttsConnectionSetDefault, id) as Promise<{
         ok: true
         connections: TtsConnectionSafe[]
       }>
@@ -123,7 +117,7 @@ const api = {
       >,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.modelRemove, id) as Promise<{ ok: true; connections: ModelConnectionSafe[] }>,
-    /** 连通性测试；不传 model 就测该接入的默认模型 */
+    /** 连通性测试；不传 model 就测该接入模型列表的第一个 */
     test: (id: string, model?: string) =>
       ipcRenderer.invoke(IPC.modelTest, id, model) as Promise<{
         ok: boolean
@@ -216,8 +210,6 @@ const api = {
       ipcRenderer.invoke(IPC.voiceClone, input) as Promise<{ ok: boolean; error?: string }>,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,
-    setDefault: (id: string) =>
-      ipcRenderer.invoke(IPC.voiceSetDefault, id) as Promise<{ ok: boolean; error?: string }>,
     rename: (id: string, name: string) =>
       ipcRenderer.invoke(IPC.voiceRename, id, name) as Promise<{ ok: boolean; error?: string }>,
     /** 试听：合成一句固定文案并返回缓存路径（用 audioEngine.playTts 播放） */

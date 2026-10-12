@@ -37,7 +37,7 @@ type VoiceFilter = 'all' | TtsProvider
 
 /** 音色库：克隆音色的管理、试听与引用关系。
  *  克隆在服务商侧异步训练，本页接收广播更新状态。克隆音色绑定「它克隆时那条接入 + 目标模型」
- *  （不可跨模型），合成时按这个绑定路由；「设为默认音色」= 写在该接入上 + 把该接入设为默认接入。 */
+ *  （不可跨模型），合成时按这个绑定路由。音色的入口统一在人设卡/场次，这里没有「默认音色」。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
@@ -163,9 +163,6 @@ export function VoicesPage() {
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {shown.map((voice) => {
               const connection = ttsConnections.find((item) => item.id === voice.connectionId)
-              // 「默认音色」= 它所在接入的默认音色（该接入同时是默认接入时才是全站兜底的那一个）
-              const isDefault =
-                Boolean(connection?.defaultVoice) && connection?.defaultVoice === voice.voiceType
               const owner = TTS_PROVIDER_SHORT[voice.provider]
               const spec = catalog.find(
                 (entry) => entry.provider === voice.provider && entry.model.id === voice.model
@@ -177,7 +174,6 @@ export function VoicesPage() {
                   <div className="flex items-center justify-between gap-2">
                     <span className="min-w-0 truncate text-sm font-medium">{voice.name}</span>
                     <div className="flex shrink-0 items-center gap-1.5">
-                      {isDefault && <Badge variant="secondary">默认音色</Badge>}
                       <Badge variant="outline" className="gap-1">
                         <ProviderIcon providerId={voice.provider} size="sm" />
                         {owner}
@@ -231,25 +227,6 @@ export function VoicesPage() {
                         试听
                       </Button>
                     )}
-                    {voice.status === 'ready' && !isDefault && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        title="写在这条接入上，并把它设为默认接入"
-                        onClick={() => {
-                          void window.api.voice.setDefault(voice.id).then((r) => {
-                            if (r.ok) {
-                              toast.success('已设为默认音色', {
-                                description: '它所在的接入也设成了默认接入'
-                              })
-                              reload()
-                            } else toast.error('设置失败', { description: r.error })
-                          })
-                        }}
-                      >
-                        设为默认音色
-                      </Button>
-                    )}
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -290,7 +267,7 @@ export function VoicesPage() {
               <p className="mb-1 text-[13px] text-destructive">这个音色正在被使用，删掉后这些地方会指向不存在的音色：</p>
               {usages[deleting.id].personas.map((item) => (
                 <p key={`${item.id}-${item.role}`}>
-                  主播卡「{item.name}」{item.role ? ` · 角色 ${item.role}` : ' · 默认音色'}
+                  主播卡「{item.name}」{item.role ? ` · 角色 ${item.role}` : ' · 音色'}
                 </p>
               ))}
               {usages[deleting.id].plans.map((item) => (

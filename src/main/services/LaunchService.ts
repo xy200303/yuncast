@@ -13,7 +13,7 @@ import type { StreamService } from './stream/StreamService'
 import type { TtsService } from './TtsService'
 import type { UtteranceService } from './UtteranceService'
 import { resolveModelForPersona } from './llmModel'
-import { getLlmProvider, getTtsProvider, ttsConnectionDefaultModel, ttsModelBlocker, ttsModelSpec } from './providers/registry'
+import { getLlmProvider } from './providers/registry'
 import { findCloneVoice } from '../../shared/voiceProvider'
 
 /** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
@@ -87,12 +87,7 @@ export class LaunchService {
               : `语言模型：${name} · ${resolved.model}（临时用旧的全局配置）`
         })
         const fallback = resolved.fallback
-        if (fallback?.kind === 'model') {
-          items.push({
-            level: 'warn',
-            label: `指定模型 ${fallback.requested} 不在接入「${fallback.connectionName}」的模型列表里，已回落用 ${fallback.used}`
-          })
-        } else if (fallback?.kind === 'legacy') {
+        if (fallback?.kind === 'legacy') {
           items.push({
             level: 'warn',
             label:
@@ -109,11 +104,19 @@ export class LaunchService {
         })
       }
     }
-    // ②a 语音合成：生效音色（场次 > 人设 > 默认接入的默认音色）走和运行时完全相同的合成路由
-    const defaultVoice = this.storage.ttsConnectionGetDefaultAny()?.defaultVoice ?? ''
-    const effectiveVoice = (plan.voiceId || persona?.voiceId || defaultVoice).trim()
+    // ②a 语音合成：生效音色（场次 > 人设卡）走和运行时完全相同的合成路由。
+    // 没有默认音色也没有默认接入：没选音色就是阻断项，不做任何猜测。
+    const effectiveVoice = (plan.voiceId || persona?.voiceId || '').trim()
     let ttsReady = false
-    if (effectiveVoice) {
+    if (!effectiveVoice) {
+      items.push({
+        level: 'block',
+        label: '还没给主播选音色',
+        detail: persona
+          ? `到主播团给「${persona.name}」选一个音色（场次里也能覆盖），不然主播没声音`
+          : '到主播团选一张人设卡并给它选一个音色，不然主播没声音'
+      })
+    } else {
       try {
         const route = this.tts.routeForVoice(effectiveVoice)
         ttsReady = true
@@ -129,33 +132,6 @@ export class LaunchService {
           level: 'block',
           label: '语音合成不可用',
           detail: error instanceof Error ? error.message : String(error)
-        })
-      }
-    } else {
-      // 没指定音色（场次/人设都留空，默认接入也没写默认音色）：退到默认接入的默认模型上做检查，
-      // 播出时音色取该模型目录的第一个；这里至少要把「默认接入的默认模型能不能用」说清楚
-      const connection = this.storage.ttsConnectionGetDefaultAny()
-      const def = connection ? getTtsProvider(connection.providerId) : undefined
-      const modelId = connection ? ttsConnectionDefaultModel(connection, def) : ''
-      const blocker = connection ? ttsModelBlocker(connection, def, modelId) : '还没有语音合成接入'
-      if (connection && !blocker) {
-        ttsReady = true
-        items.push({
-          level: 'ok',
-          label: `语音合成：默认接入「${connection.name}」/ ${ttsModelSpec(connection.providerId, modelId)?.label ?? modelId}`
-        })
-        items.push({
-          level: 'warn',
-          label: '还没指定音色',
-          detail: '会用它自己音色目录的第一个音色；想换到人设卡或场次里选一个，或在默认接入里填默认音色'
-        })
-      } else {
-        items.push({
-          level: 'block',
-          label: '没有可用的语音合成',
-          detail: connection
-            ? `${blocker}（默认接入「${connection.name}」）：设置 → 语音合成处理`
-            : '设置 → 语音合成：加一条接入（凭据齐全 + 至少启用一个模型），不然主播没声音'
         })
       }
     }

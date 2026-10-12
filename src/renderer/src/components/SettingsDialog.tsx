@@ -25,11 +25,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
-import { flattenModelCatalog, voiceInCatalog, type CatalogModel } from '@/lib/voice'
+import { flattenModelCatalog, type CatalogModel } from '@/lib/voice'
 import { ProviderIcon } from '@/components/ProviderIcon'
-import { VoicePickerDialog } from '@/components/AnchorsPage'
 import {
-  effectiveModel,
   providerLabel,
   useAppStore,
   type LlmProviderManifest,
@@ -40,7 +38,6 @@ import { audioEngine } from '../audio/engine'
 import {
   APP_ACCENTS,
   APP_ACCENT_META,
-  TTS_PROVIDER_SHORT,
   type AppAccent,
   type AppTheme,
   type ModelConnectionSafe,
@@ -436,8 +433,9 @@ function LlmSection() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[13px] font-medium">语言模型（LLM）</p>
-          <p className="text-xs text-muted-foreground">
-            主播 Agent 的大脑。一条 = 一个服务商的接入，密钥只填一次；模型列表里放这家能用的模型，默认模型是没特别指定时用的那个
+          <p className="text-[13px] text-muted-foreground">
+            主播 Agent 的大脑。一条 = 一个服务商的接入，密钥只填一次；模型列表里放这家能用的模型，
+            用哪个由人设卡自己选（这里没有「默认模型」）
           </p>
         </div>
         <Button size="sm" onClick={() => setEditing({})}>
@@ -468,8 +466,7 @@ function LlmSection() {
                   )}
                 </div>
                 <p className="truncate text-xs text-muted-foreground">
-                  {providerLabel(providers, connection.providerId)} · {connection.models.length} 个模型 ·
-                  默认 {effectiveModel(connection, providers) || '—'}
+                  {providerLabel(providers, connection.providerId)} · {connection.models.length} 个模型
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-1">
@@ -544,7 +541,7 @@ function LlmSection() {
 
 /**
  * 连通性测试弹窗：列出这条接入的全部模型，逐个测（也能一次全测）。
- * 之所以不直接测默认模型：同一家的模型可用性常常不一致，得能单独验。
+ * 同一家的模型可用性常常不一致，所以不挑一个代表来测，得能单独验。
  */
 function TestConnectionDialog({
   connection,
@@ -604,11 +601,6 @@ function TestConnectionDialog({
                 className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2"
               >
                 <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{model}</span>
-                {model === connection.defaultModel && (
-                  <Badge variant="secondary" className="shrink-0">
-                    默认
-                  </Badge>
-                )}
                 {result.state === 'ok' && (
                   <span className="shrink-0 text-xs text-emerald-600">
                     连通{result.detail ? ` · ${result.detail}` : ''}
@@ -662,7 +654,6 @@ function ConnectionEditorDialog({
     connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
   )
   const [models, setModels] = useState<string[]>(connection?.models ?? [])
-  const [defaultModel, setDefaultModel] = useState(connection?.defaultModel ?? '')
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
@@ -694,15 +685,11 @@ function ConnectionEditorDialog({
   }
 
   const setModelAt = (index: number, value: string) => {
-    // 改的正好是当前默认模型：跟着改名，别让它掉出列表
-    if (models[index] === defaultModel) setDefaultModel(value)
     setModels(models.map((model, i) => (i === index ? value : model)))
   }
 
   const removeModelAt = (index: number) => {
-    const next = models.filter((_, i) => i !== index)
-    if (models[index] === defaultModel) setDefaultModel(next[0] ?? '')
-    setModels(next)
+    setModels(models.filter((_, i) => i !== index))
   }
 
   const addModels = (ids: string[]) => {
@@ -712,7 +699,6 @@ function ConnectionEditorDialog({
       if (value && !next.includes(value)) next.push(value)
     }
     setModels(next)
-    if (!defaultModel) setDefaultModel(next[0] ?? '')
   }
 
   const save = async () => {
@@ -725,10 +711,6 @@ function ConnectionEditorDialog({
       toast.warning('至少加一个模型', { description: '模型列表里放这家能用的模型 id' })
       return
     }
-    if (!models.includes(defaultModel)) {
-      toast.warning('默认模型要在模型列表里', { description: '点模型行右侧的「默认」按钮指定一个' })
-      return
-    }
     setBusy(true)
     try {
       const result = await window.api.model.save({
@@ -736,8 +718,7 @@ function ConnectionEditorDialog({
         name,
         providerId,
         params,
-        models,
-        defaultModel
+        models
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
@@ -812,7 +793,7 @@ function ConnectionEditorDialog({
 
           <div>
             <div className="mb-1 flex items-center justify-between">
-              <Label>模型列表（这家能用的模型，右侧点「默认」指定默认模型）</Label>
+              <Label>模型列表（这家能用的模型；用哪个由人设卡自己选）</Label>
               <Button
                 variant="outline"
                 size="sm"
@@ -837,15 +818,6 @@ function ConnectionEditorDialog({
                       placeholder="模型 id，如 deepseek-chat"
                       className="h-7 text-xs"
                     />
-                    <Button
-                      variant={model === defaultModel ? 'secondary' : 'ghost'}
-                      size="sm"
-                      className="h-7 shrink-0 text-xs"
-                      title="设为默认模型"
-                      onClick={() => setDefaultModel(model)}
-                    >
-                      {model === defaultModel ? '默认' : '设为默认'}
-                    </Button>
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -1166,8 +1138,8 @@ function ttsModelLabel(catalog: CatalogModel[], provider: TtsProvider, modelId: 
 
 /**
  * 语音合成（火山引擎 / 阿里云百炼）：
- * 一个条目 = 一个服务商接入，条目里带齐它自己的东西：凭据、默认音色、模型与每个模型的参数（含语气）、
- * 实时合成开关。没有跨服务商的「通用偏好」——音色严格绑定模型，模型属于某条接入，兜底只用「默认接入」。
+ * 一个条目 = 一个服务商账号，条目里带齐它自己的东西：凭据、模型与每个模型的参数（含语气）、实时合成开关。
+ * 没有默认模型 / 默认音色 / 默认接入：音色严格绑定模型，模型属于某条接入，用哪个由人设卡/场次选。
  */
 function TtsSection() {
   const providers = useAppStore((s) => s.ttsProviders)
@@ -1182,15 +1154,6 @@ function TtsSection() {
   )
   const [deleting, setDeleting] = useState<TtsConnectionSafe | null>(null)
   const [testing, setTesting] = useState<TtsConnectionSafe | null>(null)
-
-  const catalog = flattenModelCatalog(providers)
-
-  const useAsDefault = (connection: TtsConnectionSafe) => {
-    void window.api.tts.setDefaultConnection(connection.id).then((result) => {
-      setConnections(result.connections)
-      toast.success(`「${connection.name}」已设为默认接入`)
-    })
-  }
 
   const removeConnection = () => {
     const target = deleting
@@ -1209,9 +1172,9 @@ function TtsSection() {
       <div className="rounded-lg border bg-card px-5 py-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-sm font-medium">服务商接入</p>
+            <p className="text-[14px] font-medium">服务商接入</p>
             <p className="mt-0.5 text-[13px] text-muted-foreground">
-              一条接入 = 一个服务商账号；模型和它的参数（语速、语气…）都在这条接入里配。
+              一条接入 = 一个服务商账号；模型和参数都在这条接入里配（音色由人设卡/场次选，这里不设默认）。
             </p>
           </div>
           <Button size="sm" className="shrink-0" onClick={() => setAdding(true)}>
@@ -1237,8 +1200,7 @@ function TtsSection() {
                   <ProviderIcon providerId={connection.providerId} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-sm font-medium">{connection.name}</span>
-                      {connection.isDefault && <Badge variant="secondary">默认接入</Badge>}
+                      <span className="truncate text-[14px] font-medium">{connection.name}</span>
                       {unused > 0 && (
                         <Badge variant="outline" className="text-amber-600">
                           {unused} 个模型缺配置
@@ -1246,9 +1208,10 @@ function TtsSection() {
                       )}
                     </div>
                     <p className="mt-1 text-[13px] text-muted-foreground">
-                      {connection.models.length} 个模型 · 默认模型{' '}
-                      {ttsModelLabel(catalog, connection.providerId, connection.defaultModel)} · 默认音色{' '}
-                      {connection.defaultVoice || '未指定'}
+                      {connection.models.length} 个模型 · 实时合成 {connection.realtime ? '开' : '关'}
+                      {connection.usableModels.length > 0
+                        ? ` · 可用 ${connection.usableModels.length} 个`
+                        : ' · 现在没有能用的模型'}
                     </p>
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
@@ -1267,11 +1230,6 @@ function TtsSection() {
                     >
                       配置
                     </Button>
-                    {!connection.isDefault && (
-                      <Button variant="ghost" size="sm" onClick={() => useAsDefault(connection)}>
-                        设为默认
-                      </Button>
-                    )}
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -1318,7 +1276,7 @@ function TtsSection() {
           <p className="text-sm text-muted-foreground">
             确认删除「{deleting?.name}」？
             {boundVoices > 0
-              ? `这条接入下有 ${boundVoices} 个克隆音色，删掉后会回退到该服务商的默认接入（音色记录本身不受影响）。`
+              ? `这条接入下有 ${boundVoices} 个克隆音色：克隆音色只认克隆时那条接入，删掉后它们会合不出声（音色记录本身保留），想继续用得把接入加回来。`
               : '音色记录本身不受影响。'}
           </p>
           <DialogFooter>
@@ -1366,7 +1324,7 @@ function TtsProviderPickerDialog({
               <div className="min-w-0 flex-1">
                 <p className="text-[13px] font-medium">{item.label}</p>
                 <p className="text-xs text-muted-foreground">{item.note}</p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                <p className="mt-0.5 text-[13px] text-muted-foreground">
                   {item.models.filter((model) => model.kind !== 'realtime').length} 个模型可用 ·{' '}
                   {item.capabilities.clone ? '支持声音复刻' : '不支持复刻'}
                 </p>
@@ -1439,7 +1397,7 @@ function TtsParamForm({
 
 /**
  * 接入测试弹窗：选一个已启用的模型 + 它的音色，合成一句听。
- * 不直接测默认模型：同一家的模型可用性常常不一致（比如没填业务空间 ID 的模型必然失败），得能单独验。
+ * 不让一个模型代表整条接入：同一家的模型可用性常常不一致（比如没填业务空间 ID 的模型必然失败），得能单独验。
  */
 function TtsTestDialog({
   connection,
@@ -1451,7 +1409,7 @@ function TtsTestDialog({
   const providers = useAppStore((s) => s.ttsProviders)
   const voices = useAppStore((s) => s.voices)
   const catalog = flattenModelCatalog(providers)
-  const [modelId, setModelId] = useState(connection.defaultModel || connection.models[0]?.id || '')
+  const [modelId, setModelId] = useState(connection.models[0]?.id ?? '')
   const [voice, setVoice] = useState('')
   const [text, setText] = useState('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
   const [busy, setBusy] = useState(false)
@@ -1555,7 +1513,7 @@ function TtsTestDialog({
               <div className="mt-2 flex max-h-44 flex-col gap-2 overflow-y-auto rounded-lg border px-2 py-2">
                 {voiceGroups.map((group) => (
                   <div key={group.label} className="flex flex-col gap-1">
-                    <span className="text-[11px] text-muted-foreground">{group.label}</span>
+                    <span className="text-[13px] text-muted-foreground">{group.label}</span>
                     <div className="flex flex-wrap gap-1">
                       {group.voices.map((spec) => (
                         <Button
@@ -1610,7 +1568,7 @@ function TtsTestDialog({
   )
 }
 
-/** 新建/编辑语音合成接入：凭据 + 默认音色 + 模型（勾选、参数、默认）+ 实时合成 + 默认接入 */
+/** 新建/编辑语音合成接入：接入名 + 凭据 + 模型（勾选 + 每个模型的参数）+ 实时合成 */
 function TtsConnectionEditorDialog({
   providerId,
   connection,
@@ -1643,19 +1601,12 @@ function TtsConnectionEditorDialog({
   const [modelParams, setModelParams] = useState<Record<string, Record<string, string | number | boolean>>>(
     () => Object.fromEntries((connection?.models ?? []).map((item) => [item.id, { ...item.params }]))
   )
-  const [defaultModel, setDefaultModel] = useState(connection?.defaultModel || firstTts)
-  const [defaultVoice, setDefaultVoice] = useState(connection?.defaultVoice ?? '')
   const [realtime, setRealtime] = useState(connection?.realtime ?? false)
-  const [makeDefault, setMakeDefault] = useState(connection?.isDefault ?? connections.length === 0)
   const [expanded, setExpanded] = useState('')
-  const [pickerOpen, setPickerOpen] = useState(false)
   const [busy, setBusy] = useState(false)
 
   const toggleModel = (id: string, on: boolean) => {
-    const next = on ? [...enabled, id] : enabled.filter((item) => item !== id)
-    setEnabled(next)
-    // 停用正好是默认模型：默认位跟着挪到还启用的第一个，别留一个空的默认
-    if (!next.includes(defaultModel)) setDefaultModel(next[0] ?? '')
+    setEnabled(on ? [...enabled, id] : enabled.filter((item) => item !== id))
   }
 
   const patchModelParam = (id: string, key: string, value: string | number | boolean) =>
@@ -1666,27 +1617,6 @@ function TtsConnectionEditorDialog({
       else current[key] = value
       return { ...prev, [id]: current }
     })
-
-  /** 默认音色要能真的合成：克隆音色必须是这条接入克隆的、绑的模型也勾上了；系统音色要属于已勾选的模型 */
-  const voiceWarning = ((): string | null => {
-    const id = defaultVoice.trim()
-    if (!id) return null
-    const clone = voices.find((voice) => voice.voiceType === id)
-    if (clone) {
-      if (clone.provider !== providerId) {
-        return `这是${TTS_PROVIDER_SHORT[clone.provider]}接入下克隆的音色，本接入合成不了`
-      }
-      if (clone.connectionId && clone.connectionId !== connection?.id) return '这个音色克隆在另一条接入下'
-      if (!enabled.includes(clone.model)) return `这个音色绑定的模型「${clone.model}」还没勾上`
-      return null
-    }
-    const owners = voiceInCatalog(catalog, id)
-    if (owners.length === 0) return null
-    const mine = owners.find((entry) => entry.provider === providerId && enabled.includes(entry.model.id))
-    return mine
-      ? null
-      : `这个音色属于 ${owners.map((entry) => entry.model.label).join(' / ')}，本接入没勾上`
-  })()
 
   const restreamable = specs.some((spec) => enabled.includes(spec.id) && spec.streaming)
 
@@ -1700,10 +1630,6 @@ function TtsConnectionEditorDialog({
       toast.warning('至少启用一个模型', { description: '勾上要用的模型，音色才有地方合成' })
       return
     }
-    if (!enabled.includes(defaultModel)) {
-      toast.warning('默认模型要在启用列表里', { description: '点模型行右侧的「设为默认」指定一个' })
-      return
-    }
     setBusy(true)
     try {
       const result = await window.api.tts.saveConnection({
@@ -1712,10 +1638,7 @@ function TtsConnectionEditorDialog({
         name,
         params,
         models: enabled.map((id) => ({ id, params: modelParams[id] ?? {} })),
-        defaultModel,
-        defaultVoice,
-        realtime: restreamable ? realtime : false,
-        makeDefault
+        realtime: restreamable ? realtime : false
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
@@ -1766,27 +1689,6 @@ function TtsConnectionEditorDialog({
             ))}
           </div>
 
-          <div className="rounded-lg border px-3.5 py-3">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <p className="text-sm">默认音色</p>
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  人设卡/场次都没指定音色时用它
-                </p>
-              </div>
-              <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
-                选择音色
-              </Button>
-            </div>
-            <Input
-              className="mt-2"
-              value={defaultVoice}
-              onChange={(e) => setDefaultVoice(e.target.value)}
-              placeholder="音色 id（可留空）"
-            />
-            {voiceWarning && <p className="mt-1.5 text-xs text-amber-600">{voiceWarning}</p>}
-          </div>
-
           <div>
             <Label className="mb-2">模型（勾上要用的；展开配这个模型的参数，比如语速、语气）</Label>
             <div className="flex flex-col gap-2">
@@ -1824,14 +1726,6 @@ function TtsConnectionEditorDialog({
                           参数{paramCount > 0 ? `（${paramCount}）` : ''}
                         </Button>
                       )}
-                      <Button
-                        variant={defaultModel === spec.id ? 'secondary' : 'ghost'}
-                        size="sm"
-                        disabled={!on}
-                        onClick={() => setDefaultModel(spec.id)}
-                      >
-                        {defaultModel === spec.id ? '默认模型' : '设为默认'}
-                      </Button>
                     </div>
                     {on && expanded === spec.id && spec.params.length > 0 && (
                       <div className="border-t px-3 py-3">
@@ -1866,14 +1760,6 @@ function TtsConnectionEditorDialog({
             />
           </div>
 
-          <div className="flex items-center justify-between gap-3 rounded-lg border px-3.5 py-3">
-            <div>
-              <p className="text-sm">设为默认接入</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">谁都没指定音色时整条用它</p>
-            </div>
-            <Switch checked={makeDefault} onCheckedChange={setMakeDefault} aria-label="设为默认接入" />
-          </div>
-
           <DocLinks items={def.links} />
         </div>
 
@@ -1885,8 +1771,6 @@ function TtsConnectionEditorDialog({
             {busy ? '保存中…' : '保存'}
           </Button>
         </DialogFooter>
-
-        <VoicePickerDialog open={pickerOpen} onOpenChange={setPickerOpen} onPick={setDefaultVoice} />
       </DialogContent>
     </Dialog>
   )

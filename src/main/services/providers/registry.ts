@@ -44,7 +44,7 @@ export interface LlmProviderDef {
   capabilities: { tools: boolean; streaming: boolean; contextWindow?: number }
   /** 各家自有参数（baseUrl / region / apiKey …） */
   configFields: FieldSpec[]
-  /** 默认模型名，接入里没指定时用它 */
+  /** 该服务商的兜底模型名：只在完全没给出模型名时用（如本地服务），不是接入级的默认模型 */
   defaultModel: string
   /**
    * 该服务商的常见模型 id，给设置页的模型列表做下拉建议。
@@ -78,12 +78,16 @@ export interface ResolvedModel {
   fallback?: ResolvedFallback
 }
 
-/** 兜底说明的两种来源（条目文案由 LaunchService 拼） */
-export type ResolvedFallback =
-  /** 人设卡指定的模型已不在该接入的模型列表里，回落用了接入的默认模型 */
-  | { kind: 'model'; requested: string; used: string; connectionName: string }
-  /** 人设卡没给出可用的接入与模型（没选 / 选了但没配齐），临时用了旧的 config.llm */
-  | { kind: 'legacy'; personaName: string; reason: 'missing' | 'unusable'; connectionName?: string }
+/**
+ * 兜底说明（条目文案由 LaunchService 拼）。只剩「旧的 config.llm」这一种来源：
+ * 接入里没有默认模型，人设卡指定的模型不在列表里就等于没选。
+ */
+export type ResolvedFallback = {
+  kind: 'legacy'
+  personaName: string
+  reason: 'missing' | 'unusable'
+  connectionName?: string
+}
 
 const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, localOpenAiProvider]
 
@@ -103,16 +107,14 @@ export function secretFieldKeys(providerId: string): string[] {
 }
 
 /**
- * 接入实际用的模型：默认模型（得在列表里）→ 列表第一个 → provider 的默认模型。
- * 解析模型、连通性测试都走它，保证「测的是哪条」和「跑的是哪条」一致。
+ * 接入模型列表里的第一个。只在「调用方没指定模型」的场景用（连通性测试、老库补大脑）：
+ * 运行时用哪个模型一律由人设卡显式指定，接入没有默认模型这一档。
  */
-export function connectionModel(
-  connection: Pick<ModelConnection, 'models' | 'defaultModel'>,
+export function connectionFirstModel(
+  connection: Pick<ModelConnection, 'models'>,
   def: LlmProviderDef | undefined
 ): string {
   const models = connection.models.filter((model) => model.trim())
-  const preferred = connection.defaultModel.trim()
-  if (preferred && models.includes(preferred)) return preferred
   return models[0] ?? def?.defaultModel ?? ''
 }
 
@@ -165,8 +167,6 @@ export interface TtsProviderManifest {
   configFields: FieldSpec[]
   /** 模型目录（含每模型的参数声明与系统音色目录） */
   models: TtsModelSpec[]
-  /** 「默认音色」字段的说法 */
-  voiceHint: { label: string; placeholder: string; help?: string }
   links: { label: string; url: string }[]
 }
 
@@ -195,20 +195,6 @@ export function ttsSecretFieldKeys(providerId: string): string[] {
 /** 查某服务商的某个模型 spec */
 export function ttsModelSpec(providerId: string, modelId: string): TtsModelSpec | undefined {
   return getTtsProvider(providerId)?.models.find((model) => model.id === modelId)
-}
-
-/**
- * 接入实际生效的默认模型：default_model（得在启用列表里）→ 第一个启用模型
- * → manifest 第一个 tts 模型。路由、测试都走它，保证「测的是哪条」和「跑的是哪条」一致。
- */
-export function ttsConnectionDefaultModel(
-  connection: Pick<TtsConnection, 'models' | 'defaultModel'>,
-  def: TtsProviderManifest | undefined
-): string {
-  const ids = connection.models.map((model) => model.id).filter((id) => id.trim())
-  const preferred = connection.defaultModel.trim()
-  if (preferred && ids.includes(preferred)) return preferred
-  return ids[0] ?? def?.models.find((model) => model.kind === 'tts')?.id ?? def?.models[0]?.id ?? ''
 }
 
 /** 合并某接入某模型的最终参数：manifest ParamSpec 默认值 ← 接入 models[].params 覆盖 */

@@ -80,12 +80,12 @@ export interface TtsModelSpec {
 }
 
 /**
- * 语音合成的**通用偏好**：与「哪家的凭据」无关，两家共用。
- * 凭据本身不在这里——它按服务商存在 tts_connections 接入列表里（一条 = 一家），
- * 合成时按生效音色的归属路由到对应接入（见 docs 与 TtsService.route）。
+ * 语音合成的遗留偏好。凭据、模型、实时开关都在 tts_connections 接入里（一条 = 一个服务商账号），
+ * 合成时按生效音色的归属路由到对应接入（见 TtsService.route）：没有默认接入，也没有默认音色。
+ * 这份配置只剩迁移与「发音测试时间」在用。
  */
 export interface TtsConfig {
-  /** 默认服务商：没指定音色（或音色是服务商自带的系统音色）时，用哪家的接入合成 */
+  /** @deprecated 迁移用：旧配置的「默认服务商」，只在老库抽第一条接入时用 */
   providerId: TtsProvider
   /** @deprecated 迁移用（旧配置里「当前服务商」）：默认服务商缺失时取它；新代码一律读 providerId */
   provider: TtsProvider
@@ -105,9 +105,9 @@ export interface TtsConfig {
   languageType: string
   /** @deprecated 迁移用：已迁入 tts_connections */
   workspaceId: string
-  /** 默认音色（火山 voice_type / 百炼 voice） */
+  /** @deprecated 迁移用：旧的全局默认音色，升级时清空，新代码一律读人设卡/场次的音色 */
   voiceId: string
-  /** @deprecated 迁移用：已折入接入默认模型的 models[].params（speech_rate），新代码不再读 */
+  /** @deprecated 迁移用：已折入接入某个模型的 models[].params（speech_rate），新代码不再读 */
   speed: number
   /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
   realtime: boolean
@@ -150,6 +150,12 @@ export interface TtsConnectionModel {
   params: Record<string, string | number | boolean>
 }
 
+/**
+ * 一条接入 = 一个服务商账号（凭据 + 它启用的模型 + 实时合成开关）。
+ * 没有「默认模型」「默认音色」「默认接入」：合成时用哪条接入的哪个模型，
+ * 由音色自己决定（克隆音色带 connection_id + model；系统音色在模型目录里反查；
+ * 手动音色用 `接入::模型::音色` 复合串显式指定）。
+ */
 export interface TtsConnection {
   id: string
   providerId: TtsProvider
@@ -159,14 +165,8 @@ export interface TtsConnection {
   params: Record<string, string | number | boolean>
   /** 启用的模型及其参数覆盖 */
   models: TtsConnectionModel[]
-  /** 默认模型，必须是 models 里的一员 */
-  defaultModel: string
-  /** 这条接入的默认音色（留空则用默认模型音色目录第一个）：人设卡/场次都没指定音色时用它 */
-  defaultVoice: string
   /** 实时合成（动态内容流式播报）：按接入开，只有支持流式的模型才真生效 */
   realtime: boolean
-  /** 全站唯一的默认接入：谁都没指定时整条用它（默认音色 + 默认模型） */
-  isDefault: boolean
   createdAt: number
   updatedAt: number
 }
@@ -178,11 +178,7 @@ export interface TtsConnectionInput {
   name: string
   params: Record<string, string | number | boolean>
   models: TtsConnectionModel[]
-  defaultModel: string
-  defaultVoice?: string
   realtime?: boolean
-  /** 设为全站默认接入（会清掉其它接入的默认位） */
-  makeDefault?: boolean
 }
 
 /** 给渲染层用的接入：密钥字段的值置空，只留「填没填过」「能不能用」与「哪些模型可用」 */
@@ -255,8 +251,6 @@ export interface ModelConnection {
   params: Record<string, string | number | boolean>
   /** 这家服务商下可用的模型 id 列表 */
   models: string[]
-  /** 默认模型，必须是 models 里的一员；空串 = 用 provider 的 defaultModel */
-  defaultModel: string
   createdAt: number
   updatedAt: number
 }
@@ -276,7 +270,6 @@ export interface ModelConnectionInput {
   providerId: string
   params: Record<string, string | number | boolean>
   models: string[]
-  defaultModel: string
 }
 
 /**
@@ -540,7 +533,7 @@ export interface SpeechItem {
   turnId: string
   /** 话轮内顺序 */
   seq: number
-  /** 角色音色（编剧模式），空串 = 用 TTS 默认音色 */
+  /** 角色音色（编剧模式），空串 = 用当前主播的音色 */
   voiceId: string
   source: { agentId: string; kind: SpeechSourceKind }
   lane: SpeechLane
@@ -631,11 +624,11 @@ export interface Persona {
   background: string
   /** 禁区（绝不能说的话题/承诺） */
   taboos: string
-  /** 默认音色（对应 config.tts 的 voiceId 体系） */
+  /** 音色（火山 voice_type / 百炼 voice，或手动音色的 `接入::模型::音色` 复合串）：必选，没选预检会拦下 */
   voiceId: string
   /** 大脑：绑定的供应商接入 id（ModelConnection.id）；要和 model 一起选好，开播才确定用哪个模型 */
   modelConnectionId: string | null
-  /** 指定用接入里的哪个模型（必选）；已不在该接入的模型列表里时回落到接入默认模型 */
+  /** 指定用接入里的哪个模型（必选）；不在该接入的模型列表里视同没选 */
   model: string
   /** 编剧模式角色：主播一个脑子写多个角色的台词，按 voiceId 路由音色 */
   roles: PersonaRole[]
@@ -720,7 +713,7 @@ export interface VoiceRecord {
   voiceType: string
   /** 克隆目标模型（定死，不可跨模型）：火山 seed-icl-x / 百炼 target_model */
   model: string
-  /** 克隆时用的接入 id（合成路由优先走它；失效回退该 provider 默认接入） */
+  /** 克隆时用的接入 id（合成路由只走它：绑定失效就得重新克隆或把接入加回来） */
   connectionId: string
   /** 样本音频文件路径（userData/voices/）；百炼公网 URL 克隆时为空 */
   samplePath: string
@@ -734,11 +727,11 @@ export interface VoiceRecord {
   updatedAt: number
 }
 
-/** 一条音色被谁引用（人设卡默认音色 / 角色表） */
+/** 一条音色被谁引用（人设卡音色 / 角色表） */
 export interface VoiceUsagePersona {
   id: string
   name: string
-  /** 空 = 用在这张卡的默认音色上；否则是角色名 */
+  /** 空 = 用在这张卡的音色上；否则是角色名 */
   role: string
 }
 
@@ -937,7 +930,7 @@ export interface LivePlan {
   currentSceneIdx: number
   genConfig: PlanGenConfig
   knowledgeScope: PlanKnowledgeScope
-  /** 场次指定音色（四层优先级最高：场次 > 角色 > 人设 > TTS 默认）；空 = 不覆盖 */
+  /** 场次指定音色（四层优先级最高：场次 > 角色 > 人设）；空 = 用场次绑的人设卡的音色 */
   voiceId: string
   createdAt: number
   updatedAt: number
@@ -964,7 +957,7 @@ export interface Utterance {
   sceneId: string
   variantIdx: number
   text: string
-  /** 空 = 用场次/人设/TTS 默认音色 */
+  /** 空 = 用场次/人设卡的音色 */
   voiceId: string
   audioPath: string | null
   /** 预合成时实际用的音色：装载进池前比对，音色改过则旧音频作废 */

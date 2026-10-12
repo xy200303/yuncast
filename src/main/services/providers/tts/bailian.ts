@@ -192,12 +192,6 @@ const models: TtsModelSpec[] = [
   }
 ]
 
-const voiceHint = {
-  label: '默认音色 voice',
-  placeholder: '音色 id，例如 Cherry / longxiaochun_v2',
-  help: '音色严格绑定模型（不可跨模型）：以所选模型目录里的音色为准，复刻音色填克隆返回的 voice_id'
-}
-
 export const bailianTtsProvider: TtsProviderManifest = {
   id: 'bailian',
   label: `${TTS_PROVIDER_SHORT.bailian}（Qwen-TTS / CosyVoice）`,
@@ -234,7 +228,6 @@ export const bailianTtsProvider: TtsProviderManifest = {
     }
   ],
   models,
-  voiceHint,
   links: [
     { label: '去百炼控制台拿 API Key', url: 'https://bailian.console.aliyun.com/?tab=model#/api-key' },
     { label: '查看 Qwen-TTS 文档', url: 'https://help.aliyun.com/zh/model-studio/qwen-tts-api' }

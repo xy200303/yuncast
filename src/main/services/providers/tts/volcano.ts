@@ -124,12 +124,6 @@ const models: TtsModelSpec[] = [
   }
 ]
 
-const voiceHint = {
-  label: '默认音色 voice_type',
-  placeholder: '系统音色 id，例如 zh_female_vv_uranus_bigtts',
-  help: '复刻音色就填音色库里的那个 speaker_id（克隆后可用「音色库 → 设为默认」直接写上）'
-}
-
 export const volcanoTtsProvider: TtsProviderManifest = {
   id: 'volcano',
   label: `${TTS_PROVIDER_SHORT.volcano}（豆包语音）`,
@@ -153,7 +147,6 @@ export const volcanoTtsProvider: TtsProviderManifest = {
     }
   ],
   models,
-  voiceHint,
   links: [
     { label: '去火山语音控制台拿 API Key', url: 'https://console.volcengine.com/speech/app' },
     { label: '查看 V3 接入文档', url: 'https://www.volcengine.com/docs/6561/1598757' }

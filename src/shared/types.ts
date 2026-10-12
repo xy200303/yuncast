@@ -497,6 +497,8 @@ export interface DirectorMessage {
   options?: string[]
   /** ask 被回答后记录所选/所答 */
   answered?: string
+  /** 导演指令附带的文件（名称 + 本机路径，随指令一起发给主播） */
+  attachments?: { name: string; path: string }[]
 }
 
 // ---------- 音色库（M8 声音克隆） ----------

@@ -1,15 +1,13 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Bot,
-  ChevronDown,
-  ChevronUp,
   CircleHelp,
   Clapperboard,
   Loader2,
   Megaphone,
-  MessagesSquare,
   MessageSquareText,
   OctagonAlert,
+  Paperclip,
   Pause,
   Play,
   Radio,
@@ -95,6 +93,10 @@ export function LivePage() {
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
   const [leftTab, setLeftTab] = useState<'pool' | 'comments'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
+  /** 右栏选项卡：对话是主区（铺满高度），提词器/操作切过去才显示 */
+  const [rightTab, setRightTab] = useState<'chat' | 'teleprompter' | 'control'>('chat')
+  /** 导演对话未读数（切走时有新汇报/请示在选项卡上亮红点） */
+  const [chatUnread, setChatUnread] = useState(0)
 
   // 评论订阅提到页面层（标签上要显示条数），保持最近 100 条
   useEffect(() => {
@@ -208,36 +210,67 @@ export function LivePage() {
           </Tabs>
         </section>
 
-        {/* 右侧面板：提词器 + 操作面板 */}
+        {/* 右侧面板：选项卡切换。对话是主区（铺满整栏）；提词器/操作切过去才显示。
+            forceMount 保持挂载——切走不丢消息状态和订阅。 */}
         <aside className="flex w-80 shrink-0 flex-col border-l">
-          <div className="flex h-8 shrink-0 items-center border-b px-4 text-xs text-muted-foreground">提词器</div>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            <SceneLine />
-            <AgentDraft />
-            {playing ? (
-              <TeleprompterCurrent item={playing} />
-            ) : (
-              <p className="text-sm text-muted-foreground">当前没有在播的话术</p>
-            )}
-            <p className="mt-5 mb-2 text-xs text-muted-foreground">接下来要播</p>
-            {queued.length === 0 ? (
-              <p className="text-xs text-muted-foreground">队列空了</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {queued.slice(0, 3).map((item) => (
-                  <div key={item.id} className="rounded-lg border bg-card px-3 py-2">
-                    <div className="mb-1 flex items-center gap-1.5">
-                      <Badge variant={LANE_BADGE_VARIANT[item.lane]}>{LANE_LABEL[item.lane]}</Badge>
-                      <Badge variant="outline">{STATUS_LABEL[item.status]}</Badge>
+          <Tabs
+            value={rightTab}
+            onValueChange={(v) => {
+              setRightTab(v as typeof rightTab)
+              if (v === 'chat') setChatUnread(0)
+            }}
+            className="min-h-0 flex-1 gap-0"
+          >
+            <div className="shrink-0 border-b px-3 pt-2">
+              <TabsList variant="line">
+                <TabsTrigger value="chat" className="px-3 text-xs">
+                  对话
+                  {chatUnread > 0 && <Badge className="ml-1 h-4 px-1 text-[10px]">{chatUnread}</Badge>}
+                </TabsTrigger>
+                <TabsTrigger value="teleprompter" className="px-3 text-xs">
+                  提词器
+                </TabsTrigger>
+                <TabsTrigger value="control" className="px-3 text-xs">
+                  操作
+                </TabsTrigger>
+              </TabsList>
+            </div>
+            <TabsContent value="chat" forceMount className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
+              <DirectorConsole active={rightTab === 'chat'} onUnread={() => setChatUnread((n) => n + 1)} />
+            </TabsContent>
+            <TabsContent
+              value="teleprompter"
+              forceMount
+              className="min-h-0 flex-1 overflow-y-auto p-4 data-[state=inactive]:hidden"
+            >
+              <SceneLine />
+              <AgentDraft />
+              {playing ? (
+                <TeleprompterCurrent item={playing} />
+              ) : (
+                <p className="text-sm text-muted-foreground">当前没有在播的话术</p>
+              )}
+              <p className="mt-5 mb-2 text-xs text-muted-foreground">接下来要播</p>
+              {queued.length === 0 ? (
+                <p className="text-xs text-muted-foreground">队列空了</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {queued.slice(0, 3).map((item) => (
+                    <div key={item.id} className="rounded-lg border bg-card px-3 py-2">
+                      <div className="mb-1 flex items-center gap-1.5">
+                        <Badge variant={LANE_BADGE_VARIANT[item.lane]}>{LANE_LABEL[item.lane]}</Badge>
+                        <Badge variant="outline">{STATUS_LABEL[item.status]}</Badge>
+                      </div>
+                      <p className="line-clamp-2 text-[13px] text-muted-foreground">{item.text}</p>
                     </div>
-                    <p className="line-clamp-2 text-[13px] text-muted-foreground">{item.text}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-          <DirectorConsole />
-          <ControlPanel />
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+            <TabsContent value="control" forceMount className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
+              <ControlPanel />
+            </TabsContent>
+          </Tabs>
         </aside>
       </div>
     </div>
@@ -532,28 +565,30 @@ function AgentDraft() {
 }
 
 /**
- * 导演对话（docs/07 §8.8）：导演 ↔ 主播的实时文字通道，提词器下方、可折叠。
+ * 导演对话（docs/07 §8.8）：导演 ↔ 主播的实时文字通道，右栏主区（铺满整栏高度）。
  * 消息三类分流：导演指令（右侧气泡）/ 主播汇报（灰字，report_to_director 工具）/ 主播请示（高亮卡片 + 一键选项）。
  * 快速指令（暂停/跳过/恢复）本地解析直接执行，不过 LLM；其余文本 steer 插队给主播。
+ * composer 对齐 Codex 桌面版：圆角盒内 附件（回形针）+ 发送；附件以路径形式随指令发给主播。
  */
-function DirectorConsole() {
+function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
   const setLoopRunning = useAppStore((s) => s.setLoopRunning)
-  const [open, setOpen] = useState(true)
   const [messages, setMessages] = useState<DirectorMessage[]>([])
   const [input, setInput] = useState('')
-  const [unread, setUnread] = useState(0)
+  const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
   const listRef = useRef<HTMLDivElement>(null)
-  const openRef = useRef(open)
-  openRef.current = open
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const onUnreadRef = useRef(onUnread)
+  onUnreadRef.current = onUnread
 
-  // 订阅主播汇报/请示（主进程广播）
+  // 订阅主播汇报/请示（主进程广播）；切走时在「对话」选项卡上累未读
   useEffect(() => {
     if (!('api' in window)) return
     return window.api.director.onEvent((message) => {
       setMessages((prev) => [...prev.slice(-99), message])
-      if (!openRef.current) setUnread((n) => n + 1)
+      if (!activeRef.current) onUnreadRef.current()
     })
   }, [])
 
@@ -564,7 +599,13 @@ function DirectorConsole() {
     const now = Date.now()
     setMessages([
       { id: 'demo-1', ts: now - 120000, kind: 'report', text: '开场白播完了，在线 23 人，正在讲 1 号链接的保温杯' },
-      { id: 'demo-2', ts: now - 90000, kind: 'director', text: '语速放慢一点，多强调 316 不锈钢内胆' },
+      {
+        id: 'demo-2',
+        ts: now - 90000,
+        kind: 'director',
+        text: '语速放慢一点，多强调 316 不锈钢内胆',
+        attachments: [{ name: '保温杯卖点.pdf', path: 'D:/docs/保温杯卖点.pdf' }]
+      },
       { id: 'demo-3', ts: now - 60000, kind: 'report', text: '收到，已把「316 不锈钢内胆」编进当前话术，语速调慢了 10%' },
       {
         id: 'demo-4',
@@ -580,9 +621,9 @@ function DirectorConsole() {
   const stickRef = useRef(true)
   useEffect(() => {
     const el = listRef.current
-    if (!el || !open) return
+    if (!el || !active) return
     if (stickRef.current) el.scrollTop = el.scrollHeight
-  }, [messages, open])
+  }, [messages, active])
 
   const append = (message: DirectorMessage): void => {
     setMessages((prev) => [...prev.slice(-99), message])
@@ -609,13 +650,31 @@ function DirectorConsole() {
     return false
   }
 
+  const pickAttachment = async (): Promise<void> => {
+    const filePath = await window.api.dialog.pickFile('选择附件', [
+      'png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf', 'docx', 'txt', 'md'
+    ])
+    if (!filePath) return
+    setAttachments((prev) => [...prev, { name: filePath.split(/[\\/]/).pop() ?? filePath, path: filePath }])
+  }
+
   const send = (raw: string): void => {
     const text = raw.trim()
-    if (!text) return
+    const files = attachments
+    if (!text && files.length === 0) return
     setInput('')
-    append({ id: `dm-local-${Date.now()}`, ts: Date.now(), kind: 'director', text })
-    if (runQuickCommand(text)) return
-    void window.api.director.send(text).then((result) => {
+    setAttachments([])
+    append({
+      id: `dm-local-${Date.now()}`,
+      ts: Date.now(),
+      kind: 'director',
+      text,
+      attachments: files.length > 0 ? files : undefined
+    })
+    if (text && runQuickCommand(text)) return
+    const payload =
+      files.length > 0 ? `${text}\n${files.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
+    void window.api.director.send(payload).then((result) => {
       if (!result.ok) toast.error('指令没送达', { description: result.error })
     })
   }
@@ -625,133 +684,171 @@ function DirectorConsole() {
     send(answer)
   }
 
+  const canSend = input.trim().length > 0 || attachments.length > 0
+
   return (
-    <div className="shrink-0 border-t">
-      <button
-        type="button"
-        className="flex h-8 w-full items-center gap-1.5 px-4 text-xs text-muted-foreground hover:text-foreground"
-        onClick={() => {
-          setOpen(!open)
-          if (!open) setUnread(0)
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={listRef}
+        className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2"
+        onScroll={(e) => {
+          const el = e.currentTarget
+          stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
         }}
       >
-        <MessagesSquare className="size-3.5" />
-        <span>导演对话</span>
-        {unread > 0 && <Badge className="h-4 px-1 text-[10px]">{unread}</Badge>}
-        {agent.state === 'running' && (
-          <span className="size-1.5 rounded-full bg-green-500" title="主播在跑，指令 steer 插队直达" />
-        )}
-        <span className="ml-auto">{open ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}</span>
-      </button>
-
-      {open && (
-        <div className="flex h-56 flex-col">
-          <div
-            ref={listRef}
-            className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-2"
-            onScroll={(e) => {
-              const el = e.currentTarget
-              stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
-            }}
-          >
-            {messages.length === 0 ? (
-              <p className="py-4 text-center text-xs text-muted-foreground">
-                和主播直接对话：下指令、收汇报、答请示。消息只进对话，不会被播出去。
-              </p>
-            ) : (
-              messages.map((message) =>
-                message.kind === 'director' ? (
+        {messages.length === 0 ? (
+          <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+            <Bot className="size-8" strokeWidth={1.25} />
+            <p className="px-6 text-center text-xs leading-5">
+              和主播直接对话：下指令、收汇报、答请示。
+              <br />
+              消息只进对话，不会被播出去。
+            </p>
+          </div>
+        ) : (
+          messages.map((message) =>
+            message.kind === 'director' ? (
+              <div
+                key={message.id}
+                className="ml-auto max-w-[85%] rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground"
+              >
+                {message.text}
+                {message.attachments?.map((file) => (
                   <div
-                    key={message.id}
-                    className="ml-auto max-w-[85%] rounded-lg bg-primary px-3 py-1.5 text-[13px] text-primary-foreground"
+                    key={file.path}
+                    className="mt-1 flex items-center gap-1 rounded bg-primary-foreground/15 px-1.5 py-0.5 text-xs"
+                    title={file.path}
                   >
-                    {message.text}
+                    <Paperclip className="size-3 shrink-0" />
+                    <span className="truncate">{file.name}</span>
                   </div>
-                ) : message.kind === 'report' ? (
-                  <div key={message.id} className="flex items-start gap-1.5 text-xs text-muted-foreground">
-                    <Bot className="mt-0.5 size-3.5 shrink-0" />
-                    <p className="min-w-0">
-                      {message.text}
-                      <span className="ml-1.5 text-[10px] opacity-60">
-                        {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </p>
-                  </div>
+                ))}
+              </div>
+            ) : message.kind === 'report' ? (
+              <div key={message.id} className="flex items-start gap-1.5 text-xs text-muted-foreground">
+                <Bot className="mt-0.5 size-3.5 shrink-0" />
+                <p className="min-w-0">
+                  {message.text}
+                  <span className="ml-1.5 text-[10px] opacity-60">
+                    {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </p>
+              </div>
+            ) : (
+              <div key={message.id} className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
+                <div className="mb-1.5 flex items-center gap-1.5">
+                  <CircleHelp className="size-3.5 text-primary" />
+                  <span className="text-xs font-medium text-primary">主播请示</span>
+                  <span className="ml-auto text-[10px] text-muted-foreground">
+                    {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <p className="mb-2 text-[13px]">{message.text}</p>
+                {message.answered ? (
+                  <Badge variant="secondary">已答复：{message.answered}</Badge>
                 ) : (
-                  <div key={message.id} className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2.5">
-                    <div className="mb-1.5 flex items-center gap-1.5">
-                      <CircleHelp className="size-3.5 text-primary" />
-                      <span className="text-xs font-medium text-primary">主播请示</span>
-                      <span className="ml-auto text-[10px] text-muted-foreground">
-                        {new Date(message.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                    </div>
-                    <p className="mb-2 text-[13px]">{message.text}</p>
-                    {message.answered ? (
-                      <Badge variant="secondary">已答复：{message.answered}</Badge>
-                    ) : (
-                      <div className="flex flex-wrap gap-1.5">
-                        {(message.options ?? []).map((option) => (
-                          <Button
-                            key={option}
-                            variant="outline"
-                            size="sm"
-                            className="h-6 px-2 text-xs"
-                            onClick={() => answerAsk(message, option)}
-                          >
-                            {option}
-                          </Button>
-                        ))}
-                      </div>
-                    )}
+                  <div className="flex flex-wrap gap-1.5">
+                    {(message.options ?? []).map((option) => (
+                      <Button
+                        key={option}
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-xs"
+                        onClick={() => answerAsk(message, option)}
+                      >
+                        {option}
+                      </Button>
+                    ))}
                   </div>
-                )
-              )
+                )}
+              </div>
+            )
+          )
+        )}
+      </div>
+
+      {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
+      <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-xs"
+          onClick={() => send(loopRunning ? '暂停播报' : '恢复播报')}
+        >
+          {loopRunning ? '暂停播报' : '恢复播报'}
+        </Button>
+        <Button variant="outline" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={() => send('跳过')}>
+          跳过这条
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-xs"
+          onClick={() => send('汇报一下当前直播状态')}
+        >
+          汇报下状态
+        </Button>
+      </div>
+
+      {/* composer：圆角盒 + 附件 + 发送（Codex 桌面版布局） */}
+      <div className="shrink-0 p-2">
+        <div className="rounded-lg bg-muted px-3 pt-2 pb-1.5">
+          {attachments.length > 0 && (
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {attachments.map((file) => (
+                <span
+                  key={file.path}
+                  className="flex items-center gap-1 rounded-md bg-background px-1.5 py-0.5 text-xs"
+                  title={file.path}
+                >
+                  <Paperclip className="size-3 shrink-0 text-muted-foreground" />
+                  <span className="max-w-36 truncate">{file.name}</span>
+                  <button
+                    type="button"
+                    className="text-muted-foreground hover:text-foreground"
+                    onClick={() => setAttachments((prev) => prev.filter((f) => f.path !== file.path))}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
+            </div>
+          )}
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            rows={2}
+            placeholder={agent.state === 'running' ? '对主播说点什么…' : '主播没在跑（先启动场次）'}
+            className="max-h-32 w-full resize-none bg-transparent text-[13px] leading-5 outline-none placeholder:text-muted-foreground"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                send(input)
+              }
+            }}
+          />
+          <div className="flex items-center gap-1">
+            <Button variant="ghost" size="icon-sm" onClick={() => void pickAttachment()} title="添加附件">
+              <Paperclip />
+            </Button>
+            {agent.state === 'running' && (
+              <span className="ml-1 flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="size-1.5 rounded-full bg-green-500" />
+                主播在跑，指令插队直达
+              </span>
             )}
-          </div>
-
-          {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
-          <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">
             <Button
-              variant="outline"
-              size="sm"
-              className="h-6 shrink-0 px-2 text-xs"
-              onClick={() => send(loopRunning ? '暂停播报' : '恢复播报')}
+              size="icon-sm"
+              className="ml-auto"
+              disabled={!canSend}
+              onClick={() => send(input)}
+              title="发送（Enter）"
             >
-              {loopRunning ? '暂停播报' : '恢复播报'}
-            </Button>
-            <Button variant="outline" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={() => send('跳过')}>
-              跳过这条
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-6 shrink-0 px-2 text-xs"
-              onClick={() => send('汇报一下当前直播状态')}
-            >
-              汇报下状态
-            </Button>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-1.5 border-t p-2">
-            <Input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder={agent.state === 'running' ? '对主播说点什么…' : '主播没在跑（先启动场次）'}
-              className="h-8 text-[13px]"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                  e.preventDefault()
-                  send(input)
-                }
-              }}
-            />
-            <Button size="icon-sm" disabled={!input.trim()} onClick={() => send(input)} title="发送">
               <SendHorizontal />
             </Button>
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }

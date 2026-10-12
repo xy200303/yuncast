@@ -48,6 +48,8 @@ export class AgentService {
   private exchanges = 0
   /** 本场运行态音色（场次指定；set_voice 工具可热改；空 = 回落人设/TTS 默认） */
   private planVoiceId = ''
+  /** 播报是否被暂停：暂停时评论/触发器不再派给 LLM，say 也说不出去（统一开播控制里的「暂停」） */
+  private speakingPaused = false
   /** 场景推进后的装载钩子（LaunchService 接上：把新场景话术库载入池） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
   /** 主播请示（ask_director）→ 导演对话面板高亮卡片；不阻塞 run（docs/07 §8.8.6 ④） */
@@ -71,6 +73,14 @@ export class AgentService {
   /** 设置本场音色（开播装载时写入场次音色；运行中热切换音色也走这里） */
   setPlanVoice(voiceId: string): void {
     this.planVoiceId = voiceId.trim()
+  }
+
+  /**
+   * 暂停/恢复主播产出。暂停时：评论不再派给 LLM、触发器不触发、say/insert_next 被拒
+   * （说出去的话收不回，所以宁可不生成）；导演指令照常送达，随时可以喊「继续」。
+   */
+  setSpeakingPaused(paused: boolean): void {
+    this.speakingPaused = paused
   }
 
   status(): AgentStatus {
@@ -104,6 +114,8 @@ export class AgentService {
     this.setState('running')
     this.startedAt = Date.now()
     this.exchanges = 0
+    // 新一场总是从"能说话"开始（上一场可能是暂停状态停掉的）
+    this.speakingPaused = false
     // 开场白由「开场白」触发器（stream.started → task）负责，见 TriggerRuntime
   }
 
@@ -135,6 +147,8 @@ export class AgentService {
   /** 评论入口（连接器）：主播自己决定回不回、怎么回。老粉画像随评论注入。 */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    // 暂停期间评论只进事件队列（EventBus 已记下），不派给 LLM（同 docs/07 §8.5 人工接管的处理）
+    if (this.speakingPaused) return
     // 先查画像（老粉识别），再记一次互动
     const known = this.memory.lookupViewer(comment.author)
     const isQuestion = /[?？]$/.test(comment.content.trim())
@@ -150,8 +164,14 @@ export class AgentService {
     )
   }
 
-  /** 触发器入口（docs/01 §3.5）：steer=生成中插一句，task=派一个任务。主播没在跑就丢弃。 */
+  /** 触发器入口（docs/01 §3.5）：steer=生成中插一句，task=派一个任务。主播没在跑/已暂停就丢弃。 */
   inject(text: string, mode: 'steer' | 'task'): void {
+    if (this.speakingPaused) return
+    this.deliver(text, mode)
+  }
+
+  /** 实际投递：导演指令绕过暂停检查走这里，其余的入口统一先过暂停闸门 */
+  private deliver(text: string, mode: 'steer' | 'task'): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     if (mode === 'steer' && this.busy) {
       try {
@@ -166,13 +186,13 @@ export class AgentService {
 
   /**
    * 导演指令入口（docs/07 §8.8）：最高优先级，生成中就 steer 插队，空闲直接派。
-   * 主播用 report_to_director 工具回报执行结果（进导演对话面板，不播报）。
+   * 暂停期间照常送达（不然喊不出「继续」）；主播用 report_to_director 回报执行结果。
    */
   directorSay(text: string): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
       throw new Error('主播没在跑：先在直播台启动场次')
     }
-    this.inject(
+    this.deliver(
       `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完用 report_to_director 简要汇报执行情况。`,
       'steer'
     )
@@ -294,7 +314,8 @@ export class AgentService {
         onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
         onDirectorAsk: (ask) => this.onDirectorAsk?.(ask),
         setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
-        onPlaybackControl: (action) => this.onPlaybackControl?.(action)
+        onPlaybackControl: (action) => this.onPlaybackControl?.(action),
+        getSpeakingPaused: () => this.speakingPaused
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),

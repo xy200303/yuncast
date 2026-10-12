@@ -84,6 +84,9 @@ const api = {
     stop: () => ipcRenderer.invoke(IPC.agentStop) as Promise<void>,
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
+    /** 暂停/恢复主播产出（统一开播控制里的暂停：停播报 + 停生成） */
+    setSpeakingPaused: (paused: boolean) =>
+      ipcRenderer.invoke(IPC.playbackSetPaused, paused) as Promise<void>,
     /** 订阅 Agent 状态 + 生成中预览，返回取消订阅函数 */
     onStatus: (cb: (status: AgentStatus) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, status: AgentStatus) => cb(status)

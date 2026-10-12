@@ -36,6 +36,8 @@ export const IPC = {
   directorSend: 'director:send',
   /** main → renderer：主播汇报/请示消息 */
   directorEvent: 'director:event',
+  /** renderer → main：播报控制（暂停时连主播产出一起停） */
+  playbackSetPaused: 'playback:set-paused',
   /** main → renderer：播报控制（主播工具 pause_broadcast/resume_broadcast/skip_current 触发） */
   playbackControlEvent: 'playback:control',
 

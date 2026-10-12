@@ -37,7 +37,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
-import { playbackLoop } from '../audio/playbackLoop'
+import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import type {
   DirectorMessage,
   LiveComment,
@@ -95,8 +95,6 @@ function splitSentences(text: string): string[] {
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
   const levels = useAppStore((s) => s.levels)
-  const loopRunning = useAppStore((s) => s.loopRunning)
-  const setLoopRunning = useAppStore((s) => s.setLoopRunning)
   const [leftTab, setLeftTab] = useState<'pool' | 'comments'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
   /** 右栏选项卡：对话是主区（铺满高度），提词器/操作切过去才显示 */
@@ -117,19 +115,17 @@ export function LivePage() {
     if (!('api' in window)) return
     return window.api.playback.onControl((action) => {
       if (action === 'pause') {
-        playbackLoop.stop()
-        setLoopRunning(false)
+        pauseBroadcast()
         toast.message('主播暂停了播报', { description: '池里的内容保留' })
       } else if (action === 'resume') {
-        playbackLoop.start()
-        setLoopRunning(true)
+        resumeBroadcast()
         toast.message('主播恢复了播报')
       } else {
         audioEngine.stopCurrentTts()
         toast.message('主播跳过了当前这条')
       }
     })
-  }, [setLoopRunning])
+  }, [])
 
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const queued = pool.items.filter((item) => item.status !== 'playing')
@@ -164,23 +160,6 @@ export function LivePage() {
               />
             </div>
           </div>
-          <Button
-            variant={loopRunning ? 'secondary' : 'default'}
-            size="sm"
-            onClick={() => {
-              if (loopRunning) {
-                playbackLoop.stop()
-                setLoopRunning(false)
-                toast.message('播报已暂停', { description: '池里的内容保留，恢复后继续播' })
-              } else {
-                playbackLoop.start()
-                setLoopRunning(true)
-              }
-            }}
-          >
-            {loopRunning ? <Pause /> : <Play />}
-            {loopRunning ? '暂停播报' : '恢复播报'}
-          </Button>
         </div>
       </header>
 
@@ -308,6 +287,7 @@ export function LivePage() {
  */
 function PlanLauncher() {
   const agent = useAppStore((s) => s.agent)
+  const loopRunning = useAppStore((s) => s.loopRunning)
   const activePlanId = useAppStore((s) => s.config.live.activePlanId)
   const [plans, setPlans] = useState<LivePlan[]>([])
   const [busy, setBusy] = useState(false)
@@ -356,6 +336,8 @@ function PlanLauncher() {
       const result = await window.api.plan.launch(activePlanId)
       if (result.ok) {
         setChecks(null)
+        // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
+        resumeBroadcast()
         toast.success(`场次已启动：${activePlan?.name ?? ''}`, {
           description: result.loaded
             ? `已从话术库装载 ${result.loaded} 条，接着播`
@@ -404,16 +386,40 @@ function PlanLauncher() {
         </SelectContent>
       </Select>
 
-      <Button
-        size="sm"
-        variant={running ? 'secondary' : 'default'}
-        disabled={busy || checking}
-        onClick={() => void (running ? stop() : openPreflight())}
-        title={running ? '停止本场（池内存货播完）' : '预检并启动场次'}
-      >
-        {busy || checking ? <Loader2 className="animate-spin" /> : running ? <Square /> : <Play />}
-        {running ? '停止场次' : '启动场次'}
-      </Button>
+      {/* 统一开播控制：启动 → 暂停/继续 → 结束，一个地方说清"这场现在什么状态" */}
+      {running ? (
+        <>
+          <Button
+            size="sm"
+            variant={loopRunning ? 'default' : 'secondary'}
+            onClick={() => (loopRunning ? pauseBroadcast() : resumeBroadcast())}
+            title={loopRunning ? '暂停：停播报，也让主播先别生成新话术' : '继续播报'}
+          >
+            {loopRunning ? <Pause /> : <Play />}
+            {loopRunning ? '暂停' : '继续'}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void stop()}
+            title="结束本场（池里的存货会播完）"
+          >
+            {busy ? <Loader2 className="animate-spin" /> : <Square />}
+            结束场次
+          </Button>
+        </>
+      ) : (
+        <Button
+          size="sm"
+          disabled={busy || checking}
+          onClick={() => void openPreflight()}
+          title="预检并启动场次"
+        >
+          {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
+          启动场次
+        </Button>
+      )}
 
       {activePlan && !running && (
         <span className="hidden text-xs text-muted-foreground lg:inline">
@@ -728,7 +734,6 @@ function AskCard({
 function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
-  const setLoopRunning = useAppStore((s) => s.setLoopRunning)
   const [messages, setMessages] = useState<DirectorMessage[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
@@ -797,14 +802,12 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   /** 快速指令本地解析（不过 LLM）。命中返回 true。 */
   const runQuickCommand = (text: string): boolean => {
     if (/^(暂停|暂停播报|停一下)$/.test(text)) {
-      playbackLoop.stop()
-      setLoopRunning(false)
-      toast.message('播报已暂停', { description: '池里的内容保留，恢复后继续播' })
+      pauseBroadcast()
+      toast.message('播报已暂停', { description: '主播也停了产出，池里的内容保留，恢复后继续播' })
       return true
     }
     if (/^(恢复|继续|恢复播报|继续播报)$/.test(text)) {
-      playbackLoop.start()
-      setLoopRunning(true)
+      resumeBroadcast()
       return true
     }
     if (/^(跳过|跳过这条|下一条)$/.test(text)) {
@@ -912,9 +915,9 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           variant="outline"
           size="sm"
           className="h-6 shrink-0 px-2 text-xs"
-          onClick={() => send(loopRunning ? '暂停播报' : '恢复播报')}
+          onClick={() => send(loopRunning ? '暂停' : '继续')}
         >
-          {loopRunning ? '暂停播报' : '恢复播报'}
+          {loopRunning ? '暂停' : '继续'}
         </Button>
         <Button variant="outline" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={() => send('跳过')}>
           跳过这条

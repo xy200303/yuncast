@@ -58,6 +58,8 @@ export interface AnchorToolDeps {
   setPlanVoice?: (voiceId: string) => void
   /** 播报控制（pause/resume/skip）：广播到渲染进程执行 */
   onPlaybackControl?: (action: PlaybackControlAction) => void
+  /** 播报是否被暂停：暂停期间 say / insert_next 直接拒（说出去的话收不回） */
+  getSpeakingPaused?: () => boolean
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
@@ -74,7 +76,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     onSceneAdvanced,
     onDirectorAsk,
     setPlanVoice,
-    onPlaybackControl
+    onPlaybackControl,
+    getSpeakingPaused
   } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
@@ -99,6 +102,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
+          if (getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
           const voiceId = resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.())
           pool.say({
             text: params.text,
@@ -120,6 +124,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
+          if (getSpeakingPaused?.()) return '播报已暂停：插播也播不出去，等导演恢复'
           const comment = getLastComment()
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
           pool.insertNext({
@@ -340,18 +345,19 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     defineTool({
       name: 'pause_broadcast',
       label: '暂停播报',
-      description: '暂停播报（池里的存货保留，恢复后接着播）。导演接管麦克风或需要安静几秒时用。',
+      description:
+        '暂停播报：停住播放，你也暂时不许说新话术（评论/触发器不再进来）。导演要接管麦克风或要求安静时用，恢复用 resume_broadcast。',
       parameters: Type.Object({}),
       execute: async () =>
         guardTool(() => {
           onPlaybackControl?.('pause')
-          return '已暂停播报（池里的内容保留）'
+          return '已暂停播报（池里的内容保留）——你现在说不出去，等恢复'
         })
     }),
     defineTool({
       name: 'resume_broadcast',
       label: '恢复播报',
-      description: '恢复播报，接着播池里没播完的内容。',
+      description: '恢复播报，接着播池里没播完的内容，你也可以重新开口了。',
       parameters: Type.Object({}),
       execute: async () =>
         guardTool(() => {

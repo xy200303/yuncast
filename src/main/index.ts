@@ -371,6 +371,10 @@ function registerIpc(
     }
   })
   ipcMain.handle(IPC.agentStatus, () => agent.status())
+  // 统一开播控制里的「暂停」：停播报的同时停主播产出（评论/触发器不派、say 被拒）
+  ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => {
+    agent.setSpeakingPaused(Boolean(paused))
+  })
 
   // ---------- 导演对话 ----------
   ipcMain.handle(IPC.directorSend, (_e, text: string) =>

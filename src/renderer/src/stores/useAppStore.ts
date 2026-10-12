@@ -5,7 +5,6 @@ import {
   DEFAULT_CONFIG,
   INITIAL_STREAM_STATS,
   llmReady,
-  ttsProviderConfigured,
   type AgentStatus,
   type AppAccent,
   type AppConfig,

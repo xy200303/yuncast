@@ -18,21 +18,11 @@ import { ProviderIcon } from '@/components/ProviderIcon'
 import { cn } from '@/lib/utils'
 import { cloneVoiceHint, flattenModelCatalog, type CatalogModel } from '@/lib/voice'
 import { useAppStore } from '../stores/useAppStore'
-import {
-  TTS_PROVIDERS,
-  TTS_PROVIDER_SHORT,
-  ttsProviderConfigured,
-  type TtsProvider,
-  type VoiceRecord,
-  type VoiceUsage
-} from '../../../shared/types'
+import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../../shared/types'
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
-
-/** 音色库筛选：全部 + 各服务商（带音色数量与接入有无） */
-type VoiceFilter = 'all' | TtsProvider
 
 /** 音色库：克隆音色的管理、试听与引用关系。
  *  克隆在服务商侧异步训练，本页接收广播更新状态。克隆音色绑定「它克隆时那条接入 + 目标模型」
@@ -42,8 +32,7 @@ export function VoicesPage() {
   const ttsConnections = useAppStore((s) => s.ttsConnections)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const catalog = flattenModelCatalog(ttsProviders)
-  const [filter, setFilter] = useState<VoiceFilter>('all')
-  /** 再按接入筛一层：一家可以有多条接入，音色属于哪条得能分开看 */
+  /** 按接入筛：接入的标签里就带服务商，所以不再单列服务商标签页 */
   const [connectionFilter, setConnectionFilter] = useState('all')
   const [adding, setAdding] = useState(false)
   const [deleting, setDeleting] = useState<VoiceRecord | null>(null)
@@ -69,14 +58,9 @@ export function VoicesPage() {
     }
   }, [voices])
 
-  const countOf = (id: VoiceFilter) =>
-    id === 'all' ? voices.length : voices.filter((voice) => voice.provider === id).length
   const shown = voices.filter(
-    (voice) =>
-      (filter === 'all' || voice.provider === filter) &&
-      (connectionFilter === 'all' || voice.connectionId === connectionFilter)
+    (voice) => connectionFilter === 'all' || voice.connectionId === connectionFilter
   )
-  const filters: VoiceFilter[] = ['all', ...TTS_PROVIDERS]
 
   const preview = (voice: VoiceRecord) => {
     if (previewing) return
@@ -99,39 +83,18 @@ export function VoicesPage() {
         <AudioLines className="size-4 text-primary" />
         <h1 className="text-sm font-medium">音色库</h1>
         <p className="text-[13px] text-muted-foreground">克隆音色管理 · 主播可以调度各家的音色</p>
-        <div className="ml-2 flex items-center gap-1">
-          {filters.map((id) => {
-            const label = id === 'all' ? '全部' : TTS_PROVIDER_SHORT[id]
-            const configured = id === 'all' || ttsProviderConfigured(ttsConnections, id)
-            return (
-              <Button
-                key={id}
-                variant={filter === id ? 'secondary' : 'ghost'}
-                size="sm"
-                className="h-7 gap-1.5 text-xs"
-                onClick={() => setFilter(id)}
-              >
-                {label}
-                <span className="text-muted-foreground">{countOf(id)}</span>
-                {id !== 'all' && (
-                  <span className={configured ? 'text-muted-foreground' : 'text-destructive'}>
-                    {configured ? '已配置' : '未配置'}
-                  </span>
-                )}
-              </Button>
-            )
-          })}
-        </div>
+        <p className="text-[13px] text-muted-foreground">共 {voices.length} 个</p>
         {ttsConnections.length > 0 && (
           <Select value={connectionFilter} onValueChange={setConnectionFilter}>
-            <SelectTrigger className="ml-1 h-7 w-48 text-xs">
+            <SelectTrigger className="ml-2 h-7 w-56 text-xs">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="all">全部接入</SelectItem>
+              <SelectItem value="all">全部接入（{voices.length}）</SelectItem>
               {ttsConnections.map((connection) => (
                 <SelectItem key={connection.id} value={connection.id}>
-                  {TTS_PROVIDER_SHORT[connection.providerId]} · {connection.name}
+                  {TTS_PROVIDER_SHORT[connection.providerId]} · {connection.name}（
+                  {voices.filter((voice) => voice.connectionId === connection.id).length}）
                 </SelectItem>
               ))}
             </SelectContent>
@@ -156,7 +119,7 @@ export function VoicesPage() {
           </div>
         ) : shown.length === 0 ? (
           <p className="py-8 text-center text-sm text-muted-foreground">
-            这个服务商下还没有音色。点「新建音色」，在弹窗里选它作为服务商
+            这条接入下还没有音色。点「新建音色」，在弹窗里选它作为接入
           </p>
         ) : (
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">

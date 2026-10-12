@@ -67,13 +67,21 @@ export const IPC = {
   personaSetActive: 'persona:set-active',
   personaRemove: 'persona:remove',
 
-  // 实时 TTS 流式合成
-  ttsStreamStart: 'tts:stream-start',
-  ttsStreamStop: 'tts:stream-stop',
-  /** main → renderer：流式 PCM 块 */
-  ttsStreamChunk: 'tts:stream-chunk',
-  /** main → renderer：流式结束/出错 */
-  ttsStreamEnd: 'tts:stream-end',
+  // 实时 TTS 流式合成（主进程内部：AudioPipeline 的 PCM 生产者，不再直接对渲染层开口）
+  /** 主进程 → 渲染层：音频 PCM 片（唯一的出声数据流） */
+  audioPcm: 'audio:pcm',
+  /** 主进程 → 渲染层：电平（RMS） */
+  audioLevel: 'audio:level',
+  /** 主进程 → 渲染层：一段播放结束 */
+  audioEnd: 'audio:end',
+  /** 渲染层 → 主进程：本机监听主音量（不影响推流那一路的电平） */
+  audioSetMasterVolume: 'audio:set-master-volume',
+  /** 渲染层 → 主进程：紧急静音（AI 两路一起哑；麦克风人声不受影响） */
+  audioSetMuted: 'audio:set-muted',
+  /** 渲染层 → 主进程：BGM（选文件 / 播放 / 停止 / 音量）；推流侧由混音器自己循环 */
+  audioSetBgm: 'audio:set-bgm',
+  /** 渲染层 → 主进程：停掉当前 AI 播报（跳过这条 / 紧急停止；BGM 与推流不断） */
+  audioStopAll: 'audio:stop-all',
 
   // 音色库（M8 声音克隆）
   voiceList: 'voice:list',
@@ -156,9 +164,7 @@ export const IPC = {
   streamStats: 'stream:stats',
   /** main → renderer：推流状态/码率 */
   streamStatsEvent: 'stream:stats-event',
-  /** 直推混音器：TTS 音频入队 / BGM 控制 / 麦克风 PCM 帧 */
-  streamPushTts: 'stream:push-tts',
-  streamSetBgm: 'stream:set-bgm',
+  /** 直推混音器：麦克风 PCM 帧（TTS/BGM 由主进程 AudioPipeline 直连混音器，不再经渲染层转手） */
   streamMicPcm: 'stream:mic-pcm',
 
   // 平台连接器

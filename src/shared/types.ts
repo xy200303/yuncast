@@ -494,7 +494,7 @@ export interface SpeechItem {
   audioPath?: string
   /** 语音稿：真正送进 TTS 的文本（已把 @昵称 转成自然称呼）；空则用 text */
   speechText?: string
-  /** 实时合成条目：不预合成文件，播出时由渲染进程流式合成播放（tts.realtime 开启时） */
+  /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播（tts.realtime 开启时） */
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
   originUtteranceId?: string
@@ -964,6 +964,38 @@ export interface BgmConfig {
   volume: number
 }
 
+
+// ---------- 音频管线（main → renderer） ----------
+// 主进程 AudioPipeline 是唯一音频权威：解码/调度/混音/音量都在那边判定，
+// 渲染层只把这里推来的 PCM 排队出声。
+
+/** 一片 PCM：s16le / 48kHz / 单声道（渲染层排播；混音器那一路由主进程自己复制成立体声） */
+export interface AudioPcmPayload {
+  pcm: Uint8Array
+  sampleRate: number
+  /** 本次播放会话内的递增序号（丢块排查用） */
+  seq: number
+}
+
+/** 电平（0-1，主进程按片算，渲染层只显示） */
+export interface AudioLevelPayload {
+  tts: number
+  master: number
+}
+
+/** 一段播放结束（渲染层据此收尾排播） */
+export interface AudioEndPayload {
+  itemId?: string
+  /** true = 被跳过/急停打断：渲染层立刻掐断已排的队列，不放完 */
+  stopped?: boolean
+}
+
+export type AudioBgmAction = 'start' | 'stop' | 'volume'
+
+export interface AudioCommandResult {
+  ok: boolean
+  error?: string
+}
 
 export type StreamState = 'idle' | 'starting' | 'live' | 'stopping' | 'error'
 

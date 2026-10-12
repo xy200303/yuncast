@@ -7,15 +7,17 @@ import type { TtsService } from './TtsService'
  *
  * 目标：话术不再"整段合成完才播"，而是**边合成边播**，把首包延迟从「整段合成时间」压到「首块到达时间」。
  *
- * 当前实现分两层：
- * 1. **流式管线（已实现，可验证）**：一次合成 → FFmpeg 解码为 PCM → 按 100ms 块**按真实速率节拍**吐给消费方。
- *    这条路径打通了「PCM 分块 → 渲染进程 WebAudio 无缝排播 → 混音器直通」，播放确实是"边收边播"。
- * 2. **供应商真流式（待接入）**：把 1 换成服务商的流式接口（火山 WS 二进制协议 / 百炼 DashScope stream），
- *    只需替换本文件 `streamChunks()` 的取数方式，下游一行不用改。⚠ 流式协议细节未核对（同 docs/06 口径），
- *    核对清单见 docs/06-TTS克隆接口核对.md 末节。
+ * 这一层只负责"产出 PCM 块"（s16le **单声道 48k**）：谁来播、按什么速率播、怎么混 BGM 都在
+ * 主进程 AudioPipeline（本机监听 + 推流同一份 PCM）。所以这里不再自己 sleep 节流。
+ *
+ * 两条取数路径：
+ * 1. 供应商真流式（百炼 SSE）：按服务端返回的块往外吐（采样率由模型参数决定，管线负责重采样）。
+ * 2. 其余（火山整段合成 / 模型未开放流式）：整段合成到缓存 → ffmpeg 解码成 PCM → 切成块吐出。
+ *    管线仍是流式的（首块到达即出声）。
+ * 换成供应商流式接口只需替换 `streamChunks()` 的取数方式，下游一行不用改。
  */
 
-/** 每块的音频时长（PCM 16bit 单声道 48k 下 ≈ 100ms 一帧，与混音器帧率对齐） */
+/** 每块的音频时长：100ms（与混音器帧率对齐，块越小首包越快） */
 const CHUNK_MS = 100
 const SAMPLE_RATE = 48000
 const BYTES_PER_SAMPLE = 2
@@ -81,9 +83,8 @@ export class TtsStreamService {
   }
 
   /**
-   * 产出 PCM 块流。
-   * 现在：一次合成 → 解码 → 切片 → 按真实速率节拍吐出（模拟流式，管线真实）。
-   * 将来：替换为服务商流式接口的读取循环（火山 WS / 百炼 stream），签名不变。
+   * 产出 PCM 块流（s16le 单声道；采样率随块给出）。
+   * 速率节流由 AudioPipeline 负责：这里只管尽快把解码结果交出去。
    */
   private async *streamChunks(
     text: string,
@@ -96,7 +97,7 @@ export class TtsStreamService {
       yield* this.tts.synthesizeBailianStream(text, voiceId, signal)
       return
     }
-    // 其余情况（火山整段合成 / 模型未开放流式）：整段合成 → 解码 → 按真实速率切片，管线仍是流式的
+    // 其余情况（火山整段合成 / 模型未开放流式）：整段合成 → 解码 → 切块
     yield* this.chunkedFallback(text, voiceId, signal)
   }
 
@@ -110,12 +111,11 @@ export class TtsStreamService {
       // 一次合成到缓存（将来这里换成服务商流式读取循环，下游不变）
       tempFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal)
       if (signal.aborted) return
-      const pcm = await decodeToPcm(tempFile)
+      // 解码成管线口径（48k 单声道），不在这里节流
+      const pcm = await decodeToPcm(tempFile, { channels: 1 })
       for (let offset = 0; offset < pcm.length; offset += CHUNK_BYTES) {
         if (signal.aborted) return
         yield { pcm: pcm.subarray(offset, Math.min(offset + CHUNK_BYTES, pcm.length)), sampleRate: SAMPLE_RATE }
-        // 按真实播放速率节拍吐块：消费方一边收一边播，队列水位不会被灌满
-        await sleep(CHUNK_MS)
       }
     } catch (error) {
       console.warn('流式合成失败:', error)
@@ -124,10 +124,6 @@ export class TtsStreamService {
       if (tempFile) void rm(tempFile, { force: true }).catch(() => undefined)
     }
   }
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
 }
 
 

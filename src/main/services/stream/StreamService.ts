@@ -85,10 +85,10 @@ export class StreamService {
     this.patch({ state: 'idle', streaming: false, reconnecting: false, bitrateKbps: 0, durationSec: 0 })
   }
 
-  /** 直推模式：合成完成的 TTS 音频送入混音器进流（没在推流时丢弃） */
-  async pushTts(filePath: string): Promise<void> {
+  /** 直推模式：AudioPipeline 推来的 TTS PCM（48k 立体声 s16le）入混音器进流（没在推流时丢弃） */
+  pushTtsPcm(pcm: Buffer): void {
     if (this.stats.state !== 'live' || this.stats.mode !== 'direct') return
-    await audioMixer.pushTts(filePath)
+    audioMixer.pushTtsPcm(pcm)
   }
 
   async setBgm(action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number): Promise<void> {

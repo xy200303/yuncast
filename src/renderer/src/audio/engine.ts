@@ -1,50 +1,28 @@
 /**
- * WebAudio 混音引擎（渲染进程单例，M7 补齐自旧版 desktop/src/renderer/src/audio/engine.ts）。
- * 拓扑：
- *   tts 元素 → ttsGain ┐
- *   bgm 元素 → bgmGain ┼→ masterGain → analyser → destination
- *   mic 流   → micGain ┘
- * ducking：tts 播放或真人说话期间 bgmGain 自动下压（Gain 自动化，无延迟抖动）。
- * AI 音频整体经系统输出（伴侣模式由直播伴侣采集）；直推模式的 PCM 混音在主进程 AudioMixer。
+ * 渲染层音频终端（哑终端：只做出声与采集，编排全在主进程）。
+ *
+ * 主进程 AudioPipeline 是唯一音频权威：解码 / 调度 / 混音 / BGM / ducking / 音量都在那边判定，
+ * 按 50ms 一片把 PCM 推过来（IPC audio:pcm）。这里只做三件事：
+ *   1. 把收到的 PCM 排播出声 —— streamPlayer 挂在这条 tts 总线上（masterGain → analyser → 声卡）
+ *   2. 本机输出增益与紧急静音（只影响你耳朵里听到的；推流那一路由主进程单独判定）
+ *   3. 麦克风采集（真人接管 / 伴侣模式），说话时压低 AI 总线（自动避让）
+ *
+ * 不再读文件、不再建 `<audio>`、不管 BGM 与 ducking、不再自己算电平（电平由主进程推来）。
  */
 
 export interface EngineEvents {
-  onLevels(levels: { tts: number; master: number }): void
-  /** 真人说话状态变化（自动避让：压低 AI 播报） */
+  /** 真人说话状态变化（自动避让：说话期间压低 AI 播报） */
   onHumanSpeaking(speaking: boolean): void
-}
-
-const LEVEL_INTERVAL_MS = 150
-
-/** audio-cache 里的合成音频走 media:// 自定义协议（dev 下页面是 http://，不能直接 file://） */
-export function toCacheMediaUrl(filePath: string): string {
-  const name = filePath.split(/[\\/]/).pop()!
-  return `media:///${encodeURIComponent(name)}`
-}
-
-/** BGM 走 media://local/（主进程校验只允许 config.bgm.path 那个文件） */
-function toLocalMediaUrl(filePath: string): string {
-  return `media://local/${encodeURIComponent(filePath)}`
 }
 
 class AudioEngine {
   private ctx: AudioContext | null = null
   private masterGain: GainNode | null = null
   private ttsGain: GainNode | null = null
-  private bgmGain: GainNode | null = null
   private analyser: AnalyserNode | null = null
 
-  private ttsEl: HTMLAudioElement | null = null
-  private bgmEl: HTMLAudioElement | null = null
-  private bgmUrl = ''
-
-  private duckingEnabled = true
-  private duckingDepthDb = 14
   private aiMuted = false
-  private activeTts = 0
-  private bgmBaseVolume = 0.3
   private masterVolume = 1
-  private levelsTimer: ReturnType<typeof setInterval> | null = null
   private events: EngineEvents | null = null
 
   // 麦克风总线
@@ -55,122 +33,43 @@ class AudioEngine {
   private micAutoYield = true
   private speaking = false
   private lastSpeakAt = 0
+  private speechTimer: ReturnType<typeof setInterval> | null = null
 
   init(events: EngineEvents): void {
     this.events = events
   }
 
-  /** 对外暴露音频图入口（实时流式播放要挂进同一条 tts 总线，才能走 ducking/静音/电平） */
+  /** 对外暴露音频图入口（PCM 排播器要挂在同一条 tts 总线上） */
   ensureContext(): AudioContext {
     return this.ensureGraph()
   }
 
-  /** TTS 总线输入节点（外部音源接这里） */
+  /** TTS 总线输入节点（主进程推来的 PCM 接这里） */
   ttsInput(): GainNode {
     this.ensureGraph()
     return this.ttsGain!
+  }
+
+  /** 输出分析节点（电平观察/自检用；出声链路的末端取样） */
+  outputAnalyser(): AnalyserNode {
+    this.ensureGraph()
+    return this.analyser!
   }
 
   private ensureGraph(): AudioContext {
     if (this.ctx) return this.ctx
     this.ctx = new AudioContext()
     this.masterGain = this.ctx.createGain()
-    this.masterGain.gain.value = this.masterVolume
+    this.masterGain.gain.value = 1
     this.ttsGain = this.ctx.createGain()
-    this.bgmGain = this.ctx.createGain()
     this.analyser = this.ctx.createAnalyser()
     this.analyser.fftSize = 256
     this.ttsGain.connect(this.masterGain)
-    this.bgmGain.connect(this.masterGain)
     this.masterGain.connect(this.analyser)
     this.analyser.connect(this.ctx.destination)
-    this.applyMute()
-    this.startLevelLoop()
+    this.applyTtsGain()
+    void this.ctx.resume().catch(() => undefined)
     return this.ctx
-  }
-
-  // ---------- TTS 播报 ----------
-
-  /** 播放一条 TTS 音频，结束后 resolve */
-  playTts(filePath: string): Promise<void> {
-    const ctx = this.ensureGraph()
-    void ctx.resume()
-    return new Promise((resolve) => {
-      const el = new Audio(toCacheMediaUrl(filePath))
-      this.ttsEl = el
-      const src = ctx.createMediaElementSource(el)
-      src.connect(this.ttsGain!)
-      el.addEventListener('ended', () => this.finishTts(src, el, resolve), { once: true })
-      el.addEventListener('error', () => this.finishTts(src, el, resolve), { once: true })
-      this.activeTts += 1
-      this.applyBgmGain()
-      void el.play().catch(() => this.finishTts(src, el, resolve))
-    })
-  }
-
-  private finishTts(
-    src: MediaElementAudioSourceNode,
-    el: HTMLAudioElement,
-    resolve: () => void
-  ): void {
-    if (this.ttsEl === el) this.ttsEl = null
-    src.disconnect()
-    this.activeTts = Math.max(0, this.activeTts - 1)
-    if (this.activeTts === 0) this.applyBgmGain()
-    resolve()
-  }
-
-  /** 当前 TTS 播放进度 0~1，未播放或时长未知时返回 null（提词器句级高亮用） */
-  getTtsProgress(): number | null {
-    const el = this.ttsEl
-    if (!el || !Number.isFinite(el.duration) || el.duration <= 0) return null
-    return Math.min(1, el.currentTime / el.duration)
-  }
-
-  stopCurrentTts(): void {
-    if (this.ttsEl) {
-      this.ttsEl.pause()
-      this.ttsEl.currentTime = 0
-      this.ttsEl = null
-      this.activeTts = 0
-      this.applyBgmGain()
-    }
-  }
-
-  // ---------- BGM ----------
-
-  startBgm(filePath: string, volume: number): void {
-    const ctx = this.ensureGraph()
-    void ctx.resume()
-    const url = toLocalMediaUrl(filePath)
-    if (this.bgmEl && this.bgmUrl === url) {
-      this.setBgmVolume(volume)
-      return
-    }
-    this.stopBgm()
-    const el = new Audio(url)
-    el.loop = true
-    const src = ctx.createMediaElementSource(el)
-    src.connect(this.bgmGain!)
-    this.bgmEl = el
-    this.bgmUrl = url
-    this.setBgmVolume(volume)
-    void el.play().catch(() => undefined)
-  }
-
-  stopBgm(): void {
-    this.bgmEl?.pause()
-    this.bgmEl = null
-    this.bgmUrl = ''
-  }
-
-  get bgmPlaying(): boolean {
-    return this.bgmEl !== null
-  }
-
-  setBgmVolume(volume: number): void {
-    this.bgmBaseVolume = volume
-    this.applyBgmGain()
   }
 
   // ---------- 麦克风总线（真人接管说话） ----------
@@ -208,9 +107,12 @@ class AudioEngine {
         window.api.stream.pushMicPcm(new Uint8Array(e.data))
       }
     }
+
+    if (opts.autoYield) this.startSpeechWatch()
   }
 
   stopMic(): void {
+    this.stopSpeechWatch()
     this.micWorklet?.disconnect()
     this.micWorklet = null
     this.micGain?.disconnect()
@@ -220,6 +122,7 @@ class AudioEngine {
     this.micStream = null
     if (this.speaking) {
       this.speaking = false
+      this.applyTtsGain()
       this.events?.onHumanSpeaking(false)
     }
   }
@@ -228,7 +131,17 @@ class AudioEngine {
     return this.micStream !== null
   }
 
-  /** 麦克风 RMS 检测：说话→压 TTS 并通知调度器暂停，停嘴 800ms 恢复 */
+  private startSpeechWatch(): void {
+    if (this.speechTimer) return
+    this.speechTimer = setInterval(() => this.detectSpeech(), 150)
+  }
+
+  private stopSpeechWatch(): void {
+    if (this.speechTimer) clearInterval(this.speechTimer)
+    this.speechTimer = null
+  }
+
+  /** 麦克风 RMS 检测：说话→压低 AI 总线并通知调度器，停嘴 800ms 恢复 */
   private detectSpeech(): void {
     if (!this.micAnalyser || !this.micAutoYield) return
     const buf = new Float32Array(this.micAnalyser.fftSize)
@@ -241,87 +154,58 @@ class AudioEngine {
       this.lastSpeakAt = Date.now()
       if (!this.speaking) {
         this.speaking = true
-        this.applySpeechDuck()
+        this.applyTtsGain()
         this.events?.onHumanSpeaking(true)
       }
     } else if (this.speaking && Date.now() - this.lastSpeakAt > 800) {
       this.speaking = false
-      this.applySpeechDuck()
+      this.applyTtsGain()
       this.events?.onHumanSpeaking(false)
     }
   }
 
-  /** 说话时把 TTS 总线静音（双保险，主进程混音器同样压 BGM） */
-  private applySpeechDuck(): void {
-    if (!this.ttsGain || !this.ctx || !this.micAutoYield) return
-    this.ttsGain.gain.setTargetAtTime(this.speaking ? 0 : 1, this.ctx.currentTime, 0.1)
+  // ---------- 音量 / 静音 ----------
+
+  /** 主音量（本机监听）：只是把值交给主进程 AudioPipeline，它在推 PCM 时按这个增益走 */
+  setMasterVolume(volume: number): void {
+    this.masterVolume = Math.max(0, Math.min(1, volume))
+    void window.api.audio.setMasterVolume(this.masterVolume)
   }
 
-  // ---------- ducking / 静音 / 主音量 ----------
-
-  setDucking(enabled: boolean, depthDb: number): void {
-    this.duckingEnabled = enabled
-    this.duckingDepthDb = depthDb
-    this.applyBgmGain()
+  get volume(): number {
+    return this.masterVolume
   }
 
-  /** BGM 最终增益 = 基础音量 × ducking 系数 × AI 静音开关 */
-  private applyBgmGain(): void {
-    if (!this.bgmGain || !this.ctx) return
-    let target = this.aiMuted ? 0 : this.bgmBaseVolume
-    const talking = this.activeTts > 0 || this.speaking
-    if (target > 0 && this.duckingEnabled && talking) {
-      target *= 10 ** (-this.duckingDepthDb / 20)
-    }
-    this.bgmGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.15)
-  }
-
+  /**
+   * 紧急静音：本地立刻把 AI 总线压零（不等 IPC），同时告诉主进程
+   * （推流那一路与电平显示也跟着静）。麦克风人声不受影响。
+   */
   setAiMuted(muted: boolean): void {
     this.aiMuted = muted
-    this.applyMute()
+    this.applyTtsGain()
+    void window.api.audio.setMuted(muted)
   }
 
   get muted(): boolean {
     return this.aiMuted
   }
 
-  /** 主音量（全部总线） */
-  setMasterVolume(volume: number): void {
-    this.masterVolume = volume
-    if (this.masterGain && this.ctx) {
-      this.masterGain.gain.setTargetAtTime(this.aiMuted ? 0 : volume, this.ctx.currentTime, 0.05)
-    }
+  /** 停掉当前 AI 播报（跳过这条 / 紧急停止）：解码与排播都在主进程，这里只管本地已排的队列 */
+  stopCurrent(): void {
+    void window.api.audio.stopAll()
   }
 
-  /** AI 静音只闷 TTS + BGM 总线，麦克风人声不受影响 */
-  private applyMute(): void {
-    if (!this.ctx) return
-    const t = this.ctx.currentTime
-    this.ttsGain?.gain.setTargetAtTime(this.aiMuted ? 0 : 1, t, 0.05)
-    this.applyBgmGain()
-    this.masterGain?.gain.setTargetAtTime(this.aiMuted ? 0 : this.masterVolume, t, 0.05)
-  }
-
-  /** 紧急停止：立即停掉所有 AI 播报（BGM 保留，推流不断） */
-  panic(): void {
-    this.stopCurrentTts()
-    this.setAiMuted(false)
-  }
-
-  // ---------- 电平 ----------
-
-  private startLevelLoop(): void {
-    if (this.levelsTimer || !this.analyser) return
-    const buf = new Float32Array(this.analyser.fftSize)
-    this.levelsTimer = setInterval(() => {
-      this.analyser!.getFloatTimeDomainData(buf)
-      let sum = 0
-      for (let i = 0; i < buf.length; i++) sum += buf[i] * buf[i]
-      const rms = Math.min(1, Math.sqrt(sum / buf.length) * 2.5)
-      this.events?.onLevels({ tts: this.activeTts > 0 ? rms : 0, master: rms })
-      this.detectSpeech()
-    }, LEVEL_INTERVAL_MS)
+  /** AI 总线增益 = 静音 或 真人在说话 → 0 */
+  private applyTtsGain(): void {
+    if (!this.ttsGain || !this.ctx) return
+    const target = this.aiMuted || this.speaking ? 0 : 1
+    this.ttsGain.gain.setTargetAtTime(target, this.ctx.currentTime, 0.05)
   }
 }
 
 export const audioEngine = new AudioEngine()
+
+// 开发期把引擎挂到 window 上，便于本机自检（CDP 脚本测 audioEngine 图内的 RMS），打包版不挂
+if (import.meta.env.DEV) {
+  ;(window as unknown as Record<string, unknown>)['__audioEngine'] = audioEngine
+}

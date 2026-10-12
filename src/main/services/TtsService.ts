@@ -83,6 +83,8 @@ export interface TtsTestResult {
   error?: string
   audioPath?: string
   latencyMs?: number
+  /** 合成完由主进程直接出声：true = 真的播出来了（渲染层不再自己播） */
+  playing?: boolean
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -93,7 +95,7 @@ function asNumber(value: unknown, fallback: number): number {
 export class TtsService {
   constructor(private readonly storage: StorageService) {}
 
-  /** 合成音频缓存目录（media:// 协议只服务这个目录里的文件） */
+  /** 合成音频缓存目录：主进程音频管线从这里取文件解码成本机监听/推流用的 PCM */
   audioCacheDir(): string {
     const dir = join(app.getPath('userData'), 'audio-cache')
     void mkdir(dir, { recursive: true }).catch(() => undefined)

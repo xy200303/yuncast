@@ -65,11 +65,11 @@ interface AppState {
   pool: PoolSnapshot
   setPool: (snapshot: PoolSnapshot) => void
 
-  /** 播放循环开关 */
+  /** 播放循环开关（主进程持有循环，这里只是界面镜像：暂停/继续时同步） */
   loopRunning: boolean
   setLoopRunning: (running: boolean) => void
 
-  /** 音频引擎电平 */
+  /** 输出电平（主进程 AudioPipeline 按片推来，渲染层只显示） */
   levels: { tts: number; master: number }
   setLevels: (levels: { tts: number; master: number }) => void
 

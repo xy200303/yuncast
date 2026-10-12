@@ -4,10 +4,11 @@ import { getFfmpegPath } from './bin'
 const log = console
 
 /**
- * Node 侧 PCM 混音器（FFmpeg 直推模式的音频源）。
+ * Node 侧 PCM 混音器（FFmpeg 直推模式的音频汇合点）。
  * 以 20ms 时钟向推流进程 stdin 喂 48kHz 立体声 s16le：
- *   TTS 播报 + BGM 循环，BGM 在 TTS 期间自动下压（ducking）。
- * 与渲染进程 WebAudio 引擎并行工作（那边负责本地监听/伴侣模式系统声音）。
+ *   TTS 播报 + BGM 循环 + 麦克风人声，BGM 在 TTS 期间自动下压（ducking）。
+ * TTS 的 PCM 由主进程 AudioPipeline 按真实速率推来（与本机监听同一份解码结果）；
+ * 本机监听那一份由渲染层 WebAudio 出声，混音器只管推流。
  */
 
 const SAMPLE_RATE = 48000
@@ -18,25 +19,44 @@ const FRAME_BYTES = (SAMPLE_RATE * FRAME_MS * CHANNELS * BYTES_PER_SAMPLE) / 100
 
 const DUCK_RATIO = 10 ** (-14 / 20) // 默认下压 14dB
 
-/** 把任意音频文件解码为 PCM Buffer（s16le 48k stereo） */
-export function decodeToPcm(filePath: string): Promise<Buffer> {
+/** 把任意音频文件解码为 PCM Buffer（默认 s16le 48k stereo；可指定声道/采样率） */
+export function decodeToPcm(
+  filePath: string,
+  opts: { channels?: number; sampleRate?: number } = {}
+): Promise<Buffer> {
+  const channels = opts.channels ?? CHANNELS
+  const sampleRate = opts.sampleRate ?? SAMPLE_RATE
   return new Promise((resolve, reject) => {
     const proc = spawn(getFfmpegPath(), [
       '-v', 'error',
       '-i', filePath,
       '-f', 's16le',
-      '-ar', String(SAMPLE_RATE),
-      '-ac', String(CHANNELS),
+      '-ar', String(sampleRate),
+      '-ac', String(channels),
       'pipe:1'
     ])
     const chunks: Buffer[] = []
+    let stderr = ''
     proc.stdout.on('data', (c: Buffer) => chunks.push(c))
+    proc.stderr?.on('data', (c: Buffer) => {
+      stderr = (stderr + c.toString()).slice(-2000)
+    })
     proc.on('error', reject)
     proc.on('close', (code) => {
       if (code === 0) resolve(Buffer.concat(chunks))
-      else reject(new Error(`音频解码失败: ${filePath}`))
+      else reject(new Error(`音频解码失败：${firstLine(stderr) || `ffmpeg 退出码 ${code}`}（${filePath}）`))
     })
   })
+}
+
+/** ffmpeg stderr 的第一行非空内容（报错要具体） */
+function firstLine(text: string): string {
+  return (
+    text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? ''
+  )
 }
 
 export class AudioMixer {
@@ -68,19 +88,9 @@ export class AudioMixer {
     this.ttsCurrent = null
   }
 
-  /** 实时 TTS 的 PCM 块直接入播报队列（与整段合成的解码结果同一条消费链） */
+  /** 实时 TTS / 文件解码后的 PCM 块入播报队列（48k 立体声 s16le；AudioPipeline 是唯一数据源） */
   pushTtsPcm(pcm: Buffer): void {
     if (pcm.length > 0) this.ttsQueue.push(pcm)
-  }
-
-  /** 合成完成的 TTS 音频文件入队播报 */
-  async pushTts(filePath: string): Promise<void> {
-    try {
-      const buf = await decodeToPcm(filePath)
-      this.ttsQueue.push(buf)
-    } catch (err) {
-      log.warn('TTS 音频解码失败:', err)
-    }
   }
 
   async setBgm(action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number): Promise<void> {

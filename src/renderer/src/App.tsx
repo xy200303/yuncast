@@ -17,7 +17,7 @@ import { StatsPage } from './components/StatsPage'
 import { SettingsDialog } from './components/SettingsDialog'
 import { useAppStore, type NavPage } from './stores/useAppStore'
 import { audioEngine } from './audio/engine'
-import { playbackLoop } from './audio/playbackLoop'
+import { streamPlayer } from './audio/streamPlayer'
 
 const PAGES: Record<NavPage, ComponentType> = {
   live: LivePage,
@@ -51,10 +51,23 @@ export default function App() {
     return () => themeQuery.removeEventListener('change', onTheme)
   }, [loadConfig, loadModelLibrary, syncSystemTheme])
 
-  // 音频引擎 + 话术池订阅 + 播放循环（应用级单例，挂载即运行）
+  // 音频终端 + 话术池订阅（应用级单例，挂载即运行）。
+  // 播放调度在主进程：这里只把推来的 PCM 排播出声、把电平显示出来。
   useEffect(() => {
     if (!('api' in window)) return
-    audioEngine.init({ onLevels: setLevels, onHumanSpeaking: () => {} })
+    audioEngine.init({ onHumanSpeaking: () => {} })
+    const offPcm = window.api.audio.onPcm((payload) => {
+      streamPlayer.push(
+        new Int16Array(payload.pcm.buffer, payload.pcm.byteOffset, payload.pcm.byteLength >> 1),
+        payload.sampleRate
+      )
+    })
+    const offEnd = window.api.audio.onEnd((payload) => {
+      // 正常播完：游标留着，下一条接着排（连播不空档）；被跳过/急停：立刻掐断
+      if (payload.stopped) streamPlayer.stop()
+      else streamPlayer.end()
+    })
+    const offLevel = window.api.audio.onLevel((payload) => setLevels(payload))
     /** 本轮连续失败计数：TTS 凭据不通时会十几条连环失败，提示合成一条，别把界面糊住 */
     let failedBurst = 0
     const offSnapshot = window.api.pool.onSnapshot((snapshot) => {
@@ -73,14 +86,15 @@ export default function App() {
         })
       }
       setPool(snapshot)
-      playbackLoop.kick()
     })
     void window.api.pool.snapshot().then(setPool)
-    playbackLoop.start()
     setLoopRunning(true)
     return () => {
+      offPcm()
+      offEnd()
+      offLevel()
       offSnapshot()
-      playbackLoop.stop()
+      streamPlayer.stop()
       setLoopRunning(false)
     }
   }, [setPool, setLevels, setLoopRunning])

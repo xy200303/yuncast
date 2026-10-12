@@ -17,7 +17,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { cn } from '@/lib/utils'
 import { cloneVoiceHint, flattenModelCatalog, type CatalogModel } from '@/lib/voice'
-import { audioEngine } from '../audio/engine'
 import { useAppStore } from '../stores/useAppStore'
 import {
   TTS_PROVIDERS,
@@ -82,14 +81,14 @@ export function VoicesPage() {
   const preview = (voice: VoiceRecord) => {
     if (previewing) return
     setPreviewing(voice.id)
+    // 合成与出声都在主进程（aux 槽：不打断正在播报的话术）；播放结束才回来
     void window.api.voice
       .preview(voice.id)
-      .then(async (result) => {
-        if (!result.ok) {
-          toast.error('试听失败', { description: result.error })
-          return
-        }
-        await audioEngine.playTts(result.audioPath)
+      .then((result) => {
+        if (!result.ok) toast.error('试听失败', { description: result.error })
+      })
+      .catch((error: unknown) => {
+        toast.error('试听失败', { description: error instanceof Error ? error.message : String(error) })
       })
       .finally(() => setPreviewing(''))
   }

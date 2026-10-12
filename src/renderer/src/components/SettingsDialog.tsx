@@ -33,7 +33,6 @@ import {
   type ProviderFieldSpec,
   type TtsProviderManifest
 } from '../stores/useAppStore'
-import { audioEngine } from '../audio/engine'
 import {
   APP_ACCENTS,
   APP_ACCENT_META,
@@ -1315,6 +1314,8 @@ function TtsTestDialog({
     error?: string
     latencyMs?: number
     audioPath?: string
+    /** 合成完由主进程直接出声：true = 真的播出来了 */
+    playing?: boolean
   } | null>(null)
 
   const entry = catalog.find(
@@ -1347,8 +1348,8 @@ function TtsTestDialog({
         voice: voice.trim() || undefined,
         text
       })
+      // 合成与出声都在主进程：res.playing=true 才代表真的播出来了
       setResult(res)
-      if (res.ok && res.audioPath) await audioEngine.playTts(res.audioPath)
     } catch (error) {
       setResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
     } finally {
@@ -1445,7 +1446,7 @@ function TtsTestDialog({
             (result.ok ? (
               <p className="text-xs text-emerald-600">
                 合成成功{result.latencyMs ? ` · ${result.latencyMs} ms` : ''}
-                {result.audioPath ? ' · 正在播放' : ''}
+                {result.playing ? ' · 已出声' : ''}
               </p>
             ) : (
               <p className="text-xs text-destructive">{result.error}</p>

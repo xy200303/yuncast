@@ -116,7 +116,7 @@ export function LivePage() {
         resumeBroadcast()
         toast.message('主播恢复了播报')
       } else {
-        audioEngine.stopCurrentTts()
+        audioEngine.stopCurrent()
         toast.message('主播跳过了当前这条')
       }
     })
@@ -758,7 +758,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       return true
     }
     if (/^(跳过|跳过这条|下一条)$/.test(text)) {
-      audioEngine.stopCurrentTts()
+      audioEngine.stopCurrent()
       toast.message('已跳过当前播报')
       return true
     }
@@ -951,12 +951,12 @@ function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
   const panic = () => {
     setPanicOpen(false)
     void (async () => {
-      // 急停链：停主播 → 清全部车道 → 停当前播放（播放循环会把 playing 条目收掉）
+      // 急停链：停主播 → 清全部车道 → 主进程掐断当前播报（解码与排播都在那边）
       await window.api.agent.stop()
       for (const lane of ['interrupt', 'next', 'normal', 'filler'] as const) {
         await window.api.pool.clearLane(lane)
       }
-      audioEngine.stopCurrentTts()
+      audioEngine.stopCurrent()
       toast.success('已紧急停止', { description: '主播已停，话术池已清空' })
     })()
   }
@@ -1179,36 +1179,37 @@ function ManualBroadcastDialog({
   )
 }
 
-/** 调音量弹窗：BGM（选择/播放/音量）+ 麦克风接管 + 主音量 */
+/** 调音量弹窗：BGM（选择/播放/音量）+ 麦克风接管 + 主音量。BGM 与音量全在主进程判定。 */
 function VolumeDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const config = useAppStore((s) => s.config)
   const saveConfig = useAppStore((s) => s.saveConfig)
   const streamMode = useAppStore((s) => s.stream.mode)
-  const [bgmPlaying, setBgmPlaying] = useState(audioEngine.bgmPlaying)
+  const [bgmPlaying, setBgmPlaying] = useState(false)
   const [bgmVolume, setBgmVolume] = useState(Math.round(config.bgm.volume * 100))
   const [micOn, setMicOn] = useState(audioEngine.micActive)
-  const [masterVolume, setMasterVolume] = useState(100)
+  const [masterVolume, setMasterVolume] = useState(Math.round(audioEngine.volume * 100))
 
   const pickBgm = async () => {
     const filePath = await window.api.dialog.pickFile('音频文件', ['mp3', 'wav', 'm4a', 'ogg', 'flac'])
     if (!filePath) return
-    audioEngine.startBgm(filePath, bgmVolume / 100)
-    void window.api.stream.setBgm('start', filePath, bgmVolume / 100)
+    const result = await window.api.audio.setBgm('start', filePath, bgmVolume / 100)
+    if (!result.ok) {
+      toast.error('BGM 放不了', { description: result.error ?? '未知原因' })
+      return
+    }
     void saveConfig({ bgm: { path: filePath, volume: bgmVolume / 100 } })
     setBgmPlaying(true)
     toast.success('BGM 已开始播放', { description: filePath.split(/[\/]/).pop() })
   }
 
   const stopBgm = () => {
-    audioEngine.stopBgm()
-    void window.api.stream.setBgm('stop')
+    void window.api.audio.setBgm('stop')
     setBgmPlaying(false)
   }
 
   const changeBgmVolume = (value: number) => {
     setBgmVolume(value)
-    audioEngine.setBgmVolume(value / 100)
-    void window.api.stream.setBgm('volume', undefined, value / 100)
+    void window.api.audio.setBgm('volume', undefined, value / 100)
   }
 
   const toggleMic = async (on: boolean) => {
@@ -1279,8 +1280,7 @@ function VolumeDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (op
                 audioEngine.setMasterVolume(v / 100)
               }}
             />
-          </div>
-        </div>
+          </div>        </div>
       </DialogContent>
     </Dialog>
   )

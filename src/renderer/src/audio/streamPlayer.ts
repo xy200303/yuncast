@@ -1,13 +1,13 @@
 import { audioEngine } from './engine'
 
 /**
- * 实时 TTS 的 PCM 流式播放器。
+ * 本机监听播放器（渲染层唯一的播放器）。
  *
- * 与整段播放（playTts 播 mp3 文件）不同：这里接收主进程按真实速率推来的 PCM 块，
- * 用 WebAudio 的 AudioBufferSourceNode 按游标首尾相接排播 —— 第一块到达就开始出声，
- * 后续块无缝接上，做到"边合成边播"。
+ * 主进程 AudioPipeline 按真实速率把 PCM 片推来（IPC audio:pcm），这里用 WebAudio 的
+ * AudioBufferSourceNode 按游标首尾相接排播：第一片到达就开始出声，后续片无缝接上。
  *
- * PCM 约定：s16le、48kHz、单声道（与混音器同一口径，主进程直接转发给混音器所以两边一致）。
+ * PCM 约定：s16le、48kHz、**单声道**（主进程推来的就是管线口径；立体声转换只在主进程喂混音器时做）。
+ * 增益 / 静音 / 真人避让都挂在引擎的 tts 总线上，所以 master 音量与紧急静音天然生效。
  */
 
 const SAMPLE_RATE = 48000
@@ -23,13 +23,13 @@ class StreamPlayer {
     if (this.ctx) return this.ctx
     const ctx = audioEngine.ensureContext()
     this.ctx = ctx
-    // 挂进引擎的 tts 总线：ducking、AI 静音、电平表都照常生效
+    // 挂进引擎的 tts 总线：音量、AI 静音、真人避让都照常生效
     this.gain = ctx.createGain()
     this.gain.connect(audioEngine.ttsInput())
     return ctx
   }
 
-  /** 推入一块 PCM（sampleRate 为该块原始采样率）；返回 true 表示这是本次会话的第一块（已开始出声） */
+  /** 推入一块 PCM（sampleRate 为该块原始采样率）；返回 true 表示这是本次会话的第一块 */
   push(pcm: Int16Array, sampleRate = SAMPLE_RATE): boolean {
     const ctx = this.ensureGraph()
     void ctx.resume()
@@ -45,8 +45,8 @@ class StreamPlayer {
     source.buffer = buffer
     source.connect(this.gain!)
 
+    const first = this.cursor <= ctx.currentTime
     const startAt = Math.max(this.cursor, ctx.currentTime + 0.02)
-    const first = this.cursor === 0
     source.start(startAt)
     this.cursor = startAt + buffer.duration
     this.sources.add(source)
@@ -54,18 +54,16 @@ class StreamPlayer {
     return first
   }
 
-  /** 会话结束：返回剩余播放时长（毫秒），调用方可等它播完 */
+  /**
+   * 一段播完：把游标留在原处，等它自然放完。
+   * 下一条的 PCM 会接着游标排（连播不空档）；返回剩余播放时长（毫秒）。
+   */
   end(): number {
-    if (!this.ctx || this.cursor === 0) {
-      this.cursor = 0
-      return 0
-    }
-    const remainMs = Math.max(0, (this.cursor - this.ctx.currentTime) * 1000)
-    this.cursor = 0
-    return remainMs
+    if (!this.ctx || this.cursor === 0) return 0
+    return Math.max(0, (this.cursor - this.ctx.currentTime) * 1000)
   }
 
-  /** 立即停止（接管说话/紧急停止时用） */
+  /** 立即掐断（跳过这条 / 紧急停止）：已排的队列也不放了 */
   stop(): void {
     for (const source of this.sources) {
       try {

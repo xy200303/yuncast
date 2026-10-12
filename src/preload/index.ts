@@ -4,6 +4,11 @@ import type {
   AgentStatus,
   AppConfig,
   AppInfo,
+  AudioBgmAction,
+  AudioCommandResult,
+  AudioEndPayload,
+  AudioLevelPayload,
+  AudioPcmPayload,
   ConnectorStatus,
   DirectorMessage,
   EpisodeSummary,
@@ -182,25 +187,40 @@ const api = {
     setActive: (id: string) => ipcRenderer.invoke(IPC.personaSetActive, id) as Promise<Persona | null>,
     remove: (id: string) => ipcRenderer.invoke(IPC.personaRemove, id) as Promise<void>
   },
-  ttsStream: {
-    start: (sessionId: string, text: string, voiceId?: string) =>
-      ipcRenderer.invoke(IPC.ttsStreamStart, sessionId, text, voiceId) as Promise<{ ok: boolean }>,
-    stop: (sessionId: string) =>
-      ipcRenderer.invoke(IPC.ttsStreamStop, sessionId) as Promise<{ ok: boolean }>,
-    /** 订阅 PCM 块与结束事件，返回取消订阅函数 */
-    onChunk: (cb: (payload: { sessionId: string; pcm: Uint8Array; sampleRate: number }) => void) => {
-      const listener = (
-        _e: Electron.IpcRendererEvent,
-        payload: { sessionId: string; pcm: Uint8Array; sampleRate: number }
-      ) => cb(payload)
-      ipcRenderer.on(IPC.ttsStreamChunk, listener)
-      return () => ipcRenderer.removeListener(IPC.ttsStreamChunk, listener)
+  audio: {
+    /** 主音量（本机监听）：交给主进程 AudioPipeline，它按这个增益推 PCM（不影响推流那一路） */
+    setMasterVolume: (volume: number) =>
+      ipcRenderer.invoke(IPC.audioSetMasterVolume, volume) as Promise<AudioCommandResult>,
+    /** 紧急静音：AI 两路（本机监听 + 推流）一起哑，麦克风人声不受影响 */
+    setMuted: (muted: boolean) => ipcRenderer.invoke(IPC.audioSetMuted, muted) as Promise<AudioCommandResult>,
+    /** BGM（选文件 / 停止 / 音量）：本机监听与推流两侧都由主进程处理 */
+    setBgm: (action: AudioBgmAction, filePath?: string, volume?: number) =>
+      ipcRenderer.invoke(IPC.audioSetBgm, action, filePath, volume) as Promise<AudioCommandResult>,
+    /** 停掉当前 AI 播报（跳过这条 / 紧急停止）：主进程掐断解码与排播，BGM 与推流不断 */
+    stopAll: () => ipcRenderer.invoke(IPC.audioStopAll) as Promise<AudioCommandResult>,
+    /** 订阅 PCM 片（本机监听唯一数据流），返回取消订阅函数 */
+    onPcm: (cb: (payload: AudioPcmPayload) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: AudioPcmPayload) => cb(payload)
+      ipcRenderer.on(IPC.audioPcm, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.audioPcm, listener)
+      }
     },
-    onEnd: (cb: (payload: { sessionId: string; error?: string }) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, payload: { sessionId: string; error?: string }) =>
-        cb(payload)
-      ipcRenderer.on(IPC.ttsStreamEnd, listener)
-      return () => ipcRenderer.removeListener(IPC.ttsStreamEnd, listener)
+    /** 订阅电平（主进程按片算，渲染层只显示） */
+    onLevel: (cb: (payload: AudioLevelPayload) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: AudioLevelPayload) => cb(payload)
+      ipcRenderer.on(IPC.audioLevel, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.audioLevel, listener)
+      }
+    },
+    /** 订阅「一段播完」（渲染层据此收尾排播） */
+    onEnd: (cb: (payload: AudioEndPayload) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: AudioEndPayload) => cb(payload)
+      ipcRenderer.on(IPC.audioEnd, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.audioEnd, listener)
+      }
     }
   },
   voice: {
@@ -212,7 +232,7 @@ const api = {
       ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,
     rename: (id: string, name: string) =>
       ipcRenderer.invoke(IPC.voiceRename, id, name) as Promise<{ ok: boolean; error?: string }>,
-    /** 试听：合成一句固定文案并返回缓存路径（用 audioEngine.playTts 播放） */
+    /** 试听：合成一句固定文案，合成完由**主进程**直接出声（不再返回 audioPath 让渲染层播） */
     preview: (id: string) =>
       ipcRenderer.invoke(IPC.voicePreview, id) as Promise<
         { ok: true; audioPath: string } | { ok: false; error: string }
@@ -333,11 +353,7 @@ const api = {
     start: () => ipcRenderer.invoke(IPC.streamStart) as Promise<{ ok: boolean; error?: string }>,
     stop: () => ipcRenderer.invoke(IPC.streamStop) as Promise<void>,
     stats: () => ipcRenderer.invoke(IPC.streamStats) as Promise<StreamStats>,
-    /** 直推混音器：TTS 音频入队（没在推流时主进程丢弃） */
-    pushTts: (filePath: string) => ipcRenderer.invoke(IPC.streamPushTts, filePath) as Promise<void>,
-    setBgm: (action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number) =>
-      ipcRenderer.invoke(IPC.streamSetBgm, action, filePath, volume) as Promise<void>,
-    /** 麦克风 PCM 帧（s16le 48k stereo）进混音器 */
+    /** 麦克风 PCM 帧（s16le 48k stereo）进混音器；TTS/BGM 由主进程 AudioPipeline 直连，不经这里 */
     pushMicPcm: (pcm: Uint8Array) => ipcRenderer.send(IPC.streamMicPcm, pcm),
     onStats: (cb: (stats: StreamStats) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, stats: StreamStats) => cb(stats)

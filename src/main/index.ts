@@ -1,13 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
-import { basename, join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { pathToFileURL } from 'node:url'
 import { IPC } from '../shared/ipc-channels'
 import {
   type AgentStatus,
   type AppConfig,
   type AppInfo,
+  type AudioEndPayload,
+  type AudioLevelPayload,
+  type AudioPcmPayload,
   type ConnectorStatus,
   type DirectorMessage,
   type LiveComment,
@@ -49,18 +51,13 @@ import { GenerationService, type GenerationProgress } from './services/Generatio
 import { LaunchService } from './services/LaunchService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
-import { audioMixer } from './services/stream/ffmpeg/mixer'
+import { AudioPipeline } from './services/audio/AudioPipeline'
+import { PlaybackLoop } from './services/audio/PlaybackLoop'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
 // 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
 // 测试/并行实例可用 AGENT_ANCHOR_USER_DATA 指向别的目录。
 app.setPath('userData', process.env['AGENT_ANCHOR_USER_DATA'] ?? join(app.getPath('appData'), 'AgentAnchor'))
-
-// 自定义媒体协议：渲染进程经 WebAudio 播放 audio-cache 内的合成音频（火山 mp3 / 百炼 wav）。
-// dev 环境页面是 http://，无法直接引用 file:// 资源。
-protocol.registerSchemesAsPrivileged([
-  { scheme: 'media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true } }
-])
 
 let mainWindow: BrowserWindow | null = null
 let pool: SpeechPool | null = null
@@ -180,6 +177,8 @@ function broadcastPool(snapshot: PoolSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.poolSnapshotEvent, snapshot)
   }
+  // 池里可能刚来了新话术：叫醒主进程的播放循环，不用等满一个睡眠周期
+  playback?.kick()
   const empty = snapshot.items.length === 0
   if (empty && !poolWasEmpty) bus?.emit('pool.empty', {}, 'pool')
   poolWasEmpty = empty
@@ -255,29 +254,31 @@ function broadcastConnector(status: ConnectorStatus): void {
   }
 }
 
-/** 线性插值重采样到 48k（混音器口径固定 48k mono s16le） */
-function resampleTo48k(pcm: Buffer, fromRate: number): Buffer {
-  if (fromRate === 48000) return pcm
-  const inSamples = Math.floor(pcm.length / 2)
-  if (inSamples === 0) return pcm
-  const ratio = 48000 / fromRate
-  const outSamples = Math.floor(inSamples * ratio)
-  const out = Buffer.alloc(outSamples * 2)
-  for (let i = 0; i < outSamples; i++) {
-    const pos = i / ratio
-    const idx = Math.floor(pos)
-    const frac = pos - idx
-    const a = pcm.readInt16LE(Math.min(idx, inSamples - 1) * 2)
-    const b = pcm.readInt16LE(Math.min(idx + 1, inSamples - 1) * 2)
-    out.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(a + (b - a) * frac))), i * 2)
-  }
-  return out
-}
-
 /** 音色库变化广播（训练状态更新/新增/删除） */
 function broadcastVoices(voices: VoiceRecord[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.voiceChanged, voices)
+  }
+}
+
+/** 音频 PCM 片广播（本机监听唯一数据流；AudioPipeline 是唯一发源地） */
+function broadcastPcm(payload: AudioPcmPayload): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.audioPcm, payload)
+  }
+}
+
+/** 电平广播（主进程算，渲染层只显示） */
+function broadcastLevel(payload: AudioLevelPayload): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.audioLevel, payload)
+  }
+}
+
+/** 一段播放结束广播（渲染层据此收尾排播） */
+function broadcastAudioEnd(payload: AudioEndPayload): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.audioEnd, payload)
   }
 }
 
@@ -290,6 +291,8 @@ let voiceSvc: VoiceService | null = null
 let ttsStream: TtsStreamService | null = null
 let ttsRealtime: TtsRealtimeService | null = null
 let streamSvc: StreamService | null = null
+let pipeline: AudioPipeline | null = null
+let playback: PlaybackLoop | null = null
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
 function guard<T>(fn: () => T): { ok: true; item: T } | { ok: false; error: string }
@@ -347,14 +350,24 @@ function registerIpc(
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 
   // ---------- TTS ----------
-  ipcMain.handle(IPC.ttsTest, (_e, input: TtsTestInput) =>
-    tts.test({
+  // 测试发音：合成完由**主进程**出声（aux 槽，不打断正在播报的话术）——
+  // 渲染层不再拿到 audioPath 自己去播；只有真的开始出声才回 ok，解码/放音失败照实报错。
+  ipcMain.handle(IPC.ttsTest, async (_e, input: TtsTestInput) => {
+    const result = await tts.test({
       connectionId: String(input?.connectionId ?? ''),
       model: String(input?.model ?? ''),
       voice: input?.voice ? String(input.voice) : undefined,
       text: input?.text ? String(input.text).slice(0, 200) : undefined
     })
-  )
+    if (!result.ok || !result.audioPath || !pipeline) return result
+    const request = pipeline.playFile(`tts-test-${Date.now()}`, result.audioPath, { slot: 'aux' })
+    const started = await request.started
+    if (!started.ok) {
+      return { ...result, error: started.error ?? '音频没能放出来（没有可用输出设备或播放被系统拒绝）' }
+    }
+    await request.done
+    return { ...result, playing: true }
+  })
 
   // ---------- 语音合成的供应商接入（设置 → 语音合成） ----------
   ipcMain.handle(IPC.ttsConnectionList, () => storage.ttsConnectionListSafe())
@@ -448,9 +461,11 @@ function registerIpc(
     }
   })
   ipcMain.handle(IPC.agentStatus, () => agent.status())
-  // 统一开播控制里的「暂停」：停播报的同时停主播产出（评论/触发器不派、say 被拒）
+  // 统一开播控制里的「暂停」：停播报（主进程播放循环）+ 停主播产出（评论/触发器不派、say 被拒）
   ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => {
-    agent.setSpeakingPaused(Boolean(paused))
+    const value = Boolean(paused)
+    agent.setSpeakingPaused(value)
+    playback?.setRunning(!value)
   })
 
   // ---------- 导演对话 ----------
@@ -468,33 +483,22 @@ function registerIpc(
   ipcMain.handle(IPC.personaSetActive, (_e, id: string) => persona.setActive(id))
   ipcMain.handle(IPC.personaRemove, (_e, id: string) => persona.remove(id))
 
-  // ---------- 实时 TTS 流式合成 ----------
-  ipcMain.handle(IPC.ttsStreamStart, async (_e, sessionId: string, text: string, voiceId?: string) => {
-    void ttsStream?.start(sessionId, text, voiceId, {
-      onChunk: (pcm, sampleRate) => {
-        // 直推模式：PCM 同时进混音器（混音器口径固定 48k，非 48k 先重采样）
-        if (storage.getConfig().stream.mode === 'direct') {
-          audioMixer.pushTtsPcm(sampleRate === 48000 ? pcm : resampleTo48k(pcm, sampleRate))
-        }
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamChunk, { sessionId, pcm, sampleRate })
-        }
-      },
-      onEnd: () => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamEnd, { sessionId })
-        }
-      },
-      onError: (error) => {
-        for (const win of BrowserWindow.getAllWindows()) {
-          if (!win.isDestroyed()) win.webContents.send(IPC.ttsStreamEnd, { sessionId, error })
-        }
-      }
-    })
+  // ---------- 音频（主进程 AudioPipeline 是唯一音频权威） ----------
+  // 渲染层只做三件事：收 PCM 出声、master 音量/紧急静音、麦克风采集。
+  ipcMain.handle(IPC.audioSetMasterVolume, (_e, volume: number) => {
+    pipeline?.setMasterVolume(Number(volume))
     return { ok: true }
   })
-  ipcMain.handle(IPC.ttsStreamStop, (_e, sessionId: string) => {
-    ttsStream?.stop(sessionId)
+  ipcMain.handle(IPC.audioSetMuted, (_e, muted: boolean) => {
+    pipeline?.setMuted(Boolean(muted))
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.audioSetBgm, async (_e, action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number) => {
+    if (!pipeline) return { ok: false, error: '音频管线未初始化' }
+    return pipeline.setBgm(action, filePath ? String(filePath) : undefined, volume)
+  })
+  ipcMain.handle(IPC.audioStopAll, () => {
+    pipeline?.stopAll()
     return { ok: true }
   })
 
@@ -645,13 +649,10 @@ function registerIpc(
   })
 
   // ---------- 推流 ----------
+  // TTS / BGM 不再由渲染层转手：AudioPipeline 直连混音器（stream.pushTtsPcm / stream.setBgm）
   ipcMain.handle(IPC.streamStart, () => stream.start())
   ipcMain.handle(IPC.streamStop, () => stream.stop())
   ipcMain.handle(IPC.streamStats, () => stream.getStats())
-  ipcMain.handle(IPC.streamPushTts, (_e, filePath: string) => stream.pushTts(String(filePath)))
-  ipcMain.handle(IPC.streamSetBgm, (_e, action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number) =>
-    stream.setBgm(action, filePath, volume)
-  )
   ipcMain.on(IPC.streamMicPcm, (_e, pcm: Uint8Array) => stream.pushMicPcm(pcm))
 
   // ---------- 平台连接器 ----------
@@ -707,6 +708,19 @@ if (!single) {
     triggers = new TriggerRuntime(storage, bus, pool, agent)
     streamSvc = new StreamService(storage, broadcastStream)
 
+    // 音频管线（唯一音频权威）：解码/排播/混音/音量都在这。
+    // 同一片 PCM 同时喂推流（混音器）与本机监听（IPC → 渲染层声卡）。
+    pipeline = new AudioPipeline({
+      feedStream: (pcmStereo48k) => streamSvc?.pushTtsPcm(pcmStereo48k),
+      setStreamBgm: (action, filePath, volume) => streamSvc?.setBgm(action, filePath, volume) ?? Promise.resolve(),
+      sendPcm: broadcastPcm,
+      sendLevel: broadcastLevel,
+      sendEnd: broadcastAudioEnd
+    })
+    // 播放循环搬到了主进程：渲染层不再参与播放调度
+    playback = new PlaybackLoop(pool, () => ttsStream, pipeline)
+    playback.start()
+
     // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（任何事件源下游都无感知）
     bus.subscribe((event) => {
       if (event.type !== 'comment.new') return
@@ -727,8 +741,13 @@ if (!single) {
     // 端口改了重连
     storage.onConfigChange(() => connector?.restart())
 
-    // 音色库（M8 声音克隆）：训练状态变化推给渲染进程；试听要走 TTS 合成，所以带上 tts
-    voiceSvc = new VoiceService(storage, tts, broadcastVoices)
+    // 音色库（M8 声音克隆）：训练状态变化推给渲染进程；试听由主进程合成完直接出声（aux 槽）
+    voiceSvc = new VoiceService(storage, tts, broadcastVoices, async (itemId, filePath) => {
+      const request = pipeline!.playFile(itemId, filePath, { slot: 'aux' })
+      const started = await request.started
+      if (started.ok) await request.done
+      return started
+    })
 
     // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）+ 场次启动（§8.5）
     const utterances = new UtteranceService(storage, tts, persona)
@@ -758,35 +777,13 @@ if (!single) {
       }
     }
 
-    // 实时 TTS：流式合成（当前=整段合成后按真实速率分块吐，管线真流式；供应商流式接口见 docs/06）
+    // 实时 TTS：流式合成（整段合成 → 解码 → 分块吐 PCM，由 AudioPipeline 按真实速率排播；
+    // 供应商流式接口见 docs/06）。它只对主进程内部开口，渲染层拿不到 PCM 通道。
     ttsStream = new TtsStreamService(tts)
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
     timerInterval.unref?.()
-
-    // media:// 只服务两类资源：audio-cache 里的合成音频（basename）；config.bgm.path 指向的 BGM 文件
-    protocol.handle('media', (request) => {
-      const url = new URL(request.url)
-      const pathname = decodeURIComponent(url.pathname)
-      if (url.hostname === 'local') {
-        const requestedPath = pathname.replace(/^\//, '')
-        const allowedPath = storage.getConfig().bgm.path
-        const normalize = (value: string): string => {
-          const normalized = resolve(value)
-          return process.platform === 'win32' ? normalized.toLowerCase() : normalized
-        }
-        if (!allowedPath || normalize(requestedPath) !== normalize(allowedPath)) {
-          return new Response('Forbidden', { status: 403 })
-        }
-        return net.fetch(pathToFileURL(requestedPath).toString())
-      }
-      const requestedName = pathname.replace(/^\//, '')
-      if (!requestedName || requestedName !== basename(requestedName)) {
-        return new Response('Forbidden', { status: 403 })
-      }
-      return net.fetch(pathToFileURL(join(tts.audioCacheDir(), requestedName)).toString())
-    })
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
@@ -802,6 +799,9 @@ if (!single) {
 app.on('window-all-closed', () => {
   if (timerInterval) clearInterval(timerInterval)
   connector?.stop()
+  // 播放循环先停（它会把正在播的那条退回 ready），再收音频管线（杀掉解码进程、断了推流 BGM）
+  playback?.dispose()
+  pipeline?.dispose()
   void streamSvc?.stop()
   triggers?.dispose()
   pool?.dispose()

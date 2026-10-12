@@ -63,7 +63,9 @@ export class VoiceService {
   constructor(
     private readonly storage: StorageService,
     private readonly tts: TtsService,
-    private readonly onChanged: (voices: VoiceRecord[]) => void
+    private readonly onChanged: (voices: VoiceRecord[]) => void,
+    /** 试听由主进程直接出声（aux 槽：不打断正在播报的话术） */
+    private readonly play: (itemId: string, filePath: string) => Promise<{ ok: boolean; error?: string }>
   ) {}
 
   list(): VoiceRecord[] {
@@ -445,8 +447,12 @@ export class VoiceService {
   /**
    * 试听：合成路由自己解决「这个音色走哪条接入哪个模型」（voices.model + connection_id），
    * 路由抛出的中文原因直接透传给渲染层。
+   * 合成完由**主进程**出声（不再把 audioPath 交给渲染层的 `<audio>`），
+   * 所以这里等播放结束才返回：渲染层的"正在试听"状态与真实出声对齐。
    */
-  async preview(id: string): Promise<{ ok: true; audioPath: string } | { ok: false; error: string }> {
+  async preview(
+    id: string
+  ): Promise<{ ok: true; audioPath: string } | { ok: false; error: string }> {
     const voice = this.storage.listVoices().find((v) => v.id === id)
     if (!voice) return { ok: false, error: '音色不存在' }
     if (voice.status !== 'ready' || !voice.voiceType) {
@@ -458,6 +464,10 @@ export class VoiceService {
         `你好，我是${voice.name}，欢迎来到直播间。`,
         voice.voiceType
       )
+      const played = await this.play(`voice-preview-${voice.id}`, audioPath)
+      if (!played.ok) {
+        return { ok: false, error: played.error ?? '音频没能放出来（没有可用输出设备或播放被系统拒绝）' }
+      }
       return { ok: true, audioPath }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }

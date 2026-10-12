@@ -248,6 +248,15 @@ export class SpeechPool {
     this.refresh()
   }
 
+  /** 播放/合成失败：记下具体原因，条目置 failed（快照广播出去，界面照实提示，不当成播出成功） */
+  markFailed(id: string, error: string): void {
+    const item = this.storage.speechGet(id)
+    if (!item || item.status === 'done' || item.status === 'failed') return
+    console.error(`[AgentAnchor] 播报失败（${id}）: ${error}`)
+    this.storage.speechUpdate(id, { status: 'failed', error })
+    this.refresh()
+  }
+
   // ---------- 自查 ----------
 
   getStatus(): PoolStatus {

@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   Bot,
@@ -85,12 +85,6 @@ const SOURCE_LABEL: Record<SpeechSourceKind, string> = {
   reaction: '捧场'
 }
 
-/** 把话术按标点切成句子（提词器句级高亮用） */
-function splitSentences(text: string): string[] {
-  const parts = text.split(/(?<=[。！？!?；;…\n])/).filter((s) => s.trim().length > 0)
-  return parts.length > 0 ? parts : [text]
-}
-
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
   const levels = useAppStore((s) => s.levels)
@@ -126,14 +120,11 @@ export function LivePage() {
     })
   }, [])
 
-  const playing = pool.items.find((item) => item.status === 'playing') ?? null
-
-  // 队列 = 还没开始播的条目，按话轮分组（同 lane + turnId 一组，原子播出不拆开）。
-  // 正在播的那条由上方「播报中」条显示（句级高亮），队列里不再重复列一遍。
+  // 队列：按话轮分组（同 lane + turnId 一组，原子播出不拆开）。
+  // 正在播的那条同样列在这里，用「播报中」标记标出来——不再单独做一块状态显示。
   const groups = useMemo(() => {
     const out: { key: string; items: SpeechItem[] }[] = []
     for (const item of pool.items) {
-      if (item.status === 'playing') continue
       const key = `${item.lane}:${item.turnId}`
       const last = out[out.length - 1]
       if (last && last.key === key) last.items.push(item)
@@ -180,11 +171,7 @@ export function LivePage() {
               {groups.length === 0 && pool.failed.length === 0 ? (
                 <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
                   <Radio className="size-10" strokeWidth={1.25} />
-                  <p className="text-sm">
-                    {playing
-                      ? '队列空了，正在播的那句在右侧对话区底部'
-                      : '话术池是空的，从右侧操作面板发起人工播报'}
-                  </p>
+                  <p className="text-sm">话术池是空的，从右侧操作面板发起人工播报</p>
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">
@@ -553,75 +540,6 @@ function PoolRow({ item }: { item: SpeechItem }) {
   )
 }
 
-/**
- * 播报状态行（对话区底部常驻，不随消息滚动跑掉）：主播此刻在说什么 / 在生成什么 / 第几场。
- * 跟对话消息一起看：上面是它汇报和请示，最下面是它正在说的这句，句级高亮跟音频进度走。
- */
-function NowPlayingBar() {
-  const pool = useAppStore((s) => s.pool)
-  const agent = useAppStore((s) => s.agent)
-  const playing = pool.items.find((item) => item.status === 'playing') ?? null
-  const queued = pool.items.filter((item) => item.status !== 'playing').length
-  const sentences = useMemo(() => (playing ? splitSentences(playing.text) : []), [playing?.text])
-  const [active, setActive] = useState(0)
-
-  useEffect(() => {
-    setActive(0)
-    if (!playing) return
-    const timer = setInterval(() => {
-      const progress = audioEngine.getTtsProgress()
-      if (progress !== null) {
-        setActive(Math.min(sentences.length - 1, Math.floor(progress * sentences.length)))
-      }
-    }, 200)
-    return () => clearInterval(timer)
-  }, [playing?.id, sentences.length])
-
-  return (
-    <div className="shrink-0 border-t px-3 py-2">
-      <div className="flex items-center gap-1.5 text-[11px]">
-        <span className={cn('size-1.5 shrink-0 rounded-full', playing ? 'bg-primary' : 'bg-muted-foreground/40')} />
-        <span className={cn('font-medium', playing ? 'text-primary' : 'text-muted-foreground')}>
-          {playing ? '播报中' : agent.state === 'running' ? '空闲' : '未开播'}
-        </span>
-        {agent.scene && (
-          <span className="truncate text-muted-foreground">
-            第 {agent.scene.index + 1}/{agent.scene.total} 场 · {agent.scene.title}
-          </span>
-        )}
-        {queued > 0 && <span className="ml-auto shrink-0 font-mono text-muted-foreground">待播 {queued}</span>}
-      </div>
-      {playing ? (
-        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[18px]">
-          {sentences.map((sentence, index) => (
-            <Fragment key={index}>
-              <span
-                className={cn(
-                  index === active
-                    ? 'font-medium text-primary'
-                    : index < active
-                      ? 'text-muted-foreground/50'
-                      : 'text-muted-foreground'
-                )}
-              >
-                {sentence}
-              </span>
-            </Fragment>
-          ))}
-        </p>
-      ) : agent.draft ? (
-        <p className="mt-0.5 line-clamp-2 text-[12px] leading-[18px] text-muted-foreground/80">
-          生成中：{agent.draft}
-        </p>
-      ) : (
-        <p className="mt-0.5 text-[12px] leading-[18px] text-muted-foreground/70">
-          {agent.state === 'running' ? '主播在跑，队列空了它自己补' : '选好场次点「启动场次」开播'}
-        </p>
-      )}
-    </div>
-  )
-}
-
 /** 推流状态指示（直播台 header）：开播/码率/时长/重连 */
 function StreamIndicator() {
   const stream = useAppStore((s) => s.stream)
@@ -932,9 +850,6 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           )
         )}
       </div>
-
-      {/* 播报状态行：对话区底部常驻，主播正在说的那句就在这儿（句级高亮） */}
-      <NowPlayingBar />
 
       {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
       <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">

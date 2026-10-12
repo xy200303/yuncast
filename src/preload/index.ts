@@ -65,6 +65,8 @@ const api = {
     /** 取第一个 ready 条目开始播放（主进程置 playing），无则 null */
     next: () => ipcRenderer.invoke(IPC.poolNext) as Promise<SpeechItem | null>,
     markDone: (id: string) => ipcRenderer.invoke(IPC.poolMarkDone, id) as Promise<void>,
+    /** 播放中断：把正在播的这条退回 ready（恢复后从头重播） */
+    requeue: (id: string) => ipcRenderer.invoke(IPC.poolRequeue, id) as Promise<PoolResult>,
     snapshot: () => ipcRenderer.invoke(IPC.poolSnapshot) as Promise<PoolSnapshot>,
     /** 订阅池快照广播，返回取消订阅函数 */
     onSnapshot: (cb: (snapshot: PoolSnapshot) => void) => {

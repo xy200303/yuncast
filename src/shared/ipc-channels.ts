@@ -17,6 +17,8 @@ export const IPC = {
   poolNext: 'pool:next',
   /** renderer → main：播报完成回报 */
   poolMarkDone: 'pool:mark-done',
+  /** renderer → main：播放中断（暂停/急停）把这条退回 ready，等恢复重播 */
+  poolRequeue: 'pool:requeue',
   poolSnapshot: 'pool:snapshot',
   /** main → renderer：池快照广播 */
   poolSnapshotEvent: 'pool:snapshot-event',

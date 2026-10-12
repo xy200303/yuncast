@@ -339,6 +339,7 @@ function registerIpc(
   ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) => pool.getRecentPlayed(n))
   ipcMain.handle(IPC.poolNext, () => pool.next())
   ipcMain.handle(IPC.poolMarkDone, (_e, id: string) => pool.markDone(id))
+  ipcMain.handle(IPC.poolRequeue, (_e, id: string) => guard(() => pool.requeue(String(id ?? ''))))
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 
   // ---------- TTS ----------

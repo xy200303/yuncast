@@ -228,6 +228,14 @@ export class SpeechPool {
     return this.storage.speechGet(item.id)
   }
 
+  /** 播放中断（暂停/急停/退出）：正在播的条目退回 ready，等恢复从头重播 */
+  requeue(id: string): void {
+    const item = this.storage.speechGet(id)
+    if (!item || item.status !== 'playing') return
+    this.storage.speechUpdate(id, { status: 'ready' })
+    this.refresh()
+  }
+
   /** 播报完成回报 */
   markDone(id: string): void {
     const item = this.storage.speechGet(id)

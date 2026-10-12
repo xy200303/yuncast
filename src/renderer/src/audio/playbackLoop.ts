@@ -17,6 +17,8 @@ function sleep(ms: number): Promise<void> {
 class PlaybackLoop {
   private running = false
   private waker: (() => void) | null = null
+  /** 正在播的条目 id：被中断时退回 ready，别让它永远卡在队列里的「播报中」 */
+  private current: string | null = null
 
   get isRunning(): boolean {
     return this.running
@@ -29,9 +31,13 @@ class PlaybackLoop {
   }
 
   stop(): void {
+    const interrupted = this.current
+    this.current = null
     this.running = false
     audioEngine.stopCurrentTts()
     streamPlayer.stop()
+    // 被中断的这条退回 ready：恢复后从头重播（不然它再也不会被取到，状态永远停在"播报中"）
+    if (interrupted) void window.api.pool.requeue(interrupted)
     this.kick()
   }
 
@@ -102,12 +108,14 @@ class PlaybackLoop {
         await this.wait(IDLE_WAIT_MS)
         continue
       }
+      this.current = item.id
 
       // 实时合成条目：不读文件，由主进程流式推 PCM，这里边收边排播
       if (item.stream && !item.audioPath) {
         await this.playStream(item.id, item.speechText || item.text, item.voiceId || undefined)
         if (!this.running) break
         await window.api.pool.markDone(item.id)
+        this.current = null
         continue
       }
 
@@ -120,6 +128,7 @@ class PlaybackLoop {
       await audioEngine.playTts(item.audioPath)
       if (!this.running) break
       await window.api.pool.markDone(item.id)
+      this.current = null
     }
   }
 }

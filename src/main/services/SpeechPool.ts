@@ -145,7 +145,10 @@ export class SpeechPool {
       expiresAt: input.expiresAt,
       replyTo: input.replyTo,
       speechText: speechText !== text ? speechText : undefined,
-      status: 'pending',
+      originUtteranceId: input.originUtteranceId,
+      // 场次装载：库里的预合成音频直接复用，开播零延迟（未预合成才进合成窗口）
+      audioPath: input.audioPath?.trim() || undefined,
+      status: input.audioPath?.trim() ? 'ready' : 'pending',
       createdAt: Date.now()
     }
     this.storage.speechInsert(item)

@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertTriangle,
   Bot,
+  CheckCircle2,
   CircleHelp,
   Clapperboard,
   Loader2,
@@ -12,10 +14,12 @@ import {
   Play,
   Radio,
   RadioTower,
+  RefreshCw,
   SendHorizontal,
   SlidersHorizontal,
   Square,
-  X
+  X,
+  XCircle
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -38,6 +42,7 @@ import type {
   DirectorMessage,
   LiveComment,
   LivePlan,
+  PreflightItem,
   SpeechItem,
   SpeechLane,
   SpeechSourceKind,
@@ -279,13 +284,15 @@ export function LivePage() {
 
 /**
  * 场次入口：选场次 + 启动/停止场次（唯一开播入口）。
- * 最小版：加载场次（写 activePlanId）+ 启动主播 Agent；预检弹窗与话术库装载是后续里程碑。
+ * 点「启动场次」先跑预检（docs/07 §8.5）：阻断项红、警告项黄，有阻断项不许开。
  */
 function PlanLauncher() {
   const agent = useAppStore((s) => s.agent)
   const activePlanId = useAppStore((s) => s.config.live.activePlanId)
   const [plans, setPlans] = useState<LivePlan[]>([])
   const [busy, setBusy] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [checks, setChecks] = useState<PreflightItem[] | null>(null)
 
   useEffect(() => {
     void window.api.plan.list().then(setPlans)
@@ -293,6 +300,7 @@ function PlanLauncher() {
 
   const running = agent.state === 'running' || agent.state === 'starting'
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
+  const blocked = (checks ?? []).some((item) => item.level === 'block')
 
   const switchPlan = async (id: string): Promise<void> => {
     await window.api.plan.setActive(id)
@@ -303,18 +311,36 @@ function PlanLauncher() {
     })
   }
 
-  const start = async (): Promise<void> => {
-    if (busy) return
+  const runPreflight = async (): Promise<void> => {
+    if (!activePlanId) return
+    setChecking(true)
+    try {
+      setChecks(await window.api.plan.preflight(activePlanId))
+    } finally {
+      setChecking(false)
+    }
+  }
+
+  const openPreflight = async (): Promise<void> => {
     if (!activePlanId) {
       toast.warning('先选一个场次', { description: '场次决定这场用什么人设、剧本与话术' })
       return
     }
+    await runPreflight()
+  }
+
+  const start = async (): Promise<void> => {
+    if (busy || !activePlanId) return
     setBusy(true)
     try {
-      // 最小版：加载场次（已是 active）→ 启动主播会话
-      const result = await window.api.agent.start()
+      const result = await window.api.plan.launch(activePlanId)
       if (result.ok) {
-        toast.success(`场次已启动：${activePlan?.name ?? ''}`, { description: '开场话术正在入池' })
+        setChecks(null)
+        toast.success(`场次已启动：${activePlan?.name ?? ''}`, {
+          description: result.loaded
+            ? `已从话术库装载 ${result.loaded} 条，接着播`
+            : '本场没有就绪话术，主播先现场生成'
+        })
       } else {
         toast.error('启动失败', { description: result.error })
       }
@@ -361,11 +387,11 @@ function PlanLauncher() {
       <Button
         size="sm"
         variant={running ? 'secondary' : 'default'}
-        disabled={busy}
-        onClick={() => void (running ? stop() : start())}
-        title={running ? '停止本场（池内存货播完）' : '加载场次并启动主播'}
+        disabled={busy || checking}
+        onClick={() => void (running ? stop() : openPreflight())}
+        title={running ? '停止本场（池内存货播完）' : '预检并启动场次'}
       >
-        {busy ? <Loader2 className="animate-spin" /> : running ? <Square /> : <Play />}
+        {busy || checking ? <Loader2 className="animate-spin" /> : running ? <Square /> : <Play />}
         {running ? '停止场次' : '启动场次'}
       </Button>
 
@@ -374,6 +400,55 @@ function PlanLauncher() {
           {activePlan.theme || '（未设主题）'}
         </span>
       )}
+
+      {/* 开播预检（docs/07 §8.5）：阻断项拦住开播，警告项自己判断 */}
+      <Dialog
+        open={checks !== null}
+        onOpenChange={(open) => {
+          if (!open) setChecks(null)
+        }}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>开播预检{activePlan ? ` · ${activePlan.name}` : ''}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-80 space-y-2 overflow-y-auto">
+            {(checks ?? []).map((item, index) => (
+              <div key={index} className="flex items-start gap-2 rounded-md border p-2">
+                {item.level === 'ok' ? (
+                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
+                ) : item.level === 'warn' ? (
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+                ) : (
+                  <XCircle className="mt-0.5 size-4 shrink-0 text-red-600" />
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm">{item.label}</p>
+                  {item.detail && <p className="text-xs text-muted-foreground">{item.detail}</p>}
+                </div>
+              </div>
+            ))}
+          </div>
+          {blocked && (
+            <p className="text-xs text-red-600">
+              有阻断项：按提示处理完再开播（配置入口在左下角「设置」）。
+            </p>
+          )}
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button variant="outline" onClick={() => setChecks(null)}>
+              先去处理
+            </Button>
+            <Button variant="outline" disabled={checking} onClick={() => void runPreflight()}>
+              {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              重新预检
+            </Button>
+            <Button disabled={blocked || busy} onClick={() => void start()}>
+              {busy ? <Loader2 className="animate-spin" /> : <Play />}
+              仍然启动
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

@@ -101,6 +101,7 @@ interface SpeechRow {
   audio_path: unknown
   speech_text: unknown
   stream: unknown
+  origin_utterance_id: unknown
   error: unknown
   sort_order: unknown
   created_at: unknown
@@ -155,6 +156,7 @@ function rowToItem(row: SpeechRow): SpeechItem {
     audioPath: str(row.audio_path) || undefined,
     speechText: str(row.speech_text) || undefined,
     stream: num(row.stream) === 1,
+    originUtteranceId: str(row.origin_utterance_id) || undefined,
     error: str(row.error) || undefined,
     sortOrder: num(row.sort_order),
     createdAt: num(row.created_at) ?? 0,
@@ -331,6 +333,10 @@ export class StorageService {
       )
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS utterances_plan ON utterances(plan_id, scene_id, status)')
+    // 预合成时实际用的音色：装载进池时比对，音色改过就不复用旧音频
+    this.ensureColumn('utterances', 'synth_voice', "TEXT NOT NULL DEFAULT ''")
+    // 话术取自哪条库底稿（复盘溯源，docs/07 §3）
+    this.ensureColumn('speech_items', 'origin_utterance_id', 'TEXT')
     // 实时合成条目标记（M9）
     this.ensureColumn('speech_items', 'stream', 'INTEGER NOT NULL DEFAULT 0')
     // 语音稿（显示稿与念法分离）
@@ -469,8 +475,9 @@ export class StorageService {
       .prepare(
         `INSERT INTO speech_items
          (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
-          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, stream, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, stream,
+          origin_utterance_id, error, sort_order, created_at, played_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -489,6 +496,7 @@ export class StorageService {
         item.audioPath ?? null,
         item.speechText ?? null,
         item.stream ? 1 : 0,
+        item.originUtteranceId ?? null,
         item.error ?? null,
         item.sortOrder ?? null,
         item.createdAt,
@@ -986,10 +994,22 @@ export class StorageService {
   }
 
   /** 预合成状态推进（批量合成时逐条更新） */
-  utteranceSetAudio(id: string, status: UtteranceStatus, audioPath: string | null, error?: string): void {
+  utteranceSetAudio(
+    id: string,
+    status: UtteranceStatus,
+    audioPath: string | null,
+    error?: string,
+    synthVoice?: string
+  ): void {
+    if (synthVoice === undefined) {
+      this.db
+        .prepare('UPDATE utterances SET status = ?, audio_path = ?, error = ? WHERE id = ?')
+        .run(status, audioPath, error ?? null, id)
+      return
+    }
     this.db
-      .prepare('UPDATE utterances SET status = ?, audio_path = ?, error = ? WHERE id = ?')
-      .run(status, audioPath, error ?? null, id)
+      .prepare('UPDATE utterances SET status = ?, audio_path = ?, error = ?, synth_voice = ? WHERE id = ?')
+      .run(status, audioPath, error ?? null, synthVoice, id)
   }
 
   close(): void {
@@ -1006,6 +1026,7 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     text: str(r.text),
     voiceId: str(r.voice_id),
     audioPath: str(r.audio_path) || null,
+    synthVoice: str(r.synth_voice),
     status: (str(r.status) || 'pending') as Utterance['status'],
     error: str(r.error) || undefined,
     source: str(r.source) === 'adopted' ? 'adopted' : 'initial',

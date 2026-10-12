@@ -54,6 +54,8 @@ export interface TtsConfig {
   format: 'mp3' | 'wav' | 'pcm'
   /** 输出采样率（Hz） */
   sampleRate: number
+  /** 上次「测试发音」成功的时间戳（预检里提示凭据可能失效，docs/07 §8.5） */
+  lastTestAt: number
 }
 
 export const DEFAULT_TTS_CONFIG: TtsConfig = {
@@ -71,7 +73,8 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   workspaceId: '',
   instruction: '',
   format: 'mp3',
-  sampleRate: 24000
+  sampleRate: 24000,
+  lastTestAt: 0
 }
 
 /** 该服务商是否已具备合成所需的最小凭据 */
@@ -272,7 +275,8 @@ export function parseAppConfig(input: unknown): AppConfig {
       ttsRow.format === 'wav' || ttsRow.format === 'pcm'
         ? ttsRow.format
         : 'mp3',
-    sampleRate: typeof ttsRow.sampleRate === 'number' && ttsRow.sampleRate > 0 ? ttsRow.sampleRate : 24000
+    sampleRate: typeof ttsRow.sampleRate === 'number' && ttsRow.sampleRate > 0 ? ttsRow.sampleRate : 24000,
+    lastTestAt: typeof ttsRow.lastTestAt === 'number' ? ttsRow.lastTestAt : 0
   }
   const llmRow = row.llm && typeof row.llm === 'object' ? (row.llm as Record<string, unknown>) : {}
   const llmProvider = LLM_PROVIDERS.find((id) => id === llmRow.provider) ?? DEFAULT_LLM_CONFIG.provider
@@ -371,6 +375,8 @@ export interface SpeechItem {
   speechText?: string
   /** 实时合成条目：不预合成文件，播出时由渲染进程流式合成播放（tts.realtime 开启时） */
   stream?: boolean
+  /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
+  originUtteranceId?: string
   /** 合成/播放失败原因 */
   error?: string
   /** reorder 手动指定的顺序（优先级高于 createdAt） */
@@ -392,6 +398,10 @@ export interface PoolSayInput {
   dedupeKey?: string
   expiresAt?: number
   replyTo?: SpeechReplyTo
+  /** 从话术库取件入池时带来源 id（复盘溯源） */
+  originUtteranceId?: string
+  /** 已预合成的音频文件（话术库预合成产物）：带上即置 ready，不再重复合成 */
+  audioPath?: string
 }
 
 export interface PoolStatus {
@@ -739,6 +749,8 @@ export interface Utterance {
   /** 空 = 用场次/人设/TTS 默认音色 */
   voiceId: string
   audioPath: string | null
+  /** 预合成时实际用的音色：装载进池前比对，音色改过则旧音频作废 */
+  synthVoice?: string
   status: UtteranceStatus
   error?: string
   /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
@@ -748,6 +760,23 @@ export interface Utterance {
 }
 
 export type UtteranceInput = Omit<Utterance, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error'>
+
+// ---------- 场次启动预检与装载（docs/07 §8.5） ----------
+
+export type PreflightLevel = 'ok' | 'warn' | 'block'
+
+export interface PreflightItem {
+  level: PreflightLevel
+  label: string
+  detail?: string
+}
+
+export interface LaunchResult {
+  ok: boolean
+  /** 装载进话术池的条目数 */
+  loaded?: number
+  error?: string
+}
 
 // ---------- 人设卡角色（编剧模式多音色，docs/01 §3.1） ----------
 

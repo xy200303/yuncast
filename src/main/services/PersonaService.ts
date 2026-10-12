@@ -1,5 +1,6 @@
 import { DEFAULT_PERSONA, type LivePlan, type Persona, type Script } from '../../shared/types'
 import type { StorageService } from './StorageService'
+import { resolveVoice } from './anchorTools'
 
 /**
  * 人设卡服务（docs/01 §5 主播团）。
@@ -60,6 +61,14 @@ export class PersonaService {
     }
   }
 
+  /**
+   * 本场生效的音色（docs/07 §8.5 四层优先级）：场次 > 显式 voice > 角色 > 人设 > TTS 默认。
+   * 话术库预合成与开播装载共用它，保证「音频是用哪把声音合成的」两边判断一致。
+   */
+  resolvePlanVoice(plan: LivePlan | null | undefined, role?: string, voice?: string): string | undefined {
+    return resolveVoice(this.get(), role, voice, plan?.voiceId ?? '')
+  }
+
   /** 组装主播 Agent 的 system prompt（人设 + 场次/剧本 + 角色 + 池操作约定） */
   buildSystemPrompt(
     persona: Persona,
@@ -80,7 +89,7 @@ ${persona.roles.map((r) => `- ${r.name}：${r.style}`).join('\n')}
     const planSection = plan
       ? `\n# 本场直播
 - 场次：${plan.name}
-- 主题方向：${plan.theme || '（未设定，自由发挥）'}${
+- 主题方向：${plan.theme || '（未设定，自由发挥）'}${plan.styleHint ? `\n- 演出形式：${plan.styleHint}` : ''}${
           script
             ? `
 - 剧本场景序列（用 advance_scene 逐场推进，每场播得差不多就推进）：

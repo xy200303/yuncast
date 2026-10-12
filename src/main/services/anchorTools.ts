@@ -15,9 +15,15 @@ import type { ScriptService } from './ScriptService'
 /** 主播的来源 id（话术池限流按来源算） */
 export const AGENT_SOURCE_ID = 'anchor'
 
-/** 编剧模式：role 名 → 角色音色；无 role 时回落人设默认音色；都没有返回 undefined（用 TTS 默认音色） */
-export function resolveVoice(persona: Persona, role?: string, voice?: string): string | undefined {
+/** 编剧模式：role 名 → 角色音色。音色优先级（docs/07 §8.5）：显式 voice > 场次音色 > 角色音色 > 人设音色 > TTS 默认。都没有返回 undefined */
+export function resolveVoice(
+  persona: Persona,
+  role?: string,
+  voice?: string,
+  planVoice?: string
+): string | undefined {
   if (voice?.trim()) return voice.trim()
+  if (planVoice?.trim()) return planVoice.trim()
   if (role?.trim()) {
     const found = persona.roles.find((r) => r.name === role.trim())
     if (found?.voiceId) return found.voiceId
@@ -37,10 +43,25 @@ export interface AnchorToolDeps {
   onSceneChanged: () => void
   /** 汇报给导演：消息进导演对话面板（不播报、不进话术池）。无头测试可不传 */
   onDirectorReport?: (text: string) => void
+  /** 当前场次指定音色（运行态，场次加载时写入；热切换 set_voice 也改它） */
+  getPlanVoice?: () => string
+  /** 场景切换后装载新场景话术库（AgentService 转发给 LaunchService） */
+  onSceneAdvanced?: (sceneIndex: number) => void
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
-  const { pool, knowledge, memory, persona, script, getLastComment, onSceneChanged, onDirectorReport } = deps
+  const {
+    pool,
+    knowledge,
+    memory,
+    persona,
+    script,
+    getLastComment,
+    onSceneChanged,
+    onDirectorReport,
+    getPlanVoice,
+    onSceneAdvanced
+  } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
     try {
@@ -64,7 +85,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const voiceId = resolveVoice(persona.get(), params.role, params.voice)
+          const voiceId = resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.())
           pool.say({
             text: params.text,
             voiceId,
@@ -89,7 +110,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
           pool.insertNext({
             text: params.text,
-            voiceId: resolveVoice(persona.get(), params.role, params.voice),
+            voiceId: resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.()),
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'reply',
             replyTo
@@ -157,6 +178,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
           const next = script.advanceScene()
           if (!next) return '已经是最后一场了（或没有绑定剧本），收尾还是从头循环由你判断'
           onSceneChanged()
+          // 新场景的话术库自动装载进池（骨架接上，不用等补货）
+          onSceneAdvanced?.(next.index)
           return `进入第 ${next.index + 1}/${next.total} 场「${next.scene.title}」\n目标：${next.scene.goal}\n要点：${next.scene.keyPoints}`
         })
     }),

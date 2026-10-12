@@ -44,6 +44,7 @@ import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
 import { GenerationService, type GenerationProgress } from './services/GenerationService'
+import { LaunchService } from './services/LaunchService'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -312,7 +313,8 @@ function registerIpc(
   stream: StreamService,
   connector: ConnectorService,
   utterances: UtteranceService,
-  generation: GenerationService
+  generation: GenerationService,
+  launch: LaunchService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -497,6 +499,15 @@ function registerIpc(
     script.setActivePlan(String(id ?? ''))
     return storage.getConfig().live.activePlanId
   })
+  // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口
+  ipcMain.handle(IPC.planPreflight, (_e, id: string) => launch.preflight(String(id ?? '')))
+  ipcMain.handle(IPC.planLaunch, async (_e, id: string) => {
+    const wasRunning = agent.status().state !== 'stopped'
+    const result = await launch.launch(String(id ?? ''))
+    // 真的开起来了才发开播事件（开场白触发器靠它）
+    if (result.ok && !wasRunning) bus.emit('stream.started', {}, 'human')
+    return result
+  })
 
   // ---------- 话术库（场次底稿） ----------
   ipcMain.handle(IPC.utteranceList, (_e, planId: string) => utterances.list(String(planId)))
@@ -624,9 +635,15 @@ if (!single) {
     // 音色库（M8 声音克隆）：训练状态变化推给渲染进程
     voiceSvc = new VoiceService(storage, broadcastVoices)
 
-    // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）
-    const utterances = new UtteranceService(storage, tts)
+    // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）+ 场次启动（§8.5）
+    const utterances = new UtteranceService(storage, tts, persona)
     const generation = new GenerationService(storage, knowledge, utterances, persona, script, broadcastGeneration)
+    const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc)
+    // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
+    agent.onSceneAdvanced = () => {
+      const loaded = launch.loadActiveSceneUtterances()
+      if (loaded > 0) console.log(`[AgentAnchor] 新场景装载话术 ${loaded} 条`)
+    }
 
     // 实时 TTS：流式合成（当前=整段合成后按真实速率分块吐，管线真流式；供应商流式接口见 docs/06）
     ttsStream = new TtsStreamService(tts)
@@ -660,7 +677,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, generation)
+    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, generation, launch)
     createWindow(storage)
 
     app.on('activate', () => {

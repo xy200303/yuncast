@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { Utterance, UtteranceInput } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
+import type { PersonaService } from './PersonaService'
 
 /**
  * 场次话术库（docs/07 §3 utterances）：场次底稿库，长期存在、可反复用、可编辑。
@@ -11,7 +12,8 @@ import type { TtsService } from './TtsService'
 export class UtteranceService {
   constructor(
     private readonly storage: StorageService,
-    private readonly tts: TtsService
+    private readonly tts: TtsService,
+    private readonly persona: PersonaService
   ) {}
 
   list(planId: string): Utterance[] {
@@ -80,6 +82,7 @@ export class UtteranceService {
     onProgress?: (u: Utterance) => void,
     signal?: AbortSignal
   ): Promise<{ done: number; failed: number }> {
+    const plan = this.storage.planList().find((p) => p.id === planId) ?? null
     const pending = this.storage
       .utteranceList(planId)
       .filter((u) => u.status === 'pending' || u.status === 'failed')
@@ -87,12 +90,19 @@ export class UtteranceService {
     let failed = 0
     for (const u of pending) {
       if (signal?.aborted) break
+      // 合成用的音色与开播装载时的判定口径一致（场次音色优先于人设音色）
+      const voice = this.persona.resolvePlanVoice(plan, undefined, u.voiceId) ?? ''
       this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
       onProgress?.({ ...u, status: 'synthesizing' })
       try {
-        const audioPath = await this.tts.synthesize(`utterance-${u.id}`, u.text, u.voiceId || undefined, signal)
-        this.storage.utteranceSetAudio(u.id, 'ready', audioPath)
-        onProgress?.({ ...u, status: 'ready', audioPath })
+        const audioPath = await this.tts.synthesize(
+          `utterance-${u.id}`,
+          u.text,
+          voice || undefined,
+          signal
+        )
+        this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
+        onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
         done++
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)

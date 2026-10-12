@@ -68,6 +68,8 @@ export class TtsService {
   async test(text: string): Promise<{ ok: boolean; error?: string; audioPath?: string }> {
     try {
       const audioPath = await this.synthesize(`test-${Date.now()}`, text)
+      // 记下成功时间：开播预检用它提示"凭据可能失效"（docs/07 §8.5）
+      this.storage.setConfig({ tts: { lastTestAt: Date.now() } })
       return { ok: true, audioPath }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }

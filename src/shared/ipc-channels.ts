@@ -96,6 +96,10 @@ export const IPC = {
   planSave: 'plan:save',
   planDelete: 'plan:delete',
   planSetActive: 'plan:set-active',
+  /** 开播前预检（docs/07 §8.5）：返回检查项清单，UI 弹确认 */
+  planPreflight: 'plan:preflight',
+  /** 启动场次：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */
+  planLaunch: 'plan:launch',
 
   // 话术库（场次底稿）
   utteranceList: 'utterance:list',

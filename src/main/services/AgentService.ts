@@ -45,6 +45,10 @@ export class AgentService {
   private startedAt = 0
   /** 本场发生过几轮对话（没对话就不写总结） */
   private exchanges = 0
+  /** 本场运行态音色（场次指定；set_voice 工具可热改；空 = 回落人设/TTS 默认） */
+  private planVoiceId = ''
+  /** 场景推进后的装载钩子（LaunchService 接上：把新场景话术库载入池） */
+  onSceneAdvanced: ((sceneIndex: number) => void) | null = null
 
   constructor(
     private readonly storage: StorageService,
@@ -56,6 +60,11 @@ export class AgentService {
     private readonly broadcast: (status: AgentStatus) => void,
     private readonly onDirectorReport?: (text: string) => void
   ) {}
+
+  /** 设置本场音色（开播装载时写入场次音色；运行中热切换音色也走这里） */
+  setPlanVoice(voiceId: string): void {
+    this.planVoiceId = voiceId.trim()
+  }
 
   status(): AgentStatus {
     const current = this.state === 'stopped' ? null : this.script.currentScene()
@@ -273,7 +282,9 @@ export class AgentService {
         script: this.script,
         getLastComment: () => this.lastComment,
         onSceneChanged: () => this.notifySceneChanged(),
-        onDirectorReport: (text) => this.onDirectorReport?.(text)
+        onDirectorReport: (text) => this.onDirectorReport?.(text),
+        getPlanVoice: () => this.planVoiceId,
+        onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex)
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),

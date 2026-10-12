@@ -12,12 +12,14 @@ import type {
   LiveEvent,
   LivePlan,
   LivePlanInput,
+  LaunchResult,
   PartialDeep,
   Persona,
   PoolResult,
   PoolSayInput,
   PoolSnapshot,
   PoolStatus,
+  PreflightItem,
   Product,
   ProductInput,
   Script,
@@ -208,7 +210,11 @@ const api = {
       ipcRenderer.invoke(IPC.planSave, input, id) as Promise<PoolResult<LivePlan>>,
     remove: (id: string) => ipcRenderer.invoke(IPC.planDelete, id) as Promise<PoolResult>,
     /** 设为当前场次，返回生效的 activePlanId */
-    setActive: (id: string) => ipcRenderer.invoke(IPC.planSetActive, id) as Promise<string>
+    setActive: (id: string) => ipcRenderer.invoke(IPC.planSetActive, id) as Promise<string>,
+    /** 开播前预检：检查项清单（阻断/警告） */
+    preflight: (id: string) => ipcRenderer.invoke(IPC.planPreflight, id) as Promise<PreflightItem[]>,
+    /** 启动场次：加载配置 + 应用人设音色 + 装载话术库 + 启动主播 */
+    launch: (id: string) => ipcRenderer.invoke(IPC.planLaunch, id) as Promise<LaunchResult>
   },
   utterance: {
     list: (planId: string) => ipcRenderer.invoke(IPC.utteranceList, planId) as Promise<Utterance[]>,

@@ -626,11 +626,12 @@ function AskCard({
 /** 对话时间线的一条：导演指令（右）/ 主播文本（左，中间文本或最终回复）/ 工具卡片 / 请示卡片 */
 type ChatEntry =
   | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
-  | { type: 'text'; id: string; ts: number; text: string; final: boolean }
+  | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string }
   | {
       type: 'tool'
       id: string
       ts: number
+      turnId: string
       name: string
       args?: string
       status: 'running' | 'ok' | 'error'
@@ -726,12 +727,20 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     const offTimeline = window.api.director.onTimeline((event) => {
       const entry = event.entry
       if (entry.type === 'text') {
-        upsert({ type: 'text', id: entry.id, ts: Date.now(), text: entry.text, final: entry.final === true })
+        upsert({
+          type: 'text',
+          id: entry.id,
+          ts: Date.now(),
+          turnId: event.turnId,
+          text: entry.text,
+          final: entry.final === true
+        })
       } else {
         upsert({
           type: 'tool',
           id: entry.id,
           ts: Date.now(),
+          turnId: event.turnId,
           name: entry.name,
           args: entry.args,
           status: entry.status,
@@ -774,10 +783,11 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
         text: '语速放慢一点，多强调 316 不锈钢内胆',
         attachments: [{ name: '保温杯卖点.pdf', path: 'D:/docs/保温杯卖点.pdf' }]
       },
-      { type: 'tool', id: 'demo-t1', ts: t0 - 118000, name: 'search_knowledge', args: '保温杯 内胆', status: 'ok', result: '商品「316 保温杯」：内胆 316 不锈钢，容量 500ml', durationMs: 240 },
-      { type: 'text', id: 'demo-2', ts: t0 - 117000, text: '先查一下内胆材质的话术，再调下面几条。', final: false },
-      { type: 'tool', id: 'demo-t2', ts: t0 - 116000, name: 'revise_next', args: 'count=2', status: 'ok', result: '已改写 2 条未播话术', durationMs: 88 },
-      { type: 'text', id: 'demo-3', ts: t0 - 60000, text: '收到：接下来两条改成强调 316 不锈钢内胆，语速提示调慢了 10%，预计 30 秒后生效。', final: true },
+      { type: 'tool', id: 'demo-t1', ts: t0 - 118000, turnId: 'turn-1', name: 'search_knowledge', args: '保温杯 内胆', status: 'ok', result: '商品「316 保温杯」：内胆 316 不锈钢，容量 500ml', durationMs: 240 },
+      { type: 'text', id: 'demo-2', ts: t0 - 117000, turnId: 'turn-1', text: '先查一下内胆材质的话术，再调下面几条。', final: false },
+      { type: 'tool', id: 'demo-t2', ts: t0 - 116000, turnId: 'turn-1', name: 'revise_next', args: 'count=2', status: 'ok', result: '已改写 2 条未播话术', durationMs: 88 },
+      { type: 'text', id: 'demo-3', ts: t0 - 60000, turnId: 'turn-1', text: '收到：接下来两条改成强调 316 不锈钢内胆，语速提示调慢了 10%，预计 30 秒后生效。', final: true },
+      { type: 'text', id: 'demo-4', ts: t0 - 40000, turnId: 'turn-2', text: '这一轮没有任何工具调用，只有这一句结论——所以它不带「最终回复」标签，就是一条普通回复。', final: true },
       {
         type: 'ask',
         id: 'demo-4',
@@ -883,6 +893,19 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             const dayBreak = prev ? new Date(prev.ts).toDateString() !== new Date(entry.ts).toDateString() : false
             // 主播连着一串产出（文本/工具/请示）只在第一条显示头像
             const aiRun = entry.type !== 'director' && prev?.type === 'director'
+            /**
+             * 「最终回复」标签只在本轮出现过中间内容（工具卡片 / 别的文本）时才加：
+             * 一轮从头到尾只有一段文本时，这个标签没有对照物，反而让人以为是重复的第二条回复。
+             */
+            const showFinalLabel =
+              entry.type === 'text' &&
+              entry.final &&
+              entries.some(
+                (item) =>
+                  item.id !== entry.id &&
+                  (item.type === 'text' || item.type === 'tool') &&
+                  item.turnId === entry.turnId
+              )
             const avatar = (
               <span
                 className={cn(
@@ -936,9 +959,11 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                         <div>
                           <div className="mb-1 flex items-center gap-2">
                             <span className="text-[12px] font-medium">主播</span>
-                            <span className="rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground">
-                              最终回复
-                            </span>
+                            {showFinalLabel && (
+                              <span className="rounded bg-muted px-1 py-px font-mono text-[10px] text-muted-foreground">
+                                最终回复
+                              </span>
+                            )}
                             <span className="font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
                           </div>
                           <div className="rounded-2xl rounded-tl-sm bg-muted px-3 py-2">

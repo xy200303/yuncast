@@ -2,13 +2,22 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import type { StorageService } from './StorageService'
-import { findCloneVoice, voiceMatchesProvider, voiceUnavailableError } from '../../shared/voiceProvider'
+import { getTtsProvider, isTtsConnectionReady } from './providers/registry'
+import { TTS_PROVIDER_SHORT, type TtsConnection, type TtsProvider } from '../../shared/types'
+import {
+  defaultProviderConnectionError,
+  findCloneVoice,
+  voiceConnectionError
+} from '../../shared/voiceProvider'
 
 /**
  * TTS 双通道合成（搬迁自旧版 desktop/src/main/modules/tts/volcanoClient.ts）。
  * - 火山引擎语音合成（大模型语音合成 HTTP 协议）: https://www.volcengine.com/docs/6561/79817
  * - 阿里云百炼 DashScope 多模态生成（Qwen-TTS）
  * 预合成走 HTTP 一次性返回 mp3（火山）/ wav（百炼），写入 userData/audio-cache。
+ *
+ * 凭据按服务商存在 tts_connections 接入列表里（设置 → 语音合成，一家一条），
+ * 合成时**按生效音色的归属路由到对应接入**：克隆音色归它自己那家，系统音色归默认服务商。
  */
 
 const VOLCANO_TTS_URL = 'https://openspeech.bytedance.com/api/v1/tts'
@@ -34,6 +43,13 @@ interface VolcanoTtsRequest {
   request: { reqid: string; text: string; operation: string }
 }
 
+/** 解析出来的合成路由：用哪家的哪条接入，以及真正送进合成的音色 */
+interface TtsRoute {
+  provider: TtsProvider
+  params: TtsConnection['params']
+  voice: string
+}
+
 export class TtsService {
   constructor(private readonly storage: StorageService) {}
 
@@ -44,53 +60,77 @@ export class TtsService {
     return dir
   }
 
-  /** 当前 TTS 服务商是否为百炼（流式接口已核实可用） */
-  providerIsBailian(): boolean {
-    return this.storage.getConfig().tts.provider === 'bailian'
+  /** 该音色会走哪家（流式通道据此选实现；接入没配就抛中文原因） */
+  providerForVoice(voiceId?: string): TtsProvider {
+    return this.route(voiceId).provider
   }
 
-  outputExtension(): 'mp3' | 'wav' {
-    return this.storage.getConfig().tts.provider === 'bailian' ? 'wav' : 'mp3'
+  /**
+   * 合成路由：克隆音色只能用**它自己那家**的接入（火山复刻的 speaker_id 拿去百炼必然失败）；
+   * 系统音色（音色库里没有记录）判断不出归属，按默认服务商。那条接入没配也没法合成，
+   * 就地抛中文原因，不让请求跑到服务商才报一个看不懂的错。
+   */
+  private route(voiceId?: string): TtsRoute {
+    const { tts } = this.storage.getConfig()
+    const voice = (voiceId || tts.voiceId).trim()
+    const clone = voice ? findCloneVoice(this.storage.listVoices(), voice) : undefined
+    const provider: TtsProvider = clone ? (clone.provider as TtsProvider) : tts.providerId
+    const connection = this.storage.ttsConnectionGetByProvider(provider)
+    if (!connection || !isTtsConnectionReady(connection, getTtsProvider(provider))) {
+      throw new Error(clone ? voiceConnectionError(clone) : defaultProviderConnectionError(provider))
+    }
+    return { provider, params: connection.params, voice }
   }
 
   /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。 */
   async synthesize(itemId: string, text: string, voiceId?: string, signal?: AbortSignal): Promise<string> {
-    const outPath = join(this.audioCacheDir(), `${itemId}.${this.outputExtension()}`)
-    const tts = this.storage.getConfig().tts
-    this.assertVoiceProvider(voiceId)
-    if (tts.provider === 'bailian') {
-      await this.synthesizeBailian(text, outPath, voiceId, signal)
+    const route = this.route(voiceId)
+    const extension = route.provider === 'bailian' ? 'wav' : 'mp3'
+    const outPath = join(this.audioCacheDir(), `${itemId}.${extension}`)
+    if (route.provider === 'bailian') {
+      await this.synthesizeBailian(text, outPath, route, signal)
     } else {
-      await this.synthesizeVolcano(text, outPath, voiceId, signal)
+      await this.synthesizeVolcano(text, outPath, route, signal)
     }
     return outPath
   }
 
-  /**
-   * 平台绑定护栏：克隆音色只能用它所属的服务商合成（火山复刻的 speaker_id 拿去百炼必然失败）。
-   * 在这里拦下来给出中文原因（缺凭据就说缺凭据），不让请求跑到服务商才报一个看不懂的错。
-   * 命中的是系统音色（音色库里没有记录）时无法判断归属，放行。
-   */
-  private assertVoiceProvider(voiceId?: string): void {
-    const { tts } = this.storage.getConfig()
-    const voice = (voiceId || tts.voiceId).trim()
-    if (!voice) return // 空音色由各合成分支报「未选择音色」
-    const clone = findCloneVoice(this.storage.listVoices(), voice)
-    if (clone && !voiceMatchesProvider(clone, tts.provider)) {
-      throw new Error(voiceUnavailableError(clone, tts))
-    }
-  }
-
-  /** 设置页「测试发音」：合成一小段并返回路径，渲染进程直接播放 */
-  async test(text: string): Promise<{ ok: boolean; error?: string; audioPath?: string }> {
+  /** 设置页「测试发音」：用指定的那条接入（默认 = 默认服务商）合成一小段，返回路径给渲染进程播放 */
+  async test(
+    text: string,
+    providerId?: TtsProvider
+  ): Promise<{ ok: boolean; error?: string; audioPath?: string }> {
+    const provider = providerId ?? this.storage.getConfig().tts.providerId
     try {
-      const audioPath = await this.synthesize(`test-${Date.now()}`, text)
+      const voice = this.testVoice(provider)
+      if (!voice) {
+        return {
+          ok: false,
+          error: `还没有可用的${TTS_PROVIDER_SHORT[provider]}音色：到设置 → 语音合成填默认音色，或在音色库克隆一个`
+        }
+      }
+      const audioPath = await this.synthesize(`test-${Date.now()}`, text, voice)
       // 记下成功时间：开播预检用它提示"凭据可能失效"（docs/07 §8.5）
       this.storage.setConfig({ tts: { lastTestAt: Date.now() } })
       return { ok: true, audioPath }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  /**
+   * 测某家那条接入时用哪个音色：优先这家已就绪的克隆音色（归属明确，一定路由到它）；
+   * 退而用默认音色——只有默认那家能用（默认音色归另外一家时会路由到那家去，测不到这条接入）。
+   */
+  private testVoice(provider: TtsProvider): string {
+    const voices = this.storage.listVoices()
+    const clone = voices.find(
+      (voice) => voice.provider === provider && voice.status === 'ready' && voice.voiceType.trim()
+    )
+    if (clone) return clone.voiceType
+    const { tts } = this.storage.getConfig()
+    if (tts.providerId !== provider || findCloneVoice(voices, tts.voiceId)) return ''
+    return tts.voiceId
   }
 
   private combinedSignal(signal?: AbortSignal): AbortSignal {
@@ -102,16 +142,18 @@ export class TtsService {
   private async synthesizeVolcano(
     text: string,
     outPath: string,
-    voiceId?: string,
+    route: TtsRoute,
     signal?: AbortSignal
   ): Promise<void> {
     const { tts } = this.storage.getConfig()
-    if (!tts.appId || !tts.accessToken) throw new Error('火山 TTS AppId / Access Token 未配置')
-    const voice = voiceId || tts.voiceId
+    const appId = String(route.params.appId ?? '')
+    const accessToken = String(route.params.accessToken ?? '')
+    const cluster = String(route.params.cluster ?? '') || 'volcano_tts'
+    const voice = route.voice
     if (!voice) throw new Error('未选择音色（voiceId 为空）')
 
     const payload: VolcanoTtsRequest = {
-      app: { appid: tts.appId, token: tts.accessToken, cluster: tts.cluster || 'volcano_tts' },
+      app: { appid: appId, token: accessToken, cluster },
       user: { uid: 'agent-anchor' },
       audio: {
         voice_type: voice,
@@ -129,7 +171,7 @@ export class TtsService {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer;${tts.accessToken}`
+        Authorization: `Bearer;${accessToken}`
       },
       body: JSON.stringify(payload),
       signal: this.combinedSignal(signal)
@@ -161,18 +203,16 @@ export class TtsService {
     signal?: AbortSignal
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     const { tts } = this.storage.getConfig()
-    if (!tts.apiKey) throw new Error('百炼 API Key 未配置')
-    if (!tts.model) throw new Error('百炼模型未配置')
-    const voice = voiceId || tts.voiceId
-    if (!voice) throw new Error('未选择百炼音色（voiceId 为空）')
-    this.assertVoiceProvider(voice)
+    const route = this.route(voiceId)
+    const apiKey = String(route.params.apiKey ?? '')
+    if (!route.voice) throw new Error('未选择百炼音色（voiceId 为空）')
 
-    const target = this.buildBailianTarget(text, voice, { stream: true })
+    const target = this.buildBailianTarget(text, route.voice, route.params, { stream: true })
     const res = await fetch(target.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${tts.apiKey}`,
+        Authorization: `Bearer ${apiKey}`,
         'X-DashScope-SSE': 'enable'
       },
       body: JSON.stringify(target.body),
@@ -230,22 +270,24 @@ export class TtsService {
   private buildBailianTarget(
     text: string,
     voice: string,
+    params: TtsConnection['params'],
     extra: { stream: boolean }
   ): BailianTarget {
     const { tts } = this.storage.getConfig()
-    const base = (tts.baseUrl || 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
+    const model = String(params.model ?? '')
+    const base = (String(params.baseUrl ?? '') || 'https://dashscope.aliyuncs.com/api/v1').replace(/\/+$/, '')
     const instruction = tts.instruction?.trim()
 
     // Qwen-TTS 系列（qwen3-tts-flash）：通用端点 + multimodal-generation 请求体
-    if (tts.model.startsWith(BAILIAN_QWEN_TTS_PREFIX)) {
+    if (model.startsWith(BAILIAN_QWEN_TTS_PREFIX)) {
       return {
         url: `${base}${BAILIAN_TTS_PATH}`,
         body: {
-          model: tts.model,
+          model,
           input: {
             text,
             voice,
-            language_type: tts.languageType || 'Chinese',
+            language_type: String(params.languageType ?? '') || 'Chinese',
             ...(instruction ? { instruction } : {})
           }
         }
@@ -253,17 +295,18 @@ export class TtsService {
     }
 
     // 其余系列（Qwen-Audio-TTS / CosyVoice / MiniMax）：maas 端点，需要业务空间 ID
-    if (!tts.workspaceId) {
+    const workspaceId = String(params.workspaceId ?? '')
+    if (!workspaceId) {
       throw new Error(
-        `模型 ${tts.model} 需要「业务空间 ID」（设置 → 语音合成）：端点形如 https://{业务空间ID}.cn-beijing.maas.aliyuncs.com`
+        `模型 ${model} 需要「业务空间 ID」（设置 → 语音合成 → 阿里云百炼接入）：端点形如 https://{业务空间ID}.cn-beijing.maas.aliyuncs.com`
       )
     }
-    const maasBase = `https://${tts.workspaceId}${MAAS_BASE}`
+    const maasBase = `https://${workspaceId}${MAAS_BASE}`
     void MAAS_REGION_SUFFIX
     return {
       url: `${maasBase}${MAAS_TTS_PATH}`,
       body: {
-        model: tts.model,
+        model,
         input: {
           text,
           voice,
@@ -278,21 +321,19 @@ export class TtsService {
   private async synthesizeBailian(
     text: string,
     outPath: string,
-    voiceId?: string,
+    route: TtsRoute,
     signal?: AbortSignal
   ): Promise<void> {
-    const { tts } = this.storage.getConfig()
-    if (!tts.apiKey) throw new Error('百炼 API Key 未配置')
-    if (!tts.model) throw new Error('百炼模型未配置')
-    const voice = voiceId || tts.voiceId
+    const apiKey = String(route.params.apiKey ?? '')
+    const voice = route.voice
     if (!voice) throw new Error('未选择百炼音色（voiceId 为空）')
 
-    const target = this.buildBailianTarget(text, voice, { stream: false })
+    const target = this.buildBailianTarget(text, voice, route.params, { stream: false })
     const res = await fetch(target.url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${tts.apiKey}`
+        Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify(target.body),
       signal: this.combinedSignal(signal)

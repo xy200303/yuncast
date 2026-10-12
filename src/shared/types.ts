@@ -27,33 +27,38 @@ export const TTS_PROVIDER_SHORT: Record<TtsProvider, string> = {
   bailian: '阿里云百炼'
 }
 
+/**
+ * 语音合成的**通用偏好**：与「哪家的凭据」无关，两家共用。
+ * 凭据本身不在这里——它按服务商存在 tts_connections 接入列表里（一条 = 一家），
+ * 合成时按生效音色的归属路由到对应接入（见 docs 与 TtsService.route）。
+ */
 export interface TtsConfig {
+  /** 默认服务商：没指定音色（或音色是服务商自带的系统音色）时，用哪家的接入合成 */
+  providerId: TtsProvider
+  /** @deprecated 迁移用（旧配置里「当前服务商」）：默认服务商缺失时取它；新代码一律读 providerId */
   provider: TtsProvider
-  /** 火山引擎：应用 AppId */
+  /** @deprecated 迁移用：已迁入 tts_connections，新代码不再读 */
   appId: string
-  /** 火山引擎：Access Token（敏感字段，safeStorage 加密落盘） */
+  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，safeStorage 加密落盘） */
   accessToken: string
-  /** 火山引擎：接入集群 */
+  /** @deprecated 迁移用：已迁入 tts_connections */
   cluster: string
-  /** 百炼：API Key（敏感字段，safeStorage 加密落盘） */
+  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，safeStorage 加密落盘） */
   apiKey: string
-  /** 百炼模型名称，例如 qwen3-tts-flash */
+  /** @deprecated 迁移用：已迁入 tts_connections */
   model: string
-  /** 百炼 DashScope API 地址 */
+  /** @deprecated 迁移用：已迁入 tts_connections */
   baseUrl: string
-  /** 百炼可选语种，Auto 或 Chinese 等 */
+  /** @deprecated 迁移用：已迁入 tts_connections */
   languageType: string
+  /** @deprecated 迁移用：已迁入 tts_connections */
+  workspaceId: string
   /** 默认音色（火山 voice_type / 百炼 voice） */
   voiceId: string
   /** 语速倍率（仅火山生效） */
   speed: number
   /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
   realtime: boolean
-  /**
-   * 百炼业务空间 ID：Qwen-Audio-TTS / CosyVoice / MiniMax 系列的端点形如
-   * https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/...，与 Qwen-TTS 的通用端点不可混用
-   */
-  workspaceId: string
   /** 语气指令（instruction，≤100 字符）：自然语言描述语音表现，如「语速稍快，语气热情」 */
   instruction: string
   /** 输出音频格式：mp3 兼容性最好；pcm 适合流式（无需解码，直接喂播放器/混音器） */
@@ -65,6 +70,7 @@ export interface TtsConfig {
 }
 
 export const DEFAULT_TTS_CONFIG: TtsConfig = {
+  providerId: 'volcano',
   provider: 'volcano',
   appId: '',
   accessToken: '',
@@ -73,26 +79,41 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   model: 'qwen3-tts-flash',
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
   languageType: 'Chinese',
+  workspaceId: '',
   voiceId: '',
   speed: 1.0,
   realtime: false,
-  workspaceId: '',
   instruction: '',
   format: 'mp3',
   sampleRate: 24000,
   lastTestAt: 0
 }
 
-/** 该服务商是否已具备合成所需的最小凭据 */
-export function ttsConfigured(tts: TtsConfig): boolean {
-  if (tts.provider === 'bailian') return Boolean(tts.apiKey && tts.model && tts.voiceId)
-  return Boolean(tts.appId && tts.accessToken && tts.voiceId)
+// ---------- 语音合成的供应商接入（与 model_connections 同构：一条 = 一个服务商 + 一份凭据） ----------
+
+export interface TtsConnection {
+  id: string
+  providerId: TtsProvider
+  /** 该服务商的凭据（按 provider manifest 的 configFields；secret 字段落盘加密） */
+  params: Record<string, string | number | boolean>
+  createdAt: number
+  updatedAt: number
+}
+
+/** 给渲染层用的接入：密钥字段的值置空，只留「填没填过」与「能不能用」两个标记 */
+export type TtsConnectionSafe = TtsConnection & { hasSecret: boolean; ready: boolean }
+
+/** 某家服务商是否已配好接入（有这条接入且必填项齐）：音色提示、筛选标记与预检都按它判断 */
+export function ttsProviderConfigured(
+  connections: TtsConnectionSafe[],
+  providerId: TtsProvider
+): boolean {
+  return connections.some((connection) => connection.providerId === providerId && connection.ready)
 }
 
 /**
- * 某家服务商在配置里有没有凭据——**与「当前选中哪家」无关**：
- * TtsConfig 一家一套字段（火山 appId/accessToken、百炼 apiKey）长期并存，
- * 音色库/预检要按「音色所属那家有没有凭据」判断，不能拿当前服务商当依据。
+ * @deprecated 迁移用：判断旧的 config.tts 平铺凭据里某家填没填过（`migrateLegacyTts` 抽接入时用）。
+ * 新代码一律看 `tts_connections` 有没有这条接入。
  */
 export function ttsProviderHasCredentials(tts: TtsConfig, provider: TtsProvider): boolean {
   return provider === 'bailian' ? Boolean(tts.apiKey) : Boolean(tts.appId && tts.accessToken)
@@ -251,7 +272,7 @@ export interface TtsRealtimeConfig {
   /** WS 端点（百炼含业务空间 ID）：wss://{workspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/inference */
   wsUrl: string
   voiceId: string
-  /** 留空沿用「语音合成」的 API Key */
+  /** 不用填：实时通道的凭据取自「语音合成」里对应服务商的接入（TtsRealtimeService.connectionParams） */
   apiKey: string
   /** 指令控制（自然语言描述语音表现，例如「语速稍快、语气热情」） */
   instruction: string
@@ -322,8 +343,12 @@ function parseTtsRealtime(input: unknown): TtsRealtimeConfig {
 export function parseAppConfig(input: unknown): AppConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const ttsRow = row.tts && typeof row.tts === 'object' ? (row.tts as Record<string, unknown>) : {}
+  const legacyTtsProvider =
+    TTS_PROVIDERS.find((id) => id === ttsRow.provider) ?? DEFAULT_TTS_CONFIG.providerId
   const tts: TtsConfig = {
-    provider: TTS_PROVIDERS.find((id) => id === ttsRow.provider) ?? DEFAULT_TTS_CONFIG.provider,
+    // 默认服务商：新字段优先；老配置只有 provider，升级后它就是默认那家
+    providerId: TTS_PROVIDERS.find((id) => id === ttsRow.providerId) ?? legacyTtsProvider,
+    provider: legacyTtsProvider,
     appId: typeof ttsRow.appId === 'string' ? ttsRow.appId : '',
     accessToken: typeof ttsRow.accessToken === 'string' ? ttsRow.accessToken : '',
     cluster: typeof ttsRow.cluster === 'string' ? ttsRow.cluster : DEFAULT_TTS_CONFIG.cluster,

@@ -292,7 +292,7 @@ function PlanDialog({
     knowledgeScope: plan?.knowledgeScope ?? DEFAULT_PLAN_KNOWLEDGE_SCOPE,
     voiceId: plan?.voiceId ?? ''
   })
-  const tts = useAppStore((s) => s.config.tts)
+  const ttsConnections = useAppStore((s) => s.ttsConnections)
   const [busy, setBusy] = useState(false)
 
   const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
@@ -420,7 +420,7 @@ function PlanDialog({
                   <SelectItem value="none">不覆盖</SelectItem>
                   {groupVoicesByProvider(
                     voices.filter((v) => v.status === 'ready' && v.voiceType),
-                    tts
+                    ttsConnections
                   ).map((group) =>
                     group.voices.length === 0 ? null : (
                       <SelectGroup key={group.provider}>
@@ -428,7 +428,7 @@ function PlanDialog({
                           <ProviderIcon providerId={group.provider} size="sm" />
                           <span>
                             {group.label}
-                            {group.hasCredentials ? '' : '（缺凭据）'}
+                            {group.configured ? '' : '（未配置）'}
                           </span>
                         </SelectLabel>
                         {group.voices.map((voice) => (
@@ -442,7 +442,7 @@ function PlanDialog({
                 </SelectContent>
               </Select>
               <p className="mt-1 text-xs text-muted-foreground">
-                列出音色库所有已就绪的克隆音色（按服务商分组）：缺凭据的那家选中后会就地提示
+                列出音色库所有已就绪的克隆音色（按服务商分组）：没配接入的那家选中后会就地提示
               </p>
               <VoiceProviderHint voiceId={form.voiceId} />
             </div>

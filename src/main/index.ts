@@ -48,7 +48,7 @@ import { UtteranceService } from './services/UtteranceService'
 import { GenerationService, type GenerationProgress } from './services/GenerationService'
 import { LaunchService } from './services/LaunchService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
-import { getLlmProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
+import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -347,7 +347,29 @@ function registerIpc(
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 
   // ---------- TTS ----------
-  ipcMain.handle(IPC.ttsTest, (_e, text: string) => tts.test(String(text ?? '').slice(0, 200)))
+  ipcMain.handle(IPC.ttsTest, (_e, text: string, providerId?: string) =>
+    tts.test(String(text ?? '').slice(0, 200), providerId as TtsProvider | undefined)
+  )
+
+  // ---------- 语音合成的供应商接入（设置 → 语音合成） ----------
+  ipcMain.handle(IPC.ttsConnectionList, () => storage.ttsConnectionListSafe())
+  ipcMain.handle(
+    IPC.ttsConnectionSave,
+    (_e, providerId: string, params: Record<string, string | number | boolean>) => {
+      try {
+        const id = String(providerId ?? '')
+        if (!getTtsProvider(id)) return { ok: false, error: '服务商不认识：重新选一家' }
+        storage.ttsConnectionSave({ providerId: id, params: params ?? {} })
+        return { ok: true, connections: storage.ttsConnectionListSafe() }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      }
+    }
+  )
+  ipcMain.handle(IPC.ttsConnectionRemove, (_e, providerId: string) => {
+    storage.ttsConnectionDelete(String(providerId ?? ''))
+    return { ok: true, connections: storage.ttsConnectionListSafe() }
+  })
 
   // ---------- 语言模型（供应商接入，设置 → 语言模型） ----------
   ipcMain.handle(IPC.modelList, () => storage.connectionListSafe())

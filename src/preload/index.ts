@@ -30,6 +30,7 @@ import type {
   SpeechItem,
   SpeechLane,
   TtsProvider,
+  TtsConnectionSafe,
   Utterance,
   UtteranceInput,
   VoiceRecord,
@@ -83,8 +84,28 @@ const api = {
     }
   },
   tts: {
-    test: (text: string) =>
-      ipcRenderer.invoke(IPC.ttsTest, text) as Promise<{ ok: boolean; error?: string; audioPath?: string }>
+    /** 测试发音：用指定那条接入（不传 = 默认服务商那条）合成一小段 */
+    test: (text: string, providerId?: TtsProvider) =>
+      ipcRenderer.invoke(IPC.ttsTest, text, providerId) as Promise<{
+        ok: boolean
+        error?: string
+        audioPath?: string
+      }>,
+    /**
+     * 语音合成的供应商接入（设置 → 语音合成）：一家一条，音色按归属路由到对应接入。
+     * 密钥字段的值不出主进程，只有 hasSecret / ready 两个标记。
+     */
+    connections: () => ipcRenderer.invoke(IPC.ttsConnectionList) as Promise<TtsConnectionSafe[]>,
+    saveConnection: (providerId: TtsProvider, params: Record<string, string | number | boolean>) =>
+      ipcRenderer.invoke(IPC.ttsConnectionSave, providerId, params) as Promise<
+        { ok: true; connections: TtsConnectionSafe[] } | { ok: false; error: string }
+      >,
+    /** 清除该服务商的接入（合成时按音色归属找接入，清掉后那家的音色就用不了了） */
+    removeConnection: (providerId: TtsProvider) =>
+      ipcRenderer.invoke(IPC.ttsConnectionRemove, providerId) as Promise<{
+        ok: true
+        connections: TtsConnectionSafe[]
+      }>
   },
   /**
    * 供应商接入（设置 → 语言模型）：一条 = 一个服务商 + 一份凭据 + 一串模型。
@@ -186,7 +207,7 @@ const api = {
   },
   voice: {
     list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,
-    /** provider = 这次复刻交给哪家（新建弹窗里选，克隆要用那家的凭据） */
+    /** provider = 这次复刻交给哪家（新建弹窗里选，用那家接入的凭据） */
     clone: (input: { name: string; samplePath: string; authorized: boolean; provider: TtsProvider }) =>
       ipcRenderer.invoke(IPC.voiceClone, input) as Promise<{ ok: boolean; error?: string }>,
     remove: (id: string) =>

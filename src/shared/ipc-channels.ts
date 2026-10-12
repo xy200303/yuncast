@@ -25,6 +25,10 @@ export const IPC = {
 
   // TTS
   ttsTest: 'tts:test',
+  /** 语音合成的供应商接入（设置 → 语音合成）：一家一条，音色按归属路由到对应接入 */
+  ttsConnectionList: 'tts:connection-list',
+  ttsConnectionSave: 'tts:connection-save',
+  ttsConnectionRemove: 'tts:connection-remove',
 
   // 语言模型（供应商接入 + 服务商注册表）
   modelList: 'model:list',
@@ -77,7 +81,7 @@ export const IPC = {
   voiceRemove: 'voice:remove',
   voiceSetDefault: 'voice:set-default',
   voiceUploadSample: 'voice:upload-sample',
-  /** 用该音色合成一句固定文案试听（合成带当前服务商的凭据，不属于那家时返回中文错误） */
+  /** 用该音色合成一句固定文案试听（用该音色自己那家的接入，那条接入没配就返回中文错误） */
   voicePreview: 'voice:preview',
   /** 重命名音色 */
   voiceRename: 'voice:rename',

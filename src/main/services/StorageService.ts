@@ -8,6 +8,7 @@ import {
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   LLM_PROVIDER_META,
   parseAppConfig,
+  ttsProviderHasCredentials,
   type AppConfig,
   type EpisodeSummary,
   type KnowledgeFile,
@@ -27,22 +28,37 @@ import {
   type SpeechStatus,
   type Trigger,
   type LiveEvent,
+  type TtsConnection,
+  type TtsConnectionSafe,
   type Utterance,
   type UtteranceStatus,
   type ViewerProfile,
   type VoiceRecord
 } from '../../shared/types'
-import { connectionModel, getLlmProvider, isModelConnectionReady, secretFieldKeys } from './providers/registry'
+import {
+  connectionModel,
+  getLlmProvider,
+  isModelConnectionReady,
+  isTtsConnectionReady,
+  getTtsProvider,
+  secretFieldKeys,
+  ttsConnectionFields,
+  ttsSecretFieldKeys
+} from './providers/registry'
 
 /**
  * 持久化层：
- * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey / llm.apiKey 用 safeStorage 加密落盘）
- * - 话术池、人设卡等业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
+ * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey / llm.apiKey 等用 safeStorage 加密落盘）
+ * - 业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
+ * - 供应商接入（model_connections / tts_connections）：密钥字段在 params 里内联加密
  */
 
 type StoredValue = string | { __enc: string }
 
-/** 以 dot path 标记的敏感字段，写入前加密、读出后解密 */
+/**
+ * 以 dot path 标记的敏感字段，写入前加密、读出后解密。
+ * tts.accessToken / tts.apiKey 只剩迁移用（旧配置的凭据要能解密读出来才能搬进 tts_connections）。
+ */
 const SECRET_KEYS = [
   'tts.accessToken',
   'tts.apiKey',
@@ -380,9 +396,21 @@ export class StorageService {
     // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     this.ensureColumn('agents', 'model_connection_id', 'TEXT')
     this.ensureColumn('agents', 'model', "TEXT NOT NULL DEFAULT ''")
+    // 语音合成的供应商接入（设置 → 语音合成）：一条 = 一个服务商 + 一份凭据
+    // 音色自带服务商归属，合成时按音色的归属路由到对应接入，所以一家只能有一条
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tts_connections (
+        id TEXT PRIMARY KEY,
+        provider_id TEXT NOT NULL UNIQUE,
+        params TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
     this.migrateModelProfiles()
     this.migrateLegacyLlm()
     this.migratePersonaBrains()
+    this.migrateLegacyTts()
   }
 
   // ---------- 音色库（M8） ----------
@@ -526,12 +554,117 @@ export class StorageService {
     }
   }
 
+  // ---------- 语音合成的供应商接入（设置 → 语音合成） ----------
+
+  /** 读出全部接入（密钥字段已解密），按创建顺序 */
+  ttsConnectionList(): TtsConnection[] {
+    return this.db
+      .prepare('SELECT * FROM tts_connections ORDER BY created_at ASC')
+      .all()
+      .map((row) => this.toTtsConnection(row as Record<string, unknown>))
+  }
+
+  /** 按服务商取接入：合成时按音色的归属找它（一家一条，找不到 = 这家没配） */
+  ttsConnectionGetByProvider(providerId: string): TtsConnection | null {
+    const row = this.db.prepare('SELECT * FROM tts_connections WHERE provider_id = ?').get(providerId)
+    return row ? this.toTtsConnection(row as Record<string, unknown>) : null
+  }
+
+  /** 新建/更新接入（一家一条，按 provider UPSERT）。密钥字段留空表示不修改（沿用已保存的那个） */
+  ttsConnectionSave(input: {
+    providerId: string
+    params: Record<string, string | number | boolean>
+  }): TtsConnection {
+    const now = Date.now()
+    const existing = this.ttsConnectionGetByProvider(input.providerId)
+    const secrets = ttsSecretFieldKeys(input.providerId)
+    const params: TtsConnection['params'] = {}
+    for (const [key, value] of Object.entries(input.params ?? {})) {
+      if (secrets.includes(key) && String(value ?? '') === '' && existing) {
+        params[key] = existing.params[key] ?? ''
+        continue
+      }
+      params[key] = value
+    }
+    for (const key of secrets) {
+      if (!(key in params)) params[key] = existing?.params[key] ?? ''
+    }
+
+    this.db
+      .prepare(
+        `INSERT INTO tts_connections (id, provider_id, params, created_at, updated_at)
+         VALUES (@id, @providerId, @params, @createdAt, @updatedAt)
+         ON CONFLICT(provider_id) DO UPDATE SET params = @params, updated_at = @updatedAt`
+      )
+      .run({
+        id: existing?.id ?? `tts-${now.toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+        providerId: input.providerId,
+        params: JSON.stringify(this.encryptTtsParams(params, input.providerId)),
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now
+      })
+
+    return this.ttsConnectionGetByProvider(input.providerId) as TtsConnection
+  }
+
+  ttsConnectionDelete(providerId: string): void {
+    this.db.prepare('DELETE FROM tts_connections WHERE provider_id = ?').run(providerId)
+  }
+
+  /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
+  ttsConnectionListSafe(): TtsConnectionSafe[] {
+    return this.ttsConnectionList().map((connection) => {
+      const secrets = ttsSecretFieldKeys(connection.providerId)
+      const hasSecret = secrets.some((key) => String(connection.params[key] ?? '').trim().length > 0)
+      const params = { ...connection.params }
+      for (const key of secrets) params[key] = ''
+      return {
+        ...connection,
+        params,
+        hasSecret,
+        ready: isTtsConnectionReady(connection, getTtsProvider(connection.providerId))
+      }
+    })
+  }
+
+  private toTtsConnection(r: Record<string, unknown>): TtsConnection {
+    const providerId = str(r.provider_id) as TtsConnection['providerId']
+    return {
+      id: str(r.id),
+      providerId,
+      params: this.decryptTtsParams(r.params, providerId),
+      createdAt: num(r.created_at) ?? 0,
+      updatedAt: num(r.updated_at) ?? 0
+    }
+  }
+
   /** 密钥字段按 {"__enc": base64} 加密后内联进 params，与 config.json 用同一套写法 */
   private encryptParams(
     params: ModelConnection['params'],
     providerId: string
   ): Record<string, string | number | boolean | { __enc: string }> {
-    const secrets = secretFieldKeys(providerId)
+    return this.encryptSecrets(params, secretFieldKeys(providerId))
+  }
+
+  private decryptParams(raw: unknown, providerId: string): ModelConnection['params'] {
+    return this.decryptSecrets(raw, secretFieldKeys(providerId))
+  }
+
+  private encryptTtsParams(
+    params: TtsConnection['params'],
+    providerId: string
+  ): Record<string, string | number | boolean | { __enc: string }> {
+    return this.encryptSecrets(params, ttsSecretFieldKeys(providerId))
+  }
+
+  private decryptTtsParams(raw: unknown, providerId: string): TtsConnection['params'] {
+    return this.decryptSecrets(raw, ttsSecretFieldKeys(providerId))
+  }
+
+  private encryptSecrets(
+    params: Record<string, string | number | boolean>,
+    secrets: string[]
+  ): Record<string, string | number | boolean | { __enc: string }> {
     const out: Record<string, string | number | boolean | { __enc: string }> = {}
     const canEncrypt = safeStorage.isEncryptionAvailable()
     for (const [key, value] of Object.entries(params)) {
@@ -544,10 +677,9 @@ export class StorageService {
     return out
   }
 
-  private decryptParams(raw: unknown, providerId: string): ModelConnection['params'] {
+  private decryptSecrets(raw: unknown, secrets: string[]): Record<string, string | number | boolean> {
     const parsed = parseJson<Record<string, unknown>>(raw, {})
-    const secrets = secretFieldKeys(providerId)
-    const out: ModelConnection['params'] = {}
+    const out: Record<string, string | number | boolean> = {}
     for (const [key, value] of Object.entries(parsed)) {
       if (secrets.includes(key) && value && typeof value === 'object' && '__enc' in value) {
         try {
@@ -656,6 +788,27 @@ export class StorageService {
       models: [llm.model],
       defaultModel: llm.model
     })
+  }
+
+  /**
+   * 旧配置迁移：接入表为空且旧的 config.tts 填过凭据时，把**当前服务商那家**的凭据抽成一条接入。
+   * 平铺在 config.tts 里的凭据字段自此不再使用（保留字段：加密路径与这次迁移还要读它们），
+   * 所以老用户升级后声音照旧能出来，不会因为「凭据看起来空了」而哑掉。
+   */
+  private migrateLegacyTts(): void {
+    const row = this.db.prepare('SELECT COUNT(*) AS n FROM tts_connections').get() as
+      | { n?: unknown }
+      | undefined
+    if (Number(row?.n ?? 0) > 0) return
+    const { tts } = this.config
+    const providerId = tts.providerId
+    if (!ttsProviderHasCredentials(tts, providerId)) return
+    const legacy = tts as unknown as Record<string, string | number | boolean>
+    const params: Record<string, string | number | boolean> = {}
+    for (const field of ttsConnectionFields(providerId)) {
+      params[field.key] = legacy[field.key] ?? field.default ?? ''
+    }
+    this.ttsConnectionSave({ providerId, params })
   }
 
   /**

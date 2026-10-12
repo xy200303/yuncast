@@ -1,6 +1,6 @@
 import { TTS_PROVIDER_SHORT } from '../../../../shared/types'
 import type { TtsProviderManifest } from '../registry'
-import { TTS_PROVIDER_FIELD, voiceField } from './shared'
+import { voiceField } from './shared'
 
 /**
  * 阿里云百炼 Qwen-TTS：HTTP 返回音频地址（TtsService.synthesizeBailian）。
@@ -25,7 +25,6 @@ export const bailianTtsProvider: TtsProviderManifest = {
     formats: ['mp3', 'wav', 'pcm']
   },
   configFields: [
-    TTS_PROVIDER_FIELD,
     {
       key: 'apiKey',
       label: 'API Key',
@@ -72,7 +71,8 @@ export const bailianTtsProvider: TtsProviderManifest = {
       label: '语气指令 instruction（可选，≤100 字）',
       type: 'text',
       placeholder: '例如：语速稍快，语气热情，像直播间卖货',
-      wide: true
+      wide: true,
+      preference: true
     },
     {
       key: 'format',
@@ -83,7 +83,8 @@ export const bailianTtsProvider: TtsProviderManifest = {
         { value: 'mp3', label: 'MP3（兼容最好）' },
         { value: 'wav', label: 'WAV' },
         { value: 'pcm', label: 'PCM（流式推荐，免解码）' }
-      ]
+      ],
+      preference: true
     },
     {
       key: 'sampleRate',
@@ -94,7 +95,8 @@ export const bailianTtsProvider: TtsProviderManifest = {
         { value: '24000', label: '24000（推荐）' },
         { value: '16000', label: '16000' },
         { value: '48000', label: '48000' }
-      ]
+      ],
+      preference: true
     }
   ],
   voiceHint,

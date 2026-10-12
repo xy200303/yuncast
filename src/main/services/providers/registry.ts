@@ -1,4 +1,4 @@
-import type { ModelConnection, TtsProvider } from '../../../shared/types'
+import type { ModelConnection, TtsConnection, TtsProvider } from '../../../shared/types'
 import { piCloudProviders } from './llm/piCloud'
 import { localOpenAiProvider } from './llm/localOpenAi'
 import { volcanoTtsProvider } from './tts/volcano'
@@ -26,6 +26,11 @@ export interface FieldSpec {
   required?: boolean
   /** 占满整行（端点、业务空间 ID 这类长字段） */
   wide?: boolean
+  /**
+   * 语音合成专有：该字段属于「通用偏好」（存在 config.tts 上，两家共用），
+   * 而不是某条接入的凭据——设置页据此把字段分到「接入弹窗」与「通用偏好」两块
+   */
+  preference?: boolean
 }
 
 export interface LlmProviderDef {
@@ -129,7 +134,10 @@ export function isModelConnectionReady(
 
 /**
  * 语音合成服务商 manifest（与 LLM 侧同一套 FieldSpec）。
- * 设置页据此渲染表单，能力位决定「实时合成」开关能不能开、音色克隆入口显不显示：
+ *
+ * `configFields` 里带 `preference` 的是**通用偏好**（默认音色/语速/语气指令/输出格式，
+ * 存在 config.tts 上、两家共用）；其余是该服务商**接入**的凭据字段，存进 tts_connections。
+ * 能力位决定「实时合成」开关能不能开、音色克隆入口显不显示：
  *   streaming —— 该服务商是否已接入真流式（docs/06 附录：百炼 Qwen-TTS 已核实，火山待核对）
  *   clone     —— 是否支持音色克隆（docs/06：火山已实现、百炼复刻未实现）
  *   instruction / formats —— 合成请求里实际支持的参数与输出格式
@@ -152,7 +160,7 @@ export interface TtsProviderManifest {
     instruction: boolean
     formats: ('mp3' | 'wav' | 'pcm')[]
   }
-  /** 该服务商在 TtsConfig 里要填的字段（provider 由下拉承担，清单里保留它是为了完整覆盖） */
+  /** 该服务商的接入凭据字段 + 通用偏好字段（`preference: true` 的是后者） */
   configFields: FieldSpec[]
   /** 「默认音色」字段的说法 */
   voiceHint: { label: string; placeholder: string; help?: string }
@@ -167,4 +175,28 @@ export function listTtsProviders(): TtsProviderManifest[] {
 
 export function getTtsProvider(id: string): TtsProviderManifest | undefined {
   return TTS_PROVIDER_DEFS.find((def) => def.id === id)
+}
+
+/** 该服务商**接入**要填的字段（凭据）；通用偏好不在其中 */
+export function ttsConnectionFields(providerId: string): FieldSpec[] {
+  return (getTtsProvider(providerId)?.configFields ?? []).filter((field) => !field.preference)
+}
+
+/** provider 的密钥字段清单（落盘加密、编辑回填都用它） */
+export function ttsSecretFieldKeys(providerId: string): string[] {
+  return ttsConnectionFields(providerId)
+    .filter((field) => field.secret)
+    .map((field) => field.key)
+}
+
+/** 接入是否配得齐：manifest 里必填的凭据字段都有值（有这条接入 ≠ 配齐了） */
+export function isTtsConnectionReady(
+  connection: Pick<TtsConnection, 'params'>,
+  def: TtsProviderManifest | undefined
+): boolean {
+  if (!def) return false
+  return ttsConnectionFields(def.id).every((field) => {
+    if (!field.required) return true
+    return String(connection.params[field.key] ?? '').trim().length > 0
+  })
 }

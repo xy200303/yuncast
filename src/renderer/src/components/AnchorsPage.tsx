@@ -548,8 +548,8 @@ function PersonaEditorDialog({
   )
 }
 
-/** 从音色库挑选（只列训练完成的音色）；按归属分组，缺凭据的组照常可选并就地提示 */
-function VoicePickerDialog({
+/** 从音色库挑选（只列训练完成的音色）；按归属分组，没配接入的组照常可选并就地提示 */
+export function VoicePickerDialog({
   open,
   onOpenChange,
   onPick
@@ -559,10 +559,10 @@ function VoicePickerDialog({
   onPick: (voiceType: string) => void
 }) {
   const voices = useAppStore((s) => s.voices)
-  const tts = useAppStore((s) => s.config.tts)
+  const ttsConnections = useAppStore((s) => s.ttsConnections)
   const groups = groupVoicesByProvider(
     voices.filter((v) => v.status === 'ready' && v.voiceType),
-    tts
+    ttsConnections
   )
 
   return (
@@ -584,7 +584,7 @@ function VoicePickerDialog({
                     <ProviderIcon providerId={group.provider} size="sm" />
                     <span>
                       {group.label}
-                      {group.hasCredentials ? '' : '（缺凭据）'}
+                      {group.configured ? '' : '（未配置）'}
                     </span>
                   </div>
                   {group.voices.map((voice) => (

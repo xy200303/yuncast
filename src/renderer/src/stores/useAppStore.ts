@@ -5,7 +5,7 @@ import {
   DEFAULT_CONFIG,
   INITIAL_STREAM_STATS,
   llmReady,
-  ttsConfigured,
+  ttsProviderConfigured,
   type AgentStatus,
   type AppAccent,
   type AppConfig,
@@ -15,6 +15,7 @@ import {
   type PartialDeep,
   type Persona,
   type PoolSnapshot,
+  type TtsConnectionSafe,
   type VoiceRecord,
   type StreamStats
 } from '../../../shared/types'
@@ -93,12 +94,15 @@ interface AppState {
   llmProviders: LlmProviderManifest[]
   /** 语音合成服务商清单（设置 → 语音合成表单与音色分组都读它） */
   ttsProviders: TtsProviderManifest[]
+  /** 语音合成的供应商接入（一家一条）：音色提示、筛选标记都按「这条接入在不在」判断 */
+  ttsConnections: TtsConnectionSafe[]
   /** 当前主播卡（状态栏的 LLM 徽章按它选的接入与模型判定） */
   persona: Persona | null
   loadModelLibrary: () => Promise<void>
   /** 接入库变了就调它：当前主播卡引用的接入可能已失效，徽章要跟着变 */
   refreshPersona: () => Promise<void>
   setConnections: (connections: ModelConnectionSafe[]) => void
+  setTtsConnections: (connections: TtsConnectionSafe[]) => void
   setPersona: (persona: Persona | null) => void
 }
 
@@ -186,28 +190,34 @@ export const useAppStore = create<AppState>()((set, get) => ({
   connections: [],
   llmProviders: [],
   ttsProviders: [],
+  ttsConnections: [],
   persona: null,
   loadModelLibrary: async () => {
     if (!('api' in window)) return
-    const [connections, llmProviders, ttsProviders, persona] = await Promise.all([
+    const [connections, llmProviders, ttsProviders, ttsConnections, persona] = await Promise.all([
       window.api.model.list(),
       window.api.providers.llmList(),
       window.api.providers.ttsList(),
+      window.api.tts.connections(),
       window.api.persona.get()
     ])
-    set({ connections, llmProviders, ttsProviders, persona })
+    set({ connections, llmProviders, ttsProviders, ttsConnections, persona })
   },
   refreshPersona: async () => {
     if (!('api' in window)) return
     set({ persona: await window.api.persona.get() })
   },
   setConnections: (connections) => set({ connections }),
+  setTtsConnections: (ttsConnections) => set({ ttsConnections }),
   setPersona: (persona) => set({ persona })
 }))
 
-/** TTS 是否已配置（状态栏徽章用） */
-export function selectTtsReady(config: AppConfig): boolean {
-  return ttsConfigured(config.tts)
+/** TTS 是否已配置（状态栏徽章用）：默认服务商那条接入配齐了才算 */
+export function selectTtsReady(
+  config: AppConfig,
+  connections: TtsConnectionSafe[]
+): boolean {
+  return ttsProviderConfigured(connections, config.tts.providerId)
 }
 
 /** 当前主播卡的语言模型是否就绪（状态栏徽章用）：卡上选的接入与模型都可用才算 */

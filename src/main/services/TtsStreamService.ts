@@ -90,8 +90,8 @@ export class TtsStreamService {
     voiceId: string | undefined,
     signal: AbortSignal
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    // 百炼 Qwen-TTS 支持 SSE 真流式（接口已按官方文档核实）：直接用它的分块
-    if (this.tts.providerIsBailian()) {
+    // 路由到百炼的音色直接用它的 SSE 真流式（接口已按官方文档核实）
+    if (this.tts.providerForVoice(voiceId) === 'bailian') {
       yield* this.tts.synthesizeBailianStream(text, voiceId, signal)
       return
     }

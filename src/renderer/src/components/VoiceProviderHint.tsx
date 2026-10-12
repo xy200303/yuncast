@@ -1,28 +1,19 @@
-import { ttsProviderHasCredentials } from '../../../shared/types'
-import {
-  findCloneVoice,
-  missingCredentialHint,
-  voiceMatchesProvider,
-  voiceUnavailableError
-} from '../../../shared/voiceProvider'
+import { ttsProviderConfigured } from '../../../shared/types'
+import { findCloneVoice, missingConnectionHint } from '../../../shared/voiceProvider'
 import { useAppStore } from '../stores/useAppStore'
 
 /**
- * 音色归属提示：手打或已选的音色命中克隆音色时，就地说明它能不能合成——
- * 缺凭据说缺凭据，两家都配了只是当前没切过去就说清切哪家。
- * 系统音色（库里没记录）无法判断归属，不提示。
+ * 音色归属提示：手打或已选的音色命中克隆音色时，就地说明它能不能合成。
+ * 现在合成按音色归属路由到那家的接入，所以判断只剩一件事：**这条接入配没配**。
+ * 系统音色（库里没记录）归默认服务商，由开播预检负责提示。
  */
 export function VoiceProviderHint({ voiceId }: { voiceId: string }) {
   const voices = useAppStore((s) => s.voices)
-  const tts = useAppStore((s) => s.config.tts)
+  const connections = useAppStore((s) => s.ttsConnections)
 
   const clone = findCloneVoice(voices, voiceId)
   if (!clone) return null
-  const sameProvider = voiceMatchesProvider(clone, tts.provider)
-  if (sameProvider && ttsProviderHasCredentials(tts, clone.provider)) return null
-  const text = sameProvider
-    ? missingCredentialHint(clone.provider, tts)
-    : voiceUnavailableError(clone, tts)
+  if (ttsProviderConfigured(connections, clone.provider)) return null
 
-  return <p className="mt-1 text-xs text-destructive">{text}</p>
+  return <p className="mt-1 text-xs text-destructive">{missingConnectionHint(clone.provider)}</p>
 }

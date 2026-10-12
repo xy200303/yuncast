@@ -1,6 +1,6 @@
 import { TTS_PROVIDER_SHORT } from '../../../../shared/types'
 import type { TtsProviderManifest } from '../registry'
-import { TTS_PROVIDER_FIELD, voiceField } from './shared'
+import { voiceField } from './shared'
 
 /**
  * 火山引擎（豆包语音）语音合成：HTTP 一次性合成 mp3（TtsService.synthesizeVolcano）。
@@ -24,7 +24,6 @@ export const volcanoTtsProvider: TtsProviderManifest = {
     formats: ['mp3']
   },
   configFields: [
-    TTS_PROVIDER_FIELD,
     {
       key: 'appId',
       label: 'AppId',
@@ -55,7 +54,8 @@ export const volcanoTtsProvider: TtsProviderManifest = {
       type: 'number',
       default: 1,
       placeholder: '1.0',
-      help: '对应合成请求里的 speed_ratio，1.0 为原速'
+      help: '对应合成请求里的 speed_ratio，1.0 为原速',
+      preference: true
     }
   ],
   voiceHint,

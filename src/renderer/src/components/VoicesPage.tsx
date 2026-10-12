@@ -17,11 +17,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { audioEngine } from '../audio/engine'
 import { useAppStore } from '../stores/useAppStore'
-import { missingCredentialHint } from '../../../shared/voiceProvider'
+import { missingConnectionHint } from '../../../shared/voiceProvider'
 import {
   TTS_PROVIDERS,
   TTS_PROVIDER_SHORT,
-  ttsProviderHasCredentials,
+  ttsProviderConfigured,
   type TtsProvider,
   type VoiceRecord,
   type VoiceUsage
@@ -31,15 +31,16 @@ function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-/** 音色库筛选：全部 + 各服务商（带音色数量与凭据有无） */
+/** 音色库筛选：全部 + 各服务商（带音色数量与接入有无） */
 type VoiceFilter = 'all' | TtsProvider
 
 /** 音色库：克隆音色的管理、试听与引用关系。
  *  克隆在服务商侧异步训练，本页接收广播更新状态；「设为默认音色」写 config.tts.voiceId。
- *  各家音色都能看能选（主播 agent 声音无关，可以调度各家的音色），只按凭据有无提示。 */
+ *  各家音色都能看能选能合成（合成时按音色的归属路由到那家的接入），只提示那家的接入配没配。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
   const tts = useAppStore((s) => s.config.tts)
+  const ttsConnections = useAppStore((s) => s.ttsConnections)
   const defaultVoiceId = tts.voiceId
   const [filter, setFilter] = useState<VoiceFilter>('all')
   const [adding, setAdding] = useState(false)
@@ -95,7 +96,7 @@ export function VoicesPage() {
         <div className="ml-2 flex items-center gap-1">
           {filters.map((id) => {
             const label = id === 'all' ? '全部' : TTS_PROVIDER_SHORT[id]
-            const ready = id === 'all' || ttsProviderHasCredentials(tts, id)
+            const configured = id === 'all' || ttsProviderConfigured(ttsConnections, id)
             return (
               <Button
                 key={id}
@@ -107,8 +108,8 @@ export function VoicesPage() {
                 {label}
                 <span className="text-muted-foreground">{countOf(id)}</span>
                 {id !== 'all' && (
-                  <span className={ready ? 'text-muted-foreground' : 'text-destructive'}>
-                    {ready ? '已配凭据' : '缺凭据'}
+                  <span className={configured ? 'text-muted-foreground' : 'text-destructive'}>
+                    {configured ? '已配置' : '未配置'}
                   </span>
                 )}
               </Button>
@@ -140,7 +141,7 @@ export function VoicesPage() {
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {shown.map((voice) => {
               const isDefault = voice.status === 'ready' && voice.voiceType === defaultVoiceId
-              const hasCredentials = ttsProviderHasCredentials(tts, voice.provider)
+              const configured = ttsProviderConfigured(ttsConnections, voice.provider)
               const owner = TTS_PROVIDER_SHORT[voice.provider]
               const usage = usages[voice.id]
               return (
@@ -179,8 +180,8 @@ export function VoicesPage() {
                   <p className="text-xs text-muted-foreground">
                     {usage ? usageSummary(usage) : '统计引用关系…'}
                   </p>
-                  {!hasCredentials && (
-                    <p className="text-xs text-destructive">{missingCredentialHint(voice.provider, tts)}</p>
+                  {!configured && (
+                    <p className="text-xs text-destructive">{missingConnectionHint(voice.provider)}</p>
                   )}
 
                   <div className="mt-auto flex flex-wrap justify-end gap-1.5 pt-1">
@@ -382,7 +383,7 @@ function NewVoiceDialog({
   onOpenChange: (open: boolean) => void
   onDone: () => void
 }) {
-  const tts = useAppStore((s) => s.config.tts)
+  const ttsConnections = useAppStore((s) => s.ttsConnections)
   const [provider, setProvider] = useState<TtsProvider>('volcano')
   const [name, setName] = useState('')
   const [samplePath, setSamplePath] = useState('')
@@ -488,7 +489,7 @@ function NewVoiceDialog({
 
         <div className="flex flex-col gap-3">
           <div>
-            <Label className="mb-1">服务商（复刻在它那边做，用它的凭据）</Label>
+            <Label className="mb-1">服务商（复刻在它那边做，用它的接入）</Label>
             <Select value={provider} onValueChange={(v) => setProvider(v as TtsProvider)}>
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -509,8 +510,8 @@ function NewVoiceDialog({
                 阿里云百炼音色复刻还没实现（接口核对中）：先选火山引擎
               </p>
             ) : (
-              !ttsProviderHasCredentials(tts, 'volcano') && (
-                <p className="mt-1 text-xs text-destructive">{missingCredentialHint('volcano', tts)}</p>
+              !ttsProviderConfigured(ttsConnections, 'volcano') && (
+                <p className="mt-1 text-xs text-destructive">{missingConnectionHint('volcano')}</p>
               )
             )}
           </div>

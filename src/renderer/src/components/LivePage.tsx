@@ -1,5 +1,18 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
-import { Clapperboard, Megaphone, MessageSquareText, OctagonAlert, Pause, Play, Radio, RadioTower, SlidersHorizontal, X } from 'lucide-react'
+import {
+  Clapperboard,
+  Loader2,
+  Megaphone,
+  MessageSquareText,
+  OctagonAlert,
+  Pause,
+  Play,
+  Radio,
+  RadioTower,
+  SlidersHorizontal,
+  Square,
+  X
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -7,6 +20,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Slider } from '@/components/ui/slider'
 import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -16,7 +30,14 @@ import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { playbackLoop } from '../audio/playbackLoop'
-import type { LiveComment, SpeechItem, SpeechLane, SpeechSourceKind, SpeechStatus } from '../../../shared/types'
+import type {
+  LiveComment,
+  LivePlan,
+  SpeechItem,
+  SpeechLane,
+  SpeechSourceKind,
+  SpeechStatus
+} from '../../../shared/types'
 
 const LANE_LABEL: Record<SpeechLane, string> = {
   interrupt: '打断',
@@ -96,7 +117,8 @@ export function LivePage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <Radio className="size-4 text-primary" />
         <h1 className="text-sm font-medium">直播台</h1>
-        <p className="text-xs text-muted-foreground">话术池 · 提词器</p>
+        {/* 唯一开播入口：选场次 → 启动场次（docs/07 §8.5） */}
+        <PlanLauncher />
         <div className="ml-auto flex items-center gap-3">
           <StreamIndicator />
           {/* 主输出电平 */}
@@ -210,6 +232,107 @@ export function LivePage() {
           <ControlPanel />
         </aside>
       </div>
+    </div>
+  )
+}
+
+/**
+ * 场次入口：选场次 + 启动/停止场次（唯一开播入口）。
+ * 最小版：加载场次（写 activePlanId）+ 启动主播 Agent；预检弹窗与话术库装载是后续里程碑。
+ */
+function PlanLauncher() {
+  const agent = useAppStore((s) => s.agent)
+  const activePlanId = useAppStore((s) => s.config.live.activePlanId)
+  const [plans, setPlans] = useState<LivePlan[]>([])
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    void window.api.plan.list().then(setPlans)
+  }, [])
+
+  const running = agent.state === 'running' || agent.state === 'starting'
+  const activePlan = plans.find((p) => p.id === activePlanId) ?? null
+
+  const switchPlan = async (id: string): Promise<void> => {
+    await window.api.plan.setActive(id)
+    await useAppStore.getState().loadConfig()
+    const plan = plans.find((p) => p.id === id)
+    toast.success(`已切换到场次：${plan?.name ?? ''}`, {
+      description: running ? '结构性变更下次开播生效' : undefined
+    })
+  }
+
+  const start = async (): Promise<void> => {
+    if (busy) return
+    if (!activePlanId) {
+      toast.warning('先选一个场次', { description: '场次决定这场用什么人设、剧本与话术' })
+      return
+    }
+    setBusy(true)
+    try {
+      // 最小版：加载场次（已是 active）→ 启动主播会话
+      const result = await window.api.agent.start()
+      if (result.ok) {
+        toast.success(`场次已启动：${activePlan?.name ?? ''}`, { description: '开场话术正在入池' })
+      } else {
+        toast.error('启动失败', { description: result.error })
+      }
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const stop = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    try {
+      await window.api.agent.stop()
+      toast.message('场次已停止', { description: '池里的存货会继续播完' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Select
+        value={activePlanId || undefined}
+        onValueChange={(v) => void switchPlan(v)}
+        disabled={running}
+      >
+        <SelectTrigger size="sm" className="w-48">
+          <SelectValue placeholder="选择场次" />
+        </SelectTrigger>
+        <SelectContent>
+          {plans.length === 0 && (
+            <SelectItem value="__none" disabled>
+              还没有场次（到「场次」页新建）
+            </SelectItem>
+          )}
+          {plans.map((plan) => (
+            <SelectItem key={plan.id} value={plan.id}>
+              {plan.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Button
+        size="sm"
+        variant={running ? 'secondary' : 'default'}
+        disabled={busy}
+        onClick={() => void (running ? stop() : start())}
+        title={running ? '停止本场（池内存货播完）' : '加载场次并启动主播'}
+      >
+        {busy ? <Loader2 className="animate-spin" /> : running ? <Square /> : <Play />}
+        {running ? '停止场次' : '启动场次'}
+      </Button>
+
+      {activePlan && !running && (
+        <span className="hidden text-xs text-muted-foreground lg:inline">
+          {activePlan.theme || '（未设主题）'}
+        </span>
+      )}
     </div>
   )
 }

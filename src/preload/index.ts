@@ -32,13 +32,14 @@ import type {
   Utterance,
   UtteranceInput,
   VoiceRecord,
+  VoiceUsage,
   StreamStats,
   Trigger,
   TriggerInput,
   ViewerProfile
 } from '../shared/types'
 import type { GenerationProgress } from '../main/services/GenerationService'
-import type { LlmProviderManifest } from '../main/services/providers/registry'
+import type { LlmProviderManifest, TtsProviderManifest } from '../main/services/providers/registry'
 
 /**
  * 渲染进程唯一可见的 API 白名单。
@@ -107,6 +108,8 @@ const api = {
   providers: {
     /** 服务商能力与配置字段（表单由 manifest 驱动渲染） */
     llmList: () => ipcRenderer.invoke(IPC.providersLlmList) as Promise<LlmProviderManifest[]>,
+    /** 语音合成服务商清单（设置页表单 + 音色选择的分组与能力位） */
+    ttsList: () => ipcRenderer.invoke(IPC.providersTtsList) as Promise<TtsProviderManifest[]>,
     /** 该服务商真实可用的模型 id（模型列表的下拉建议） */
     models: (providerId: string) =>
       ipcRenderer.invoke(IPC.providersModels, providerId) as Promise<string[]>
@@ -188,6 +191,14 @@ const api = {
       ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,
     setDefault: (id: string) =>
       ipcRenderer.invoke(IPC.voiceSetDefault, id) as Promise<{ ok: boolean; error?: string }>,
+    rename: (id: string, name: string) =>
+      ipcRenderer.invoke(IPC.voiceRename, id, name) as Promise<{ ok: boolean; error?: string }>,
+    /** 试听：合成一句固定文案并返回缓存路径（用 audioEngine.playTts 播放） */
+    preview: (id: string) =>
+      ipcRenderer.invoke(IPC.voicePreview, id) as Promise<
+        { ok: true; audioPath: string } | { ok: false; error: string }
+      >,
+    usage: (id: string) => ipcRenderer.invoke(IPC.voiceUsage, id) as Promise<VoiceUsage>,
     uploadSample: (bytes: Uint8Array, ext: string) =>
       ipcRenderer.invoke(IPC.voiceUploadSample, bytes, ext) as Promise<
         { ok: true; path: string } | { ok: false; error: string }

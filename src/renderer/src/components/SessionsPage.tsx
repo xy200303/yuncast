@@ -27,11 +27,13 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '../stores/useAppStore'
+import { ProviderIcon } from '@/components/ProviderIcon'
+import { groupVoicesByProvider } from '../lib/voice'
+import { ttsProviderLabel, useAppStore } from '../stores/useAppStore'
 import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
@@ -289,6 +291,8 @@ function PlanDialog({
     knowledgeScope: plan?.knowledgeScope ?? DEFAULT_PLAN_KNOWLEDGE_SCOPE,
     voiceId: plan?.voiceId ?? ''
   })
+  const currentProvider = useAppStore((s) => s.config.tts.provider)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
   const [busy, setBusy] = useState(false)
 
   const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
@@ -414,15 +418,33 @@ function PlanDialog({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">不覆盖</SelectItem>
-                  {voices
-                    .filter((v) => v.status === 'ready')
-                    .map((voice) => (
-                      <SelectItem key={voice.id} value={voice.voiceType}>
-                        {voice.name}
-                      </SelectItem>
-                    ))}
+                  {groupVoicesByProvider(
+                    voices.filter((v) => v.status === 'ready' && v.voiceType),
+                    currentProvider
+                  ).map((group) =>
+                    group.voices.length === 0 ? null : (
+                      <SelectGroup key={group.provider}>
+                        <SelectLabel className="flex items-center gap-2">
+                          <ProviderIcon providerId={group.provider} size="sm" />
+                          <span>
+                            {group.label}
+                            {group.usable ? '' : ' · 属于另一家，当前用不了'}
+                          </span>
+                        </SelectLabel>
+                        {group.voices.map((voice) => (
+                          <SelectItem key={voice.id} value={voice.voiceType} disabled={!group.usable}>
+                            {voice.name}
+                            {group.usable ? '' : `（属于${group.label}）`}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    )
+                  )}
                 </SelectContent>
               </Select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                只列当前语音合成服务商（{ttsProviderLabel(ttsProviders, currentProvider)}）的克隆音色：跨平台克隆的音色合成不了
+              </p>
             </div>
           </div>
 

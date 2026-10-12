@@ -4,7 +4,10 @@ import { basename, extname, join } from 'node:path'
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { StorageService } from './StorageService'
-import type { VoiceRecord } from '../../shared/types'
+import type { TtsService } from './TtsService'
+import { getTtsProvider } from './providers/registry'
+import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../shared/types'
+import { cloneVoiceMismatchError, voiceMatchesProvider } from '../../shared/voiceProvider'
 
 /**
  * 音色库 / 声音克隆（M8）。
@@ -37,6 +40,7 @@ export class VoiceService {
 
   constructor(
     private readonly storage: StorageService,
+    private readonly tts: TtsService,
     private readonly onChanged: (voices: VoiceRecord[]) => void
   ) {}
 
@@ -66,14 +70,18 @@ export class VoiceService {
     const name = input.name.trim()
     if (!name) return { ok: false, error: '请填写音色名称' }
     if (!input.authorized) return { ok: false, error: '请先勾选「已获得录音人授权」' }
-    if (!input.samplePath || !existsSync(input.samplePath)) {
-      return { ok: false, error: '样本文件不存在，请重新上传或录制' }
-    }
 
     const tts = this.storage.getConfig().tts
-    if (tts.provider === 'bailian') {
-      // TODO(核对后实现)：百炼 CosyVoice 音色复刻（enrollment）——需确认是否支持本地音频直传
-      return { ok: false, error: '百炼音色复刻尚未接入，当前请使用火山引擎（设置 → 语音合成）' }
+    // 能力位驱动：只有火山实现了复刻（百炼 CosyVoice 复刻待核对是否支持本地音频直传，见 docs/06）
+    // 放在样本校验之前：不能克隆的理由先于「样本没传」给出来
+    if (!getTtsProvider(tts.provider)?.capabilities.clone || tts.provider !== 'volcano') {
+      return {
+        ok: false,
+        error: `${TTS_PROVIDER_SHORT[tts.provider]}的音色复刻还没实现（接口核对中），当前只有火山引擎支持克隆（设置 → 语音合成）`
+      }
+    }
+    if (!input.samplePath || !existsSync(input.samplePath)) {
+      return { ok: false, error: '样本文件不存在，请重新上传或录制' }
     }
     if (!tts.appId || !tts.accessToken) {
       return { ok: false, error: '请先在「设置 → 语音合成」配置火山 AppId / Access Token' }
@@ -245,6 +253,74 @@ export class VoiceService {
     if (!voice) return
     this.storage.saveVoice({ ...voice, status: 'failed', error, updatedAt: Date.now() })
     this.emitChanged()
+  }
+
+  /** 重命名（只改显示名，平台侧的复刻音色标识不动） */
+  rename(id: string, name: string): { ok: boolean; error?: string } {
+    const voice = this.storage.listVoices().find((v) => v.id === id)
+    if (!voice) return { ok: false, error: '音色不存在' }
+    const next = name.trim()
+    if (!next) return { ok: false, error: '音色名称不能为空' }
+    this.storage.saveVoice({ ...voice, name: next, updatedAt: Date.now() })
+    this.emitChanged()
+    return { ok: true }
+  }
+
+  /** 谁在用这个音色：人设卡（默认音色 / 角色表）、场次、话术库条目 */
+  usage(id: string): VoiceUsage {
+    const empty: VoiceUsage = { personas: [], plans: [], utteranceCount: 0, utteranceSamples: [] }
+    const voiceType = this.storage.listVoices().find((v) => v.id === id)?.voiceType.trim() ?? ''
+    if (!voiceType) return empty
+
+    const personas = this.storage.personaList().flatMap((persona) => {
+      const refs: VoiceUsage['personas'] = []
+      if (persona.voiceId === voiceType) refs.push({ id: persona.id, name: persona.name, role: '' })
+      for (const role of persona.roles) {
+        if (role.voiceId === voiceType) refs.push({ id: persona.id, name: persona.name, role: role.name })
+      }
+      return refs
+    })
+
+    const plans: VoiceUsage['plans'] = []
+    let utteranceCount = 0
+    const utteranceSamples: VoiceUsage['utteranceSamples'] = []
+    for (const plan of this.storage.planList()) {
+      if (plan.voiceId === voiceType) plans.push({ id: plan.id, name: plan.name })
+      for (const utterance of this.storage.utteranceList(plan.id)) {
+        if (utterance.voiceId !== voiceType) continue
+        utteranceCount += 1
+        if (utteranceSamples.length < 3) {
+          utteranceSamples.push({ id: utterance.id, planName: plan.name, text: utterance.text })
+        }
+      }
+    }
+    return { personas, plans, utteranceCount, utteranceSamples }
+  }
+
+  /**
+   * 试听：用该音色合成一句固定文案，返回缓存文件路径（渲染层 media:// 播放）。
+   * 只允许试听属于当前 TTS 服务商的音色——跨平台的克隆音色合成不了。
+   */
+  async preview(id: string): Promise<{ ok: true; audioPath: string } | { ok: false; error: string }> {
+    const voice = this.storage.listVoices().find((v) => v.id === id)
+    if (!voice) return { ok: false, error: '音色不存在' }
+    if (voice.status !== 'ready' || !voice.voiceType) {
+      return { ok: false, error: '该音色还没训练完成，暂时没法试听' }
+    }
+    const provider = this.storage.getConfig().tts.provider
+    if (!voiceMatchesProvider(voice, provider)) {
+      return { ok: false, error: cloneVoiceMismatchError(voice, provider) }
+    }
+    try {
+      const audioPath = await this.tts.synthesize(
+        `voice-preview-${voice.id}`,
+        `你好，我是${voice.name}，欢迎来到直播间。`,
+        voice.voiceType
+      )
+      return { ok: true, audioPath }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
   }
 
   private emitChanged(): void {

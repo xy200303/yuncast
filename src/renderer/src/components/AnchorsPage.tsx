@@ -13,6 +13,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
+import { VoiceProviderHint } from '@/components/VoiceProviderHint'
+import { groupVoicesByProvider } from '../lib/voice'
 import {
   effectiveModel,
   selectLlmReady,
@@ -206,6 +208,7 @@ export function AnchorsPage() {
                     大脑：{brainLabelOf(connections, item)} · 嗓子：
                     {item.voiceId || 'TTS 默认'}
                   </p>
+                  <VoiceProviderHint voiceId={item.voiceId} />
                   <div className="flex flex-wrap gap-1">
                     {item.roles.slice(0, 2).map((role) => (
                       <Badge key={role.name} variant="outline" className="text-[11px]">
@@ -335,6 +338,7 @@ function PersonaEditorDialog({
                 onChange={(e) => patch({ voiceId: e.target.value })}
                 placeholder="voiceId"
               />
+              <VoiceProviderHint voiceId={form.voiceId} />
             </div>
           </div>
 
@@ -430,39 +434,42 @@ function PersonaEditorDialog({
             ) : (
               <div className="flex flex-col gap-2">
                 {form.roles.map((role, i) => (
-                  <div key={i} className="flex items-center gap-1.5">
-                    <Input
-                      value={role.name}
-                      onChange={(e) =>
-                        patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)) })
-                      }
-                      placeholder="角色名"
-                      className="h-7 w-28 shrink-0 text-xs"
-                    />
-                    <Input
-                      value={role.voiceId}
-                      onChange={(e) =>
-                        patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, voiceId: e.target.value } : r)) })
-                      }
-                      placeholder="音色 voiceId"
-                      className="h-7 w-40 shrink-0 text-xs"
-                    />
-                    <Input
-                      value={role.style}
-                      onChange={(e) =>
-                        patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, style: e.target.value } : r)) })
-                      }
-                      placeholder="口吻提示，例如：活泼的捧哏小助理"
-                      className="h-7 min-w-0 flex-1 text-xs"
-                    />
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title="删除角色"
-                      onClick={() => patch({ roles: form.roles.filter((_, j) => j !== i) })}
-                    >
-                      ×
-                    </Button>
+                  <div key={i} className="flex flex-col gap-1">
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        value={role.name}
+                        onChange={(e) =>
+                          patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)) })
+                        }
+                        placeholder="角色名"
+                        className="h-7 w-28 shrink-0 text-xs"
+                      />
+                      <Input
+                        value={role.voiceId}
+                        onChange={(e) =>
+                          patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, voiceId: e.target.value } : r)) })
+                        }
+                        placeholder="音色 voiceId"
+                        className="h-7 w-40 shrink-0 text-xs"
+                      />
+                      <Input
+                        value={role.style}
+                        onChange={(e) =>
+                          patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, style: e.target.value } : r)) })
+                        }
+                        placeholder="口吻提示，例如：活泼的捧哏小助理"
+                        className="h-7 min-w-0 flex-1 text-xs"
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title="删除角色"
+                        onClick={() => patch({ roles: form.roles.filter((_, j) => j !== i) })}
+                      >
+                        ×
+                      </Button>
+                    </div>
+                    <VoiceProviderHint voiceId={role.voiceId} />
                   </div>
                 ))}
               </div>
@@ -541,7 +548,7 @@ function PersonaEditorDialog({
   )
 }
 
-/** 从音色库挑选（只列训练完成的音色） */
+/** 从音色库挑选（只列训练完成的音色）；按归属分组，不属于当前服务商的那组禁用 */
 function VoicePickerDialog({
   open,
   onOpenChange,
@@ -552,7 +559,11 @@ function VoicePickerDialog({
   onPick: (voiceType: string) => void
 }) {
   const voices = useAppStore((s) => s.voices)
-  const ready = voices.filter((v) => v.status === 'ready' && v.voiceType)
+  const currentProvider = useAppStore((s) => s.config.tts.provider)
+  const groups = groupVoicesByProvider(
+    voices.filter((v) => v.status === 'ready' && v.voiceType),
+    currentProvider
+  )
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -560,23 +571,39 @@ function VoicePickerDialog({
         <DialogHeader>
           <DialogTitle>从音色库选择</DialogTitle>
         </DialogHeader>
-        {ready.length === 0 ? (
+        {groups.every((group) => group.voices.length === 0) ? (
           <p className="text-sm text-muted-foreground">
             音色库还没有就绪的克隆音色。到「音色库」新建一个（训练完成后即可选）。
           </p>
         ) : (
-          <div className="flex flex-col gap-1">
-            {ready.map((voice) => (
-              <button
-                key={voice.id}
-                type="button"
-                className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent"
-                onClick={() => onPick(voice.voiceType)}
-              >
-                <span className="min-w-0 truncate">{voice.name}</span>
-                <Badge variant="outline">{voice.voiceType.slice(0, 12)}…</Badge>
-              </button>
-            ))}
+          <div className="flex flex-col gap-3">
+            {groups.map((group) =>
+              group.voices.length === 0 ? null : (
+                <div key={group.provider} className="flex flex-col gap-1">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <ProviderIcon providerId={group.provider} size="sm" />
+                    <span>{group.label}</span>
+                    {!group.usable && <span>属于{group.label}，当前用不了</span>}
+                  </div>
+                  {group.voices.map((voice) => (
+                    <button
+                      key={voice.id}
+                      type="button"
+                      disabled={!group.usable}
+                      title={group.usable ? undefined : `属于${group.label}，当前语音合成用的是另一家，合成不了`}
+                      className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-card"
+                      onClick={() => onPick(voice.voiceType)}
+                    >
+                      <span className="min-w-0 truncate">
+                        {voice.name}
+                        {group.usable ? '' : `（属于${group.label}）`}
+                      </span>
+                      <Badge variant="outline">{voice.voiceType.slice(0, 12)}…</Badge>
+                    </button>
+                  ))}
+                </div>
+              )
+            )}
           </div>
         )}
         <DialogFooter>

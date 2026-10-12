@@ -47,7 +47,7 @@ import { UtteranceService } from './services/UtteranceService'
 import { GenerationService, type GenerationProgress } from './services/GenerationService'
 import { LaunchService } from './services/LaunchService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
-import { getLlmProvider, listLlmProviders } from './services/providers/registry'
+import { getLlmProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
 import { audioMixer } from './services/stream/ffmpeg/mixer'
 
 // 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
@@ -379,6 +379,7 @@ function registerIpc(
     return testModelConnection(connection, model)
   })
   ipcMain.handle(IPC.providersLlmList, () => listLlmProviders())
+  ipcMain.handle(IPC.providersTtsList, () => listTtsProviders())
   ipcMain.handle(IPC.providersModels, (_e, providerId: string) => listProviderModels(String(providerId ?? '')))
 
   // ---------- 主播 Agent ----------
@@ -467,6 +468,17 @@ function registerIpc(
   )
   ipcMain.handle(IPC.voiceRemove, (_e, id: string) => voiceSvc?.remove(id) ?? { ok: false, error: '音色服务未初始化' })
   ipcMain.handle(IPC.voiceSetDefault, (_e, id: string) => voiceSvc?.setDefault(id) ?? { ok: false, error: '音色服务未初始化' })
+  ipcMain.handle(IPC.voiceRename, (_e, id: string, name: string) =>
+    voiceSvc?.rename(String(id ?? ''), String(name ?? '')) ?? { ok: false, error: '音色服务未初始化' }
+  )
+  ipcMain.handle(
+    IPC.voicePreview,
+    (_e, id: string) =>
+      voiceSvc?.preview(String(id ?? '')) ?? { ok: false as const, error: '音色服务未初始化' }
+  )
+  ipcMain.handle(IPC.voiceUsage, (_e, id: string) =>
+    voiceSvc?.usage(String(id ?? '')) ?? { personas: [], plans: [], utteranceCount: 0, utteranceSamples: [] }
+  )
   ipcMain.handle(IPC.voiceUploadSample, async (_e, bytes: Uint8Array, ext: string) => {
     if (!voiceSvc) return { ok: false, error: '音色服务未初始化' }
     const path = await voiceSvc.saveSample(bytes, ext)
@@ -677,8 +689,8 @@ if (!single) {
     // 端口改了重连
     storage.onConfigChange(() => connector?.restart())
 
-    // 音色库（M8 声音克隆）：训练状态变化推给渲染进程
-    voiceSvc = new VoiceService(storage, broadcastVoices)
+    // 音色库（M8 声音克隆）：训练状态变化推给渲染进程；试听要走 TTS 合成，所以带上 tts
+    voiceSvc = new VoiceService(storage, tts, broadcastVoices)
 
     // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）+ 场次启动（§8.5）
     const utterances = new UtteranceService(storage, tts, persona)

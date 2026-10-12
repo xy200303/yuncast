@@ -21,6 +21,12 @@ export const APP_ACCENT_META: Record<AppAccent, { label: string; light: string; 
 export const TTS_PROVIDERS = ['volcano', 'bailian'] as const
 export type TtsProvider = (typeof TTS_PROVIDERS)[number]
 
+/** 服务商短名（错误提示与音色分组标题用）；完整名见 TTS provider manifest 的 label */
+export const TTS_PROVIDER_SHORT: Record<TtsProvider, string> = {
+  volcano: '火山引擎',
+  bailian: '阿里云百炼'
+}
+
 export interface TtsConfig {
   provider: TtsProvider
   /** 火山引擎：应用 AppId */
@@ -596,6 +602,24 @@ export interface VoiceRecord {
   authorizedAt: number | null
   createdAt: number
   updatedAt: number
+}
+
+/** 一条音色被谁引用（人设卡默认音色 / 角色表） */
+export interface VoiceUsagePersona {
+  id: string
+  name: string
+  /** 空 = 用在这张卡的默认音色上；否则是角色名 */
+  role: string
+}
+
+/** 音色的引用关系（`voice:usage`）：删除前先看谁在用，别删掉正在用的那个 */
+export interface VoiceUsage {
+  personas: VoiceUsagePersona[]
+  plans: { id: string; name: string }[]
+  /** 话术库条目数（可能很多，只给计数） */
+  utteranceCount: number
+  /** 前几条话术示例（让人认出是哪批话术） */
+  utteranceSamples: { id: string; planName: string; text: string }[]
 }
 
 // ---------- 知识库（docs/01 §4） ----------

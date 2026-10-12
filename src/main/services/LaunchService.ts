@@ -1,5 +1,6 @@
 import {
   ttsConfigured,
+  TTS_PROVIDER_SHORT,
   type LaunchResult,
   type PreflightItem
 } from '../../shared/types'
@@ -13,6 +14,7 @@ import type { StreamService } from './stream/StreamService'
 import type { UtteranceService } from './UtteranceService'
 import { resolveModelForPersona } from './llmModel'
 import { getLlmProvider } from './providers/registry'
+import { findCloneVoice, voiceMatchesProvider } from '../../shared/voiceProvider'
 
 /** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
 const LIBRARY_SOURCE_ID = 'library'
@@ -127,6 +129,25 @@ export class LaunchService {
         items.push({ level: 'warn', label: `上次测试发音在 ${hours} 小时前`, detail: '凭据可能已失效，建议重测' })
       } else {
         items.push({ level: 'ok', label: '发音测试通过（24 小时内）' })
+      }
+    }
+
+    // ②b 音色与服务商匹配：本场生效音色 = 场次 > 人设 > TTS 默认（显式/角色的音色逐条解析，这里校验到不了）
+    const effectiveVoice = (plan.voiceId || persona?.voiceId || cfg.tts.voiceId).trim()
+    if (effectiveVoice) {
+      const clone = findCloneVoice(this.storage.listVoices(), effectiveVoice)
+      if (clone && !voiceMatchesProvider(clone, cfg.tts.provider)) {
+        const owner = TTS_PROVIDER_SHORT[clone.provider]
+        items.push({
+          level: 'block',
+          label: `音色与服务商不匹配：音色「${clone.name}」是${owner}克隆的，当前语音合成用的是${TTS_PROVIDER_SHORT[cfg.tts.provider]}`,
+          detail: `到设置 → 语音合成切回${owner}，或到主播团 / 场次页把音色换成当前服务商的那个（跨平台克隆的音色合成不了）`
+        })
+      } else {
+        items.push({
+          level: 'ok',
+          label: `音色：${effectiveVoice}（${clone ? TTS_PROVIDER_SHORT[clone.provider] : '系统音色'}）`
+        })
       }
     }
 

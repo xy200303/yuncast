@@ -1,11 +1,13 @@
-import type { ModelConnection } from '../../../shared/types'
+import type { ModelConnection, TtsProvider } from '../../../shared/types'
 import { piCloudProviders } from './llm/piCloud'
 import { localOpenAiProvider } from './llm/localOpenAi'
+import { volcanoTtsProvider } from './tts/volcano'
+import { bailianTtsProvider } from './tts/bailian'
 
 /**
- * 语言模型服务商注册表（docs/09 §2、§3）。
+ * 服务商注册表：语言模型（docs/09 §2、§3）与语音合成两侧共用同一套声明方式。
  * 能力与配置字段由适配器声明，设置页据此渲染表单——加一家服务商 = 新增一个适配器文件，
- * 不动主流程、不动设置页。只有本文件 import 适配器；业务代码只依赖 LlmProviderDef。
+ * 不动主流程、不动设置页。只有本文件 import 适配器；业务代码只依赖定义类型。
  */
 
 export interface FieldSpec {
@@ -20,6 +22,10 @@ export interface FieldSpec {
   secret?: boolean
   /** 可空的密钥字段（如本地服务的 apiKey）：留空也算配好 */
   optional?: boolean
+  /** 必填字段：缺了就是「还没配齐」（UI 用它列出缺哪几项） */
+  required?: boolean
+  /** 占满整行（端点、业务空间 ID 这类长字段） */
+  wide?: boolean
 }
 
 export interface LlmProviderDef {
@@ -119,4 +125,46 @@ export function isModelConnectionReady(
     if (!field.secret || field.optional) return true
     return String(connection.params[field.key] ?? '').trim().length > 0
   })
+}
+
+/**
+ * 语音合成服务商 manifest（与 LLM 侧同一套 FieldSpec）。
+ * 设置页据此渲染表单，能力位决定「实时合成」开关能不能开、音色克隆入口显不显示：
+ *   streaming —— 该服务商是否已接入真流式（docs/06 附录：百炼 Qwen-TTS 已核实，火山待核对）
+ *   clone     —— 是否支持音色克隆（docs/06：火山已实现、百炼复刻未实现）
+ *   instruction / formats —— 合成请求里实际支持的参数与输出格式
+ * 纯数据，可直接经 IPC 交给渲染层。
+ */
+export interface TtsProviderManifest {
+  id: TtsProvider
+  /** 完整名（设置页下拉与服务商标记） */
+  label: string
+  /** 渲染层图标键，见 ProviderIcon */
+  icon: string
+  /** 一句话说明，UI 里做副标题 */
+  note: string
+  capabilities: {
+    /** 真流式（边合成边出） */
+    streaming: boolean
+    /** 音色克隆 */
+    clone: boolean
+    /** 语气指令 */
+    instruction: boolean
+    formats: ('mp3' | 'wav' | 'pcm')[]
+  }
+  /** 该服务商在 TtsConfig 里要填的字段（provider 由下拉承担，清单里保留它是为了完整覆盖） */
+  configFields: FieldSpec[]
+  /** 「默认音色」字段的说法 */
+  voiceHint: { label: string; placeholder: string; help?: string }
+  links: { label: string; url: string }[]
+}
+
+const TTS_PROVIDER_DEFS: TtsProviderManifest[] = [volcanoTtsProvider, bailianTtsProvider]
+
+export function listTtsProviders(): TtsProviderManifest[] {
+  return TTS_PROVIDER_DEFS
+}
+
+export function getTtsProvider(id: string): TtsProviderManifest | undefined {
+  return TTS_PROVIDER_DEFS.find((def) => def.id === id)
 }

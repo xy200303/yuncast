@@ -34,6 +34,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
+import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
@@ -1162,6 +1163,7 @@ function ManualBroadcastDialog({
               className="h-7 text-xs"
             />
           </div>
+          <VoiceProviderHint voiceId={voice} />
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>

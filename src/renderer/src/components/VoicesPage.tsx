@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AudioLines, Loader2, Mic, Square, Trash2, Upload } from 'lucide-react'
+import { AudioLines, Loader2, Mic, Pencil, Play, Square, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -13,45 +13,94 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Checkbox } from '@/components/ui/checkbox'
-import { useAppStore } from '../stores/useAppStore'
-import type { VoiceRecord } from '../../../shared/types'
-
-const PROVIDER_LABEL: Record<VoiceRecord['provider'], string> = {
-  volcano: '火山引擎',
-  bailian: '阿里云百炼'
-}
+import { ProviderIcon } from '@/components/ProviderIcon'
+import { audioEngine } from '../audio/engine'
+import { ttsProviderLabel, useAppStore } from '../stores/useAppStore'
+import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../../shared/types'
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
-/** 音色库：克隆音色的管理与训练状态。
- *  克隆在服务商侧异步训练，本页轮询/接收广播更新状态；「设为默认音色」写 config.tts.voiceId。 */
+/** 音色库：克隆音色的管理、试听与引用关系。
+ *  克隆在服务商侧异步训练，本页接收广播更新状态；「设为默认音色」写 config.tts.voiceId。
+ *  跨平台约束：不属于当前 TTS 服务商的克隆音色合成不了，所以试听禁用、卡片注明归属。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
   const defaultVoiceId = useAppStore((s) => s.config.tts.voiceId)
+  const currentProvider = useAppStore((s) => s.config.tts.provider)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
   const [adding, setAdding] = useState(false)
   const [deleting, setDeleting] = useState<VoiceRecord | null>(null)
+  const [renaming, setRenaming] = useState<VoiceRecord | null>(null)
+  /** 每个音色被谁用（卡片摘要 + 删除确认） */
+  const [usages, setUsages] = useState<Record<string, VoiceUsage>>({})
+  /** 正在试听的音色 id（播放期间按钮转圈） */
+  const [previewing, setPreviewing] = useState('')
 
   const reload = () => void window.api.voice.list().then(useAppStore.getState().setVoices)
+
   useEffect(reload, [])
+
+  useEffect(() => {
+    let cancelled = false
+    void Promise.all(
+      voices.map(async (voice) => [voice.id, await window.api.voice.usage(voice.id)] as const)
+    ).then((entries) => {
+      if (!cancelled) setUsages(Object.fromEntries(entries))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [voices])
+
+  const currentLabel = ttsProviderLabel(ttsProviders, currentProvider)
+  const canClone = ttsProviders.find((item) => item.id === currentProvider)?.capabilities.clone ?? false
+
+  const preview = (voice: VoiceRecord) => {
+    if (previewing) return
+    setPreviewing(voice.id)
+    void window.api.voice
+      .preview(voice.id)
+      .then(async (result) => {
+        if (!result.ok) {
+          toast.error('试听失败', { description: result.error })
+          return
+        }
+        await audioEngine.playTts(result.audioPath)
+      })
+      .finally(() => setPreviewing(''))
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <AudioLines className="size-4 text-primary" />
         <h1 className="text-sm font-medium">音色库</h1>
-        <p className="text-xs text-muted-foreground">克隆音色管理 · 训练完成后可设为默认或角色音色</p>
+        <p className="text-xs text-muted-foreground">
+          克隆音色管理 · 只能用它所属的服务商合成（当前：{currentLabel}）
+        </p>
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={reload}>
             刷新
           </Button>
-          <Button size="sm" onClick={() => setAdding(true)}>
+          <Button
+            size="sm"
+            disabled={!canClone}
+            title={canClone ? undefined : `${currentLabel}音色复刻还没实现（接口核对中）`}
+            onClick={() => setAdding(true)}
+          >
             <Mic />
             新建音色
           </Button>
         </div>
       </header>
+
+      {!canClone && (
+        <p className="shrink-0 border-b bg-muted/40 px-4 py-2 text-xs text-muted-foreground">
+          {currentLabel}音色复刻还没实现（接口核对中）：要新建克隆音色，先到设置 → 语音合成切到火山引擎
+        </p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
         {voices.length === 0 ? (
@@ -63,13 +112,19 @@ export function VoicesPage() {
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {voices.map((voice) => {
               const isDefault = voice.status === 'ready' && voice.voiceType === defaultVoiceId
+              const usable = voice.provider === currentProvider
+              const owner = TTS_PROVIDER_SHORT[voice.provider]
+              const usage = usages[voice.id]
               return (
                 <div key={voice.id} className="flex flex-col gap-2 rounded-lg border bg-card px-4 py-3">
                   <div className="flex items-center justify-between gap-2">
                     <span className="min-w-0 truncate text-[13px] font-medium">{voice.name}</span>
                     <div className="flex shrink-0 items-center gap-1.5">
                       {isDefault && <Badge variant="secondary">默认</Badge>}
-                      <Badge variant="outline">{PROVIDER_LABEL[voice.provider]}</Badge>
+                      <Badge variant="outline" className="gap-1">
+                        <ProviderIcon providerId={voice.provider} size="sm" />
+                        {owner}
+                      </Badge>
                     </div>
                   </div>
 
@@ -93,12 +148,34 @@ export function VoicesPage() {
                   {voice.status === 'failed' && voice.error && (
                     <p className="text-xs text-destructive">{voice.error}</p>
                   )}
+                  <p className="text-xs text-muted-foreground">
+                    {usage ? usageSummary(usage) : '统计引用关系…'}
+                  </p>
+                  {!usable && (
+                    <p className="text-xs text-muted-foreground">
+                      属于{owner}，当前语音合成用的是{currentLabel}，合成不了
+                    </p>
+                  )}
 
-                  <div className="mt-auto flex justify-end gap-1.5 pt-1">
+                  <div className="mt-auto flex flex-wrap justify-end gap-1.5 pt-1">
+                    {voice.status === 'ready' && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!usable || previewing !== ''}
+                        title={usable ? '用这个音色合成一句试听' : `属于${owner}，当前用不了`}
+                        onClick={() => preview(voice)}
+                      >
+                        {previewing === voice.id ? <Loader2 className="animate-spin" /> : <Play />}
+                        试听
+                      </Button>
+                    )}
                     {voice.status === 'ready' && !isDefault && (
                       <Button
                         size="sm"
                         variant="outline"
+                        disabled={!usable}
+                        title={usable ? undefined : `属于${owner}，切回${owner}再设成默认才合成得了`}
                         onClick={() => {
                           void window.api.voice.setDefault(voice.id).then((r) => {
                             if (r.ok) {
@@ -111,6 +188,14 @@ export function VoicesPage() {
                         设为默认
                       </Button>
                     )}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      title="重命名"
+                      onClick={() => setRenaming(voice)}
+                    >
+                      <Pencil />
+                    </Button>
                     <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeleting(voice)}>
                       <Trash2 />
                     </Button>
@@ -124,6 +209,12 @@ export function VoicesPage() {
 
       <NewVoiceDialog open={adding} onOpenChange={setAdding} onDone={reload} />
 
+      <RenameVoiceDialog
+        voice={renaming}
+        onOpenChange={(open) => !open && setRenaming(null)}
+        onDone={reload}
+      />
+
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -132,6 +223,27 @@ export function VoicesPage() {
           <p className="text-sm text-muted-foreground">
             确认删除「{deleting?.name}」？样本文件会一并删除，平台侧的复刻音色需要在服务商控制台单独清理。
           </p>
+          {deleting && usages[deleting.id] && usageCount(usages[deleting.id]) > 0 && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
+              <p className="mb-1 text-[13px] text-destructive">这个音色正在被使用，删掉后这些地方会指向不存在的音色：</p>
+              {usages[deleting.id].personas.map((item) => (
+                <p key={`${item.id}-${item.role}`}>
+                  主播卡「{item.name}」{item.role ? ` · 角色 ${item.role}` : ' · 默认音色'}
+                </p>
+              ))}
+              {usages[deleting.id].plans.map((item) => (
+                <p key={item.id}>场次「{item.name}」的场次音色</p>
+              ))}
+              {usages[deleting.id].utteranceCount > 0 && (
+                <p>
+                  话术库 {usages[deleting.id].utteranceCount} 条
+                  {usages[deleting.id].utteranceSamples[0]
+                    ? `（例如：${usages[deleting.id].utteranceSamples[0].text.slice(0, 20)}…）`
+                    : ''}
+                </p>
+              )}
+            </div>
+          )}
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
               取消
@@ -156,6 +268,83 @@ export function VoicesPage() {
         </DialogContent>
       </Dialog>
     </div>
+  )
+}
+
+/** 「被 2 张主播卡 · 1 个场次 · 12 条话术使用」 */
+function usageSummary(usage: VoiceUsage): string {
+  const parts: string[] = []
+  if (usage.personas.length) parts.push(`${usage.personas.length} 张主播卡`)
+  if (usage.plans.length) parts.push(`${usage.plans.length} 个场次`)
+  if (usage.utteranceCount) parts.push(`${usage.utteranceCount} 条话术`)
+  return parts.length > 0 ? `被 ${parts.join(' · ')}使用` : '还没被主播卡 / 场次 / 话术使用'
+}
+
+function usageCount(usage: VoiceUsage): number {
+  return usage.personas.length + usage.plans.length + usage.utteranceCount
+}
+
+/** 重命名音色（只改显示名） */
+function RenameVoiceDialog({
+  voice,
+  onOpenChange,
+  onDone
+}: {
+  voice: VoiceRecord | null
+  onOpenChange: (open: boolean) => void
+  onDone: () => void
+}) {
+  const [name, setName] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    setName(voice?.name ?? '')
+    setBusy(false)
+  }, [voice])
+
+  const submit = () => {
+    if (!voice || busy || !name.trim()) return
+    setBusy(true)
+    void window.api.voice
+      .rename(voice.id, name)
+      .then((r) => {
+        if (r.ok) {
+          toast.success('已重命名')
+          onOpenChange(false)
+          onDone()
+        } else toast.error('重命名失败', { description: r.error })
+      })
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <Dialog open={voice !== null} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle>重命名音色</DialogTitle>
+        </DialogHeader>
+        <div>
+          <Label className="mb-1">音色名称</Label>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="如：店主本人 / 小助理"
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit()
+            }}
+          />
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            取消
+          </Button>
+          <Button disabled={busy || !name.trim()} onClick={submit}>
+            {busy ? '保存中…' : '保存'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

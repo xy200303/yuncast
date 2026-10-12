@@ -32,6 +32,10 @@ export type NavPage = (typeof NAV_PAGES)[number]
 
 /** 服务商清单的纯数据形态：类型从 preload 暴露的 API 反推，渲染层不 import 主进程模块 */
 export type LlmProviderManifest = Awaited<ReturnType<typeof window.api.providers.llmList>>[number]
+/** 语音合成服务商清单（能力位 + 配置字段） */
+export type TtsProviderManifest = Awaited<ReturnType<typeof window.api.providers.ttsList>>[number]
+/** manifest 驱动的配置字段（LLM 与 TTS 的 configFields 结构相同） */
+export type ProviderFieldSpec = LlmProviderManifest['configFields'][number]
 
 // 启动时先用 localStorage 缓存的主题，避免等 IPC 回来闪一下白/黑
 const bootTheme = readCachedTheme()
@@ -87,6 +91,8 @@ interface AppState {
   /** 供应商接入 + 服务商清单（设置 → 语言模型；状态栏徽章与主播卡的「大脑」下拉都读它） */
   connections: ModelConnectionSafe[]
   llmProviders: LlmProviderManifest[]
+  /** 语音合成服务商清单（设置 → 语音合成表单与音色分组都读它） */
+  ttsProviders: TtsProviderManifest[]
   /** 当前主播卡（状态栏的 LLM 徽章按它选的接入与模型判定） */
   persona: Persona | null
   loadModelLibrary: () => Promise<void>
@@ -179,15 +185,17 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   connections: [],
   llmProviders: [],
+  ttsProviders: [],
   persona: null,
   loadModelLibrary: async () => {
     if (!('api' in window)) return
-    const [connections, llmProviders, persona] = await Promise.all([
+    const [connections, llmProviders, ttsProviders, persona] = await Promise.all([
       window.api.model.list(),
       window.api.providers.llmList(),
+      window.api.providers.ttsList(),
       window.api.persona.get()
     ])
-    set({ connections, llmProviders, persona })
+    set({ connections, llmProviders, ttsProviders, persona })
   },
   refreshPersona: async () => {
     if (!('api' in window)) return
@@ -212,6 +220,11 @@ export function selectLlmReady(
 
 /** 服务商显示名（拿不到 manifest 就退回 id） */
 export function providerLabel(providers: LlmProviderManifest[], providerId: string): string {
+  return providers.find((item) => item.id === providerId)?.label ?? providerId
+}
+
+/** TTS 服务商显示名（拿不到 manifest 就退回 id） */
+export function ttsProviderLabel(providers: TtsProviderManifest[], providerId: string): string {
   return providers.find((item) => item.id === providerId)?.label ?? providerId
 }
 

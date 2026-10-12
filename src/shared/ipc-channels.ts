@@ -34,6 +34,8 @@ export const IPC = {
   modelTest: 'model:test',
   /** 服务商能力与配置字段清单（设置页据此动态渲染表单） */
   providersLlmList: 'providers:llm-list',
+  /** 语音合成服务商清单（能力位 + 配置字段，设置页与音色选择都用它） */
+  providersTtsList: 'providers:tts-list',
   /** 某服务商真实可用的模型 id（设置页的模型列表据此给下拉建议） */
   providersModels: 'providers:models',
 
@@ -75,6 +77,12 @@ export const IPC = {
   voiceRemove: 'voice:remove',
   voiceSetDefault: 'voice:set-default',
   voiceUploadSample: 'voice:upload-sample',
+  /** 用该音色合成一句固定文案试听（只允许属于当前 TTS 服务商的音色） */
+  voicePreview: 'voice:preview',
+  /** 重命名音色 */
+  voiceRename: 'voice:rename',
+  /** 谁在用它：人设卡 / 场次 / 话术库条目（删除前提示占用） */
+  voiceUsage: 'voice:usage',
   /** main → renderer：音色列表变化（训练状态更新） */
   voiceChanged: 'voice:changed',
 

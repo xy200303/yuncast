@@ -29,7 +29,8 @@ import {
   effectiveModel,
   providerLabel,
   useAppStore,
-  type LlmProviderManifest
+  type LlmProviderManifest,
+  type ProviderFieldSpec
 } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import {
@@ -84,17 +85,6 @@ const LLM_LINKS: Record<string, { console: string; docs: string } | undefined> =
   zai: {
     console: 'https://open.bigmodel.cn/usercenter/apikeys',
     docs: 'https://docs.bigmodel.cn/cn/guide/develop/openai/introduction'
-  }
-}
-
-const TTS_LINKS = {
-  volcano: {
-    console: 'https://console.volcengine.com/speech/app',
-    docs: 'https://www.volcengine.com/docs/6561/79820'
-  },
-  bailian: {
-    console: 'https://bailian.console.aliyun.com/?tab=model#/api-key',
-    docs: 'https://help.aliyun.com/zh/model-studio/qwen-tts-api'
   }
 }
 
@@ -1009,7 +999,7 @@ function ProviderField({
   secretSaved,
   onChange
 }: {
-  field: LlmProviderManifest['configFields'][number]
+  field: ProviderFieldSpec
   value: string | number | boolean
   secretSaved: boolean
   onChange: (value: string | number | boolean) => void
@@ -1158,20 +1148,61 @@ function RealtimeSection() {
   )
 }
 
-/** TTS 双通道表单（火山引擎 / 阿里云百炼） */
+/** TTS 表单字段名的读写：TtsConfig 是扁平结构，字段清单由 manifest 给出，只能按 key 取 */
+function readTtsField(tts: TtsConfig, key: string): string | number | boolean {
+  return (tts as unknown as Record<string, string | number | boolean>)[key] ?? ''
+}
+
+function writeTtsField(tts: TtsConfig, key: string, value: string | number | boolean): TtsConfig {
+  return { ...tts, [key]: value } as TtsConfig
+}
+
+/**
+ * 语音合成（火山引擎 / 阿里云百炼）：服务商与字段全部由 TTS manifest 驱动——
+ * 能力位决定实时合成开关能不能开，configFields 决定显示哪些字段，links 给凭据入口。
+ */
 function TtsSection() {
   const config = useAppStore((s) => s.config)
+  const providers = useAppStore((s) => s.ttsProviders)
   const saveConfig = useAppStore((s) => s.saveConfig)
   const [form, setForm] = useState<TtsConfig>({ ...config.tts })
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
 
+  const def = providers.find((item) => item.id === form.provider)
   const dirty = JSON.stringify(form) !== JSON.stringify(config.tts)
-  const patch = (part: Partial<TtsConfig>) => setForm((prev) => ({ ...prev, ...part }))
+
+  const patchField = (key: string, value: string | number | boolean) =>
+    setForm((prev) => {
+      // 数字型字段（语速、采样率）从控件回来的是字符串，转回数字，否则落盘时会被 parseAppConfig 当非法值丢掉
+      const next = typeof readTtsField(prev, key) === 'number' && value !== '' ? Number(value) : value
+      return writeTtsField(prev, key, next)
+    })
+
+  const changeProvider = (next: TtsProvider) => {
+    const nextDef = providers.find((item) => item.id === next)
+    setForm((prev) => ({
+      ...prev,
+      provider: next,
+      // 该服务商没有真流式就关掉开关，免得留一个开着却点不动的开关让人以为流式可用
+      realtime: nextDef?.capabilities.streaming ? prev.realtime : false
+    }))
+  }
+
+  /** 待保存的配置：密钥字段留空表示沿用已保存的那个（同供应商接入的口径） */
+  const pendingConfig = (): TtsConfig => {
+    let next: TtsConfig = { ...form }
+    for (const field of def?.configFields ?? []) {
+      if (!field.secret) continue
+      if (String(readTtsField(next, field.key)).trim()) continue
+      next = writeTtsField(next, field.key, readTtsField(config.tts, field.key))
+    }
+    return next
+  }
 
   const save = () => {
     setSaving(true)
-    saveConfig({ tts: form })
+    saveConfig({ tts: pendingConfig() })
       .then(() => toast.success('TTS 配置已保存'))
       .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
       .finally(() => setSaving(false))
@@ -1183,7 +1214,7 @@ function TtsSection() {
     try {
       // 测试用的是已保存的配置：表格有改动先自动保存，避免"填了音色却报 voiceId 为空"
       if (dirty) {
-        await saveConfig({ tts: form })
+        await saveConfig({ tts: pendingConfig() })
         toast.message('配置已顺带保存')
       }
       const result = await window.api.tts.test('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
@@ -1200,12 +1231,21 @@ function TtsSection() {
     }
   }
 
+  const capabilities = def
+    ? [
+        def.capabilities.streaming ? '真流式' : '整段合成',
+        def.capabilities.clone ? '支持音色克隆' : '音色复刻未实现',
+        def.capabilities.instruction ? '语气指令' : '无语气指令',
+        `输出 ${def.capabilities.formats.join(' / ')}`
+      ].join(' · ')
+    : ''
+
   return (
     <div className="rounded-lg border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[13px] font-medium">语音合成（TTS）</p>
-          <p className="text-xs text-muted-foreground">火山引擎与阿里云百炼双通道，二选一</p>
+          <p className="text-xs text-muted-foreground">{def ? def.note : '读取服务商清单…'}</p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" disabled={testing} onClick={test}>
@@ -1220,122 +1260,64 @@ function TtsSection() {
       <div className="mt-4 grid grid-cols-2 gap-3">
         <div className="col-span-2">
           <Label className="mb-1">服务商</Label>
-          <Select value={form.provider} onValueChange={(v) => patch({ provider: v as TtsProvider })}>
+          <Select value={form.provider} onValueChange={(v) => changeProvider(v as TtsProvider)}>
             <SelectTrigger className="w-full">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="volcano">火山引擎（豆包语音）</SelectItem>
-              <SelectItem value="bailian">阿里云百炼（Qwen-TTS）</SelectItem>
+              {providers.map((item) => (
+                <SelectItem key={item.id} value={item.id}>
+                  <span className="flex items-center gap-2">
+                    <ProviderIcon providerId={item.icon} size="sm" />
+                    {item.label}
+                  </span>
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <DocLinks
-            items={
-              form.provider === 'volcano'
-                ? [
-                    { label: '去火山语音控制台拿 AppId / Token', url: TTS_LINKS.volcano.console },
-                    { label: '查看接入文档', url: TTS_LINKS.volcano.docs }
-                  ]
-                : [
-                    { label: '去百炼控制台拿 API Key', url: TTS_LINKS.bailian.console },
-                    { label: '查看 Qwen-TTS 文档', url: TTS_LINKS.bailian.docs }
-                  ]
-            }
-          />
+          {capabilities && <p className="mt-1 text-xs text-muted-foreground">能力：{capabilities}</p>}
+          {def && <DocLinks items={def.links} />}
         </div>
 
-        {form.provider === 'volcano' ? (
-          <>
-            <Field label="AppId" value={form.appId} onChange={(v) => patch({ appId: v })} placeholder="控制台 → 语音技术 → 应用管理" />
-            <Field label="Access Token" value={form.accessToken} onChange={(v) => patch({ accessToken: v })} type="password" />
-            <Field label="接入集群 Cluster" value={form.cluster} onChange={(v) => patch({ cluster: v })} placeholder="volcano_tts" />
-            <Field label="语速" value={String(form.speed)} onChange={(v) => patch({ speed: Number(v) || 1.0 })} placeholder="1.0" />
-          </>
-        ) : (
-          <>
-            <Field label="API Key" value={form.apiKey} onChange={(v) => patch({ apiKey: v })} type="password" placeholder="sk-…" />
-            <Field label="模型" value={form.model} onChange={(v) => patch({ model: v })} placeholder="qwen3-tts-flash" />
-            <Field label="API 地址" value={form.baseUrl} onChange={(v) => patch({ baseUrl: v })} placeholder="https://dashscope.aliyuncs.com/api/v1" />
-            <Field label="语种" value={form.languageType} onChange={(v) => patch({ languageType: v })} placeholder="Chinese" />
-            <div className="col-span-2">
-              <Field
-                label="业务空间 ID（Qwen-Audio-TTS / CosyVoice / MiniMax 系列必需）"
-                value={form.workspaceId}
-                onChange={(v) => patch({ workspaceId: v })}
-                placeholder="模型名不以 qwen3-tts 开头时必须填；端点形如 https://{ID}.cn-beijing.maas.aliyuncs.com"
+        {(def?.configFields ?? [])
+          .filter((field) => field.key !== 'provider')
+          .map((field) => (
+            <div key={field.key} className={field.wide ? 'col-span-2' : undefined}>
+              <Label className="mb-1">{field.label}</Label>
+              <ProviderField
+                field={field}
+                value={readTtsField(form, field.key)}
+                secretSaved={Boolean(String(readTtsField(config.tts, field.key)).trim())}
+                onChange={(value) => patchField(field.key, value)}
               />
+              {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
             </div>
-            <div className="col-span-2">
-              <Field
-                label="语气指令 instruction（可选，≤100 字）"
-                value={form.instruction}
-                onChange={(v) => patch({ instruction: v })}
-                placeholder="例如：语速稍快，语气热情，像直播间卖货"
-              />
-            </div>
-            <div>
-              <Label className="mb-1">输出格式</Label>
-              <Select
-                value={form.format}
-                onValueChange={(v) => patch({ format: v as TtsConfig['format'] })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="mp3">MP3（兼容最好）</SelectItem>
-                  <SelectItem value="wav">WAV</SelectItem>
-                  <SelectItem value="pcm">PCM（流式推荐，免解码）</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div>
-              <Label className="mb-1">采样率（Hz）</Label>
-              <Select
-                value={String(form.sampleRate)}
-                onValueChange={(v) => patch({ sampleRate: Number(v) })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="24000">24000（推荐）</SelectItem>
-                  <SelectItem value="16000">16000</SelectItem>
-                  <SelectItem value="48000">48000</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </>
-        )}
-        <div className="col-span-2">
-          <Field
-            label="默认音色 voiceId"
-            value={form.voiceId}
-            onChange={(v) => patch({ voiceId: v })}
-            placeholder={form.provider === 'volcano' ? '火山 voice_type，例如 zh_female_…' : '百炼 voice，例如 Cherry'}
-          />
-        </div>
+          ))}
       </div>
 
       <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border px-3 py-2">
         <div>
           <p className="text-[13px]">实时合成（动态内容流式播报）</p>
           <p className="text-xs text-muted-foreground">
-            开启后按内容分工：剧本/暖场话术文本已知，照常提前预合成（播出零延迟）；
-            评论回复等动态内容边合成边播，首包延迟最低。
-            百炼（Qwen-TTS）走官方 SSE 真流式；火山暂为等效回退
+            {def?.capabilities.streaming
+              ? '开启后按内容分工：剧本/暖场话术文本已知，照常提前预合成（播出零延迟）；评论回复等动态内容边合成边播，首包延迟最低'
+              : '该服务商暂未接入流式，动态内容会走整段合成（换成支持真流式的服务商才能开这个开关）'}
           </p>
         </div>
         <Switch
           checked={form.realtime}
-          onCheckedChange={(v) => patch({ realtime: v })}
+          disabled={!def?.capabilities.streaming}
+          onCheckedChange={(v) => patchField('realtime', v)}
           aria-label="实时合成开关"
         />
       </div>
 
       {!ttsConfigured(form) && (
         <p className="mt-3 text-xs text-muted-foreground">
-          还没配齐：{form.provider === 'volcano' ? 'AppId / Access Token / 音色' : 'API Key / 模型 / 音色'} 都是必填
+          还没配齐：{(def?.configFields ?? [])
+            .filter((field) => field.required)
+            .map((field) => field.label.replace(/（.*?）/, ''))
+            .join(' / ')} 都是必填
         </p>
       )}
     </div>

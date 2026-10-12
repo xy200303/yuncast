@@ -82,6 +82,9 @@ export class AgentService {
     this.speakingPaused = paused
   }
 
+  /** 开播时冻结的资产指纹：会话出生时读了一次人设/模型/剧本，之后不再读（docs/07 §8.5） */
+  private sessionFingerprint: string | null = null
+
   status(): AgentStatus {
     const current = this.state === 'stopped' ? null : this.script.currentScene()
     return {
@@ -92,8 +95,46 @@ export class AgentService {
       draft: this.draft,
       scene: current
         ? { title: current.scene.title, index: current.index, total: current.total }
-        : undefined
+        : undefined,
+      // 会话还活着时比对资产：改过人设/模型/剧本就得重启会话才生效
+      assetsStale:
+        this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint
     }
+  }
+
+  /**
+   * 资产指纹：凡是「出生时组装进 system prompt 或模型 provider」的东西都算。
+   * 不含音色——音色是每条话术现算的（resolveVoice 每次读当前值），改了立刻对后说的生效。
+   */
+  private assetFingerprint(): string {
+    const persona = this.persona.get()
+    const { plan, script } = this.script.getActive()
+    const connection = persona.modelConnectionId
+      ? this.storage.connectionGet(persona.modelConnectionId)
+      : null
+    const { llm } = this.storage.getConfig()
+    return fingerprint(
+      JSON.stringify({
+        persona: [
+          persona.id,
+          persona.name,
+          persona.personality,
+          persona.catchphrases,
+          persona.background,
+          persona.taboos,
+          persona.roles,
+          persona.modelConnectionId,
+          persona.model
+        ],
+        // 接入自身的改动（换密钥、改模型列表）同样要让会话作废
+        connection: connection
+          ? [connection.providerId, connection.models, connection.defaultModel, connection.params]
+          : null,
+        legacy: [llm.provider, llm.model, llm.apiKey, llm.baseUrl],
+        plan: [plan?.id, plan?.personaId, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
+        script: script ? [script.title, script.scenes] : null
+      })
+    )
   }
 
   /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。 */
@@ -119,6 +160,7 @@ export class AgentService {
   async stop(): Promise<void> {
     const session = this.session
     this.session = null
+    this.sessionFingerprint = null
     this.draft = ''
     this.lastComment = null
     if (session) {
@@ -265,6 +307,8 @@ export class AgentService {
     const agentDir = join(app.getPath('userData'), 'pi')
     const { model, modelRuntime, modelLabel } = await prepareLlmModel(resolved, agentDir)
     this.modelLabel = modelLabel
+    // 记下出生时的资产指纹：之后 UI 靠它判断"本场是不是旧版本"
+    this.sessionFingerprint = this.assetFingerprint()
 
     const persona = this.persona.get()
     const { plan, script } = this.script.getActive()
@@ -356,4 +400,11 @@ export class AgentService {
 
     return session
   }
+}
+
+/** 短指纹（djb2）：只用来判断"资产变没变"，不承担安全职责，避免把密钥原样留在内存字符串里 */
+function fingerprint(text: string): string {
+  let hash = 5381
+  for (let i = 0; i < text.length; i++) hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0
+  return (hash >>> 0).toString(16)
 }

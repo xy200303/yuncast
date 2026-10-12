@@ -545,6 +545,8 @@ export interface AgentStatus {
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
   scene?: { title: string; index: number; total: number }
+  /** 会话出生后资产改过（人设/模型/剧本/场次结构）：改动要重启会话才生效（docs/07 §8.5） */
+  assetsStale?: boolean
 }
 
 // ---------- 评论（来自连接器，docs/04） ----------

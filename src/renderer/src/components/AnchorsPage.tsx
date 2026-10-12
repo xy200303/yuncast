@@ -12,6 +12,7 @@ import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
+import { AssetStaleBanner } from '@/components/AssetStaleBanner'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { groupVoicesByProvider } from '../lib/voice'
@@ -99,12 +100,10 @@ export function AnchorsPage() {
 
   const openEditor = (persona?: Persona) => setEditing(persona ? { persona } : {})
 
-  /** 主播在跑就重启会话，让人设立即生效 */
-  const applyIfRunning = async (okText: string) => {
+  /** 保存后不偷偷重启会话：人设/模型是出生时冻结的，改了靠黄条上的「立即应用」显式生效 */
+  const afterSaved = (okText: string) => {
     if (useAppStore.getState().agent.state === 'running') {
-      const result = await window.api.agent.restart()
-      if (result.ok) toast.success(`${okText}，主播已按新人设重启`)
-      else toast.error(`${okText}，但主播重启失败`, { description: result.error })
+      toast.success(okText, { description: '本场主播用的还是开播时的版本，改动下次开播生效（可点黄条立即应用）' })
     } else {
       toast.success(okText)
     }
@@ -129,6 +128,7 @@ export function AnchorsPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      <AssetStaleBanner />
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <Bot className="size-4 text-primary" />
         <h1 className="text-sm font-medium">主播团</h1>
@@ -240,7 +240,7 @@ export function AnchorsPage() {
         onSaved={async (text) => {
           setEditing(null)
           await reload()
-          await applyIfRunning(text)
+          afterSaved(text)
         }}
         onDeleted={async () => {
           setEditing(null)

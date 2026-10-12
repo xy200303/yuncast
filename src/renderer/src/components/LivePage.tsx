@@ -38,6 +38,7 @@ import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
+import { AssetStaleBanner } from './AssetStaleBanner'
 import type {
   DirectorMessage,
   LiveComment,
@@ -138,8 +139,7 @@ export function LivePage() {
     <div className="flex min-h-0 flex-1">
         {/* 左栏 = 队列 / 评论流。「正在播什么」在右栏对话区底部的常驻状态行（一处就够） */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-            <Radio className="size-4 text-primary" />
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">            <Radio className="size-4 text-primary" />
             <h1 className="text-sm font-medium">直播台</h1>
             {/* 开播控制贴最右：顶部居中的 toast 不会再盖住「启动/暂停」按钮 */}
             <div className="ml-auto flex items-center gap-3">
@@ -157,6 +157,8 @@ export function LivePage() {
               <PlanLauncher />
             </div>
           </header>
+          {/* 资产改过但本场会话还是旧的：都在这里给「立即应用」 */}
+          <AssetStaleBanner />
           <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
             <div className="shrink-0 border-b px-4 pt-2">
               <TabsList variant="line">

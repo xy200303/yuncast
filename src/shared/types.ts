@@ -251,6 +251,8 @@ export interface ModelConnection {
   params: Record<string, string | number | boolean>
   /** 这家服务商下可用的模型 id 列表 */
   models: string[]
+  /** 模型级上下文窗口（tokens）：模型 id → 窗口。缺省按服务商声明/pi 内置目录；自动压缩按「窗口 − 16k」触发 */
+  modelContextWindows: Record<string, number>
   createdAt: number
   updatedAt: number
 }
@@ -270,6 +272,8 @@ export interface ModelConnectionInput {
   providerId: string
   params: Record<string, string | number | boolean>
   models: string[]
+  /** 模型级上下文窗口（可选，只保留 models 里存在的 id） */
+  modelContextWindows?: Record<string, number>
 }
 
 /**
@@ -347,8 +351,6 @@ export interface AppConfig {
   accent: AppAccent
   tts: TtsConfig
   llm: LlmConfig
-  /** 主播 Agent 运行参数（高级） */
-  agent: AgentConfig
   trigger: TriggerConfig
   live: LiveStateConfig
   stream: StreamConfig
@@ -356,22 +358,11 @@ export interface AppConfig {
   comment: CommentConfig
 }
 
-/** 主播 Agent 运行参数：长会话自动压缩的标尺 */
-export interface AgentConfig {
-  /** 上下文窗口覆盖（tokens）：自动压缩按「窗口 − 16k」触发；0 = 按服务商声明/内置目录 */
-  contextWindow: number
-}
-
-export const DEFAULT_AGENT_CONFIG: AgentConfig = {
-  contextWindow: 0
-}
-
 export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
   accent: 'clay',
   tts: DEFAULT_TTS_CONFIG,
   llm: DEFAULT_LLM_CONFIG,
-  agent: DEFAULT_AGENT_CONFIG,
   trigger: DEFAULT_TRIGGER_CONFIG,
   live: DEFAULT_LIVE_CONFIG,
   stream: DEFAULT_STREAM_CONFIG,
@@ -433,19 +424,11 @@ export function parseAppConfig(input: unknown): AppConfig {
         : DEFAULT_TRIGGER_CONFIG.maxLlmPerMinute
   }
   const liveRow = row.live && typeof row.live === 'object' ? (row.live as Record<string, unknown>) : {}
-  const agentRow =
-    row.agent && typeof row.agent === 'object' ? (row.agent as Record<string, unknown>) : {}
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     accent: APP_ACCENTS.find((id) => id === row.accent) ?? DEFAULT_CONFIG.accent,
     tts,
     llm,
-    agent: {
-      contextWindow:
-        typeof agentRow.contextWindow === 'number' && agentRow.contextWindow > 0
-          ? Math.floor(agentRow.contextWindow)
-          : 0
-    },
     trigger,
     live: { activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '' },
     stream: parseStream(row.stream),

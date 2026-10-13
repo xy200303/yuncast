@@ -399,25 +399,11 @@ function LlmSection() {
   const providers = useAppStore((s) => s.llmProviders)
   const setConnections = useAppStore((s) => s.setConnections)
   const refreshPersona = useAppStore((s) => s.refreshPersona)
-  const contextWindow = useAppStore((s) => s.config.agent.contextWindow)
-  const saveConfig = useAppStore((s) => s.saveConfig)
   const [editing, setEditing] = useState<{ connection?: ModelConnectionSafe } | null>(null)
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
   /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
   const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
-  const [contextWindowInput, setContextWindowInput] = useState(
-    contextWindow > 0 ? String(contextWindow) : ''
-  )
-
-  const saveContextWindow = (): void => {
-    const raw = contextWindowInput.trim()
-    const next = raw === '' ? 0 : Math.max(4096, Math.floor(Number(raw) || 0))
-    if (next === contextWindow) return
-    void saveConfig({ agent: { contextWindow: next } }).then(() => {
-      toast.success('上下文窗口已保存', { description: '对下一个会话生效（进行中的会话仍按旧窗口压缩）' })
-    })
-  }
 
   const test = (connection: ModelConnectionSafe) => setTesting(connection)
 
@@ -513,21 +499,6 @@ function LlmSection() {
       <p className="mt-3 text-xs text-muted-foreground">
         密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；主播卡各自指定用哪家的哪个模型。
       </p>
-
-      <div className="mt-3 flex items-center gap-2 border-t pt-3">
-        <span className="shrink-0 text-xs text-muted-foreground">上下文窗口</span>
-        <Input
-          value={contextWindowInput}
-          onChange={(e) => setContextWindowInput(e.target.value.replace(/[^\d]/g, ''))}
-          onBlur={saveContextWindow}
-          placeholder="自动"
-          inputMode="numeric"
-          className="h-7 w-28 text-xs"
-        />
-        <span className="text-xs text-muted-foreground">
-          tokens，留空按服务商默认（DeepSeek 64k / 其他 128k）。对话涨到「窗口 − 16k」时自动把旧消息压缩成摘要；改动对下个会话生效
-        </span>
-      </div>
 
       {editing && (
         <ConnectionEditorDialog
@@ -678,7 +649,13 @@ function ConnectionEditorDialog({
   const [name, setName] = useState(
     connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
   )
-  const [models, setModels] = useState<string[]>(connection?.models ?? [])
+  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）。窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
+  const [models, setModels] = useState<{ id: string; window: string }[]>(
+    (connection?.models ?? []).map((id) => ({
+      id,
+      window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : ''
+    }))
+  )
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
@@ -710,7 +687,11 @@ function ConnectionEditorDialog({
   }
 
   const setModelAt = (index: number, value: string) => {
-    setModels(models.map((model, i) => (i === index ? value : model)))
+    setModels(models.map((row, i) => (i === index ? { ...row, id: value } : row)))
+  }
+
+  const setWindowAt = (index: number, value: string) => {
+    setModels(models.map((row, i) => (i === index ? { ...row, window: value } : row)))
   }
 
   const removeModelAt = (index: number) => {
@@ -721,7 +702,7 @@ function ConnectionEditorDialog({
     const next = [...models]
     for (const id of ids) {
       const value = id.trim()
-      if (value && !next.includes(value)) next.push(value)
+      if (value && !next.some((row) => row.id === value)) next.push({ id: value, window: '' })
     }
     setModels(next)
   }
@@ -732,9 +713,17 @@ function ConnectionEditorDialog({
       toast.warning('先给这条接入起个名字')
       return
     }
-    if (models.length === 0) {
+    const ids = [...new Set(models.map((row) => row.id.trim()).filter(Boolean))]
+    if (ids.length === 0) {
       toast.warning('至少加一个模型', { description: '模型列表里放这家能用的模型 id' })
       return
+    }
+    // 模型级窗口：只收填了且 ≥4096 的，其余按服务商默认
+    const modelContextWindows: Record<string, number> = {}
+    for (const row of models) {
+      const id = row.id.trim()
+      const value = Math.floor(Number(row.window))
+      if (id && row.window.trim() && value >= 4096) modelContextWindows[id] = value
     }
     setBusy(true)
     try {
@@ -743,7 +732,8 @@ function ConnectionEditorDialog({
         name,
         providerId,
         params,
-        models
+        models: ids,
+        modelContextWindows
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
@@ -835,13 +825,21 @@ function ConnectionEditorDialog({
               </p>
             ) : (
               <div className="flex flex-col gap-1.5">
-                {models.map((model, index) => (
+                {models.map((row, index) => (
                   <div key={index} className="flex items-center gap-1.5">
                     <Input
-                      value={model}
+                      value={row.id}
                       onChange={(e) => setModelAt(index, e.target.value)}
                       placeholder="模型 id，如 deepseek-chat"
                       className="h-7 text-xs"
+                    />
+                    <Input
+                      value={row.window}
+                      onChange={(e) => setWindowAt(index, e.target.value.replace(/[^\d]/g, ''))}
+                      placeholder="窗口自动"
+                      title="上下文窗口（tokens）：留空按服务商默认。对话涨到「窗口 − 16k」时自动压缩旧消息——不同型号窗口不一样，填准了压缩更平滑"
+                      inputMode="numeric"
+                      className="h-7 w-24 shrink-0 text-xs"
                     />
                     <Button
                       variant="ghost"
@@ -853,6 +851,9 @@ function ConnectionEditorDialog({
                     </Button>
                   </div>
                 ))}
+                <p className="text-xs text-muted-foreground">
+                  第二列是上下文窗口（tokens），留空按服务商默认；对话涨到「窗口 − 16k」时自动压缩旧消息
+                </p>
               </div>
             )}
           </div>
@@ -881,7 +882,7 @@ function ConnectionEditorDialog({
           onOpenChange={setPickerOpen}
           providerId={providerId}
           providerLabel={def?.label ?? providerId}
-          picked={models}
+          picked={models.map((row) => row.id)}
           onPick={(ids) => addModels(ids)}
         />
       </DialogContent>

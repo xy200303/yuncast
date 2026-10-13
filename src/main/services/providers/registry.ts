@@ -74,6 +74,8 @@ export interface ResolvedModel {
   providerId: string
   params: Record<string, string | number | boolean>
   model: string
+  /** 模型级上下文窗口（tokens）：来自接入的模型配置；空 = 按服务商声明/pi 内置目录 */
+  contextWindow?: number
   /** 没按人设卡指定的模型跑时的兜底说明（预检据此给 warn） */
   fallback?: ResolvedFallback
 }

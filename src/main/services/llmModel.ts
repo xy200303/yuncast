@@ -141,7 +141,11 @@ function selectedModelOf(
     connectionId: bound.id,
     providerId: bound.providerId,
     params: bound.params,
-    model: requested
+    model: requested,
+    // 模型级窗口（接入上配的）：自动压缩的标尺，比服务商声明更准
+    ...(bound.modelContextWindows?.[requested]
+      ? { contextWindow: bound.modelContextWindows[requested] }
+      : {})
   }
 }
 
@@ -149,7 +153,7 @@ function selectedModelOf(
  * LLM 会话准备（主播会话用，直播/写稿同一条装配线）：
  * 自定义端点写 models.json → ModelRuntime → 运行时注入凭据（不落 pi 的 auth.json）→ 取模型。
  */
-export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string, contextWindowOverride = 0) {
+export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string) {
   const def = getLlmProvider(resolved.providerId)
   if (!def) throw new Error(`不认识的服务商：${resolved.providerId}（到设置 → 语言模型里重新选一个）`)
 
@@ -162,15 +166,14 @@ export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string,
   // params 留空时的地址就是官方默认地址，拿它判断用户有没有自定义端点
   const defaultBaseUrl = def.toModelConfig({}, def.defaultModel).baseUrl
   const isBuiltin = resolved.providerId in BUILTIN_PROVIDERS
-  // 上下文窗口（自动压缩的标尺）：设置页的手动覆盖 > 服务商声明 > pi 内置目录/128k 兜底
-  const override = contextWindowOverride > 0 ? Math.floor(contextWindowOverride) : 0
-  const contextWindow = override || def.capabilities.contextWindow
-  const needModelsJson = !isBuiltin || baseUrl !== defaultBaseUrl || override > 0
+  // 上下文窗口（自动压缩的标尺）：接入上配的模型级窗口 > 服务商声明 > pi 内置目录/128k 兜底
+  const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow
+  const needModelsJson = !isBuiltin || baseUrl !== defaultBaseUrl || resolved.contextWindow !== undefined
   const modelsPath = join(agentDir, 'models.json')
   if (needModelsJson) {
     const models = [{ id: modelId, ...(contextWindow ? { contextWindow } : {}) }]
     const providerEntry: Record<string, unknown> =
-      isBuiltin && override === 0
+      isBuiltin && resolved.contextWindow === undefined
         ? { baseUrl }
         : { baseUrl, ...(isBuiltin ? {} : { api: 'openai-completions' }), models }
     writeFileSync(modelsPath, JSON.stringify({ providers: { [providerId]: providerEntry } }, null, 2), 'utf8')

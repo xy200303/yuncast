@@ -411,6 +411,7 @@ export class StorageService {
     // 没有默认模型：用哪个模型由人设卡显式指定
     this.createModelConnectionsTable()
     this.migrateModelConnectionColumns()
+    this.ensureModelConnectionWindows()
     // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     this.ensureColumn('agents', 'model_connection_id', 'TEXT')
     this.ensureColumn('agents', 'model', "TEXT NOT NULL DEFAULT ''")
@@ -523,14 +524,21 @@ export class StorageService {
       if (!(key in params)) params[key] = existing?.params[key] ?? ''
     }
     const models = [...new Set((input.models ?? []).map((model) => model.trim()).filter(Boolean))]
+    // 模型级窗口：只收 models 里存在的 id、正整数才留（4096 起步，再小没有实用价值）
+    const modelContextWindows: Record<string, number> = {}
+    for (const [key, value] of Object.entries(input.modelContextWindows ?? {})) {
+      const id2 = key.trim()
+      const window2 = typeof value === 'number' ? Math.floor(value) : 0
+      if (models.includes(id2) && window2 >= 4096) modelContextWindows[id2] = window2
+    }
 
     this.db
       .prepare(
-        `INSERT INTO model_connections (id, name, provider_id, params, models, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @models, @createdAt, @updatedAt)
+        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, updated_at = @updatedAt`
+           models = @models, model_windows = @modelWindows, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -538,6 +546,7 @@ export class StorageService {
         providerId: input.providerId,
         params: JSON.stringify(this.encryptParams(params, input.providerId)),
         models: JSON.stringify(models),
+        modelWindows: JSON.stringify(modelContextWindows),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
@@ -571,12 +580,20 @@ export class StorageService {
     const models = Array.isArray(rawModels)
       ? rawModels.map(String).filter((model) => model.trim().length > 0)
       : []
+    const rawWindows = parseJson<unknown>(r.model_windows, {})
+    const modelContextWindows: Record<string, number> = {}
+    if (rawWindows && typeof rawWindows === 'object' && !Array.isArray(rawWindows)) {
+      for (const [key, value] of Object.entries(rawWindows as Record<string, unknown>)) {
+        if (typeof value === 'number' && value > 0) modelContextWindows[key] = Math.floor(value)
+      }
+    }
     return {
       id: str(r.id),
       name: str(r.name),
       providerId,
       params: this.decryptParams(r.params, providerId),
       models,
+      modelContextWindows,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -955,10 +972,21 @@ export class StorageService {
         provider_id TEXT NOT NULL,
         params TEXT NOT NULL DEFAULT '{}',
         models TEXT NOT NULL DEFAULT '[]',
+        model_windows TEXT NOT NULL DEFAULT '{}',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
+  }
+
+  /** 模型级上下文窗口列（model_windows，JSON：模型 id → tokens）：老库补列，幂等 */
+  private ensureModelConnectionWindows(): void {
+    const columns = this.db
+      .prepare('PRAGMA table_info(model_connections)')
+      .all()
+      .map((row) => str((row as Record<string, unknown>).name))
+    if (columns.includes('model_windows')) return
+    this.db.exec("ALTER TABLE model_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
   }
 
   /**

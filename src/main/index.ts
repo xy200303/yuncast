@@ -417,7 +417,8 @@ function registerIpc(
         name: String(input?.name ?? ''),
         providerId,
         params: input?.params ?? {},
-        models
+        models,
+        modelContextWindows: input?.modelContextWindows ?? {}
       })
       return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {

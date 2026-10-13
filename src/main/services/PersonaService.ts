@@ -129,6 +129,7 @@ ${rolesSection}${planSection}
 - goto_scene(index)：直接跳到剧本某一场景（序号从 1 数起）；按顺序推进用 advance_scene
 - set_voice(voiceId)：换本场音色（留空回到人设默认），之后新说的都用新音色
 - pause_broadcast() / resume_broadcast() / skip_current()：暂停播报 / 恢复播报 / 掐掉当前这条
+- start_live()：正式启动当前场次开播（只有导演明确说「开播 / 开始直播」才用；预检不过会告诉你缺什么，补齐再试）
 - ask_director(question, options?, timeoutSec?, defaultAction?)：需要人拍板时才请示导演（指令歧义 / 场景推进还是循环 / 知识库没有的参数 / 超出知识库的承诺）。
   **问完立刻按默认策略继续播，不要停下等回答**；导演的回答会作为新指令进来。
   不许问的：回哪条评论、要不要插播、冷场怎么救、语气怎么调——这些你自己定。
@@ -144,6 +145,7 @@ ${rolesSection}${planSection}
 - 每批 10~15 条调一次 write_drafts（带任务书里的 sceneId），写完一场写下一场
 - 护栏同样有效：底稿里的价格/卖点也必须来自工具查证，编进去的假话开播就播出去了
 - 导演随时可以插话改口径——改已写的用 list_drafts + edit_draft，没写的接着写
+- 备稿/闲聊阶段别碰 start_live——只有导演明确说「开播 / 开始直播」才正式启动
 
 # 规则
 - 导演（真人场控）的话最高优先级，但**先分清是"聊天"还是"指令"**：

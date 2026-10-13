@@ -78,6 +78,8 @@ export class AgentService {
   private speakingPaused = false
   /** 场景推进后的装载钩子（LaunchService 接上：把新场景话术库载入池） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
+  /** 主播自己开播（start_live 工具）：LaunchService 接上，返回给主播看的成败说明 */
+  onGoLive: (() => Promise<string>) | null = null
   /** 主播请示（ask_director）→ 导演对话面板高亮卡片；不阻塞 run（docs/07 §8.8.6 ④） */
   onDirectorAsk:
     | ((ask: { text: string; options: string[]; timeoutSec: number; defaultAction?: string }) => void)
@@ -294,6 +296,30 @@ export class AgentService {
       `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完直接说一句执行情况（你说的话会出现在导演对话面板，不会被播报）。`,
       'steer'
     )
+  }
+
+  /**
+   * 导演对话入口（直播台输入框）：选中场次就能聊——没会话时先按当前场次
+   * 把主播就位（prep：上下文齐备、播出通道关着），再投递指令。
+   * 已有会话（写稿中/直播中）直接投递，不动它。
+   */
+  async chat(text: string): Promise<void> {
+    await this.ensurePrepSession()
+    this.directorSay(text)
+  }
+
+  /** 主播就位（无会话时）：绑当前选中场次的资产（场次 → 人设 → 音色），起 prep 会话 */
+  private async ensurePrepSession(): Promise<void> {
+    if (this.session) return
+    const planId = this.storage.getConfig().live.activePlanId
+    const plan = planId ? this.storage.planList().find((p) => p.id === planId) : null
+    if (!plan) throw new Error('先在上方选一个场次：主播需要知道自己要播哪场，才有上下文')
+    this.script.setActivePlan(plan.id)
+    if (plan.personaId && plan.personaId !== this.persona.get().id) {
+      this.persona.setActive(plan.personaId)
+    }
+    this.setPlanVoice(plan.voiceId)
+    await this.start('prep')
   }
 
   /**
@@ -597,7 +623,8 @@ export class AgentService {
         setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
         onPlaybackControl: (action) => this.onPlaybackControl?.(action),
         getSpeakingPaused: () => this.speakingPaused,
-        getPurpose: () => this.sessionPurpose
+        getPurpose: () => this.sessionPurpose,
+        onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动场次」'
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),

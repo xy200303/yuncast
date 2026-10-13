@@ -1125,7 +1125,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             value={input}
             onChange={(e) => setInput(e.target.value)}
             rows={2}
-            placeholder={agent.state === 'running' ? '对主播说点什么…' : '主播没在跑（先启动场次）'}
+            placeholder={agent.state === 'running' ? '对主播说点什么…' : '对主播说点什么…（选中场次即可开聊，主播会自己就位）'}
             className="max-h-32 w-full resize-none bg-transparent text-[13px] leading-5 outline-none placeholder:text-muted-foreground"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {

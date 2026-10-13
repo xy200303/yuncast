@@ -473,9 +473,15 @@ function registerIpc(
   })
 
   // ---------- 导演对话 ----------
-  ipcMain.handle(IPC.directorSend, (_e, text: string) =>
-    guard(() => agent.directorSay(String(text ?? '').slice(0, 500)))
-  )
+  // chat：无会话时自动按当前选中场次起 prep 会话再投递（选中场次即可开聊，不必先启动场次）
+  ipcMain.handle(IPC.directorSend, async (_e, text: string) => {
+    try {
+      await agent.chat(String(text ?? '').slice(0, 500))
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
 
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
@@ -767,6 +773,16 @@ if (!single) {
     agent.onSceneAdvanced = () => {
       const loaded = launch.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 新场景装载话术 ${loaded} 条`)
+    }
+    // 主播自己开播（start_live 工具）：跟「启动场次」按钮走同一条 LaunchService.launch，预检拦截如实回报
+    agent.onGoLive = async () => {
+      const planId = storage.getConfig().live.activePlanId
+      if (!planId) return '没有选中场次，开不了播'
+      const wasRunning = agent!.status().state !== 'stopped'
+      const result = await launch.launch(planId)
+      if (!result.ok) return `开播被预检拦下了：${result.error}`
+      if (!wasRunning) bus!.emit('stream.started', {}, 'agent')
+      return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
     }
     // 滚动补货：池见底时把当前场景的就绪底稿装回去循环轮播，别等主播现场救火
     bus.subscribe((event) => {

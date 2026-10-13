@@ -63,6 +63,8 @@ export interface AnchorToolDeps {
   getSpeakingPaused?: () => boolean
   /** 会话用途：prep=写稿备播（say/insert_next 关闭，产出只走 write_drafts），live=直播中 */
   getPurpose?: () => 'prep' | 'live'
+  /** 正式启动当前场次开播（start_live）：返回开播结果或预检拦截原因 */
+  onGoLive?: () => Promise<string>
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
@@ -81,7 +83,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     setPlanVoice,
     onPlaybackControl,
     getSpeakingPaused,
-    getPurpose
+    getPurpose,
+    onGoLive
   } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
@@ -580,6 +583,22 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
           onPlaybackControl?.('skip')
           return '已跳过当前这条'
         })
+    }),
+    defineTool({
+      name: 'start_live',
+      label: '开始直播',
+      description:
+        '正式启动当前场次开播（装载底稿、打开播出通道、开始接评论）。只有导演明确说「开播 / 开始直播」才用；备稿、闲聊、彩排阶段别碰。预检不过会返回缺什么，按提示补齐后再试。',
+      parameters: Type.Object({}),
+      execute: async () => {
+        try {
+          if (getPurpose?.() === 'live') return ok('已经在直播了，不用重复开播')
+          if (!onGoLive) return ok('开播通道没接上，让导演从界面点「启动场次」')
+          return ok(await onGoLive())
+        } catch (error) {
+          return ok(`开播失败：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
     })
   ]
 }
@@ -602,6 +621,7 @@ export const ANCHOR_TOOL_NAMES = [
   'pause_broadcast',
   'resume_broadcast',
   'skip_current',
+  'start_live',
   'search_knowledge',
   'check_price',
   'lookup_viewer',

@@ -365,9 +365,35 @@ export class TtsService {
     }
   }
 
-  /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。 */
-  async synthesize(itemId: string, text: string, voiceId?: string, signal?: AbortSignal): Promise<string> {
-    return this.synthesizeWithRoute(itemId, text, this.route(voiceId), signal)
+  /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。
+   *  instruction：这次合成专用的表演指示（agent 写的 delivery）；模型支持语气指令才生效，
+   *  会覆盖接入上配的静态 instruction 并参与缓存键（不同演法不串缓存） */
+  async synthesize(
+    itemId: string,
+    text: string,
+    voiceId?: string,
+    signal?: AbortSignal,
+    instruction?: string
+  ): Promise<string> {
+    return this.synthesizeWithRoute(itemId, text, this.withInstruction(this.route(voiceId), instruction), signal)
+  }
+
+  /** delivery 覆盖路由的静态 instruction（模型标了 instruction 才生效；参与缓存键不串味） */
+  private withInstruction(route: TtsRoute, instruction?: string): TtsRoute {
+    const trimmed = instruction?.trim()
+    if (!trimmed || !route.model.instruction) return route
+    return { ...route, params: { ...route.params, instruction: trimmed } }
+  }
+
+  /** 这条音色路由所属服务商的预合成请求间隔（config 没显式配时的默认值，来自 manifest 的官方限流档） */
+  synthIntervalFor(voiceId?: string): number {
+    try {
+      const route = this.route(voiceId)
+      const def = getTtsProvider(route.provider)
+      return def?.defaultSynthIntervalMs ?? 500
+    } catch {
+      return 500
+    }
   }
 
   /**
@@ -676,9 +702,10 @@ export class TtsService {
   async *synthesizeBailianStream(
     text: string,
     voiceId?: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    instruction?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    const route = this.route(voiceId)
+    const route = this.withInstruction(this.route(voiceId), instruction)
     const apiKey = String(route.connection.params.apiKey ?? '')
     const sampleRate = asNumber(route.params.sample_rate, 24000)
 

@@ -671,6 +671,8 @@ function registerIpc(
     const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
     const result = await launch.launch(String(id ?? ''))
     if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
+    // 0 就绪开播：底稿还在后台合成，开播空隙叫「续写补给」顶上（agent 现场编一段，不冷场）
+    if (result.ok && (result.loaded ?? 0) === 0) bus.emit('pool.low', { remaining: 0 }, 'system')
     return result
   })
   /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
@@ -808,8 +810,13 @@ if (!single) {
       sendLevel: broadcastLevel,
       sendEnd: broadcastAudioEnd
     })
-    // 播放循环搬到了主进程：渲染层不再参与播放调度
-    playback = new PlaybackLoop(pool, () => ttsStream, pipeline, () => storage.getConfig().live.bitGapMs)
+    // 播放循环搬到了主进程：渲染层不再参与播放调度。留白优先听 agent 的（set_gap），没调走系统默认
+    playback = new PlaybackLoop(
+      pool,
+      () => ttsStream,
+      pipeline,
+      () => agent?.currentGapMs() ?? storage.getConfig().live.bitGapMs
+    )
     playback.start()
 
     // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（任何事件源下游都无感知）
@@ -868,6 +875,8 @@ if (!single) {
       const result = await launch.launch(planId)
       if (!result.ok) return `开播被预检拦下了：${result.error}`
       if (!wasLive) bus!.emit('stream.started', {}, 'agent')
+      // 0 就绪开播：后台合成还没出活，开播空隙叫「续写补给」顶上
+      if ((result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
       return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
     }
     // 滚动补货：池见底时把当前场景的就绪底稿装回去循环轮播，别等主播现场救火

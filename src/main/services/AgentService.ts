@@ -96,6 +96,8 @@ export class AgentService {
   private exchanges = 0
   /** 本场运行态音色（场次指定；set_voice 工具可热改；空 = 用当前人设卡的音色） */
   private planVoiceId = ''
+  /** 本场运行态段间留白（set_gap 工具可热改；-1 = 跟随系统默认 config.live.bitGapMs） */
+  private planGapMs = -1
   /** 播报是否被暂停：暂停时评论/触发器不再派给 LLM，say 也说不出去（统一开播控制里的「暂停」） */
   private speakingPaused = false
   /** 本场的事件接线（直播模式预设包，会话启动时按场次 modeId 解析冻结） */
@@ -139,8 +141,13 @@ export class AgentService {
   private contextWindow = 0
   /** system prompt + 工具表的固定开销（tokens，会话出生时估一次） */
   private contextOverhead = 0
-  /** 上下文估算缓存：消息条数没变就不重算（status 广播很勤，全量估算不便宜） */
-  private contextCache: { messagesLength: number; tokens: number } = { messagesLength: -1, tokens: 0 }
+  /** 上下文估算缓存：消息条数没变就不重算（status 广播很勤，全量估算不便宜）；
+   *  生成中（text_delta 不停进）每 2 秒兜底重估一次，不然流式期间仪表像死的 */
+  private contextCache: { messagesLength: number; tokens: number; at: number } = {
+    messagesLength: -1,
+    tokens: 0,
+    at: 0
+  }
 
   constructor(
     private readonly storage: StorageService,
@@ -159,6 +166,16 @@ export class AgentService {
   /** 设置本场音色（开播装载时写入场次音色；运行中热切换音色也走这里） */
   setPlanVoice(voiceId: string): void {
     this.planVoiceId = voiceId.trim()
+  }
+
+  /** 设置本场段间留白（set_gap 工具；0 = 回系统默认） */
+  setPlanGap(gapMs: number): void {
+    this.planGapMs = gapMs > 0 ? gapMs : -1
+  }
+
+  /** 当前生效的段间留白（PlaybackLoop 每次取）：agent 调过用它的，没调返回 undefined 走系统默认 */
+  currentGapMs(): number | undefined {
+    return this.state !== 'stopped' && this.planGapMs > 0 ? this.planGapMs : undefined
   }
 
   /**
@@ -193,18 +210,19 @@ export class AgentService {
     }
   }
 
-  /** 当前上下文估算（tokens）：消息估算 + system/工具表固定开销；条数没变用缓存 */
+  /** 当前上下文估算（tokens）：消息估算 + system/工具表固定开销；条数没变用缓存，生成中超 2 秒重估 */
   private currentContextTokens(): number {
     const messages = this.session?.state.messages
     if (!messages) return 0
-    if (this.contextCache.messagesLength !== messages.length) {
+    const stale = this.generating && Date.now() - this.contextCache.at > 2000
+    if (this.contextCache.messagesLength !== messages.length || stale) {
       let tokens = this.contextOverhead
       try {
         tokens += estimateContextTokens(messages as readonly Message[]).tokens
       } catch {
         // 估算失败就给出已知开销，别影响状态广播
       }
-      this.contextCache = { messagesLength: messages.length, tokens }
+      this.contextCache = { messagesLength: messages.length, tokens, at: Date.now() }
     }
     return this.contextCache.tokens
   }
@@ -281,7 +299,7 @@ export class AgentService {
     this.exchanges = 0
     // 新一场总是从"能说话"开始（上一场可能是暂停状态停掉的）
     this.speakingPaused = false
-    // 开场白由「开场白」触发器（stream.started → task）负责，见 TriggerRuntime
+    // 没有开场白触发器：开场由底稿 hook 段承担（按创作序第一个播）；0 就绪开播由「续写补给」现场顶
   }
 
   /** 把当前会话的消息存进 DB（场次即会话：stop/切场/每轮结束时都存，崩溃也丢不了多少）。
@@ -351,6 +369,9 @@ export class AgentService {
     this.draft = ''
     this.lastComment = null
     this.generating = false
+    // 音色/留白是运行态：下一场从人设默认重新开始
+    this.planVoiceId = ''
+    this.planGapMs = -1
     this.wiring = null
     // 攒批没发出去的评论随会话一起清掉
     if (this.commentBatchTimer) clearTimeout(this.commentBatchTimer)
@@ -530,7 +551,6 @@ export class AgentService {
     if (plan.personaId && plan.personaId !== this.persona.get().id) {
       this.persona.setActive(plan.personaId)
     }
-    this.setPlanVoice(plan.voiceId)
     await this.start('prep', this.restoredMessagesFor(plan.id))
   }
 
@@ -551,12 +571,11 @@ export class AgentService {
     }
     // 换场次：旧会话存回它自己场次名下，目标场次恢复它原来的对话接着写；同场次复用
     if (this.session && this.script.getActive().plan?.id !== plan.id) await this.stop()
-    // 资产切换跟开播装载同一套：场次 → 人设 → 音色
+    // 资产切换跟开播装载同一套：场次 → 人设（音色归主播：人设默认音色，set_voice 运行时可换）
     this.script.setActivePlan(plan.id)
     if (plan.personaId && plan.personaId !== this.persona.get().id) {
       this.persona.setActive(plan.personaId)
     }
-    this.setPlanVoice(plan.voiceId)
     if (!this.session) await this.start('prep', this.restoredMessagesFor(plan.id))
     this.directorSay(this.composeDraftBrief(plan, script))
   }
@@ -1039,7 +1058,7 @@ export class AgentService {
         content: [{ type: 'text', text: systemPrompt }],
         timestamp: 0
       } as unknown as AgentMessage) + TOOL_SCHEMA_OVERHEAD_TOKENS
-    this.contextCache = { messagesLength: -1, tokens: 0 }
+    this.contextCache = { messagesLength: -1, tokens: 0, at: 0 }
 
     const agent = new Agent({
       initialState: {
@@ -1060,6 +1079,7 @@ export class AgentService {
           onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
           onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
           setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
+          setPlanGap: (ms) => this.setPlanGap(ms),
           onPlaybackControl: (action) => this.onPlaybackControl?.(action),
           getSpeakingPaused: () => this.speakingPaused,
           getPurpose: () => this.sessionPurpose,

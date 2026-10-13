@@ -132,6 +132,7 @@ interface SpeechRow {
   status: unknown
   audio_path: unknown
   speech_text: unknown
+  delivery: unknown
   stream: unknown
   origin_utterance_id: unknown
   para_id: unknown
@@ -190,6 +191,7 @@ function rowToItem(row: SpeechRow): SpeechItem {
     status: (str(row.status) || 'pending') as SpeechStatus,
     audioPath: str(row.audio_path) || undefined,
     speechText: str(row.speech_text) || undefined,
+    delivery: str(row.delivery) || undefined,
     stream: num(row.stream) === 1,
     originUtteranceId: str(row.origin_utterance_id) || undefined,
     paraId: str(row.para_id) || undefined,
@@ -409,6 +411,8 @@ export class StorageService {
     this.ensureColumn('speech_items', 'stream', 'INTEGER NOT NULL DEFAULT 0')
     // 语音稿（显示稿与念法分离）
     this.ensureColumn('speech_items', 'speech_text', 'TEXT')
+    // 现场表演指示（情绪/语气）：模型支持语气指令时随这次合成发出去
+    this.ensureColumn('speech_items', 'delivery', 'TEXT')
     // 连贯段落标记（段落合成切句产物，见 shared/paragraph.ts）
     this.ensureColumn('speech_items', 'para_id', 'TEXT')
     this.ensureColumn('speech_items', 'para_pos', 'INTEGER')
@@ -1445,9 +1449,9 @@ export class StorageService {
       .prepare(
         `INSERT INTO speech_items
          (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
-          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, stream,
+          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, stream,
           origin_utterance_id, para_id, para_pos, para_len, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -1465,6 +1469,7 @@ export class StorageService {
         item.status,
         item.audioPath ?? null,
         item.speechText ?? null,
+        item.delivery ?? null,
         item.stream ? 1 : 0,
         item.originUtteranceId ?? null,
         item.paraId ?? null,

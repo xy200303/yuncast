@@ -63,6 +63,8 @@ export interface AnchorToolDeps {
   }) => void
   /** 运行态换音色（set_voice） */
   setPlanVoice?: (voiceId: string) => void
+  /** 运行态调段间留白（set_gap）：0 = 回系统默认 */
+  setPlanGap?: (gapMs: number) => void
   /** 播报控制（pause/resume/skip）：广播到渲染进程执行 */
   onPlaybackControl?: (action: PlaybackControlAction) => void
   /** 播报是否被暂停：暂停期间 say / insert_next 直接拒（说出去的话收不回） */
@@ -87,6 +89,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
     onSceneAdvanced,
     onDirectorAsk,
     setPlanVoice,
+    setPlanGap,
     onPlaybackControl,
     getSpeakingPaused,
     getPurpose,
@@ -153,11 +156,13 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       description:
         '说内容给观众听，排进话术池队列等待播出。现场短句（回评论/过渡/互动）一次说一句完整口语；' +
         '要播一个完整桥段（故事/讲解/包袱，多句 150~350 字）就把整段一次传进来——整段合成语气连贯，别拆成单句多次调。' +
-        'role 参数用于编剧模式：以某个角色的口吻写台词。',
+        'role 参数用于编剧模式：以某个角色的口吻写台词。' +
+        'delivery 写这句话的表演指示（情绪/语气，一句话，如「压低声音像说悄悄话」）——会真的拿去控制合成语气，模型支持语气指令才生效。',
       parameters: Type.Object({
         text: Type.String({ description: '要说的话：一句短评，或一整段桥段' }),
         voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
-        role: Type.Optional(Type.String({ description: '角色名（编剧模式），台词按该角色音色播出' }))
+        role: Type.Optional(Type.String({ description: '角色名（编剧模式），台词按该角色音色播出' })),
+        delivery: Type.Optional(Type.String({ description: '表演指示（情绪/语气，一句话），随这次合成发给模型' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
@@ -167,6 +172,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           pool.say({
             text: params.text,
             voiceId,
+            delivery: params.delivery,
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'scene'
           })
@@ -700,6 +706,22 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const voiceId = String(params.voiceId ?? '').trim()
           setPlanVoice?.(voiceId)
           return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它` : '已清掉场次音色，回到人设卡的音色'
+        })
+    }),
+    defineTool({
+      name: 'set_gap',
+      label: '调段间留白',
+      description:
+        '调直播的段间留白（毫秒）：正常内容播完一条后的停顿。秒杀/快节奏调小（比如 400），讲故事/宣讲调大（比如 2000）；' +
+        '传 0 回到系统默认。插播/回评论永远不等留白，不用你操心。',
+      parameters: Type.Object({
+        gapMs: Type.Number({ description: '留白毫秒数，0 = 回系统默认' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const ms = Math.max(0, Math.min(10000, Math.floor(Number(params.gapMs) || 0)))
+          setPlanGap?.(ms)
+          return ms > 0 ? `段间留白已调成 ${ms}ms，下一条正常内容开始生效` : '已回系统默认留白'
         })
     }),
     defineTool({

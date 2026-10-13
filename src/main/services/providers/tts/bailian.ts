@@ -231,5 +231,7 @@ export const bailianTtsProvider: TtsProviderManifest = {
   links: [
     { label: '去百炼控制台拿 API Key', url: 'https://bailian.console.aliyun.com/?tab=model#/api-key' },
     { label: '查看 Qwen-TTS 文档', url: 'https://help.aliyun.com/zh/model-studio/qwen-tts-api' }
-  ]
+  ],
+  // 百炼限流文档：Qwen-TTS/CosyVoice RPM 180（RPS 3），留余量取 400ms
+  defaultSynthIntervalMs: 400
 }

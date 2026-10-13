@@ -138,7 +138,8 @@ export class PlaybackLoop {
           onChunk: (pcm, sampleRate) => session.push(pcm, sampleRate),
           onEnd: () => session.end(),
           onError: (error) => session.fail(error)
-        }
+        },
+        item.delivery
       )
       return session.done
     }

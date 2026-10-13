@@ -172,11 +172,12 @@ export class UtteranceService {
 
     let done = 0
     let failed = 0
-    // 合成队列节奏（config.tts）：请求最小间隔对付服务商频率限制；瞬时错误退避重试
+    // 合成队列节奏（config.tts）：间隔 0 = 跟随服务商默认（按官方限流文档配在 manifest 里）；瞬时错误退避重试
     const { synthIntervalMs, synthRetries } = this.storage.getConfig().tts
     let lastRequestAt = 0
-    const pace = async () => {
-      const waitMs = synthIntervalMs - (Date.now() - lastRequestAt)
+    const pace = async (voice: string) => {
+      const interval = synthIntervalMs > 0 ? synthIntervalMs : this.tts.synthIntervalFor(voice || undefined)
+      const waitMs = interval - (Date.now() - lastRequestAt)
       if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
       lastRequestAt = Date.now()
     }
@@ -197,7 +198,7 @@ export class UtteranceService {
         this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
         onProgress?.({ ...u, status: 'synthesizing' })
         try {
-          await pace()
+          await pace(voice)
           const audioPath = await this.synthesizeWithRetry(u, voice, synthRetries, signal)
           this.storage.utteranceSetPara([u.id], '')
           this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
@@ -233,7 +234,8 @@ export class UtteranceService {
         await new Promise((resolve) => setTimeout(resolve, 2000 * attempt))
       }
       try {
-        return await this.tts.synthesize(`utterance-${u.id}`, u.text, voice || undefined, signal)
+        // delivery（agent 写的表演指示）随这次合成发给支持语气指令的模型——演法真正落到声音上
+        return await this.tts.synthesize(`utterance-${u.id}`, u.text, voice || undefined, signal, u.delivery || undefined)
       } catch (error) {
         lastError = error
         const message = error instanceof Error ? error.message : String(error)

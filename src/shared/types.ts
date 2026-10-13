@@ -113,7 +113,7 @@ export interface TtsConfig {
   realtime: boolean
   /** 语气指令（instruction，≤100 字符）：自然语言描述语音表现，如「语速稍快，语气热情」 */
   instruction: string
-  /** 批量预合成队列：两次合成请求的最小间隔（毫秒），对付服务商的频率限制；0 = 不限 */
+  /** 批量预合成队列：两次合成请求的最小间隔（毫秒）。0 = 跟随服务商默认（按官方限流文档配在 manifest 里：火山 50 / 百炼 400） */
   synthIntervalMs: number
   /** 批量预合成队列：瞬时错误的重试次数（指数退避 2s/4s）；鉴权类硬错误不重试 */
   synthRetries: number
@@ -140,7 +140,7 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   speed: 1.0,
   realtime: false,
   instruction: '',
-  synthIntervalMs: 500,
+  synthIntervalMs: 0,
   synthRetries: 2,
   format: 'mp3',
   sampleRate: 24000,
@@ -406,7 +406,9 @@ export function parseAppConfig(input: unknown): AppConfig {
     workspaceId: typeof ttsRow.workspaceId === 'string' ? ttsRow.workspaceId : '',
     instruction: typeof ttsRow.instruction === 'string' ? ttsRow.instruction : '',
     synthIntervalMs:
-      typeof ttsRow.synthIntervalMs === 'number' && ttsRow.synthIntervalMs >= 0
+      // 迁移：500 是「全局限流」时代的默认，那时天天写进库；现在限流归服务商 manifest，
+      // 500 按没配过处理（跟随服务商），否则它就成了用户看不见也改不掉的隐藏覆盖
+      typeof ttsRow.synthIntervalMs === 'number' && ttsRow.synthIntervalMs >= 0 && ttsRow.synthIntervalMs !== 500
         ? ttsRow.synthIntervalMs
         : DEFAULT_TTS_CONFIG.synthIntervalMs,
     synthRetries:
@@ -520,6 +522,8 @@ export interface SpeechItem {
   audioPath?: string
   /** 语音稿：真正送进 TTS 的文本（已把 @昵称 转成自然称呼）；空则用 text */
   speechText?: string
+  /** 现场表演指示（情绪/语气，一句话）：模型支持语气指令时随这次合成发出去（agent 的 say delivery） */
+  delivery?: string
   /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播（tts.realtime 开启时） */
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
@@ -541,6 +545,8 @@ export interface SpeechItem {
 export interface PoolSayInput {
   text: string
   voiceId?: string
+  /** 现场表演指示（情绪/语气，一句话）：模型支持语气指令时随合成发出去 */
+  delivery?: string
   lane?: SpeechLane
   sourceKind?: SpeechSourceKind
   sourceAgentId?: string
@@ -1022,7 +1028,7 @@ export interface LivePlan {
   currentSceneIdx: number
   genConfig: PlanGenConfig
   knowledgeScope: PlanKnowledgeScope
-  /** 场次指定音色（四层优先级最高：场次 > 角色 > 人设）；空 = 用场次绑的人设卡的音色 */
+  /** @deprecated 音色归主播 agent 定（人设默认音色 + set_voice 运行时），场次不再指定；字段保留兼容老库，读取忽略 */
   voiceId: string
   createdAt: number
   updatedAt: number

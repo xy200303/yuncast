@@ -42,19 +42,21 @@ export class TtsStreamService {
     return this.sessions.has(sessionId)
   }
 
-  /** 开始一次流式合成；返回 sessionId。chunk 以 onChunk 回调吐出，节奏按真实播放速率。 */
+  /** 开始一次流式合成；返回 sessionId。chunk 以 onChunk 回调吐出，节奏按真实播放速率。
+   *  instruction：这次合成专用的表演指示（agent 的 say delivery），模型支持语气指令才生效 */
   async start(
     sessionId: string,
     text: string,
     voiceId: string | undefined,
-    handlers: Omit<TtsStreamSession, 'sessionId'>
+    handlers: Omit<TtsStreamSession, 'sessionId'>,
+    instruction?: string
   ): Promise<void> {
     const abort = new AbortController()
     this.sessions.set(sessionId, { abort })
 
     let firstChunkSent = false
     try {
-      for await (const chunk of this.streamChunks(text, voiceId, abort.signal)) {
+      for await (const chunk of this.streamChunks(text, voiceId, abort.signal, instruction)) {
         if (abort.signal.aborted) break
         if (!firstChunkSent) {
           firstChunkSent = true
@@ -89,27 +91,29 @@ export class TtsStreamService {
   private async *streamChunks(
     text: string,
     voiceId: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    instruction?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     // 路由到百炼且模型标了 streaming 的音色直接用它的 SSE 真流式（接口已按官方文档核实）
     const route = this.tts.routeForVoice(voiceId)
     if (route.provider === 'bailian' && route.model.streaming && route.connection.realtime) {
-      yield* this.tts.synthesizeBailianStream(text, voiceId, signal)
+      yield* this.tts.synthesizeBailianStream(text, voiceId, signal, instruction)
       return
     }
     // 其余情况（火山整段合成 / 模型未开放流式）：整段合成 → 解码 → 切块
-    yield* this.chunkedFallback(text, voiceId, signal)
+    yield* this.chunkedFallback(text, voiceId, signal, instruction)
   }
 
   private async *chunkedFallback(
     text: string,
     voiceId: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    instruction?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     let tempFile = ''
     try {
       // 一次合成到缓存（将来这里换成服务商流式读取循环，下游不变）
-      tempFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal)
+      tempFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal, instruction)
       if (signal.aborted) return
       // 解码成管线口径（48k 单声道），不在这里节流
       const pcm = await decodeToPcm(tempFile, { channels: 1 })

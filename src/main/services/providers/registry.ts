@@ -170,6 +170,12 @@ export interface TtsProviderManifest {
   /** 模型目录（含每模型的参数声明与系统音色目录） */
   models: TtsModelSpec[]
   links: { label: string; url: string }[]
+  /**
+   * 批量预合成的请求间隔默认值（毫秒，按官方限流文档配）：
+   * 火山语音合成并发 100（并发制，串行无压力）；百炼 Qwen-TTS/CosyVoice RPM 180 / RPS 3（留余量）。
+   * config.tts.synthIntervalMs > 0 时以用户值为准
+   */
+  defaultSynthIntervalMs: number
 }
 
 const TTS_PROVIDER_DEFS: TtsProviderManifest[] = [volcanoTtsProvider, bailianTtsProvider]

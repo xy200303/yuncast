@@ -90,11 +90,11 @@ export class PersonaService {
   }
 
   /**
-   * 本场生效的音色（docs/07 §8.5 四层优先级）：场次 > 显式 voice > 角色 > 人设卡。
-   * 话术库预合成与开播装载共用它，保证「音频是用哪把声音合成的」两边判断一致。
+   * 本场生效的音色：人设卡默认音色 + 角色/显式覆盖（docs/07 §8.5）。
+   * 音色归主播 agent 定——场次不再指定音色（旧字段忽略），预合成与开播装载共用同一判定。
    */
-  resolvePlanVoice(plan: LivePlan | null | undefined, role?: string, voice?: string): string | undefined {
-    return resolveVoice(this.get(), role, voice, plan?.voiceId ?? '')
+  resolvePlanVoice(_plan: LivePlan | null | undefined, role?: string, voice?: string): string | undefined {
+    return resolveVoice(this.get(), role, voice)
   }
 
   /** 组装主播 Agent 的 system prompt：角色/场次段在代码里拼好，主模板走主播手册（system.anchor）。
@@ -118,7 +118,7 @@ ${persona.roles.map((r) => `- ${r.name}：${r.style}`).join('\n')}
     const planSection = plan
       ? `\n# 本场直播
 - 场次：${plan.name}
-- 主题方向：${plan.theme || '（未设定，自由发挥）'}${plan.styleHint ? `\n- 演出形式：${plan.styleHint}` : ''}${modePromptModule ? `\n${modePromptModule}` : ''}${
+- 主题方向：${plan.theme || '（未设定，自由发挥）'}${modePromptModule ? `\n${modePromptModule}` : ''}${
           script
             ? `
 - 剧本场景序列（用 advance_scene 逐场推进，每场播得差不多就推进）：

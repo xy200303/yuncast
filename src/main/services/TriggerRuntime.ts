@@ -75,20 +75,19 @@ const LEGACY_TEMPLATES: Record<string, string[]> = {
  */
 const BUILTIN_DEFAULT_DISABLED = new Set(['整点带节奏'])
 
+/**
+ * 已下线的内建触发器：模板没改过的旧行直接删掉。
+ * 开场白下线——开场由底稿 hook 段承担（按 seq 第一个播，预合成零 token），
+ * 不再让 agent 例行 say（烧 token、刷对话区、还和底稿重复）
+ */
+const BUILTIN_REMOVED: Record<string, string> = {
+  开场白:
+    '直播开始了。用 say 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。'
+}
+
 /** 内建触发器模板（首次启动播种，用户可关可改） */
 export function builtinTriggers(): TriggerInput[] {
   return [
-    {
-      name: '开场白',
-      enabled: true,
-      on: { event: 'stream.started' },
-      target: {
-        agentId: 'anchor',
-        mode: 'task',
-        promptTemplate:
-          '直播开始了。用 say 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。'
-      }
-    },
     {
       name: '欢迎新人',
       enabled: true,
@@ -207,6 +206,11 @@ export class TriggerRuntime {
   /** 内建触发器按名播种：库里缺的补上；模板升级时，没被用户改过的旧默认模板跟着换新版 */
   private seedMissingBuiltins(): void {
     const byName = new Map(this.storage.triggerList().map((t) => [t.name, t]))
+    // 已下线的内建触发器：模板没改过的旧行清掉
+    for (const [name, template] of Object.entries(BUILTIN_REMOVED)) {
+      const row = byName.get(name)
+      if (row && (row.target.promptTemplate ?? '') === template) this.storage.triggerDelete(row.id)
+    }
     for (const input of builtinTriggers()) {
       const row = byName.get(input.name)
       if (!row) {

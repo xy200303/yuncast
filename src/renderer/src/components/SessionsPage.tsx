@@ -29,14 +29,11 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { ProviderIcon } from '@/components/ProviderIcon'
-import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
-import { flattenModelCatalog, groupCloneVoices } from '../lib/voice'
 import { useAppStore } from '../stores/useAppStore'
 import {
   BIT_TYPES,
@@ -55,8 +52,7 @@ import {
   type Product,
   type Script,
   type Utterance,
-  type UtteranceStatus,
-  type VoiceRecord
+  type UtteranceStatus
 } from '../../../shared/types'
 
 const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
@@ -73,7 +69,6 @@ export function SessionsPage() {
   const [plans, setPlans] = useState<LivePlan[]>([])
   const [scripts, setScripts] = useState<Script[]>([])
   const [personas, setPersonas] = useState<Persona[]>([])
-  const [voices, setVoices] = useState<VoiceRecord[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [files, setFiles] = useState<KnowledgeFile[]>([])
   const [modes, setModes] = useState<LiveMode[]>([])
@@ -87,11 +82,10 @@ export function SessionsPage() {
   const activePlanId = config.live.activePlanId
 
   const reload = useCallback(async () => {
-    const [p, s, pe, v, pr, f, m] = await Promise.all([
+    const [p, s, pe, pr, f, m] = await Promise.all([
       window.api.plan.list(),
       window.api.script.list(),
       window.api.persona.list(),
-      window.api.voice.list(),
       window.api.knowledge.listProducts(),
       window.api.knowledge.listFiles(),
       window.api.mode.list()
@@ -99,7 +93,6 @@ export function SessionsPage() {
     setPlans(p)
     setScripts(s)
     setPersonas(pe)
-    setVoices(v)
     setProducts(pr)
     setFiles(f)
     setModes(m)
@@ -231,7 +224,6 @@ export function SessionsPage() {
         plan={editing?.plan}
         scripts={scripts}
         personas={personas}
-        voices={voices}
         products={products}
         files={files}
         modes={modes}
@@ -286,13 +278,12 @@ export function SessionsPage() {
   )
 }
 
-/** 场次新建/编辑弹窗（docs/07 §8.5 场次完整清单的可配置子集） */
+/** 场次新建/编辑弹窗（人设（必选）/模式/剧本/知识库/成本阀；音色归主播自己定，生成时长语气归生成弹窗） */
 function PlanDialog({
   open,
   plan,
   scripts,
   personas,
-  voices,
   products,
   files,
   modes,
@@ -303,7 +294,6 @@ function PlanDialog({
   plan?: LivePlan
   scripts: Script[]
   personas: Persona[]
-  voices: VoiceRecord[]
   products: Product[]
   files: KnowledgeFile[]
   modes: LiveMode[]
@@ -313,7 +303,8 @@ function PlanDialog({
   const [form, setForm] = useState<LivePlanInput>({
     name: plan?.name ?? '',
     theme: plan?.theme ?? '',
-    personaId: plan?.personaId ?? null,
+    // 场次必须绑主播：默认跟当前主播（列表按 active DESC 排，第一个就是；旧表单值优先）
+    personaId: plan?.personaId ?? personas[0]?.id ?? null,
     styleHint: plan?.styleHint ?? '',
     modeId: plan?.modeId || DEFAULT_MODE_ID,
     plannedMinutes: plan?.plannedMinutes ?? DEFAULT_PLANNED_MINUTES,
@@ -322,8 +313,6 @@ function PlanDialog({
     knowledgeScope: plan?.knowledgeScope ?? DEFAULT_PLAN_KNOWLEDGE_SCOPE,
     voiceId: plan?.voiceId ?? ''
   })
-  const ttsConnections = useAppStore((s) => s.ttsConnections)
-  const ttsProviders = useAppStore((s) => s.ttsProviders)
   const [busy, setBusy] = useState(false)
 
   const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
@@ -342,6 +331,10 @@ function PlanDialog({
 
   const submit = () => {
     if (!form.name.trim() || busy) return
+    if (!form.personaId) {
+      toast.error('场次必须绑定主播人设卡')
+      return
+    }
     setBusy(true)
     void window.api.plan
       .save(form, plan?.id)
@@ -387,16 +380,15 @@ function PlanDialog({
 
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="mb-1">主播人设卡</Label>
+              <Label className="mb-1">主播人设卡（必选）</Label>
               <Select
-                value={form.personaId ?? 'none'}
-                onValueChange={(v) => setForm({ ...form, personaId: v === 'none' ? null : v })}
+                value={form.personaId ?? ''}
+                onValueChange={(v) => setForm({ ...form, personaId: v || null })}
               >
                 <SelectTrigger className="w-full">
-                  <SelectValue />
+                  <SelectValue placeholder="选择主播" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">不绑定（用当前主播）</SelectItem>
                   {personas.map((persona) => (
                     <SelectItem key={persona.id} value={persona.id}>
                       {persona.name}
@@ -404,39 +396,31 @@ function PlanDialog({
                   ))}
                 </SelectContent>
               </Select>
+              <p className="mt-1 text-xs text-muted-foreground">音色由主播自己定（人设默认音色 + 直播中可自己换）</p>
             </div>
             <div>
-              <Label className="mb-1">演出形式</Label>
-              <Input
-                value={form.styleHint}
-                onChange={(e) => setForm({ ...form, styleHint: e.target.value })}
-                placeholder="单口 / 对口相声 / 幽默风…"
-              />
+              <Label className="mb-1">直播模式</Label>
+              <Select
+                value={form.modeId || DEFAULT_MODE_ID}
+                onValueChange={(v) => setForm({ ...form, modeId: v })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {modes.map((mode) => (
+                    <SelectItem key={mode.id} value={mode.id}>
+                      {mode.name}
+                      {mode.builtIn ? '（内置）' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {modes.find((m) => m.id === (form.modeId || DEFAULT_MODE_ID))?.description ??
+                  '演出形式已并入模式：模式决定怎么接外部事件、按什么角色定位演；自定义去「模式库」'}
+              </p>
             </div>
-          </div>
-
-          <div>
-            <Label className="mb-1">直播模式</Label>
-            <Select
-              value={form.modeId || DEFAULT_MODE_ID}
-              onValueChange={(v) => setForm({ ...form, modeId: v })}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {modes.map((mode) => (
-                  <SelectItem key={mode.id} value={mode.id}>
-                    {mode.name}
-                    {mode.builtIn ? '（内置）' : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {modes.find((m) => m.id === (form.modeId || DEFAULT_MODE_ID))?.description ??
-                '模式决定主播怎么接外部事件、按什么角色定位演；自定义模式去「模式库」建'}
-            </p>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -450,7 +434,7 @@ function PlanDialog({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">不绑定（自由发挥）</SelectItem>
+                  <SelectItem value="none">不绑定（主播自己编）</SelectItem>
                   {scripts.map((script) => (
                     <SelectItem key={script.id} value={script.id}>
                       {script.title}（{script.scenes.length} 场）
@@ -459,45 +443,8 @@ function PlanDialog({
                 </SelectContent>
               </Select>
               {scripts.length === 0 && (
-                <p className="mt-1 text-xs text-muted-foreground">还没有剧本，去「知识库」页底部建一个</p>
+                <p className="mt-1 text-xs text-muted-foreground">还没有剧本，去「知识库」页底部建一个；不绑主播也能自己编</p>
               )}
-            </div>
-            <div>
-              <Label className="mb-1">场次音色（覆盖人设音色）</Label>
-              <Select
-                value={form.voiceId || 'none'}
-                onValueChange={(v) => setForm({ ...form, voiceId: v === 'none' ? '' : v })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">不覆盖</SelectItem>
-                  {groupCloneVoices(
-                    voices.filter((v) => v.status === 'ready' && v.voiceType),
-                    ttsConnections,
-                    flattenModelCatalog(ttsProviders)
-                  ).map((group) => (
-                    <SelectGroup key={group.key}>
-                      <SelectLabel className="flex items-center gap-2">
-                        <ProviderIcon providerId={group.provider} size="sm" />
-                        <span>
-                          {group.connectionLabel} · {group.modelLabel}
-                        </span>
-                      </SelectLabel>
-                      {group.voices.map((voice) => (
-                        <SelectItem key={voice.id} value={voice.voiceType}>
-                          {voice.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                列出音色库所有已就绪的克隆音色（按服务商分组）：没配接入的那家选中后会就地提示
-              </p>
-              <VoiceProviderHint voiceId={form.voiceId} />
             </div>
           </div>
 

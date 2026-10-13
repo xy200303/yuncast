@@ -1175,25 +1175,28 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             <Button variant="ghost" size="icon-sm" onClick={() => void pickAttachment()} title="添加附件">
               <Paperclip />
             </Button>
-            <ContextMeter tokens={agent.contextTokens} window={agent.contextWindow} />
-            {agent.busy ? (
-              <Button
-                size="icon-sm"
-                onClick={() => void window.api.agent.abort()}
-                title="停止这一轮生成（会话保留，可继续对话）"
-              >
-                <Square className="fill-current" />
-              </Button>
-            ) : (
-              <Button
-                size="icon-sm"
-                disabled={!canSend}
-                onClick={() => send(input)}
-                title="发送（Enter）"
-              >
-                <SendHorizontal />
-              </Button>
-            )}
+            {/* 右移容器：仪表在不在，发送/停止钮都钉在最右；仪表来了就贴着它 */}
+            <div className="ml-auto flex items-center gap-1">
+              <ContextMeter tokens={agent.contextTokens} window={agent.contextWindow} />
+              {agent.busy ? (
+                <Button
+                  size="icon-sm"
+                  onClick={() => void window.api.agent.abort()}
+                  title="停止这一轮生成（会话保留，可继续对话）"
+                >
+                  <Square className="fill-current" />
+                </Button>
+              ) : (
+                <Button
+                  size="icon-sm"
+                  disabled={!canSend}
+                  onClick={() => send(input)}
+                  title="发送（Enter）"
+                >
+                  <SendHorizontal />
+                </Button>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -1213,7 +1216,7 @@ function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; wind
   const r = 7
   const circumference = 2 * Math.PI * r
   return (
-    <div className="group relative ml-auto flex items-center pr-1">
+    <div className="group relative flex items-center pr-1">
       <div className="pointer-events-none absolute -top-8 right-0 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-[10px] text-background opacity-0 shadow-md transition-opacity group-hover:opacity-100">
         使用 {fmt(tokens)} / {fmt(contextWindow)} tokens（{Math.round(ratio * 100)}%）· 含 system 与工具表，快涨满时自动压缩
       </div>

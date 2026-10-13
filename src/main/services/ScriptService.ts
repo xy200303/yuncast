@@ -67,6 +67,8 @@ export class ScriptService {
 
   savePlan(input: LivePlanInput, id?: string): LivePlan {
     if (!input.name.trim()) throw new Error('场次名称不能为空')
+    // 场次必须绑主播：音色/人格/模型都跟人设卡走，没有「用当前主播」这种模糊态
+    if (!input.personaId) throw new Error('场次必须绑定主播人设卡')
     const existing = id ? (this.storage.planList().find((p) => p.id === id) ?? null) : null
     const planned = Math.round(Number(input.plannedMinutes))
     const plan: LivePlan = {

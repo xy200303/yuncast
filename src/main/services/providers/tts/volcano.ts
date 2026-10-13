@@ -150,5 +150,7 @@ export const volcanoTtsProvider: TtsProviderManifest = {
   links: [
     { label: '去火山语音控制台拿 API Key', url: 'https://console.volcengine.com/speech/app' },
     { label: '查看 V3 接入文档', url: 'https://www.volcengine.com/docs/6561/1598757' }
-  ]
+  ],
+  // 火山语音合成是并发制（文档：并发 100），串行逐条合成碰不到限流，间隔意思一下
+  defaultSynthIntervalMs: 50
 }

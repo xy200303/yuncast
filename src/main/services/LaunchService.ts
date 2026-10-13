@@ -264,7 +264,6 @@ export class LaunchService {
         this.persona.setActive(plan.personaId)
         switched = true
       }
-      this.agent.setPlanVoice(plan.voiceId)
       const loaded = this.loadSceneUtterances(plan.id)
       // 有没合成的底稿就后台开蒸：0 就绪也允许开播（预检只是警告），边合成边补装，不空转
       void this.utterances.kickSynthesis(plan.id)

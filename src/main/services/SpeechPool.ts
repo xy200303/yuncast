@@ -154,6 +154,7 @@ export class SpeechPool {
       expiresAt: input.expiresAt,
       replyTo: input.replyTo,
       speechText: speechText !== text ? speechText : undefined,
+      delivery: input.delivery?.trim() || undefined,
       originUtteranceId: input.originUtteranceId,
       paraId: input.paraId?.trim() || undefined,
       paraPos: input.paraPos,
@@ -405,7 +406,8 @@ export class SpeechPool {
         item.id,
         item.speechText || textAtStart,
         item.voiceId || undefined,
-        controller.signal
+        controller.signal,
+        item.delivery
       )
       if (controller.signal.aborted) return
       const current = this.storage.speechGet(item.id)

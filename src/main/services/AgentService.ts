@@ -159,7 +159,7 @@ export class AgentService {
     const connection = persona.modelConnectionId
       ? this.storage.connectionGet(persona.modelConnectionId)
       : null
-    const { llm } = this.storage.getConfig()
+    const { llm, agent } = this.storage.getConfig()
     return fingerprint(
       JSON.stringify({
         persona: [
@@ -178,6 +178,8 @@ export class AgentService {
           ? [connection.providerId, connection.models, connection.params]
           : null,
         legacy: [llm.provider, llm.model, llm.apiKey, llm.baseUrl],
+        // 上下文窗口覆盖写进会话出生时的 models.json，改了要新会话才生效
+        agent: [agent.contextWindow],
         plan: [plan?.id, plan?.personaId, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
         script: script ? [script.title, script.scenes] : null
       })
@@ -549,7 +551,11 @@ export class AgentService {
 
   private async createSession(resolved: ResolvedModel): Promise<AgentSession> {
     const agentDir = join(app.getPath('userData'), 'pi')
-    const { model, modelRuntime, modelLabel } = await prepareLlmModel(resolved, agentDir)
+    const { model, modelRuntime, modelLabel } = await prepareLlmModel(
+      resolved,
+      agentDir,
+      this.storage.getConfig().agent.contextWindow
+    )
     this.modelLabel = modelLabel
     // 记下出生时的资产指纹：之后 UI 靠它判断"本场是不是旧版本"
     this.sessionFingerprint = this.assetFingerprint()

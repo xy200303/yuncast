@@ -399,11 +399,25 @@ function LlmSection() {
   const providers = useAppStore((s) => s.llmProviders)
   const setConnections = useAppStore((s) => s.setConnections)
   const refreshPersona = useAppStore((s) => s.refreshPersona)
+  const contextWindow = useAppStore((s) => s.config.agent.contextWindow)
+  const saveConfig = useAppStore((s) => s.saveConfig)
   const [editing, setEditing] = useState<{ connection?: ModelConnectionSafe } | null>(null)
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
   /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
   const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
+  const [contextWindowInput, setContextWindowInput] = useState(
+    contextWindow > 0 ? String(contextWindow) : ''
+  )
+
+  const saveContextWindow = (): void => {
+    const raw = contextWindowInput.trim()
+    const next = raw === '' ? 0 : Math.max(4096, Math.floor(Number(raw) || 0))
+    if (next === contextWindow) return
+    void saveConfig({ agent: { contextWindow: next } }).then(() => {
+      toast.success('上下文窗口已保存', { description: '对下一个会话生效（进行中的会话仍按旧窗口压缩）' })
+    })
+  }
 
   const test = (connection: ModelConnectionSafe) => setTesting(connection)
 
@@ -499,6 +513,21 @@ function LlmSection() {
       <p className="mt-3 text-xs text-muted-foreground">
         密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；主播卡各自指定用哪家的哪个模型。
       </p>
+
+      <div className="mt-3 flex items-center gap-2 border-t pt-3">
+        <span className="shrink-0 text-xs text-muted-foreground">上下文窗口</span>
+        <Input
+          value={contextWindowInput}
+          onChange={(e) => setContextWindowInput(e.target.value.replace(/[^\d]/g, ''))}
+          onBlur={saveContextWindow}
+          placeholder="自动"
+          inputMode="numeric"
+          className="h-7 w-28 text-xs"
+        />
+        <span className="text-xs text-muted-foreground">
+          tokens，留空按服务商默认（DeepSeek 64k / 其他 128k）。对话涨到「窗口 − 16k」时自动把旧消息压缩成摘要；改动对下个会话生效
+        </span>
+      </div>
 
       {editing && (
         <ConnectionEditorDialog

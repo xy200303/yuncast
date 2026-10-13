@@ -150,6 +150,12 @@ export const IPC = {
   /** 切场景：跳剧本场景 + 装载新场景话术库 */
   planGotoScene: 'plan:goto-scene',
 
+  // 直播模式（模式预设包：内置可复制，自定义可增删改）
+  modeList: 'mode:list',
+  modeSave: 'mode:save',
+  modeDelete: 'mode:delete',
+  modeDuplicate: 'mode:duplicate',
+
   // 话术库（场次底稿）
   utteranceList: 'utterance:list',
   utteranceSave: 'utterance:save',

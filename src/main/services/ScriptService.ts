@@ -75,6 +75,7 @@ export class ScriptService {
       theme: input.theme.trim(),
       personaId: input.personaId ?? null,
       styleHint: input.styleHint?.trim() ?? '',
+      modeId: input.modeId?.trim() ?? '',
       // 下限保护：低于 5 分钟的「预设」没有推算意义（一场至少得有几条底稿）
       plannedMinutes: Math.max(
         MIN_PLANNED_MINUTES,

@@ -22,6 +22,7 @@ import {
   type PoolSnapshot,
   type ProductInput,
   type ScriptInput,
+  type LiveModeInput,
   type LivePlanInput,
   type SpeechItem,
   type SpeechLane,
@@ -40,6 +41,7 @@ import { PromptTemplateService } from './services/PromptTemplateService'
 import { AgentService } from './services/AgentService'
 import { KnowledgeService } from './services/KnowledgeService'
 import { MemoryService } from './services/MemoryService'
+import { ModeService } from './services/ModeService'
 import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
@@ -314,6 +316,7 @@ function registerIpc(
   prompts: PromptTemplateService,
   knowledge: KnowledgeService,
   memory: MemoryService,
+  modes: ModeService,
   bus: EventBus,
   triggers: TriggerRuntime,
   script: ScriptService,
@@ -666,6 +669,16 @@ function registerIpc(
     launch.gotoScene(String(planId ?? ''), Math.floor(Number(index) || 0))
   )
 
+  // ---------- 直播模式（模式预设包） ----------
+  ipcMain.handle(IPC.modeList, () => modes.list())
+  ipcMain.handle(IPC.modeSave, (_e, input: LiveModeInput, id?: string) =>
+    guard(() => modes.save(input, id))
+  )
+  ipcMain.handle(IPC.modeDelete, (_e, id: string) => guard(() => modes.remove(String(id ?? ''))))
+  ipcMain.handle(IPC.modeDuplicate, (_e, id: string) =>
+    guard(() => modes.duplicate(String(id ?? '')))
+  )
+
   // ---------- 话术库（场次底稿） ----------
   ipcMain.handle(IPC.utteranceList, (_e, planId: string) => utterances.list(String(planId)))
   ipcMain.handle(IPC.utteranceSave, (_e, input: UtteranceInput, id?: string) =>
@@ -750,6 +763,7 @@ if (!single) {
     const persona = new PersonaService(storage, prompts)
     const knowledge = new KnowledgeService(storage)
     const memory = new MemoryService(storage)
+    const modes = new ModeService(storage)
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
     // 场次底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、场次启动都用它）
@@ -763,6 +777,7 @@ if (!single) {
       prompts,
       knowledge,
       memory,
+      modes,
       script,
       utterances,
       broadcastAgent,
@@ -770,6 +785,9 @@ if (!single) {
       broadcastDirectorTimeline
     )
     triggers = new TriggerRuntime(storage, bus, pool, agent)
+    // 模式接线：触发器总闸/进场过滤跟着当前场次模式走；老粉判定接观众画像
+    triggers.wiringProvider = () => agent!.currentWiring()
+    triggers.fanChecker = (author) => Boolean(memory.lookupViewer(author))
     streamSvc = new StreamService(storage, broadcastStream)
 
     // 音频管线（唯一音频权威）：解码/排播/混音/音量都在这。
@@ -861,7 +879,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, launch)
+    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, modes, bus, triggers, script, streamSvc, connector, utterances, launch)
     createWindow(storage)
 
     app.on('activate', () => {

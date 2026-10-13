@@ -204,6 +204,13 @@ const DEFAULT_PROMPTS = {
     content: `[观众评论] {{author}} 说：「{{content}}」{{profileHint}}
 值得回应就用 insert_next 回一句（口语、简短）；答不上来的商品信息先用 search_knowledge / check_price 查；聊出值得记住的偏好就顺手 remember_viewer 记一笔；不值得回应就忽略它，继续你的节奏。`
   },
+  'user.comment_batch': {
+    label: '观众评论攒批注入',
+    description: '互动模式攒批派评论时的包装（一窗口一批）。变量：{{comments}}（评论列表，含画像提示）',
+    content: `[观众评论·这一批]
+{{comments}}
+挑值得回应的回（insert_next，口语、简短），别逐条都回、也别打断自己正在讲的桥段；答不上来的商品信息先用 search_knowledge / check_price 查；值得记住的偏好顺手 remember_viewer 记一笔；好评论是素材，可以编进下一个桥段；其余的忽略，继续你的节奏。`
+  },
   'user.draft_brief': {
     label: '写稿任务书',
     description: '编剧模式开场派给主播的写稿任务。变量：{{plannedMinutes}} {{total}} {{scenes}} {{toneHintLine}}',

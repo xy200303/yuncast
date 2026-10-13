@@ -73,11 +73,13 @@ export class PersonaService {
     return resolveVoice(this.get(), role, voice, plan?.voiceId ?? '')
   }
 
-  /** 组装主播 Agent 的 system prompt：角色/场次段在代码里拼好，主模板走主播手册（system.anchor） */
+  /** 组装主播 Agent 的 system prompt：角色/场次段在代码里拼好，主模板走主播手册（system.anchor）。
+   *  modePromptModule：直播模式预设包的角色定位模块，拼进「本场直播」段（怎么演由模式包说，内容仍 agent 自编） */
   buildSystemPrompt(
     persona: Persona,
     plan?: LivePlan | null,
-    script?: Script | null
+    script?: Script | null,
+    modePromptModule = ''
   ): string {
     const voice = persona.voiceId
 
@@ -92,7 +94,7 @@ ${persona.roles.map((r) => `- ${r.name}：${r.style}`).join('\n')}
     const planSection = plan
       ? `\n# 本场直播
 - 场次：${plan.name}
-- 主题方向：${plan.theme || '（未设定，自由发挥）'}${plan.styleHint ? `\n- 演出形式：${plan.styleHint}` : ''}${
+- 主题方向：${plan.theme || '（未设定，自由发挥）'}${plan.styleHint ? `\n- 演出形式：${plan.styleHint}` : ''}${modePromptModule ? `\n${modePromptModule}` : ''}${
           script
             ? `
 - 剧本场景序列（用 advance_scene 逐场推进，每场播得差不多就推进）：

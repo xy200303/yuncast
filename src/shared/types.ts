@@ -965,6 +965,8 @@ export interface LivePlan {
   personaId: string | null
   /** 演出形式提示（单口/对口相声/幽默/朗诵…，注入 system prompt；docs/07 §5.6） */
   styleHint: string
+  /** 直播模式 id（modes 表；'' = 默认互动模式）：事件接线 + 角色定位提示词模块 */
+  modeId: string
   /** 预设直播时长（分钟）：开播向导按它推算本场底稿规模，预检拿就绪覆盖比对 */
   plannedMinutes: number
   scriptId: string | null
@@ -980,18 +982,93 @@ export interface LivePlan {
 
 export type LivePlanInput = Omit<LivePlan, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
 
+/** 场次没选模式（老数据）时回落到它 */
+export const DEFAULT_MODE_ID = 'interactive'
+
 /** 新建场次的表单初值（场次页 PlanDialog 用） */
 export const DEFAULT_LIVE_PLAN_INPUT: LivePlanInput = {
   name: '',
   theme: '',
   personaId: null,
   styleHint: '',
+  modeId: DEFAULT_MODE_ID,
   plannedMinutes: DEFAULT_PLANNED_MINUTES,
   scriptId: null,
   genConfig: DEFAULT_PLAN_GEN_CONFIG,
   knowledgeScope: DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   voiceId: ''
 }
+
+// ---------- 直播模式（数据化预设包：事件接线 + 角色定位提示词模块；基座工具层不含「该怎么播」的意志） ----------
+
+export interface LiveModeWiring {
+  /** 评论怎么进主播脑子：off=不派（纯直播不被打扰）/ batched=攒批一起派 / full=逐条即派 */
+  comments: 'off' | 'batched' | 'full'
+  /** batched 时的攒批窗口（秒） */
+  commentBatchSec: number
+  /** 进场事件：off=不理 / fans=只欢迎老粉 / all=都欢迎 */
+  entrances: 'off' | 'fans' | 'all'
+  /** 自动化触发器总开关：关 = 主播全身心演自己的，不被任何外部事件打扰 */
+  triggers: boolean
+}
+
+export interface LiveMode {
+  id: string
+  name: string
+  /** 一句话说明（场次页模式下拉里展示） */
+  description: string
+  wiring: LiveModeWiring
+  /** 模式提示词模块：拼进主播 system prompt 的「本场直播」段，告诉主播这场该怎么演 */
+  promptModule: string
+  /** 内置模式不可删、不可原地改，复制一份再改 */
+  builtIn: boolean
+  updatedAt: number
+}
+
+export type LiveModeInput = Omit<LiveMode, 'id' | 'builtIn' | 'updatedAt'>
+
+const DEFAULT_COMMENT_BATCH_SEC = 15
+
+/** 内置模式：启动时按 id 整行覆盖播种（用户在库里改不动它们，只能复制）；内容随代码发布升级 */
+export const BUILTIN_MODES: readonly (LiveModeInput & { id: string })[] = [
+  {
+    id: 'interactive',
+    name: '互动直播',
+    description: '边播边和观众互动：评论攒批派给主播，老粉进场会提醒，自动化触发器全开',
+    wiring: { comments: 'batched', commentBatchSec: DEFAULT_COMMENT_BATCH_SEC, entrances: 'fans', triggers: true },
+    promptModule: `- 直播模式：互动直播。边播边和观众互动——评论会攒批派给你，挑值得回的回，其余的别理；
+  老粉进场会提醒你，要表现出记得他；好评论是素材，编进下一个桥段里
+- 互动是调味料，主线节奏别丢：别为了回评论把正在讲的桥段拦腰打断`,
+  },
+  {
+    id: 'pure',
+    name: '纯直播',
+    description: '宣讲/轮播：主播全身心投入自己的表演，评论、进场、触发器全部不接',
+    wiring: { comments: 'off', commentBatchSec: DEFAULT_COMMENT_BATCH_SEC, entrances: 'off', triggers: false },
+    promptModule: `- 直播模式：纯直播（宣讲/轮播）。全身心投入自己的表演，按剧本和底稿推进；
+  观众评论和进场事件不会派给你，自动化触发器也已关闭——没有任何外部打扰，节奏完全自己掌握
+- 池快空了就自己续写（返场不返词），别停；这场播得好不好全看你的内容`,
+  },
+  {
+    id: 'crosstalk',
+    name: '相声/段子场',
+    description: '以包袱和段子为主线：一人分饰多角用角色音色，拿观众评论现挂',
+    wiring: { comments: 'batched', commentBatchSec: 30, entrances: 'off', triggers: true },
+    promptModule: `- 直播模式：相声/段子场。以包袱和段子为主线——铺垫、再铺垫、抖包袱，节奏自己掌；
+  一人分饰多角时用 say 的 role 参数写角色台词（编剧模式，按角色音色播出）
+- 歇后语、顺口溜、贯口、现挂（拿观众刚说的话当场编包袱）都是武器；卖点揉进段子里讲，别干巴巴报参数
+- 评论攒批派给你：能现挂的就现挂，不能的别理`,
+  },
+  {
+    id: 'flash',
+    name: '秒杀/逼单场',
+    description: '短促快节奏：反复捶价格锚点和稀缺感，CTA 密度高但不复读',
+    wiring: { comments: 'batched', commentBatchSec: 10, entrances: 'off', triggers: true },
+    promptModule: `- 直播模式：秒杀/逼单场。短促快节奏，桥段偏短，反复捶价格锚点、稀缺感和截止时间；
+  所有数字必须 check_price 实时核过，库存紧张的说法不许编
+- CTA（催单）密度可以高，但同样的话不许连着说——换角度捶：算账、对比、场景、倒计时轮着来`,
+  }
+]
 
 // ---------- 话术库（docs/07 §3 utterances：场次底稿库，与运行态 speech_items 分工） ----------
 

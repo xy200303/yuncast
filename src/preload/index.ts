@@ -17,6 +17,8 @@ import type {
   KnowledgeFile,
   LiveComment,
   LiveEvent,
+  LiveMode,
+  LiveModeInput,
   LivePlan,
   LivePlanInput,
   LaunchResult,
@@ -342,6 +344,14 @@ const api = {
         title?: string
         error?: string
       }>
+  },
+  mode: {
+    list: () => ipcRenderer.invoke(IPC.modeList) as Promise<LiveMode[]>,
+    save: (input: LiveModeInput, id?: string) =>
+      ipcRenderer.invoke(IPC.modeSave, input, id) as Promise<PoolResult<LiveMode>>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.modeDelete, id) as Promise<PoolResult>,
+    /** 复制一份（内置模式的定制入口） */
+    duplicate: (id: string) => ipcRenderer.invoke(IPC.modeDuplicate, id) as Promise<PoolResult<LiveMode>>
   },
   utterance: {
     list: (planId: string) => ipcRenderer.invoke(IPC.utteranceList, planId) as Promise<Utterance[]>,

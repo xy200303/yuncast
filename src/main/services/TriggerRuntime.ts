@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { LiveEvent, Trigger, TriggerInput } from '../../shared/types'
+import type { LiveEvent, LiveModeWiring, Trigger, TriggerInput } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { EventBus } from './EventBus'
 import type { SpeechPool } from './SpeechPool'
@@ -164,6 +164,13 @@ export class TriggerRuntime {
   private buffers = new Map<string, AggregateBuffer>()
   /** 全局 LLM 速率帽：滑动窗口时间戳 */
   private llmFiredAt: number[] = []
+  /**
+   * 直播模式接线（index.ts 接上，通常指向 AgentService.currentWiring）：
+   * wiring.triggers=false（纯直播）整个运行时不响；entrances 过滤进场类事件
+   */
+  wiringProvider: (() => LiveModeWiring) | null = null
+  /** 老粉判定（entrances='fans' 时过滤欢迎新人）：index.ts 接到 MemoryService */
+  fanChecker: ((author: string) => boolean) | null = null
 
   constructor(
     private readonly storage: StorageService,
@@ -234,6 +241,19 @@ export class TriggerRuntime {
   private onEvent(event: LiveEvent): void {
     // 开播重置单场预算
     if (event.type === 'stream.started') this.firedThisSession.clear()
+
+    // 模式接线总闸：纯直播（triggers=false）主播全身心演自己的，外部事件（进场/点赞/冷场/整点）一概不打扰；
+    // 但 stream.started（开场白）是开播信号不是打扰，照常放行
+    const wiring = this.wiringProvider?.()
+    if (wiring && !wiring.triggers && event.type !== 'stream.started') return
+    // 进场类事件按接线过滤：off 不理；fans 只欢迎老粉
+    if (event.type === 'viewer.join' && wiring) {
+      if (wiring.entrances === 'off') return
+      if (wiring.entrances === 'fans') {
+        const author = String(event.payload.author ?? event.payload.name ?? '')
+        if (!author || !(this.fanChecker?.(author) ?? false)) return
+      }
+    }
 
     for (const trigger of this.triggers) {
       if (!trigger.enabled || trigger.on.event !== event.type) continue

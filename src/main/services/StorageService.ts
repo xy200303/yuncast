@@ -24,6 +24,8 @@ import {
   type Product,
   type Script,
   type LivePlan,
+  type LiveMode,
+  type LiveModeWiring,
   type SpeechItem,
   type SpeechLane,
   type SpeechReplyTo,
@@ -367,6 +369,20 @@ export class StorageService {
     this.ensureColumn('live_plans', 'voice_id', "TEXT NOT NULL DEFAULT ''")
     // 预设直播时长（分钟）：开播向导按它推算底稿规模
     this.ensureColumn('live_plans', 'planned_minutes', 'INTEGER NOT NULL DEFAULT 60')
+    // 直播模式（modes 表 id；'' = 老数据，运行时回落到默认互动模式）
+    this.ensureColumn('live_plans', 'mode_id', "TEXT NOT NULL DEFAULT ''")
+    // 直播模式预设包（docs/07 §5.6 模式层：事件接线 + 角色定位提示词模块；内置行随代码整行覆盖播种）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS modes (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        wiring TEXT NOT NULL DEFAULT '{}',
+        prompt_module TEXT NOT NULL DEFAULT '',
+        built_in INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL
+      )
+    `)
     // 场次话术库（docs/07 §3 utterances：底稿库，与运行态 speech_items 分工）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS utterances (
@@ -1900,6 +1916,7 @@ export class StorageService {
           theme: str(r.theme),
           personaId: str(r.persona_id) || null,
           styleHint: str(r.style_hint),
+          modeId: str(r.mode_id),
           scriptId: str(r.script_id) || null,
           currentSceneIdx: num(r.current_scene_idx) ?? 0,
           genConfig: { ...DEFAULT_PLAN_GEN_CONFIG, ...parseJson<Partial<PlanGenConfig>>(r.gen_config, {}) },
@@ -1918,12 +1935,13 @@ export class StorageService {
   planSave(plan: LivePlan): void {
     this.db
       .prepare(
-        `INSERT INTO live_plans (id, name, theme, persona_id, style_hint, planned_minutes, script_id,
+        `INSERT INTO live_plans (id, name, theme, persona_id, style_hint, mode_id, planned_minutes, script_id,
                                  current_scene_idx, gen_config, knowledge_scope, voice_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, theme = excluded.theme,
            persona_id = excluded.persona_id, style_hint = excluded.style_hint,
+           mode_id = excluded.mode_id,
            planned_minutes = excluded.planned_minutes,
            script_id = excluded.script_id, gen_config = excluded.gen_config,
            knowledge_scope = excluded.knowledge_scope, voice_id = excluded.voice_id,
@@ -1935,6 +1953,7 @@ export class StorageService {
         plan.theme,
         plan.personaId ?? null,
         plan.styleHint,
+        plan.modeId,
         plan.plannedMinutes,
         plan.scriptId ?? null,
         plan.currentSceneIdx,
@@ -1954,6 +1973,56 @@ export class StorageService {
   /** 场景推进进度落库（断播能续） */
   planSetSceneIdx(id: string, idx: number): void {
     this.db.prepare('UPDATE live_plans SET current_scene_idx = ? WHERE id = ?').run(idx, id)
+  }
+
+  // ---------- 直播模式（模式预设包） ----------
+
+  modeList(): LiveMode[] {
+    return this.db
+      .prepare('SELECT * FROM modes ORDER BY built_in DESC, updated_at ASC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
+        return {
+          id: str(r.id),
+          name: str(r.name),
+          description: str(r.description),
+          wiring: parseJson<LiveModeWiring>(r.wiring, {
+            comments: 'batched',
+            commentBatchSec: 15,
+            entrances: 'fans',
+            triggers: true
+          }),
+          promptModule: str(r.prompt_module),
+          builtIn: num(r.built_in) === 1,
+          updatedAt: num(r.updated_at) ?? 0
+        }
+      })
+  }
+
+  modeSave(mode: LiveMode): void {
+    this.db
+      .prepare(
+        `INSERT INTO modes (id, name, description, wiring, prompt_module, built_in, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name, description = excluded.description,
+           wiring = excluded.wiring, prompt_module = excluded.prompt_module,
+           built_in = excluded.built_in, updated_at = excluded.updated_at`
+      )
+      .run(
+        mode.id,
+        mode.name,
+        mode.description,
+        JSON.stringify(mode.wiring),
+        mode.promptModule,
+        mode.builtIn ? 1 : 0,
+        mode.updatedAt
+      )
+  }
+
+  modeDelete(id: string): void {
+    this.db.prepare('DELETE FROM modes WHERE id = ?').run(id)
   }
 
   // ---------- 话术库（utterances） ----------

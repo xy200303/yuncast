@@ -16,6 +16,7 @@ import {
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
+  type LiveModeWiring,
   type LivePlan,
   type PlaybackControlAction,
   type Script
@@ -27,6 +28,7 @@ import type { PersonaService } from './PersonaService'
 import type { PromptTemplateService } from './PromptTemplateService'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
+import type { ModeService } from './ModeService'
 import type { ScriptService } from './ScriptService'
 import type { UtteranceService } from './UtteranceService'
 import { buildAnchorTools } from './anchorTools'
@@ -94,6 +96,11 @@ export class AgentService {
   private planVoiceId = ''
   /** 播报是否被暂停：暂停时评论/触发器不再派给 LLM，say 也说不出去（统一开播控制里的「暂停」） */
   private speakingPaused = false
+  /** 本场的事件接线（直播模式预设包，会话启动时按场次 modeId 解析冻结） */
+  private wiring: LiveModeWiring | null = null
+  /** 评论攒批缓冲（wiring.comments === 'batched'）：窗口到了打包成一条派给主播 */
+  private commentBuffer: { comment: LiveComment; profileHint: string }[] = []
+  private commentBatchTimer: NodeJS.Timeout | null = null
   /** 场景推进后的装载钩子（LaunchService 接上：把新场景话术库载入池） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
   /** 主播自己开播（start_live 工具）：LaunchService 接上，返回给主播看的成败说明 */
@@ -134,6 +141,7 @@ export class AgentService {
     private readonly prompts: PromptTemplateService,
     private readonly knowledge: KnowledgeService,
     private readonly memory: MemoryService,
+    private readonly modes: ModeService,
     private readonly script: ScriptService,
     private readonly utterances: UtteranceService,
     private readonly broadcast: (status: AgentStatus) => void,
@@ -216,6 +224,8 @@ export class AgentService {
           : null,
         legacy: [llm.provider, llm.model, llm.apiKey, llm.baseUrl],
         plan: [plan?.id, plan?.personaId, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
+        // 直播模式（事件接线 + 演法模块）也是出生资产：换模式这场就得重开
+        mode: this.modes.fingerprint(plan?.modeId),
         script: script ? [script.title, script.scenes] : null,
         // 主播手册（提示词模板）任何一条改过，活着的会话都得重开才生效
         prompts: this.prompts.fingerprint()
@@ -238,6 +248,8 @@ export class AgentService {
     }
     this.sessionPurpose = purpose
     this.sessionPlanId = this.script.getActive().plan?.id ?? ''
+    // 冻结本场事件接线：纯直播不派评论不接触发器，互动直播攒批派评论（模式包运行时现查，换模式重开会话生效）
+    this.wiring = this.modes.resolve(this.script.getActive().plan?.modeId).wiring
     this.setState('running')
     this.startedAt = Date.now()
     this.exchanges = 0
@@ -313,6 +325,11 @@ export class AgentService {
     this.draft = ''
     this.lastComment = null
     this.generating = false
+    this.wiring = null
+    // 攒批没发出去的评论随会话一起清掉
+    if (this.commentBatchTimer) clearTimeout(this.commentBatchTimer)
+    this.commentBatchTimer = null
+    this.commentBuffer = []
     // 停了就不再收尾当前这一轮（abort 后可能还有事件飘过来）
     this.clearTextTimers()
     this.texts.clear()
@@ -329,28 +346,59 @@ export class AgentService {
     await this.start(this.sessionPurpose)
   }
 
-  /** 评论入口（连接器）：主播自己决定回不回、怎么回。老粉画像随评论注入。 */
+  /** 当前生效的事件接线（TriggerRuntime 也看它：触发器总开关/进场过滤）。会话没跑时按当前场次的模式现解 */
+  currentWiring(): LiveModeWiring {
+    return this.wiring ?? this.modes.resolve(this.script.getActive().plan?.modeId).wiring
+  }
+
+  /** 评论入口（连接器）：主播自己决定回不回、怎么回。老粉画像随评论注入；派不派、怎么派由模式接线决定。 */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     // 写稿会话不接评论：没开播，评论不存在也不该打断写稿
     if (this.sessionPurpose !== 'live') return
     // 暂停期间评论只进事件队列（EventBus 已记下），不派给 LLM（同 docs/07 §8.5 人工接管的处理）
     if (this.speakingPaused) return
-    // 先查画像（老粉识别），再记一次互动
+    // 先查画像（老粉识别），再记一次互动——纯直播也照记：不打扰主播，但观众资产照攒
     const known = this.memory.lookupViewer(comment.author)
     const isQuestion = /[?？]$/.test(comment.content.trim())
     this.memory.touchViewer(comment.author, isQuestion ? comment.content : undefined)
+    const wiring = this.currentWiring()
+    // 纯直播：评论根本不派给主播，全身心演自己的
+    if (wiring.comments === 'off') return
     this.lastComment = comment
-    const profileHint = known
-      ? `\n[老粉画像] ${comment.author}：${this.memory.describeViewer(known)}`
-      : '\n[新观众] 没见过这位观众'
+    const profileHint = known ? `老粉：${this.memory.describeViewer(known)}` : '新观众'
+    if (wiring.comments === 'batched') {
+      // 攒批：窗口内的评论打包成一条派，别让弹幕把主播的节奏切碎
+      this.commentBuffer.push({ comment, profileHint })
+      if (!this.commentBatchTimer) {
+        this.commentBatchTimer = setTimeout(
+          () => this.flushCommentBatch(),
+          Math.max(3, wiring.commentBatchSec) * 1000
+        )
+      }
+      return
+    }
     void this.ask(
       this.prompts.render('user.comment', {
         author: comment.author,
         content: comment.content,
-        profileHint
+        profileHint: `\n[${profileHint}]`
       })
     )
+  }
+
+  /** 攒批窗口到点：打包派给主播。窗口期间停了播/切了暂停就整批丢掉（同逐条派的暂停语义） */
+  private flushCommentBatch(): void {
+    this.commentBatchTimer = null
+    const batch = this.commentBuffer
+    this.commentBuffer = []
+    if (batch.length === 0) return
+    if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    if (this.sessionPurpose !== 'live' || this.speakingPaused) return
+    const comments = batch
+      .map(({ comment, profileHint }) => `- ${comment.author}：「${comment.content}」（${profileHint}）`)
+      .join('\n')
+    void this.ask(this.prompts.render('user.comment_batch', { comments }))
   }
 
   /** 触发器入口（docs/01 §3.5）：steer=生成中插一句，task=派一个任务。主播没在跑/已暂停就丢弃。 */
@@ -917,8 +965,9 @@ export class AgentService {
 
     const persona = this.persona.get()
     const { plan, script } = this.script.getActive()
+    const mode = this.modes.resolve(plan?.modeId)
     // 人设卡的音色即主播的嗓子，必选；没选时不留兜底，合成路由会直接报错（预检也会拦下）
-    const systemPrompt = this.persona.buildSystemPrompt(persona, plan, script)
+    const systemPrompt = this.persona.buildSystemPrompt(persona, plan, script, mode.promptModule)
 
     const agent = new Agent({
       initialState: {

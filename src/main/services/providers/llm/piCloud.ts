@@ -10,6 +10,18 @@ const EXTRA_MODEL_SUGGESTIONS: Partial<Record<LlmProvider, string[]>> = {
 }
 
 /**
+ * 各家上下文窗口（tokens）：只给自定义通道（models.json）用——内置目录里的模型以目录为准。
+ * 估大了不怕（撑爆会走溢出压缩自愈），估小了会白白频繁压缩，所以都按主流型号的上限填。
+ */
+const CONTEXT_WINDOWS: Partial<Record<LlmProvider, number>> = {
+  deepseek: 65536,
+  qwen: 131072,
+  doubao: 131072,
+  kimi: 131072,
+  zai: 131072
+}
+
+/**
  * 云端 OpenAI 兼容通道：DeepSeek / 通义千问 / 豆包 / Kimi / 智谱。
  * 这五家都是「一个密钥 + 可选自定义地址」，所以共用一个适配器，
  * 各自的 label / 默认模型 / 默认地址仍来自 shared/types 的 LLM_PROVIDER_META（不重复定义）。
@@ -21,7 +33,7 @@ export const piCloudProviders: LlmProviderDef[] = LLM_PROVIDERS.map((id) => {
     label: meta.label,
     icon: id,
     note: `OpenAI 兼容通道 · 默认模型 ${meta.defaultModel}`,
-    capabilities: { tools: true, streaming: true },
+    capabilities: { tools: true, streaming: true, contextWindow: CONTEXT_WINDOWS[id] },
     configFields: [
       {
         key: 'apiKey',

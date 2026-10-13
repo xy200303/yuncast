@@ -167,7 +167,19 @@ export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string)
   if (needModelsJson) {
     const providerEntry: Record<string, unknown> = isBuiltin
       ? { baseUrl }
-      : { baseUrl, api: 'openai-completions', models: [{ id: modelId }] }
+      : {
+          baseUrl,
+          api: 'openai-completions',
+          // 上下文窗口是自动压缩的标尺：不写 pi 会按 128k 估，窗口小的模型会撑爆才压缩
+          models: [
+            {
+              id: modelId,
+              ...(def.capabilities.contextWindow
+                ? { contextWindow: def.capabilities.contextWindow }
+                : {})
+            }
+          ]
+        }
     writeFileSync(modelsPath, JSON.stringify({ providers: { [providerId]: providerEntry } }, null, 2), 'utf8')
   } else {
     // 配置回退到默认时清掉旧的自定义文件，避免残留旧端点

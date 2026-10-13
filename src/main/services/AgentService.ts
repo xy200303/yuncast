@@ -100,6 +100,8 @@ export class AgentService {
   private lastTextMessageId: string | null = null
   /** 本轮是否已标过最终回复（agent_end / agent_settled 兜底时不重复推） */
   private turnFinalized = false
+  /** 正在进行的上下文压缩的时间线卡片 id（compaction_start 建、compaction_end 更新） */
+  private compactionCardId: string | null = null
 
   constructor(
     private readonly storage: StorageService,
@@ -227,6 +229,7 @@ export class AgentService {
     this.currentMessageId = null
     this.lastTextMessageId = null
     this.turnFinalized = true
+    this.compactionCardId = null
     this.setState('stopped')
   }
 
@@ -598,7 +601,12 @@ export class AgentService {
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),
-      settingsManager: SettingsManager.inMemory({ retry: { enabled: true, maxRetries: 2 } })
+      settingsManager: SettingsManager.inMemory({
+        retry: { enabled: true, maxRetries: 2 },
+        // 长会话自动压缩：上下文逼近窗口（窗口 - 16k）时把旧消息摘要成一段，保留最近 20k。
+        // pi 默认就开着，这里写死防上游改默认值——写稿/长直播都靠它撑住上下文
+        compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }
+      })
     })
 
     session.subscribe((event) => {
@@ -656,6 +664,38 @@ export class AgentService {
         }
         // 兜底：agent_end 没走到（异常/中断）也要把最终回复标出来
         this.finalizeTurn()
+      } else if (event.type === 'compaction_start') {
+        // 自动压缩（长写稿/长直播的救命机制）：上时间线让导演知道主播在"整理笔记"
+        this.compactionCardId = `compaction-${Date.now()}`
+        this.onDirectorTimeline?.({
+          turnId: this.turnId,
+          entry: {
+            type: 'tool',
+            id: this.compactionCardId,
+            name: 'context_compact',
+            args: event.reason === 'overflow' ? '上下文撑爆了，压缩后继续' : '上下文接近上限，把旧消息整理成摘要',
+            status: 'running'
+          }
+        })
+      } else if (event.type === 'compaction_end') {
+        const id = this.compactionCardId
+        this.compactionCardId = null
+        if (id) {
+          const result = event.result
+          this.onDirectorTimeline?.({
+            turnId: this.turnId,
+            entry: {
+              type: 'tool',
+              id,
+              name: 'context_compact',
+              status: result && !event.aborted ? 'ok' : 'error',
+              result: result
+                ? `压缩前约 ${Math.round(result.tokensBefore / 1000)}k tokens → 摘要 + 最近对话继续（不丢价格/口径等已查证事实）`
+                : (event.errorMessage ?? '压缩中断'),
+              isError: !result || event.aborted
+            }
+          })
+        }
       }
     })
 

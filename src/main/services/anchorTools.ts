@@ -1,11 +1,12 @@
 import { defineTool, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import type { LiveComment, Persona, PlaybackControlAction } from '../../shared/types'
+import type { LiveComment, Persona, PlaybackControlAction, UtteranceStatus } from '../../shared/types'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
+import type { UtteranceService } from './UtteranceService'
 
 /**
  * 主播 Agent 的工具表（docs/01 §3.3）。
@@ -37,6 +38,8 @@ export interface AnchorToolDeps {
   memory: MemoryService
   persona: PersonaService
   script: ScriptService
+  /** 场次底稿库（list/edit/add/remove_draft：导演口径调整落到底稿，长期生效） */
+  utterances: UtteranceService
   /** insert_next 挂 replyTo 用的最近评论 */
   getLastComment: () => LiveComment | null
   /** 场景推进后通知 AgentService 广播状态（提词器刷新） */
@@ -67,6 +70,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     memory,
     persona,
     script,
+    utterances,
     getLastComment,
     onSceneChanged,
     getPlanVoice,
@@ -84,6 +88,25 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       // 池/护栏错误如实告诉主播，让它换策略而不是崩溃
       return ok(`操作被拒绝：${error instanceof Error ? error.message : String(error)}`)
     }
+  }
+
+  // ---------- 底稿工具共用 ----------
+  const DRAFT_STATUS: Record<UtteranceStatus, string> = {
+    pending: '待合成',
+    synthesizing: '合成中',
+    ready: '就绪',
+    failed: '失败'
+  }
+  const activePlanId = (): string | null => script.getActive().plan?.id ?? null
+  const currentSceneId = (): string => script.currentScene()?.scene.id ?? ''
+  const sceneTitleOf = (sceneId: string): string => {
+    if (sceneId === '') return '全场通用'
+    const bound = script.getActive().script
+    return bound?.scenes.find((s) => s.id === sceneId)?.title ?? sceneId
+  }
+  const requirePlan = (): string | null => {
+    const planId = activePlanId()
+    return planId ? null : '当前没有场次，没有底稿可管'
   }
 
   return [
@@ -210,6 +233,121 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
         guardTool(() => {
           pool.revise(params.itemId, params.newText)
           return `已修订 ${params.itemId}：「${params.newText}」`
+        })
+    }),
+    defineTool({
+      name: 'list_drafts',
+      label: '看底稿',
+      description:
+        '看本场底稿库（开播前生成的话术底稿，轮播的骨架）：按关键词搜，或看当前场景的。改/删底稿前先用它拿条目 id。',
+      parameters: Type.Object({
+        keyword: Type.Optional(Type.String({ description: '按文本内容过滤，比如旧价格、卖点词' })),
+        scope: Type.Optional(
+          Type.Union([Type.Literal('scene'), Type.Literal('all')], {
+            description: 'scene=当前场景+全场通用（默认），all=全场次'
+          })
+        )
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const noPlan = requirePlan()
+          if (noPlan) return noPlan
+          const all = utterances.list(activePlanId()!)
+          const sceneId = currentSceneId()
+          let list =
+            params.scope === 'all'
+              ? all
+              : all.filter((u) => u.sceneId === sceneId || u.sceneId === '')
+          const kw = params.keyword?.trim()
+          if (kw) list = list.filter((u) => u.text.includes(kw))
+          if (list.length === 0) return kw ? `没有包含「${kw}」的底稿` : '这个范围还没有底稿'
+          const shown = list.slice(0, 30)
+          return (
+            `共 ${list.length} 条${list.length > 30 ? '，只列前 30 条' : ''}：\n` +
+            shown
+              .map((u) => `${u.id}｜${sceneTitleOf(u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${u.text}`)
+              .join('\n')
+          )
+        })
+    }),
+    defineTool({
+      name: 'edit_draft',
+      label: '改底稿',
+      description:
+        '改一条底稿的文本，长期生效（导演口径调整/价格修正/说法优化）。改完旧音频作废、后台自动重新合成；已经在池里没播的副本不受影响，要改用 revise_item。',
+      parameters: Type.Object({
+        id: Type.String({ description: '底稿条目 id（list_drafts 拿）' }),
+        text: Type.String({ description: '新文本，一句完整口语' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const noPlan = requirePlan()
+          if (noPlan) return noPlan
+          const planId = activePlanId()!
+          const existing = utterances.list(planId).find((u) => u.id === params.id.trim())
+          if (!existing) return `找不到底稿 ${params.id}（用 list_drafts 拿正确的 id）`
+          utterances.save(
+            {
+              planId,
+              sceneId: existing.sceneId,
+              variantIdx: existing.variantIdx,
+              text: params.text,
+              voiceId: existing.voiceId,
+              source: existing.source,
+              sources: existing.sources
+            },
+            existing.id
+          )
+          void utterances.kickSynthesis(planId)
+          return `已改：「${params.text}」。旧音频作废，后台重新合成中，好了之后轮播/装载就用新版`
+        })
+    }),
+    defineTool({
+      name: 'add_draft',
+      label: '补底稿',
+      description:
+        '把一个新说法记进底稿库（默认记到当前场景），合成完进入轮播。现场临时编的好说法值得记；想现在就播直接用 say，别用它。',
+      parameters: Type.Object({
+        text: Type.String({ description: '底稿文本，一句完整口语' }),
+        sceneId: Type.Optional(Type.String({ description: '记到哪个场景；不传记到当前场景，没有剧本则记为全场通用' }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const noPlan = requirePlan()
+          if (noPlan) return noPlan
+          const planId = activePlanId()!
+          const sceneId = params.sceneId?.trim() ?? currentSceneId()
+          const siblings = utterances.list(planId).filter((u) => u.sceneId === sceneId)
+          const variantIdx = siblings.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
+          utterances.save({
+            planId,
+            sceneId,
+            variantIdx,
+            text: params.text,
+            voiceId: '',
+            source: 'initial',
+            sources: []
+          })
+          void utterances.kickSynthesis(planId)
+          return `已记进底稿（${sceneTitleOf(sceneId)}），后台合成完成后进入轮播；想现在就说请用 say`
+        })
+    }),
+    defineTool({
+      name: 'remove_draft',
+      label: '删底稿',
+      description: '删一条底稿（说法过时/违规/不想再播）。已经在池里没播的副本不受影响，要撤用 revise_item 或等它播完。',
+      parameters: Type.Object({
+        id: Type.String({ description: '底稿条目 id（list_drafts 拿）' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const noPlan = requirePlan()
+          if (noPlan) return noPlan
+          const planId = activePlanId()!
+          const existing = utterances.list(planId).find((u) => u.id === params.id.trim())
+          if (!existing) return `找不到底稿 ${params.id}（用 list_drafts 拿正确的 id）`
+          utterances.remove(existing.id)
+          return `已删底稿：「${existing.text}」`
         })
     }),
     defineTool({
@@ -396,6 +534,10 @@ export const ANCHOR_TOOL_NAMES = [
   'get_pool_status',
   'get_recent_played',
   'revise_item',
+  'list_drafts',
+  'edit_draft',
+  'add_draft',
+  'remove_draft',
   'advance_scene',
   'goto_scene',
   'set_voice',

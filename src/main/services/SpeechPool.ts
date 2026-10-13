@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import {
+  LIBRARY_SOURCE_ID,
   POOL_LIMITS,
   SPEECH_LANES,
   SPEECH_SOURCE_KINDS,
@@ -112,10 +113,15 @@ export class SpeechPool {
       input.sourceKind && SPEECH_SOURCE_KINDS.includes(input.sourceKind) ? input.sourceKind : 'manual'
     const sourceAgentId = input.sourceAgentId?.trim() || 'human'
 
-    // 限流：每来源每分钟 20 条
+    // 限流：主播/人工/触发器每来源每分钟 20 条；底稿库装载（library）走宽松档——
+    // 场景底稿按波次重装（容量 50 一波），整版底稿一轮要装得下
+    const limit =
+      sourceAgentId === LIBRARY_SOURCE_ID
+        ? POOL_LIMITS.libraryPerSourcePerMinute
+        : POOL_LIMITS.perSourcePerMinute
     const recent = this.storage.speechCountBySourceSince(sourceAgentId, sourceKind, Date.now() - 60_000)
-    if (recent >= POOL_LIMITS.perSourcePerMinute) {
-      throw new Error('该来源发言过于频繁（每分钟最多 20 条），稍后再试')
+    if (recent >= limit) {
+      throw new Error(`该来源发言过于频繁（每分钟最多 ${limit} 条），稍后再试`)
     }
 
     // 去重：dedupeKey 命中未播条目直接合并（pending 可更新文本，合成中/就绪保持原样）

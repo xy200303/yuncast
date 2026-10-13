@@ -634,11 +634,8 @@ function registerIpc(
     guard(() => utterances.clear(String(planId), sceneId))
   )
   ipcMain.handle(IPC.utterancePresynth, async (_e, planId: string) => {
-    // 批量预合成：异步跑，逐条进度走 utteranceEvent；这里只回启动结果
-    void utterances
-      .synthesizeAll(String(planId), broadcastUtterance)
-      .then(() => broadcastUtteranceDone(String(planId)))
-      .catch(() => broadcastUtteranceDone(String(planId)))
+    // 批量预合成：异步跑（带场次锁，主播改底稿触发的重合成共用同一条流水线），进度走 utteranceEvent
+    void utterances.kickSynthesis(String(planId))
     return { ok: true }
   })
 
@@ -713,6 +710,10 @@ if (!single) {
     const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
+    // 场次底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、场次启动都用它）
+    const utterances = new UtteranceService(storage, tts, persona)
+    utterances.onEvent = (u) => broadcastUtterance(u)
+    utterances.onBatchDone = (planId) => broadcastUtteranceDone(planId)
     agent = new AgentService(
       storage,
       pool,
@@ -720,6 +721,7 @@ if (!single) {
       knowledge,
       memory,
       script,
+      utterances,
       broadcastAgent,
       // 对话时间线：文本流式 + 工具卡片，照 pi 事件流原样推到渲染层（docs/09 §11）
       broadcastDirectorTimeline
@@ -769,7 +771,6 @@ if (!single) {
     })
 
     // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）+ 场次启动（§8.5）
-    const utterances = new UtteranceService(storage, tts, persona)
     const generation = new GenerationService(storage, knowledge, utterances, persona, script, broadcastGeneration)
     const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
     // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
@@ -777,6 +778,13 @@ if (!single) {
       const loaded = launch.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 新场景装载话术 ${loaded} 条`)
     }
+    // 滚动补货：池见底时把当前场景的就绪底稿装回去循环轮播，别等主播现场救火
+    bus.subscribe((event) => {
+      if (event.type !== 'pool.empty') return
+      if (agent?.status().state !== 'running') return
+      const loaded = launch.loadActiveSceneUtterances()
+      if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
+    })
     // 主播请示（ask_director）：进导演对话面板高亮卡片；不阻塞直播（docs/07 §8.8.6 ④）
     agent.onDirectorAsk = (ask) => {
       broadcastDirector({

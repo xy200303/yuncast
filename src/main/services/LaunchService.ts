@@ -1,4 +1,5 @@
 import {
+  LIBRARY_SOURCE_ID,
   TTS_PROVIDER_SHORT,
   type LaunchResult,
   type PreflightItem,
@@ -18,8 +19,6 @@ import { resolveModelForPersona } from './llmModel'
 import { getLlmProvider } from './providers/registry'
 import { findCloneVoice } from '../../shared/voiceProvider'
 
-/** 装载进池的来源 id：不占主播自己的每分钟发言额度 */
-const LIBRARY_SOURCE_ID = 'library'
 /** 超过这么久没重测发音，预检提醒重测（docs/07 §8.5 语音可用性） */
 const VOICE_TEST_STALE_MS = 24 * 3600_000
 /** 就绪底稿覆盖到预设时长的这个比例，预检算「够播」（低于它提醒先补底稿） */
@@ -288,6 +287,10 @@ export class LaunchService {
     const sceneId = script.scenes[sceneIndex].id
     const library = this.utterances.list(plan.id)
     const ready = library.filter((u) => u.status === 'ready' && (u.sceneId === sceneId || u.sceneId === ''))
+    // 轮播公平排序：没进过池的优先，进过的按最久没进排——容量只装得下一波时，
+    // 每一波都换没播过的上，整个场景的底稿轮得到，队尾不饿死
+    const lastLoaded = this.storage.speechLastLoadedByOrigin()
+    ready.sort((a, b) => (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0))
     // 段落位置：同 paraId 的条目按库顺序数位置（整段合成切句产物，池里按它展示/调度）
     const paraGroups = new Map<string, Utterance[]>()
     for (const u of library) {

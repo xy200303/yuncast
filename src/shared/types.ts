@@ -558,15 +558,20 @@ export type PoolResult<T = undefined> =
 
 /** 池/合成的常量约束 */
 export const POOL_LIMITS = {
-  /** 池内容量上限（未播完条目） */
+  /** 池内容量上限（未播完条目）；超出场次的底稿按波次装载（轮播补货），不必一次全装 */
   capacity: 50,
-  /** 每来源每分钟限流 */
+  /** 每来源每分钟限流（主播/触发器/人工的硬限） */
   perSourcePerMinute: 20,
+  /** 底稿库装载来源（library）的宽松限流：整版底稿按波次重装，一轮要装得下 */
+  libraryPerSourcePerMinute: 300,
   /** 预合成窗口：队列前 N 条提前送 TTS */
   synthWindow: 5,
   /** 单条话术字数上限 */
   textMaxLength: 500
 } as const
+
+/** 底稿库装载进池的来源 id（限流走 library 档；不占主播自己的发言额度） */
+export const LIBRARY_SOURCE_ID = 'library'
 
 // ---------- 人设卡（Persona，主播 Agent 的人格） ----------
 

@@ -20,6 +20,7 @@ import type { PersonaService } from './PersonaService'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
+import type { UtteranceService } from './UtteranceService'
 import { ANCHOR_TOOL_NAMES, buildAnchorTools } from './anchorTools'
 import { prepareLlmModel, resolveModelForPersona } from './llmModel'
 import type { ResolvedModel } from './providers/registry'
@@ -102,6 +103,7 @@ export class AgentService {
     private readonly knowledge: KnowledgeService,
     private readonly memory: MemoryService,
     private readonly script: ScriptService,
+    private readonly utterances: UtteranceService,
     private readonly broadcast: (status: AgentStatus) => void,
     private readonly onDirectorTimeline?: (event: DirectorTimelineEvent) => void
   ) {}
@@ -521,6 +523,7 @@ export class AgentService {
         memory: this.memory,
         persona: this.persona,
         script: this.script,
+        utterances: this.utterances,
         getLastComment: () => this.lastComment,
         onSceneChanged: () => this.notifySceneChanged(),
         getPlanVoice: () => this.planVoiceId,

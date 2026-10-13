@@ -11,11 +11,44 @@ import type { PersonaService } from './PersonaService'
  * 直播中的改写不回写底稿（复盘采纳才回写，source='adopted'）。
  */
 export class UtteranceService {
+  /** 单条状态变化广播（index.ts 接 broadcastUtterance；预合成与底稿改后重合成共用） */
+  onEvent: ((u: Utterance) => void) | null = null
+  /** 一批合成结束广播（id='' 的特殊事件，UI 整体刷新） */
+  onBatchDone: ((planId: string) => void) | null = null
+  /** 正在后台合成的场次（重入转 dirty，跑完补一轮） */
+  private readonly synthRunning = new Set<string>()
+  private readonly synthDirty = new Set<string>()
+
   constructor(
     private readonly storage: StorageService,
     private readonly tts: TtsService,
     private readonly persona: PersonaService
   ) {}
+
+  /**
+   * 后台把场次里 pending/failed 的条目合成就绪（带场次锁）：
+   * 预合成按钮、主播改/补底稿后的重合成都走这里。同时在跑就标 dirty，本轮结束自动补跑一轮。
+   */
+  async kickSynthesis(planId: string): Promise<void> {
+    if (this.synthRunning.has(planId)) {
+      this.synthDirty.add(planId)
+      return
+    }
+    this.synthRunning.add(planId)
+    try {
+      do {
+        this.synthDirty.delete(planId)
+        try {
+          await this.synthesizeAll(planId, (u) => this.onEvent?.(u))
+        } catch (error) {
+          console.warn(`[话术库] 后台合成中断：${error instanceof Error ? error.message : String(error)}`)
+        }
+      } while (this.synthDirty.has(planId))
+    } finally {
+      this.synthRunning.delete(planId)
+      this.onBatchDone?.(planId)
+    }
+  }
 
   list(planId: string): Utterance[] {
     return this.storage.utteranceList(planId)

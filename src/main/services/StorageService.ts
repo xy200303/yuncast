@@ -1389,6 +1389,23 @@ export class StorageService {
     return row ? rowToItem(row as unknown as SpeechRow) : null
   }
 
+  /**
+   * 每条底稿（origin_utterance_id）最近一次进池的时间（轮播公平排序用：
+   * 没播过的最优先，播过的按最久没播排，整个场景的话术轮得上，不饿死队尾）
+   */
+  speechLastLoadedByOrigin(): Map<string, number> {
+    const rows = this.db
+      .prepare(
+        `SELECT origin_utterance_id AS origin, MAX(created_at) AS last_at
+         FROM speech_items WHERE origin_utterance_id IS NOT NULL AND origin_utterance_id != ''
+         GROUP BY origin_utterance_id`
+      )
+      .all() as { origin: unknown; last_at: unknown }[]
+    const map = new Map<string, number>()
+    for (const row of rows) map.set(str(row.origin), num(row.last_at) ?? 0)
+    return map
+  }
+
   /** 清理过期终态：done 只留最近 200 条，其余终态 1 小时后删除 */
   /** 仍被引用的音频路径（缓存清理时跳过）：话术池条目 + 底稿库条目（含段落切片的 wav） */
   speechReferencedAudioPaths(): string[] {

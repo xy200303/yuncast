@@ -55,6 +55,19 @@ interface AggregateBuffer {
   timer: ReturnType<typeof setTimeout>
 }
 
+/**
+ * 旧版默认模板（模板升级迁移用）：播种时若库里的模板还跟这些一字不差，
+ * 说明用户没改过，跟着升级到新版；改过的一律不动。
+ */
+const LEGACY_TEMPLATES: Record<string, string[]> = {
+  冷场自救: [
+    '话术池空了，直播不能冷场。主动带节奏：用 say 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
+  ],
+  价格变动提醒: [
+    '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；没有要改的就照常继续，不用特意播报。'
+  ]
+}
+
 /** 内建触发器模板（首次启动播种，用户可关可改） */
 export function builtinTriggers(): TriggerInput[] {
   return [
@@ -110,7 +123,7 @@ export function builtinTriggers(): TriggerInput[] {
         agentId: 'anchor',
         mode: 'steer',
         promptTemplate:
-          '话术池空了，直播不能冷场。主动带节奏：用 say 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
+          '话术池空了。先用 get_pool_status 看一眼：如果底稿刚装回来（池里有存货），按节奏播就行，不用补；真的没存货了再用 say 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
       },
       throttle: { cooldownMs: 120_000 }
     },
@@ -134,7 +147,7 @@ export function builtinTriggers(): TriggerInput[] {
         agentId: 'anchor',
         mode: 'task',
         promptTemplate:
-          '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；没有要改的就照常继续，不用特意播报。'
+          '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；再用 list_drafts 搜旧价格，底稿库里同口径的用 edit_draft 改掉（长期生效）。没有要改的就照常继续，不用特意播报。'
       },
       throttle: { cooldownMs: 10_000 }
     }
@@ -163,12 +176,22 @@ export class TriggerRuntime {
     bus.subscribe((event) => this.onEvent(event))
   }
 
-  /** 内建触发器按名播种：库里缺的补上，已有的不动（用户可能改过） */
+  /** 内建触发器按名播种：库里缺的补上；模板升级时，没被用户改过的旧默认模板跟着换新版 */
   private seedMissingBuiltins(): void {
-    const existing = new Set(this.storage.triggerList().map((t) => t.name))
+    const byName = new Map(this.storage.triggerList().map((t) => [t.name, t]))
     for (const input of builtinTriggers()) {
-      if (existing.has(input.name)) continue
-      this.storage.triggerSave({ ...input, id: `tr-${randomUUID().replace(/-/g, '').slice(0, 10)}` })
+      const row = byName.get(input.name)
+      if (!row) {
+        this.storage.triggerSave({ ...input, id: `tr-${randomUUID().replace(/-/g, '').slice(0, 10)}` })
+        continue
+      }
+      const legacy = LEGACY_TEMPLATES[input.name]
+      if (legacy?.includes(row.target.promptTemplate ?? '')) {
+        this.storage.triggerSave({
+          ...row,
+          target: { ...row.target, promptTemplate: input.target.promptTemplate }
+        })
+      }
     }
   }
 

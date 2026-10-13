@@ -207,6 +207,17 @@ export async function testModelConnection(
 ): Promise<{ ok: boolean; error?: string; latencyMs?: number }> {
   const def = getLlmProvider(connection.providerId)
   if (!def) return { ok: false, error: `不认识的服务商：${connection.providerId}` }
+  // 必填凭据是空的就别发请求了：空密钥打出去只会换回 401，错误会误导成「密钥填错了」，
+  // 真实原因往往是凭据根本没存上/读不出来（比如换机后旧系统密文解不开）
+  const missing = def.configFields.filter(
+    (field) => field.secret && !field.optional && !String(connection.params[field.key] ?? '').trim()
+  )
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      error: `这条接入的${missing.map((f) => f.label).join('、')}是空的：没填，或保存的凭据读不出来——重填一次再测`
+    }
+  }
   const target = (model ?? '').trim() || connectionFirstModel(connection, def)
   const cfg = def.toModelConfig(connection.params, target)
   if (!cfg.model) return { ok: false, error: `还没有模型（${def.label}）：先加一个模型再测` }

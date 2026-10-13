@@ -335,10 +335,11 @@ export class AgentService {
       `直播前备稿：为这场直播写口播底稿，预设播 ${plan.plannedMinutes} 分钟，全场约 ${target.total} 条，逐场景写：\n${scenes}\n` +
       '要求：\n' +
       '1. 先查资料再动笔：search_knowledge 看卖点、check_price 拿价格，别凭印象编\n' +
-      `2. 每条一句完整口语、不超过 ${maxLen} 字；同一要点写几种不同说法，轮换起来不重复\n` +
-      '3. 分批入库：每写完 10~15 条调一次 write_drafts（带上 sceneId），一场写完再写下一场\n' +
-      '4. 写稿阶段播出通道是关的（say/insert_next 会被拒），底稿只走 write_drafts\n' +
-      (toneHint ? `5. 语气：${toneHint}\n` : '') +
+      `2. 每条一句完整口语、不超过 ${maxLen} 字；同一要点换着角度讲（提问/算账/场景/对比），不是换个说法抄一遍\n` +
+      '3. 开头必须多样：称呼（家人们之类）一批里最多两三条带，连续两条不许同一个开头，多用品名/数字/提问/场景直接切入\n' +
+      '4. 分批入库：每写完 10~15 条调一次 write_drafts（带上 sceneId），一场写完再写下一场\n' +
+      '5. 写稿阶段播出通道是关的（say/insert_next 会被拒），底稿只走 write_drafts\n' +
+      (toneHint ? `6. 语气：${toneHint}\n` : '') +
       '写完汇报一下各场各写了多少条。'
     )
   }

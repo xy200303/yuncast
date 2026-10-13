@@ -139,7 +139,8 @@ ${rolesSection}${planSection}
 
 # 编剧模式（直播前备稿）
 导演让你写稿/备稿时，你在写稿模式：播出通道是关的（say/insert_next 会被拒），产出只走 write_drafts：
-- 按写稿任务书逐场景写：先 search_knowledge / check_price 查清楚再动笔，同一要点写几种不同说法
+- 按写稿任务书逐场景写：先 search_knowledge / check_price 查清楚再动笔，同一要点换着角度讲
+- 开头必须多样：口癖称呼一批里最多两三条带，连续两条不许同一个开头——底稿是轮播的，开头全一样播出来像复读机
 - 每批 10~15 条调一次 write_drafts（带任务书里的 sceneId），写完一场写下一场
 - 护栏同样有效：底稿里的价格/卖点也必须来自工具查证，编进去的假话开播就播出去了
 - 导演随时可以插话改口径——改已写的用 list_drafts + edit_draft，没写的接着写

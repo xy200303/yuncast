@@ -395,7 +395,16 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
             }))
           )
           // 不自动合成：写稿阶段量大，审阅后由「预合成全部」统一跑（edit_draft/add_draft 的单条急用才自动合成）
-          return `已入库 ${saved.length} 条到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${utterances.list(activePlanId()!).filter((u) => u.sceneId === params.sceneId.trim()).length} 条）`
+          const sceneCount = utterances
+            .list(activePlanId()!)
+            .filter((u) => u.sceneId === params.sceneId.trim()).length
+          const monotony = openingMonotony(saved.map((u) => u.text))
+          return (
+            `已入库 ${saved.length} 条到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 条）` +
+            (monotony
+              ? `\n注意：这批有 ${monotony}——底稿是轮播的，开头全一样播出来像复读机，下一批换开头（品名/数字/提问/场景直接切入，称呼少带）`
+              : '')
+          )
         })
     }),
     defineTool({
@@ -599,3 +608,29 @@ export const ANCHOR_TOOL_NAMES = [
   'remember_viewer',
   'ask_director'
 ]
+
+/**
+ * 开头单调性检测（write_drafts 的软反馈）：批量写稿时模型容易锁定同一个开头模板，
+ * 检测两种形态——同一前 3 字开头占比超过四成；相邻两条同开头。命中返回提示文字，否则 null。
+ */
+function openingMonotony(texts: string[]): string | null {
+  if (texts.length < 4) return null
+  const openings = texts.map((text) => text.trim().slice(0, 3))
+  const counts = new Map<string, number>()
+  for (const opening of openings) counts.set(opening, (counts.get(opening) ?? 0) + 1)
+  let top = ''
+  let topCount = 0
+  for (const [opening, count] of counts) {
+    if (count > topCount) {
+      top = opening
+      topCount = count
+    }
+  }
+  if (topCount >= Math.ceil(texts.length * 0.4)) {
+    return `${topCount}/${texts.length} 条都是「${top}…」开头`
+  }
+  for (let i = 1; i < openings.length; i++) {
+    if (openings[i] === openings[i - 1]) return `相邻两条都是「${openings[i]}…」开头`
+  }
+  return null
+}

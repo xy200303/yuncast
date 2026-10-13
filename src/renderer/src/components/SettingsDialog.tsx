@@ -843,7 +843,7 @@ function ConnectionEditorDialog({
                       value={row.window}
                       onChange={(e) => setWindowAt(index, e.target.value.replace(/[^\d]/g, ''))}
                       placeholder="窗口自动"
-                      title="上下文窗口（tokens）：留空按服务商默认。对话涨到「窗口 − 16k」时自动压缩旧消息——不同型号窗口不一样，填准了压缩更平滑"
+                      title="上下文窗口（tokens）：留空按服务商默认（DeepSeek/Kimi/千问/豆包/智谱均按 128k）。对话快涨满窗口时自动压缩旧消息（预留 16k 给回复）——不同型号窗口不一样，填准了压缩更平滑"
                       inputMode="numeric"
                       className="h-7 w-24 shrink-0 text-xs"
                     />

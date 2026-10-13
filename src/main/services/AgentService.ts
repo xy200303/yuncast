@@ -834,7 +834,9 @@ export class AgentService {
       // 没啥可压：旧部分为空（全部对话都在保留额度内）——放弃这次，也别上卡片
       if (split <= 0) return messages
       const oldPart = body.slice(0, split)
-      const recent = body.slice(split)
+      // 保留区钳制：一条巨型消息（全量列表/长文类的工具结果）就能把压完的上下文重新顶过阈值，
+      // 死循环压缩——超大文本一律截断，只动文本不动结构（角色与工具配对保持完整）
+      const recent = clampOversizedMessages(body.slice(split))
       this.beginCompactionCard()
 
       let noteText: string
@@ -886,7 +888,7 @@ export class AgentService {
           content: [{ type: 'text', text: noteText }],
           timestamp: Date.now()
         }
-        agent.state.messages = [...(system ? [system] : []), note as AgentMessage, ...recent]
+        agent.state.messages = this.assembleCompacted(system, note as AgentMessage, recent, contextWindow)
         this.persistSession()
         return agent.state.messages
       }
@@ -896,13 +898,48 @@ export class AgentService {
         content: [{ type: 'text', text: noteText }],
         timestamp: Date.now()
       }
-      agent.state.messages = [...(system ? [system] : []), note as AgentMessage, ...recent]
+      agent.state.messages = this.assembleCompacted(system, note as AgentMessage, recent, contextWindow)
       this.endCompactionOk(tokensBefore)
       this.persistSession()
       return agent.state.messages
     } finally {
       this.compacting = false
     }
+  }
+
+  /**
+   * 组装压缩后的会话并保证「压完必降」：极端情况下保留区条数太多仍超阈值，
+   * 从保留区头部整条丢（丢带工具调用的 assistant 时连同它后面的工具结果一起丢，免得上游 400）。
+   */
+  private assembleCompacted(
+    system: AgentMessage | undefined,
+    note: AgentMessage,
+    recent: AgentMessage[],
+    contextWindow: number
+  ): AgentMessage[] {
+    const threshold = this.compactThreshold(contextWindow)
+    let kept = recent
+    const over = (): boolean => {
+      try {
+        const probe = [...(system ? [system] : []), note, ...kept]
+        return estimateContextTokens(probe as readonly Message[]).tokens > threshold
+      } catch {
+        return false
+      }
+    }
+    while (kept.length > 0 && over()) {
+      const [dropped, ...rest] = kept
+      kept = rest
+      const content = (dropped as { content?: unknown }).content
+      const hadToolCall =
+        Array.isArray(content) && content.some((p) => (p as { type?: string }).type === 'toolCall')
+      if (hadToolCall) {
+        while (kept.length > 0 && (kept[0] as { role?: string }).role === 'toolResult') {
+          kept = kept.slice(1)
+        }
+      }
+    }
+    return [...(system ? [system] : []), note, ...kept]
   }
 
   /** 压缩开始：上时间线卡片让导演知道主播在"整理笔记" */
@@ -1113,6 +1150,35 @@ function estimateMsgTokens(message: AgentMessage): number {
     else other += 1
   }
   return Math.ceil(cjk + other / 4) + 8
+}
+
+/** 压缩保留区的超大消息钳制：单条文本超过这个长度就截断（只动文本，不动消息结构） */
+const CLAMP_MESSAGE_CHARS = 4000
+
+/**
+ * 超大消息截断：一条巨型工具结果（全量列表/长文）就能把压完的上下文重新顶过阈值造成死循环。
+ * 只截文本内容，角色、toolCall/toolResult 配对等结构原样保留。
+ */
+function clampOversizedMessages(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map((message) => {
+    const m = message as { content?: unknown }
+    if (typeof m.content === 'string') {
+      return m.content.length > CLAMP_MESSAGE_CHARS
+        ? ({ ...message, content: `${m.content.slice(0, CLAMP_MESSAGE_CHARS)}…（超长已截断）` } as AgentMessage)
+        : message
+    }
+    if (!Array.isArray(m.content)) return message
+    let changed = false
+    const content = m.content.map((part) => {
+      const p = part as { type?: string; text?: string }
+      if (p.type === 'text' && typeof p.text === 'string' && p.text.length > CLAMP_MESSAGE_CHARS) {
+        changed = true
+        return { ...(part as Record<string, unknown>), text: `${p.text.slice(0, CLAMP_MESSAGE_CHARS)}…（超长已截断）` }
+      }
+      return part
+    })
+    return changed ? ({ ...message, content } as AgentMessage) : message
+  })
 }
 
 /** 把一条消息渲染成摘要模型看得懂的一行（压缩时喂旧对话用） */

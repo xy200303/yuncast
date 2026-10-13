@@ -293,12 +293,15 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           if (kw) list = list.filter((u) => u.text.includes(kw))
           if (list.length === 0) return kw ? `没有包含「${kw}」的底稿` : '这个范围还没有底稿'
           const shown = list.slice(0, 30)
+          // 列表只给前 100 字（拿 id 和概要用；要看全文去话术库，改稿按 id 改）——
+          // 底稿一多全文塞进来一条结果就是几万 token，上下文 compression 会被它顶爆
+          const brief = (text: string) => (text.length > 100 ? `${text.slice(0, 100)}…` : text)
           return (
             `共 ${list.length} 条${list.length > 30 ? '，只列前 30 条' : ''}：\n` +
             shown
               .map(
                 (u) =>
-                  `${u.id}｜${sceneTitleOf(u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${u.bitType ? `[${u.bitType}] ` : ''}${u.text}` +
+                  `${u.id}｜${sceneTitleOf(u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${u.bitType ? `[${u.bitType}] ` : ''}${brief(u.text)}` +
                   (u.delivery ? `（演法：${u.delivery}）` : '')
               )
               .join('\n')
@@ -393,6 +396,29 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           if (!existing) return `找不到底稿 ${params.id}（用 list_drafts 拿正确的 id）`
           utterances.remove(existing.id)
           return `已删底稿：「${existing.text}」`
+        })
+    }),
+    defineTool({
+      name: 'clear_drafts',
+      label: '清空底稿',
+      description:
+        '一次清空底稿库（全部或指定场景）。只有导演明确说「清空 / 全部删掉 / 清稿重写」才用；清完不可恢复。' +
+        '大批量删除必须用它——逐条 remove_draft 删几百条会把上下文顶爆，还慢。',
+      parameters: Type.Object({
+        sceneId: Type.Optional(Type.String({ description: '只清某个场景（list_drafts 里的 sceneId）；不传 = 全场清空' }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const noPlan = requirePlan()
+          if (noPlan) return noPlan
+          const planId = activePlanId()!
+          const sceneId = params.sceneId?.trim()
+          const before = utterances.list(planId).filter((u) => sceneId === undefined || u.sceneId === sceneId).length
+          if (before === 0) return sceneId ? `「${sceneTitleOf(sceneId)}」本来就没有底稿` : '底稿库本来就是空的'
+          utterances.clear(planId, sceneId)
+          return sceneId
+            ? `已清空「${sceneTitleOf(sceneId)}」的 ${before} 段底稿（已在池里没播的副本不受影响，要撤用 revise_item 或等它播完）`
+            : `已清空全场 ${before} 段底稿（已在池里没播的副本不受影响）。段数归零，可以重新写稿了`
         })
     }),
     defineTool({

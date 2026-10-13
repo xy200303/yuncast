@@ -14,7 +14,8 @@ const EXTRA_MODEL_SUGGESTIONS: Partial<Record<LlmProvider, string[]>> = {
  * 估大了不怕（撑爆会走溢出压缩自愈），估小了会白白频繁压缩，所以都按主流型号的上限填。
  */
 const CONTEXT_WINDOWS: Partial<Record<LlmProvider, number>> = {
-  deepseek: 65536,
+  // deepseek-chat（V3.2 起）官方 128K
+  deepseek: 131072,
   qwen: 131072,
   doubao: 131072,
   kimi: 131072,

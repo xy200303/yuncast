@@ -743,6 +743,25 @@ function UtteranceDialog({
     }
   }
 
+  /** 一键清空（两击确认，防手滑）：整场底稿连音频缓存一起清，清完可让主播重写到上限 */
+  const [confirmClear, setConfirmClear] = useState(false)
+  const clearAll = async () => {
+    if (!confirmClear) {
+      setConfirmClear(true)
+      setTimeout(() => setConfirmClear(false), 3000)
+      return
+    }
+    setConfirmClear(false)
+    const result = await window.api.utterance.clear(plan.id)
+    if (result.ok) {
+      toast.success('已清空全部底稿', { description: '点「生成话术库」让主播重写' })
+      await reload()
+      await onChanged()
+    } else {
+      toast.error('清空失败', { description: result.error })
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
@@ -761,7 +780,16 @@ function UtteranceDialog({
             <Sparkles />
             {items.length > 0 ? '去直播台续写' : '生成话术库'}
           </Button>
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-2">
+            <Button
+              size="sm"
+              variant={confirmClear ? 'destructive' : 'outline'}
+              disabled={stats.total === 0}
+              onClick={() => void clearAll()}
+            >
+              <Trash2 />
+              {confirmClear ? '再点一次确认清空' : '清空全部'}
+            </Button>
             <Button
               size="sm"
               variant="outline"

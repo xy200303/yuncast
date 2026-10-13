@@ -1,7 +1,8 @@
 import {
   TTS_PROVIDER_SHORT,
   type LaunchResult,
-  type PreflightItem
+  type PreflightItem,
+  type Utterance
 } from '../../shared/types'
 import type { AgentService } from './AgentService'
 import type { ConnectorService } from './ConnectorService'
@@ -247,9 +248,22 @@ export class LaunchService {
     if (!script || script.scenes.length === 0) return 0
     const sceneIndex = this.sceneIndex(plan, script.scenes.length)
     const sceneId = script.scenes[sceneIndex].id
-    const ready = this.utterances
-      .list(plan.id)
-      .filter((u) => u.status === 'ready' && (u.sceneId === sceneId || u.sceneId === ''))
+    const library = this.utterances.list(plan.id)
+    const ready = library.filter((u) => u.status === 'ready' && (u.sceneId === sceneId || u.sceneId === ''))
+    // 段落位置：同 paraId 的条目按库顺序数位置（整段合成切句产物，池里按它展示/调度）
+    const paraGroups = new Map<string, Utterance[]>()
+    for (const u of library) {
+      if (!u.paraId) continue
+      const group = paraGroups.get(u.paraId)
+      if (group) group.push(u)
+      else paraGroups.set(u.paraId, [u])
+    }
+    const paraOf = (u: Utterance) => {
+      if (!u.paraId) return {}
+      const group = paraGroups.get(u.paraId) ?? []
+      const pos = group.findIndex((item) => item.id === u.id) + 1
+      return pos > 0 ? { paraId: u.paraId, paraPos: pos, paraLen: group.length } : {}
+    }
 
     let loaded = 0
     for (const u of ready) {
@@ -264,6 +278,7 @@ export class LaunchService {
           sourceAgentId: LIBRARY_SOURCE_ID,
           dedupeKey: `ut:${u.id}:s${sceneIndex}`,
           originUtteranceId: u.id,
+          ...paraOf(u),
           audioPath: reusable ? (u.audioPath ?? undefined) : undefined
         })
         loaded += 1

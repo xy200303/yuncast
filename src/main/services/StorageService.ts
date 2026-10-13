@@ -126,6 +126,9 @@ interface SpeechRow {
   speech_text: unknown
   stream: unknown
   origin_utterance_id: unknown
+  para_id: unknown
+  para_pos: unknown
+  para_len: unknown
   error: unknown
   sort_order: unknown
   created_at: unknown
@@ -181,6 +184,9 @@ function rowToItem(row: SpeechRow): SpeechItem {
     speechText: str(row.speech_text) || undefined,
     stream: num(row.stream) === 1,
     originUtteranceId: str(row.origin_utterance_id) || undefined,
+    paraId: str(row.para_id) || undefined,
+    paraPos: num(row.para_pos),
+    paraLen: num(row.para_len),
     error: str(row.error) || undefined,
     sortOrder: num(row.sort_order),
     createdAt: num(row.created_at) ?? 0,
@@ -365,6 +371,12 @@ export class StorageService {
     this.ensureColumn('speech_items', 'stream', 'INTEGER NOT NULL DEFAULT 0')
     // 语音稿（显示稿与念法分离）
     this.ensureColumn('speech_items', 'speech_text', 'TEXT')
+    // 连贯段落标记（段落合成切句产物，见 shared/paragraph.ts）
+    this.ensureColumn('speech_items', 'para_id', 'TEXT')
+    this.ensureColumn('speech_items', 'para_pos', 'INTEGER')
+    this.ensureColumn('speech_items', 'para_len', 'INTEGER')
+    // 底稿条目的段落归属（预合成整段切句时写入）
+    this.ensureColumn('utterances', 'para_id', "TEXT NOT NULL DEFAULT ''")
     // 音色库（M8 声音克隆）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS voices (
@@ -1205,8 +1217,8 @@ export class StorageService {
         `INSERT INTO speech_items
          (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
           dedupe_key, expires_at, reply_to, status, audio_path, speech_text, stream,
-          origin_utterance_id, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          origin_utterance_id, para_id, para_pos, para_len, error, sort_order, created_at, played_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -1226,6 +1238,9 @@ export class StorageService {
         item.speechText ?? null,
         item.stream ? 1 : 0,
         item.originUtteranceId ?? null,
+        item.paraId ?? null,
+        item.paraPos ?? null,
+        item.paraLen ?? null,
         item.error ?? null,
         item.sortOrder ?? null,
         item.createdAt,
@@ -1305,10 +1320,14 @@ export class StorageService {
   }
 
   /** 清理过期终态：done 只留最近 200 条，其余终态 1 小时后删除 */
-  /** 仍被话术条目引用的音频路径（缓存清理时跳过这些文件） */
+  /** 仍被引用的音频路径（缓存清理时跳过）：话术池条目 + 底稿库条目（含段落切片的 wav） */
   speechReferencedAudioPaths(): string[] {
     return this.db
-      .prepare("SELECT DISTINCT audio_path AS path FROM speech_items WHERE audio_path IS NOT NULL AND audio_path != ''")
+      .prepare(
+        `SELECT DISTINCT audio_path AS path FROM speech_items WHERE audio_path IS NOT NULL AND audio_path != ''
+         UNION
+         SELECT DISTINCT audio_path AS path FROM utterances WHERE audio_path IS NOT NULL AND audio_path != ''`
+      )
       .all()
       .map((row) => str((row as Record<string, unknown>).path))
       .filter(Boolean)
@@ -1756,6 +1775,13 @@ export class StorageService {
       .run(status, audioPath, error ?? null, synthVoice, id)
   }
 
+  /** 段落归属（整段合成切句成功的一组）；paraId 为空串表示清除（改文本/逐条回退时） */
+  utteranceSetPara(ids: string[], paraId: string): void {
+    if (ids.length === 0) return
+    const stmt = this.db.prepare('UPDATE utterances SET para_id = ? WHERE id = ?')
+    for (const id of ids) stmt.run(paraId, id)
+  }
+
   close(): void {
     this.db.close()
   }
@@ -1775,6 +1801,7 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     error: str(r.error) || undefined,
     source: str(r.source) === 'adopted' ? 'adopted' : 'initial',
     sources: parseJson<Utterance['sources']>(r.sources, []),
+    paraId: str(r.para_id) || undefined,
     createdAt: num(r.created_at) ?? 0
   }
 }

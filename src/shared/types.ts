@@ -498,6 +498,11 @@ export interface SpeechItem {
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
   originUtteranceId?: string
+  /** 连贯段落 id：同一段的条目是一次整段合成后切开的，播出时按顺序连在一起语气才自然 */
+  paraId?: string
+  /** 段内位置（从 1 开始）与段落总条数，供池状态展示与插播调度 */
+  paraPos?: number
+  paraLen?: number
   /** 合成/播放失败原因 */
   error?: string
   /** reorder 手动指定的顺序（优先级高于 createdAt） */
@@ -521,6 +526,12 @@ export interface PoolSayInput {
   replyTo?: SpeechReplyTo
   /** 从话术库取件入池时带来源 id（复盘溯源） */
   originUtteranceId?: string
+  /** 连贯段落标记（见 SpeechItem.paraId），装载话术库时带入 */
+  paraId?: string
+  paraPos?: number
+  paraLen?: number
+  /** 手动指定的播出锚点（插播到段落末尾这类精确位置用；不传按入池时间排） */
+  sortOrder?: number
   /** 已预合成的音频文件（话术库预合成产物）：带上即置 ready，不再重复合成 */
   audioPath?: string
 }
@@ -942,6 +953,8 @@ export interface Utterance {
   /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
   source: 'initial' | 'adopted'
   sources: UtteranceSource[]
+  /** 连贯段落 id：预合成时同段整组一次合成再切句（见 shared/paragraph.ts）；空 = 逐条合成 */
+  paraId?: string
   createdAt: number
 }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { Utterance, UtteranceInput } from '../../shared/types'
+import { PARAGRAPH_MAX_CHARS, PARAGRAPH_MIN_ITEMS } from '../../shared/paragraph'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
 import type { PersonaService } from './PersonaService'
@@ -61,6 +62,8 @@ export class UtteranceService {
       createdAt: existing?.createdAt ?? Date.now()
     }
     this.storage.utteranceSave(utterance)
+    // 文本变了，旧段落归属一并作废（下次预合成重新分组）
+    if (textChanged) this.storage.utteranceSetPara([utterance.id], '')
     return utterance
   }
 
@@ -74,8 +77,9 @@ export class UtteranceService {
   }
 
   /**
-   * 批量预合成（docs/07 §4 ④）：把场次里 pending/failed 的条目逐条合成就绪。
-   * 逐条串行（TTS 限流安全），onProgress 逐条回报驱动审阅表状态刷新。
+   * 批量预合成（docs/07 §4 ④）：把场次里 pending/failed 的条目合成就绪。
+   * 同场景 + 同音色的连续条目先拼成段落整段合成（句间语气连贯，见 shared/paragraph.ts），
+   * 段落对不上句数就整组回退逐条。逐条串行（TTS 限流安全），onProgress 逐条回报驱动审阅表状态刷新。
    */
   async synthesizeAll(
     planId: string,
@@ -86,31 +90,114 @@ export class UtteranceService {
     const pending = this.storage
       .utteranceList(planId)
       .filter((u) => u.status === 'pending' || u.status === 'failed')
+    // 合成用的音色与开播装载时的判定口径一致（场次音色优先于人设音色）
+    const voiceOf = (u: Utterance) => this.persona.resolvePlanVoice(plan, undefined, u.voiceId) ?? ''
+
+    // 分组：utteranceList 已按场景 + 变体序排好，同场景同音色的连续条目累到字符上限为止
+    const groups: Utterance[][] = []
+    let current: Utterance[] = []
+    let currentChars = 0
+    for (const u of pending) {
+      const voice = voiceOf(u)
+      const continues =
+        current.length > 0 &&
+        current[0].sceneId === u.sceneId &&
+        voiceOf(current[0]) === voice &&
+        currentChars + u.text.length <= PARAGRAPH_MAX_CHARS
+      if (continues) {
+        current.push(u)
+        currentChars += u.text.length
+      } else {
+        if (current.length > 0) groups.push(current)
+        current = [u]
+        currentChars = u.text.length
+      }
+    }
+    if (current.length > 0) groups.push(current)
+
     let done = 0
     let failed = 0
-    for (const u of pending) {
+    for (const group of groups) {
       if (signal?.aborted) break
-      // 合成用的音色与开播装载时的判定口径一致（场次音色优先于人设音色）
-      const voice = this.persona.resolvePlanVoice(plan, undefined, u.voiceId) ?? ''
-      this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
-      onProgress?.({ ...u, status: 'synthesizing' })
-      try {
-        const audioPath = await this.tts.synthesize(
-          `utterance-${u.id}`,
-          u.text,
-          voice || undefined,
-          signal
-        )
-        this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
-        onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
-        done++
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        this.storage.utteranceSetAudio(u.id, 'failed', null, message.slice(0, 200))
-        onProgress?.({ ...u, status: 'failed', error: message })
-        failed++
+      if (group.length >= PARAGRAPH_MIN_ITEMS) {
+        const ok = await this.synthesizeParagraphGroup(group, voiceOf(group[0]), onProgress, signal)
+        if (ok) {
+          done += group.length
+          continue
+        }
+        if (signal?.aborted) break
+        // 段落没成：落回逐条（下面这组逐条走完）
+      }
+      for (const u of group) {
+        if (signal?.aborted) break
+        const voice = voiceOf(u)
+        this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
+        onProgress?.({ ...u, status: 'synthesizing' })
+        try {
+          const audioPath = await this.tts.synthesize(
+            `utterance-${u.id}`,
+            u.text,
+            voice || undefined,
+            signal
+          )
+          this.storage.utteranceSetPara([u.id], '')
+          this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
+          onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
+          done++
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          this.storage.utteranceSetAudio(u.id, 'failed', null, message.slice(0, 200))
+          onProgress?.({ ...u, status: 'failed', error: message })
+          failed++
+        }
       }
     }
     return { done, failed }
+  }
+
+  /**
+   * 一组连续条目整段合成：成功后每条拿到自己的切片 wav 和共同的 paraId。
+   * 任一步失败（句数对不上 / 接口报错）返回 false，调用方整组回退逐条合成。
+   */
+  private async synthesizeParagraphGroup(
+    group: Utterance[],
+    voice: string,
+    onProgress?: (u: Utterance) => void,
+    signal?: AbortSignal
+  ): Promise<boolean> {
+    for (const u of group) {
+      this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
+      onProgress?.({ ...u, status: 'synthesizing' })
+    }
+    try {
+      const { paths, paraId } = await this.tts.synthesizeParagraph(
+        group.map((u) => ({ itemId: `utterance-${u.id}`, text: u.text })),
+        voice || undefined,
+        signal
+      )
+      this.storage.utteranceSetPara(
+        group.map((u) => u.id),
+        paraId
+      )
+      group.forEach((u, i) => {
+        this.storage.utteranceSetAudio(u.id, 'ready', paths[i], undefined, voice)
+        onProgress?.({ ...u, status: 'ready', audioPath: paths[i], synthVoice: voice, paraId })
+      })
+      return true
+    } catch (error) {
+      console.warn(
+        `[话术库] 段落合成没成，回退逐条：${error instanceof Error ? error.message : String(error)}`
+      )
+      this.storage.utteranceSetPara(
+        group.map((u) => u.id),
+        ''
+      )
+      for (const u of group) {
+        const restored = u.audioPath ? 'ready' : 'pending'
+        this.storage.utteranceSetAudio(u.id, restored, u.audioPath)
+        onProgress?.({ ...u, status: restored })
+      }
+      return false
+    }
   }
 }

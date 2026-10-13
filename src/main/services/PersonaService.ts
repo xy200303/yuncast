@@ -1,4 +1,4 @@
-import { DEFAULT_PERSONA, type LivePlan, type Persona, type Script } from '../../shared/types'
+import { DEFAULT_PERSONA, LEGACY_DEFAULT_PERSONA_FIELDS, type LivePlan, type Persona, type Script } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { PromptTemplateService } from './PromptTemplateService'
 import { resolveVoice } from './anchorTools'
@@ -14,10 +14,10 @@ export class PersonaService {
     private readonly prompts: PromptTemplateService
   ) {}
 
-  /** 取当前人设卡，不存在就播种内置默认卡 */
+  /** 取当前人设卡，不存在就播种内置默认卡；内置卡的人设文本还是旧默认（用户没改过）则自动升级 */
   get(): Persona {
     const existing = this.storage.personaGet()
-    if (existing) return existing
+    if (existing) return this.upgradeLegacyDefault(existing)
     const seeded: Persona = {
       id: 'anchor-default',
       ...DEFAULT_PERSONA,
@@ -25,6 +25,30 @@ export class PersonaService {
     }
     this.storage.personaSave(seeded)
     return seeded
+  }
+
+  /**
+   * 内置默认卡升级：personality/catchphrases/background/taboos 还跟旧版默认一字不差，
+   * 说明用户只配了音色/模型、没动过人设文本——跟随代码升级到新默认；动过任何一个字都不碰。
+   */
+  private upgradeLegacyDefault(persona: Persona): Persona {
+    const legacy = LEGACY_DEFAULT_PERSONA_FIELDS
+    const untouched =
+      persona.personality === legacy.personality &&
+      persona.catchphrases === legacy.catchphrases &&
+      persona.background === legacy.background &&
+      persona.taboos === legacy.taboos
+    if (!untouched) return persona
+    const upgraded: Persona = {
+      ...persona,
+      personality: DEFAULT_PERSONA.personality,
+      catchphrases: DEFAULT_PERSONA.catchphrases,
+      background: DEFAULT_PERSONA.background,
+      taboos: DEFAULT_PERSONA.taboos,
+      updatedAt: Date.now()
+    }
+    this.storage.personaSave(upgraded)
+    return upgraded
   }
 
   /** 主播团：全部人设卡 */

@@ -65,7 +65,8 @@ const LEGACY_TEMPLATES: Record<string, string[]> = {
   ],
   价格变动提醒: [
     '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；没有要改的就照常继续，不用特意播报。'
-  ]
+  ],
+  点赞里程碑: ['点赞破 {{payload.count}} 了，谢谢家人们！']
 }
 
 /** 内建触发器模板（首次启动播种，用户可关可改） */
@@ -111,7 +112,7 @@ export function builtinTriggers(): TriggerInput[] {
       target: {
         agentId: 'anchor',
         mode: 'tool',
-        toolAction: { template: '点赞破 {{payload.count}} 了，谢谢家人们！', lane: 'normal' }
+        toolAction: { template: '点赞破 {{payload.count}} 了，多谢诸位捧场！', lane: 'normal' }
       },
       throttle: { cooldownMs: 120_000 }
     },
@@ -205,10 +206,21 @@ export class TriggerRuntime {
         continue
       }
       const legacy = LEGACY_TEMPLATES[input.name]
-      if (legacy?.includes(row.target.promptTemplate ?? '')) {
+      // steer/task 的模板在 promptTemplate，tool 直连的在 toolAction.template——两处都可能藏着旧默认
+      const isTool = row.target.mode === 'tool'
+      const rowTemplate = (isTool ? row.target.toolAction?.template : row.target.promptTemplate) ?? ''
+      if (legacy?.includes(rowTemplate)) {
         this.storage.triggerSave({
           ...row,
-          target: { ...row.target, promptTemplate: input.target.promptTemplate }
+          target: isTool
+            ? {
+                ...row.target,
+                toolAction: {
+                  template: input.target.toolAction?.template ?? '',
+                  lane: row.target.toolAction?.lane ?? input.target.toolAction?.lane ?? 'normal'
+                }
+              }
+            : { ...row.target, promptTemplate: input.target.promptTemplate }
         })
       }
     }

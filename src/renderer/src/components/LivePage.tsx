@@ -871,7 +871,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       { type: 'tool', id: 'demo-t2', ts: t0 - 116000, turnId: 'turn-1', name: 'revise_next', args: 'count=2', status: 'ok', result: '已改写 2 条未播话术', durationMs: 88 },
       { type: 'text', id: 'demo-3', ts: t0 - 60000, turnId: 'turn-1', text: '收到：接下来两条改成强调 316 不锈钢内胆，语速提示调慢了 10%，预计 30 秒后生效。', final: true },
       { type: 'text', id: 'demo-3b', ts: t0 - 59000, turnId: 'turn-1', text: '（同轮续写：这段也算这一轮的文本，不会再插分隔线。）', final: true },
-      { type: 'tool', id: 'demo-s1', ts: t0 - 55000, turnId: 'turn-2', name: 'say', args: '{"text":"家人们欢迎进直播间"}', status: 'ok', result: '已排进队列', durationMs: 31 },
+      { type: 'tool', id: 'demo-s1', ts: t0 - 55000, turnId: 'turn-2', name: 'say', args: '{"text":"诸位欢迎进直播间"}', status: 'ok', result: '已排进队列', durationMs: 31 },
       { type: 'tool', id: 'demo-s2', ts: t0 - 54800, turnId: 'turn-2', name: 'say', args: '{"text":"今天咱们是保温杯专场"}', status: 'ok', result: '已排进队列', durationMs: 8 },
       { type: 'tool', id: 'demo-s3', ts: t0 - 54600, turnId: 'turn-2', name: 'say', args: '{"text":"316 内胆，12 小时保温"}', status: 'ok', result: '已排进队列', durationMs: 5 },
       { type: 'tool', id: 'demo-s4', ts: t0 - 54400, turnId: 'turn-2', name: 'say', args: '{"text":"价格给到位，59 块 9"}', status: 'ok', result: '已排进队列', durationMs: 3 },

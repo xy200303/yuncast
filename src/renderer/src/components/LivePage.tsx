@@ -1188,20 +1188,21 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
 }
 
 
-/** 上下文仪表：圆形进度环 + 当前/窗口，涨近上限（自动压缩区）变色提醒 */
+/** 上下文仪表：只显示圆环，悬停浮出具体数字（使用 X / Y tokens（Z%）），涨近上限变色 */
 function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; window?: number }) {
   if (!tokens || !contextWindow) return null
   const ratio = Math.min(1, tokens / contextWindow)
-  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n))
+  const fmt = (n: number) =>
+    n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
   const color = ratio > 0.85 ? 'text-red-500' : ratio > 0.65 ? 'text-amber-500' : 'text-emerald-500'
   // 环形进度：r=7 的圆，周长 ≈ 43.98，dasharray 按比例填充
   const r = 7
   const circumference = 2 * Math.PI * r
   return (
-    <div
-      className="ml-auto flex items-center gap-1.5 pr-1"
-      title={`上下文估算 ${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens（含 system prompt 与工具表）；快涨满时自动压缩旧消息`}
-    >
+    <div className="group relative ml-auto flex items-center pr-1">
+      <div className="pointer-events-none absolute -top-8 right-0 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-[10px] text-background opacity-0 shadow-md transition-opacity group-hover:opacity-100">
+        使用 {fmt(tokens)} / {fmt(contextWindow)} tokens（{Math.round(ratio * 100)}%）· 含 system 与工具表，快涨满时自动压缩
+      </div>
       <svg viewBox="0 0 18 18" className={`size-4.5 -rotate-90 ${color}`}>
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2.5" />
         <circle
@@ -1215,9 +1216,6 @@ function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; wind
           strokeDasharray={`${(circumference * ratio).toFixed(2)} ${circumference.toFixed(2)}`}
         />
       </svg>
-      <span className="text-[10px] tabular-nums text-muted-foreground">
-        {fmt(tokens)}/{fmt(contextWindow)}
-      </span>
     </div>
   )
 }

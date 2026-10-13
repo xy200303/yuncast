@@ -35,6 +35,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
+import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { flattenModelCatalog, groupCloneVoices } from '../lib/voice'
 import { useAppStore } from '../stores/useAppStore'
 import {
@@ -518,25 +519,9 @@ function PlanDialog({
           />
 
           <div className="rounded-lg border p-3">
-            <p className="mb-2 text-xs font-medium">底稿规模（生成话术库与开播预检都按它算）</p>
+            <p className="mb-2 text-xs font-medium">底稿成本闸（真正的硬限制只有段数上限）</p>
             <div>
-              <Label className="mb-1 text-xs text-muted-foreground">预设直播时长（分钟）</Label>
-              <Input
-                type="number"
-                min={5}
-                max={600}
-                value={form.plannedMinutes}
-                onChange={(e) =>
-                  setForm({ ...form, plannedMinutes: Math.max(5, Number(e.target.value) || DEFAULT_PLANNED_MINUTES) })
-                }
-              />
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              按 {form.plannedMinutes} 分钟约生成 {Math.max(1, Math.ceil(form.plannedMinutes * 0.8))} 段桥段，逐场分摊；
-              每段 30~90 秒连续讲述，故事/算账/包袱/场景化等形态穿插
-            </p>
-            <div className="mt-3">
-              <Label className="mb-1 text-xs text-muted-foreground">话术段数上限（0 = 按时长推算）</Label>
+              <Label className="mb-1 text-xs text-muted-foreground">话术段数上限（0 = 按生成时填的预生成时长推算）</Label>
               <Input
                 type="number"
                 min={0}
@@ -550,7 +535,8 @@ function PlanDialog({
                 }
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                成本闸：写够上限就停；开播后池空了循环已有底稿，音频直接复用缓存，不重新合成
+                写够上限就停；开播后池空了循环已有底稿，音频直接复用缓存，不重新合成。
+                写多少由生成时填的预生成时长决定，不在这里配
               </p>
             </div>
             <div className="mt-3">
@@ -694,7 +680,8 @@ function UtteranceDialog({
     failed: items.filter((u) => u.status === 'failed').length
   }
 
-  // 「生成话术库」：跳直播台派主播写稿（编剧模式）——过程在对话区可见，随时插话改口径
+  // 「生成话术库」：先问预生成时长（一次性输入，不是场次属性），再跳直播台派主播写稿
+  const [draftAsk, setDraftAsk] = useState(false)
   const goDraft = async () => {
     if (items.length > 0) {
       const ok = await new Promise<boolean>((resolve) => {
@@ -776,7 +763,7 @@ function UtteranceDialog({
         </DialogHeader>
 
         <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" onClick={() => void goDraft()}>
+          <Button size="sm" onClick={() => setDraftAsk(true)}>
             <Sparkles />
             {items.length > 0 ? '去直播台续写' : '生成话术库'}
           </Button>
@@ -935,6 +922,12 @@ function UtteranceDialog({
             </div>
           )}
         </div>
+        <DraftMinutesDialog
+          plan={plan}
+          open={draftAsk}
+          onOpenChange={setDraftAsk}
+          onConfirm={() => void goDraft()}
+        />
       </DialogContent>
     </Dialog>
   )

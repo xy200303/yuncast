@@ -39,6 +39,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { MiniMarkdown } from '@/components/MiniMarkdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
+import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
@@ -269,10 +270,16 @@ function PlanLauncher() {
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿覆盖不过关：预检弹窗给出「去生成底稿」的直达入口（跳直播台派主播写稿） */
   const coverageShort = (checks ?? []).some((item) => item.code === 'coverage' && item.level !== 'ok')
+  const [draftAsk, setDraftAsk] = useState(false)
 
   const goGenerate = (): void => {
     if (!activePlanId) return
     setChecks(null)
+    setDraftAsk(true)
+  }
+
+  const startDraft = (): void => {
+    if (!activePlanId) return
     void window.api.agent.draftStart(activePlanId).then((result) => {
       if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
     })
@@ -456,6 +463,14 @@ function PlanLauncher() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      {activePlan && (
+        <DraftMinutesDialog
+          plan={activePlan}
+          open={draftAsk}
+          onOpenChange={setDraftAsk}
+          onConfirm={() => startDraft()}
+        />
+      )}
     </div>
   )
 }

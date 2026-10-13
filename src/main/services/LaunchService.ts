@@ -5,7 +5,7 @@ import {
   type PreflightItem,
   type Utterance
 } from '../../shared/types'
-import { coveredMinutes, planTargetBits } from '../../shared/planDuration'
+import { coveredMinutes } from '../../shared/planDuration'
 import type { AgentService } from './AgentService'
 import type { ConnectorService } from './ConnectorService'
 import type { PersonaService } from './PersonaService'
@@ -21,8 +21,6 @@ import { findCloneVoice } from '../../shared/voiceProvider'
 
 /** 超过这么久没重测发音，预检提醒重测（docs/07 §8.5 语音可用性） */
 const VOICE_TEST_STALE_MS = 24 * 3600_000
-/** 就绪底稿覆盖到预设时长的这个比例，预检算「够播」（低于它提醒先补底稿） */
-const COVERAGE_ENOUGH_RATIO = 0.8
 
 /** 分钟数展示：整数不带小数，半分钟保留一位 */
 function formatMinutes(minutes: number): string {
@@ -194,33 +192,25 @@ export class LaunchService {
       })
     }
 
-    // ⑤ 底稿覆盖：就绪桥段能播多久 vs 预设直播时长。
-    // 一段就绪桥段都没有就是阻断（开播即冷场），不够八成提醒先补。
+    // ⑤ 底稿就绪：一段就绪桥段都没有就是阻断（开播即冷场）。
+    // 时长不是硬口径（写多少由生成时填的预生成时长决定），这里只报库存和约能播多久
     const covered = coveredMinutes(ready.length)
-    const targetBits = script ? planTargetBits(plan, script).total : 0
     items.push(
       ready.length === 0
         ? {
             code: 'coverage',
             level: 'block',
-            label: `还没有就绪底稿（预设播 ${plan.plannedMinutes} 分钟）`,
+            label: '还没有就绪底稿',
             detail: script
-              ? `点下方「去生成底稿」自动生成本场约 ${targetBits} 段桥段`
+              ? '点下方「去生成底稿」，填预生成时长让主播写稿'
               : '先给场次绑一个剧本，生成 Agent 才能按场景出整版底稿'
           }
-        : covered < plan.plannedMinutes * COVERAGE_ENOUGH_RATIO
-          ? {
-              code: 'coverage',
-              level: 'warn',
-              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 段）`,
-              detail: '不够播全场，中途靠主播现场补货；建议先去场次页补生成 + 预合成'
-            }
-          : {
-              code: 'coverage',
-              level: 'ok',
-              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 段）`,
-              detail: '按预设时长够播全场，开播直接轮播'
-            }
+        : {
+            code: 'coverage',
+            level: 'ok',
+            label: `底稿就绪 ${ready.length} 段（约能播 ${formatMinutes(covered)}）`,
+            detail: '播完循环复用音频；池子水位低了主播会现场续写'
+          }
     )
 
     // ⑥ 接入与推流（都能降级：不打断开播）

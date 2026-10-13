@@ -570,8 +570,8 @@ export const POOL_LIMITS = {
   libraryPerSourcePerMinute: 300,
   /** 预合成窗口：队列前 N 条提前送 TTS */
   synthWindow: 5,
-  /** 单条话术字数上限 */
-  textMaxLength: 500
+  /** 单条话术字数上限（桥段 = 多句连续讲述，90 秒约 500~700 字） */
+  textMaxLength: 800
 } as const
 
 /** 底稿库装载进池的来源 id（限流走 library 档；不占主播自己的发言额度） */
@@ -934,17 +934,14 @@ export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
 
 // ---------- 场次（docs/01 §5 场次页；docs/07 §8.5 场次=开播单元） ----------
 
-/** 场次话术库生成配置（docs/07 §4 ①）；条数目标由 plannedMinutes 推算（shared/planDuration） */
+/** 场次话术库生成配置（docs/07 §4 ①）；段数目标由 plannedMinutes 推算（shared/planDuration） */
 export interface PlanGenConfig {
   /** 语气指令（注入生成 Agent） */
   toneHint: string
-  /** 单条长度上限（字） */
-  maxLen: number
 }
 
 export const DEFAULT_PLAN_GEN_CONFIG: PlanGenConfig = {
-  toneHint: '',
-  maxLen: 60
+  toneHint: ''
 }
 
 /** 场次知识库范围：'*' = 全部，否则是 id 白名单（docs/07 §3 plan_knowledge） */
@@ -1015,6 +1012,13 @@ export interface Utterance {
   sceneId: string
   variantIdx: number
   text: string
+  /**
+   * 桥段类型（BIT_TYPES 之一）；'' = 旧式单句（桥段制之前的底稿）。
+   * 桥段 = 内容/合成/播放/缓存四个单元对齐的一段连续讲述（多句、30~90 秒）。
+   */
+  bitType: string
+  /** 表演指示（情绪/语速/停顿，一句话）：合成时随文本一起进 TTS 的语境，UI 可编辑 */
+  delivery: string
   /** 空 = 用场次/人设卡的音色 */
   voiceId: string
   audioPath: string | null
@@ -1025,12 +1029,30 @@ export interface Utterance {
   /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
   source: 'initial' | 'adopted'
   sources: UtteranceSource[]
-  /** 连贯段落 id：预合成时同段整组一次合成再切句（见 shared/paragraph.ts）；空 = 逐条合成 */
+  /** 连贯段落 id：旧式单句预合成时同段整组一次合成再切句（见 shared/paragraph.ts）；桥段用不到，空 */
   paraId?: string
   createdAt: number
 }
 
 export type UtteranceInput = Omit<Utterance, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error'>
+
+/** 桥段类型（内容形态标签）：写稿/展示/防单调都用它；自定义类型也允许（存档原样展示） */
+export const BIT_TYPES = [
+  { id: 'hook', label: '开场钩' },
+  { id: 'story', label: '故事' },
+  { id: 'scene', label: '场景化' },
+  { id: 'math', label: '算账' },
+  { id: 'compare', label: '对比' },
+  { id: 'punchline', label: '包袱' },
+  { id: 'interact', label: '互动' },
+  { id: 'cta', label: '催单' },
+  { id: 'transition', label: '转场' },
+  { id: 'general', label: '通用' }
+] as const
+
+export const BIT_TYPE_LABEL: Record<string, string> = Object.fromEntries(
+  BIT_TYPES.map((t) => [t.id, t.label])
+)
 
 // ---------- 场次启动预检与装载（docs/07 §8.5） ----------
 

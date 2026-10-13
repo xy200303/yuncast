@@ -123,17 +123,19 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
   return [
     defineTool({
       name: 'say',
-      label: '说一句',
+      label: '说',
       description:
-        '说一句常规话术，排进话术池队列等待播出。每次只说一句完整的话（40 字以内最佳），口语化。role 参数用于编剧模式：以某个角色的口吻写台词。',
+        '说内容给观众听，排进话术池队列等待播出。现场短句（回评论/过渡/互动）一次说一句完整口语；' +
+        '要播一个完整桥段（故事/讲解/包袱，多句 150~350 字）就把整段一次传进来——整段合成语气连贯，别拆成单句多次调。' +
+        'role 参数用于编剧模式：以某个角色的口吻写台词。',
       parameters: Type.Object({
-        text: Type.String({ description: '要说的话，一句' }),
+        text: Type.String({ description: '要说的话：一句短评，或一整段桥段' }),
         voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
         role: Type.Optional(Type.String({ description: '角色名（编剧模式），台词按该角色音色播出' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_drafts 入库'
+          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_bits 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
           const voiceId = resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.())
           pool.say({
@@ -164,7 +166,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_drafts 入库'
+          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_bits 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：插播也播不出去，等导演恢复'
           const comment = getLastComment()
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
@@ -252,7 +254,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'list_drafts',
       label: '看底稿',
       description:
-        '看本场底稿库（开播前生成的话术底稿，轮播的骨架）：按关键词搜，或看当前场景的。改/删底稿前先用它拿条目 id。',
+        '看本场底稿库（开播前写好的桥段，轮播的骨架）：按关键词搜，或看当前场景的。改/删底稿前先用它拿条目 id。',
       parameters: Type.Object({
         keyword: Type.Optional(Type.String({ description: '按文本内容过滤，比如旧价格、卖点词' })),
         scope: Type.Optional(
@@ -278,7 +280,11 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           return (
             `共 ${list.length} 条${list.length > 30 ? '，只列前 30 条' : ''}：\n` +
             shown
-              .map((u) => `${u.id}｜${sceneTitleOf(u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${u.text}`)
+              .map(
+                (u) =>
+                  `${u.id}｜${sceneTitleOf(u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${u.bitType ? `[${u.bitType}] ` : ''}${u.text}` +
+                  (u.delivery ? `（演法：${u.delivery}）` : '')
+              )
               .join('\n')
           )
         })
@@ -287,10 +293,12 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'edit_draft',
       label: '改底稿',
       description:
-        '改一条底稿的文本，长期生效（导演口径调整/价格修正/说法优化）。改完旧音频作废、后台自动重新合成；已经在池里没播的副本不受影响，要改用 revise_item。',
+        '改一条底稿（长期生效）：文本、类型、表演指示都能改（导演口径调整/价格修正/说法优化）。改完旧音频作废、后台自动重新合成；已经在池里没播的副本不受影响，要改用 revise_item。',
       parameters: Type.Object({
         id: Type.String({ description: '底稿条目 id（list_drafts 拿）' }),
-        text: Type.String({ description: '新文本，一句完整口语' })
+        text: Type.String({ description: '新文本（桥段就传整段，单句就传一句）' }),
+        type: Type.Optional(Type.String({ description: '桥段类型（不改不传）' })),
+        delivery: Type.Optional(Type.String({ description: '表演指示（不改不传）' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
@@ -305,6 +313,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
               sceneId: existing.sceneId,
               variantIdx: existing.variantIdx,
               text: params.text,
+              bitType: params.type?.trim() ?? existing.bitType,
+              delivery: params.delivery?.trim() ?? existing.delivery,
               voiceId: existing.voiceId,
               source: existing.source,
               sources: existing.sources
@@ -312,16 +322,18 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             existing.id
           )
           void utterances.kickSynthesis(planId)
-          return `已改：「${params.text}」。旧音频作废，后台重新合成中，好了之后轮播/装载就用新版`
+          return `已改：「${params.text.slice(0, 40)}${params.text.length > 40 ? '…' : ''}」。旧音频作废，后台重新合成中，好了之后轮播/装载就用新版`
         })
     }),
     defineTool({
       name: 'add_draft',
       label: '补底稿',
       description:
-        '把一个新说法记进底稿库（默认记到当前场景），合成完进入轮播。现场临时编的好说法值得记；想现在就播直接用 say，别用它。',
+        '把一段新内容记进底稿库（默认记到当前场景），合成完进入轮播。现场临时编的好桥段值得记；想现在就播直接用 say，别用它。',
       parameters: Type.Object({
-        text: Type.String({ description: '底稿文本，一句完整口语' }),
+        text: Type.String({ description: '底稿文本（桥段就整段，单句就一句）' }),
+        type: Type.Optional(Type.String({ description: '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/general）' })),
+        delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
         sceneId: Type.Optional(Type.String({ description: '记到哪个场景；不传记到当前场景，没有剧本则记为全场通用' }))
       }),
       execute: async (_id, params) =>
@@ -337,6 +349,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             sceneId,
             variantIdx,
             text: params.text,
+            bitType: params.type?.trim() ?? '',
+            delivery: params.delivery?.trim() ?? '',
             voiceId: '',
             source: 'initial',
             sources: []
@@ -364,16 +378,21 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         })
     }),
     defineTool({
-      name: 'write_drafts',
-      label: '批量写底稿',
+      name: 'write_bits',
+      label: '写桥段',
       description:
-        '编剧模式批量入库：把为某个场景写好的一批底稿存进底稿库（每批 10~15 条，写稿任务书里有逐场目标条数和 sceneId）。' +
-        'sources 填每条参考过的来源名（商品名/文件名），没参考就空数组。入库是待合成状态，导演审完统一预合成，不用你管音频。',
+        '编剧模式批量入库：把为某个场景写好的桥段存进底稿库（一次 1~4 段，写稿任务书里有逐场目标段数和 sceneId）。' +
+        '桥段 = 一段 30~90 秒的连续讲述（多句、150~350 字），是合成和播放的最小单元——写成一个有起承转合的整体，别拆成单句。' +
+        'type 标内容形态：hook 开场钩 / story 故事 / scene 场景化 / math 算账 / compare 对比 / punchline 包袱（歇后语、顺口溜、段子）/ interact 互动 / cta 催单 / transition 转场 / general 通用。' +
+        'delivery 写表演指示（一句话：情绪、语速、哪里停顿，比如「压低声音像说悄悄话，报价格前停一拍」）。' +
+        'sources 填每段参考过的来源名（商品名/文件名），没参考就空数组。入库是待合成状态，导演审完统一预合成，不用你管音频。',
       parameters: Type.Object({
         sceneId: Type.String({ description: '写到哪个场景（写稿任务书里的 sceneId）' }),
         items: Type.Array(
           Type.Object({
-            text: Type.String({ description: '一条底稿，一句完整口语' }),
+            type: Type.String({ description: '桥段类型（见工具描述），自定义类型也行' }),
+            text: Type.String({ description: '桥段全文：多句连续口语，150~350 字，有铺垫有落点' }),
+            delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
             sources: Type.Optional(
               Type.Array(
                 Type.Object({
@@ -381,11 +400,11 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
                   name: Type.String({ description: '来源名（商品名/文件名/网址）' }),
                   snippet: Type.String({ description: '引用的关键信息，一句话' })
                 }),
-                { description: '这条参考的来源' }
+                { description: '这段参考的来源' }
               )
             )
           }),
-          { description: '本批底稿（10~15 条）' }
+          { description: '本批桥段（1~4 段）' }
         )
       }),
       execute: async (_id, params) =>
@@ -397,6 +416,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             params.sceneId.trim(),
             params.items.map((item) => ({
               text: item.text,
+              bitType: item.type,
+              delivery: item.delivery,
               sources: (item.sources ?? []).map(
                 (s): UtteranceSource => ({ type: s.type, id: '', name: s.name, snippet: s.snippet })
               )
@@ -406,12 +427,10 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const sceneCount = utterances
             .list(activePlanId()!)
             .filter((u) => u.sceneId === params.sceneId.trim()).length
-          const monotony = openingMonotony(saved.map((u) => u.text))
+          const monotony = bitTypeMonotony(params.items.map((item) => item.type))
           return (
-            `已入库 ${saved.length} 条到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 条）` +
-            (monotony
-              ? `\n注意：这批有 ${monotony}——底稿是轮播的，开头全一样播出来像复读机，下一批换开头（品名/数字/提问/场景直接切入，称呼少带）`
-              : '')
+            `已入库 ${saved.length} 段到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 段）` +
+            (monotony ? `\n注意：${monotony}——一场戏全是同一种形态会很平，下批换类型（故事/算账/包袱/场景化穿插着来）` : '')
           )
         })
     }),
@@ -609,27 +628,13 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
 }
 
 /**
- * 开头单调性检测（write_drafts 的软反馈）：批量写稿时模型容易锁定同一个开头模板，
- * 检测两种形态——同一前 3 字开头占比超过四成；相邻两条同开头。命中返回提示文字，否则 null。
+ * 形态单调性检测（write_bits 的软反馈）：一批桥段全是同一种类型（≥3 段）就提醒换形态——
+ * 一场戏全是叫卖或全是故事都平，类型穿插才有起伏。
  */
-function openingMonotony(texts: string[]): string | null {
-  if (texts.length < 4) return null
-  const openings = texts.map((text) => text.trim().slice(0, 3))
-  const counts = new Map<string, number>()
-  for (const opening of openings) counts.set(opening, (counts.get(opening) ?? 0) + 1)
-  let top = ''
-  let topCount = 0
-  for (const [opening, count] of counts) {
-    if (count > topCount) {
-      top = opening
-      topCount = count
-    }
-  }
-  if (topCount >= Math.ceil(texts.length * 0.4)) {
-    return `${topCount}/${texts.length} 条都是「${top}…」开头`
-  }
-  for (let i = 1; i < openings.length; i++) {
-    if (openings[i] === openings[i - 1]) return `相邻两条都是「${openings[i]}…」开头`
-  }
+function bitTypeMonotony(types: string[]): string | null {
+  if (types.length < 3) return null
+  const first = types[0].trim()
+  if (!first) return null
+  if (types.every((t) => t.trim() === first)) return `这批 ${types.length} 段全是「${first}」类型`
   return null
 }

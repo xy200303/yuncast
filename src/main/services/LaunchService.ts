@@ -5,7 +5,7 @@ import {
   type PreflightItem,
   type Utterance
 } from '../../shared/types'
-import { coveredMinutes, planTargetLines } from '../../shared/planDuration'
+import { coveredMinutes, planTargetBits } from '../../shared/planDuration'
 import type { AgentService } from './AgentService'
 import type { ConnectorService } from './ConnectorService'
 import type { PersonaService } from './PersonaService'
@@ -183,21 +183,21 @@ export class LaunchService {
     } else if (sceneReady.length === 0) {
       items.push({
         level: 'warn',
-        label: `当前场景没有就绪话术（共 ${library.length} 条，就绪 ${ready.length} 条）`,
+        label: `当前场景没有就绪话术（共 ${library.length} 段，就绪 ${ready.length} 段）`,
         detail: '可以先批量预合成，或让主播现场补货'
       })
     } else {
       items.push({
         level: 'ok',
-        label: `话术库：当前场景就绪 ${sceneReady.length} 条`,
-        detail: `全场就绪 ${ready.length}/${library.length} 条，开播直接装载`
+        label: `话术库：当前场景就绪 ${sceneReady.length} 段`,
+        detail: `全场就绪 ${ready.length}/${library.length} 段，开播直接装载`
       })
     }
 
-    // ⑤ 底稿覆盖：就绪条目能播多久 vs 预设直播时长。
-    // 一条就绪底稿都没有就是阻断（开播即冷场），不够八成提醒先补。
+    // ⑤ 底稿覆盖：就绪桥段能播多久 vs 预设直播时长。
+    // 一段就绪桥段都没有就是阻断（开播即冷场），不够八成提醒先补。
     const covered = coveredMinutes(ready.length)
-    const targetLines = script ? planTargetLines(plan, script).total : 0
+    const targetBits = script ? planTargetBits(plan, script).total : 0
     items.push(
       ready.length === 0
         ? {
@@ -205,20 +205,20 @@ export class LaunchService {
             level: 'block',
             label: `还没有就绪底稿（预设播 ${plan.plannedMinutes} 分钟）`,
             detail: script
-              ? `点下方「去生成底稿」自动生成本场约 ${targetLines} 条话术`
+              ? `点下方「去生成底稿」自动生成本场约 ${targetBits} 段桥段`
               : '先给场次绑一个剧本，生成 Agent 才能按场景出整版底稿'
           }
         : covered < plan.plannedMinutes * COVERAGE_ENOUGH_RATIO
           ? {
               code: 'coverage',
               level: 'warn',
-              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 条）`,
+              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 段）`,
               detail: '不够播全场，中途靠主播现场补货；建议先去场次页补生成 + 预合成'
             }
           : {
               code: 'coverage',
               level: 'ok',
-              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 条）`,
+              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 段）`,
               detail: '按预设时长够播全场，开播直接轮播'
             }
     )

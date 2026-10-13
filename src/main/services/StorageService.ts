@@ -399,6 +399,9 @@ export class StorageService {
     this.ensureColumn('speech_items', 'para_len', 'INTEGER')
     // 底稿条目的段落归属（预合成整段切句时写入）
     this.ensureColumn('utterances', 'para_id', "TEXT NOT NULL DEFAULT ''")
+    // 桥段制：内容形态标签（BIT_TYPES；'' = 旧式单句）+ 表演指示（情绪/语速/停顿）
+    this.ensureColumn('utterances', 'bit_type', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('utterances', 'delivery', "TEXT NOT NULL DEFAULT ''")
     // 音色库（M8 声音克隆）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS voices (
@@ -1965,12 +1968,13 @@ export class StorageService {
   utteranceSave(u: Utterance): void {
     this.db
       .prepare(
-        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, text, voice_id, audio_path,
+        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, text, bit_type, delivery, voice_id, audio_path,
                                  status, error, source, sources, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx,
-           text = excluded.text, voice_id = excluded.voice_id, audio_path = excluded.audio_path,
+           text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
+           voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
            sources = excluded.sources`
       )
@@ -1980,6 +1984,8 @@ export class StorageService {
         u.sceneId,
         u.variantIdx,
         u.text,
+        u.bitType,
+        u.delivery,
         u.voiceId,
         u.audioPath ?? null,
         u.status,
@@ -2041,6 +2047,8 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     sceneId: str(r.scene_id),
     variantIdx: num(r.variant_idx) ?? 0,
     text: str(r.text),
+    bitType: str(r.bit_type),
+    delivery: str(r.delivery),
     voiceId: str(r.voice_id),
     audioPath: str(r.audio_path) || null,
     synthVoice: str(r.synth_voice),

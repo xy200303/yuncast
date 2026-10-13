@@ -225,6 +225,8 @@ function broadcastUtteranceDone(planId: string): void {
         sceneId: '',
         variantIdx: 0,
         text: '',
+        bitType: '',
+        delivery: '',
         voiceId: '',
         audioPath: null,
         status: 'ready',

@@ -54,8 +54,12 @@ export class UtteranceService {
     return this.storage.utteranceList(planId)
   }
 
-  /** 生成 Agent 的 save_utterances 工具走这里：一次写一场景的一批变体 */
-  saveMany(planId: string, sceneId: string, items: { text: string; sources?: Utterance['sources'] }[]): Utterance[] {
+  /** 生成 Agent 的 write_bits 工具走这里：一次写一场景的一批桥段 */
+  saveMany(
+    planId: string,
+    sceneId: string,
+    items: { text: string; bitType?: string; delivery?: string; sources?: Utterance['sources'] }[]
+  ): Utterance[] {
     const existing = this.storage.utteranceList(planId).filter((u) => u.sceneId === sceneId)
     let variantIdx = existing.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
     return items
@@ -66,6 +70,8 @@ export class UtteranceService {
           sceneId,
           variantIdx: variantIdx++,
           text: item.text.trim(),
+          bitType: item.bitType?.trim() ?? '',
+          delivery: item.delivery?.trim() ?? '',
           voiceId: '',
           source: 'initial',
           sources: item.sources ?? []
@@ -86,6 +92,8 @@ export class UtteranceService {
       sceneId: input.sceneId,
       variantIdx: input.variantIdx,
       text: input.text.trim(),
+      bitType: input.bitType?.trim() ?? existing?.bitType ?? '',
+      delivery: input.delivery?.trim() ?? existing?.delivery ?? '',
       voiceId: input.voiceId ?? '',
       audioPath: textChanged ? null : (existing?.audioPath ?? null),
       status: textChanged ? 'pending' : (existing?.status ?? 'pending'),
@@ -111,8 +119,10 @@ export class UtteranceService {
 
   /**
    * 批量预合成（docs/07 §4 ④）：把场次里 pending/failed 的条目合成就绪。
-   * 同场景 + 同音色的连续条目先拼成段落整段合成（句间语气连贯，见 shared/paragraph.ts），
-   * 段落对不上句数就整组回退逐条。逐条串行（TTS 限流安全），onProgress 逐条回报驱动审阅表状态刷新。
+   * 桥段（bitType 非空）：一条 = 一整段连续讲述 = 一次合成，不拆不分组——
+   * 播放/合成/缓存单元对齐，请求数比单句时代少一个量级，语气由 TTS 按整段上下文处理。
+   * 旧式单句（桥段制之前的底稿）：维持同场景同音色连续条目拼段落整组合成再切句，
+   * 段落对不上句数就整组回退逐条。逐条串行（TTS 限流安全），onProgress 逐条回报。
    */
   async synthesizeAll(
     planId: string,
@@ -126,11 +136,21 @@ export class UtteranceService {
     // 合成用的音色与开播装载时的判定口径一致（场次音色优先于人设音色）
     const voiceOf = (u: Utterance) => this.persona.resolvePlanVoice(plan, undefined, u.voiceId) ?? ''
 
-    // 分组：utteranceList 已按场景 + 变体序排好，同场景同音色的连续条目累到字符上限为止
+    // 桥段自成一组（整段一次合成）；旧式单句按原规则拼段落
     const groups: Utterance[][] = []
     let current: Utterance[] = []
     let currentChars = 0
+    const flush = () => {
+      if (current.length > 0) groups.push(current)
+      current = []
+      currentChars = 0
+    }
     for (const u of pending) {
+      if (u.bitType) {
+        flush()
+        groups.push([u])
+        continue
+      }
       const voice = voiceOf(u)
       const continues =
         current.length > 0 &&
@@ -141,12 +161,12 @@ export class UtteranceService {
         current.push(u)
         currentChars += u.text.length
       } else {
-        if (current.length > 0) groups.push(current)
+        flush()
         current = [u]
         currentChars = u.text.length
       }
     }
-    if (current.length > 0) groups.push(current)
+    flush()
 
     let done = 0
     let failed = 0

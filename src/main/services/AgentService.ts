@@ -20,7 +20,7 @@ import {
   type PlaybackControlAction,
   type Script
 } from '../../shared/types'
-import { planTargetLines } from '../../shared/planDuration'
+import { planTargetBits } from '../../shared/planDuration'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { PersonaService } from './PersonaService'
@@ -487,14 +487,14 @@ export class AgentService {
     this.directorSay(this.composeDraftBrief(plan, script))
   }
 
-  /** 写稿任务书：场景行（id/时长/目标条数/要点）代码拼好，主文案走主播手册（user.draft_brief） */
+  /** 写稿任务书：场景行（id/时长/目标段数/要点）代码拼好，主文案走主播手册（user.draft_brief） */
   private composeDraftBrief(plan: LivePlan, script: Script): string {
-    const target = planTargetLines(plan, script)
-    const { maxLen, toneHint } = plan.genConfig
+    const target = planTargetBits(plan, script)
+    const { toneHint } = plan.genConfig
     const scenes = script.scenes
       .map(
         (scene, i) =>
-          `  ${i + 1}. 「${scene.title}」（sceneId=${scene.id}，约 ${scene.estDurationMin} 分钟，目标 ${target.perScene[i] ?? 0} 条）` +
+          `  ${i + 1}. 「${scene.title}」（sceneId=${scene.id}，约 ${scene.estDurationMin} 分钟，目标 ${target.perScene[i] ?? 0} 段桥段）` +
           `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
       )
       .join('\n')
@@ -502,7 +502,6 @@ export class AgentService {
       plannedMinutes: plan.plannedMinutes,
       total: target.total,
       scenes,
-      maxLen,
       toneHintLine: toneHint ? `6. 语气：${toneHint}\n` : ''
     })
   }

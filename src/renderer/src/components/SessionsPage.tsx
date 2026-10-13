@@ -36,6 +36,8 @@ import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { flattenModelCatalog, groupCloneVoices } from '../lib/voice'
 import { useAppStore } from '../stores/useAppStore'
 import {
+  BIT_TYPES,
+  BIT_TYPE_LABEL,
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   DEFAULT_PLANNED_MINUTES,
@@ -169,7 +171,7 @@ export function SessionsPage() {
                       <BookOpenText className="size-3.5" />
                       {stats && stats.total > 0 ? (
                         <span>
-                          话术库 {stats.total} 条 · 就绪 {stats.ready}
+                          话术库 {stats.total} 段 · 就绪 {stats.ready}
                         </span>
                       ) : (
                         <span>话术库为空（点「话术库」生成）</span>
@@ -469,37 +471,21 @@ function PlanDialog({
 
           <div className="rounded-lg border p-3">
             <p className="mb-2 text-xs font-medium">底稿规模（生成话术库与开播预检都按它算）</p>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <Label className="mb-1 text-xs text-muted-foreground">预设直播时长（分钟）</Label>
-                <Input
-                  type="number"
-                  min={5}
-                  max={600}
-                  value={form.plannedMinutes}
-                  onChange={(e) =>
-                    setForm({ ...form, plannedMinutes: Math.max(5, Number(e.target.value) || DEFAULT_PLANNED_MINUTES) })
-                  }
-                />
-              </div>
-              <div>
-                <Label className="mb-1 text-xs text-muted-foreground">单条长度上限（字）</Label>
-                <Input
-                  type="number"
-                  min={20}
-                  max={200}
-                  value={form.genConfig.maxLen}
-                  onChange={(e) =>
-                    setForm({
-                      ...form,
-                      genConfig: { ...form.genConfig, maxLen: Math.max(20, Number(e.target.value) || 60) }
-                    })
-                  }
-                />
-              </div>
+            <div>
+              <Label className="mb-1 text-xs text-muted-foreground">预设直播时长（分钟）</Label>
+              <Input
+                type="number"
+                min={5}
+                max={600}
+                value={form.plannedMinutes}
+                onChange={(e) =>
+                  setForm({ ...form, plannedMinutes: Math.max(5, Number(e.target.value) || DEFAULT_PLANNED_MINUTES) })
+                }
+              />
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              按 {form.plannedMinutes} 分钟约生成 {Math.ceil(form.plannedMinutes * 4)} 条底稿，逐场分摊；同一要点会写不同说法轮换
+              按 {form.plannedMinutes} 分钟约生成 {Math.max(1, Math.ceil(form.plannedMinutes * 0.8))} 段桥段，逐场分摊；
+              每段 30~90 秒连续讲述，故事/算账/包袱/场景化等形态穿插
             </p>
             <div className="mt-3">
               <Label className="mb-1 text-xs text-muted-foreground">语气指令（可选）</Label>
@@ -508,7 +494,7 @@ function PlanDialog({
                 onChange={(e) =>
                   setForm({ ...form, genConfig: { ...form.genConfig, toneHint: e.target.value } })
                 }
-                placeholder="例如：节奏明快、多和观众唠嗑、少喊口号"
+                placeholder="例如：节奏明快、多讲故事、少喊口号"
               />
             </div>
           </div>
@@ -593,6 +579,8 @@ function UtteranceDialog({
   const [presynthRunning, setPresynthRunning] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
+  const [editType, setEditType] = useState('')
+  const [editDelivery, setEditDelivery] = useState('')
 
   const reload = useCallback(async () => {
     setItems(await window.api.utterance.list(plan.id))
@@ -671,6 +659,8 @@ function UtteranceDialog({
         sceneId: u.sceneId,
         variantIdx: u.variantIdx,
         text: editText,
+        bitType: editType,
+        delivery: editDelivery,
         voiceId: u.voiceId,
         source: u.source,
         sources: u.sources
@@ -694,7 +684,7 @@ function UtteranceDialog({
           <DialogTitle>
             话术库 · {plan.name}
             <span className="ml-2 text-xs font-normal text-muted-foreground">
-              {stats.total} 条 · 就绪 {stats.ready}
+              {stats.total} 段 · 就绪 {stats.ready}
               {stats.failed > 0 ? ` · 失败 ${stats.failed}` : ''}
             </span>
           </DialogTitle>
@@ -731,7 +721,7 @@ function UtteranceDialog({
               {groups.map((group) => (
                 <div key={group.sceneId || '__common'}>
                   <p className="sticky top-0 mb-1 bg-popover py-1 text-xs font-medium text-muted-foreground">
-                    {sceneTitle(group.sceneId)} · {group.items.length} 条
+                    {sceneTitle(group.sceneId)} · {group.items.length} 段
                   </p>
                   <div className="flex flex-col gap-1.5">
                     {group.items.map((u) => (
@@ -744,7 +734,25 @@ function UtteranceDialog({
                               className="min-h-16 resize-none text-[13px]"
                               autoFocus
                             />
-                            <div className="flex justify-end gap-1.5">
+                            <div className="flex items-center gap-2">
+                              <Select value={editType || 'general'} onValueChange={setEditType}>
+                                <SelectTrigger className="h-7 w-28 text-xs">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {BIT_TYPES.map((t) => (
+                                    <SelectItem key={t.id} value={t.id}>
+                                      {t.label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <Input
+                                value={editDelivery}
+                                onChange={(e) => setEditDelivery(e.target.value)}
+                                placeholder="表演指示（可选）：情绪/语速/停顿"
+                                className="h-7 flex-1 text-xs"
+                              />
                               <Button variant="ghost" size="sm" onClick={() => setEditingId(null)}>
                                 取消
                               </Button>
@@ -762,7 +770,19 @@ function UtteranceDialog({
                               {u.status === 'synthesizing' ? (
                                 <Skeleton className="h-4 w-3/4" />
                               ) : (
-                                <p className="text-[13px] leading-5">{u.text}</p>
+                                <>
+                                  <p className="text-[13px] leading-5">
+                                    {u.bitType && (
+                                      <span className="mr-1.5 inline-flex items-center rounded bg-accent/70 px-1 py-px text-[10px] font-medium">
+                                        {BIT_TYPE_LABEL[u.bitType] ?? u.bitType}
+                                      </span>
+                                    )}
+                                    {u.text}
+                                  </p>
+                                  {u.delivery && (
+                                    <p className="mt-0.5 text-xs text-muted-foreground">演法：{u.delivery}</p>
+                                  )}
+                                </>
                               )}
                               {u.error && <p className="mt-0.5 text-xs text-destructive">{u.error}</p>}
                               {u.sources.length > 0 && (
@@ -789,6 +809,8 @@ function UtteranceDialog({
                               onClick={() => {
                                 setEditingId(u.id)
                                 setEditText(u.text)
+                                setEditType(u.bitType || 'general')
+                                setEditDelivery(u.delivery)
                               }}
                             >
                               <Pencil />

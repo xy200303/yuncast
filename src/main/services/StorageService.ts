@@ -2,6 +2,7 @@ import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
 import {
   DEFAULT_CONFIG,
   DEFAULT_PLAN_GEN_CONFIG,
@@ -52,9 +53,12 @@ import {
 
 /**
  * 持久化层：
- * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey / llm.apiKey 等用 safeStorage 加密落盘）
+ * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey / llm.apiKey 等加密落盘）
  * - 业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
  * - 供应商接入（model_connections / tts_connections）：密钥字段在 params 里内联加密
+ * - 凭据加密用应用自管的 secretBox（AES-256-GCM + userData/secret.key，见 secretBox.ts），
+ *   不用系统钥匙串——避免系统密钥轮换后凭据全哑，且行为跨平台一致；
+ *   旧 safeStorage 密文启动时尝试迁移（解不开则按凭据缺失提示重填）
  */
 
 type StoredValue = string | { __enc: string }
@@ -205,6 +209,7 @@ export class StorageService {
   constructor() {
     const dir = app.getPath('userData')
     mkdirSync(dir, { recursive: true })
+    initSecretBox(dir)
     this.configFile = join(dir, 'config.json')
     this.config = this.loadConfig()
 
@@ -427,6 +432,8 @@ export class StorageService {
     this.migrateModelProfiles()
     this.migrateLegacyLlm()
     this.migratePersonaBrains()
+    // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
+    this.migrateLegacySecrets()
   }
 
   // ---------- 音色库（M8） ----------
@@ -716,15 +723,33 @@ export class StorageService {
     return this.decryptSecrets(raw, ttsSecretFieldKeys(providerId))
   }
 
+  /**
+   * 解一个密文值：v2 走 secretBox；旧 safeStorage 密文尝试解开（解得开则由启动迁移统一转 v2）。
+   * 解不开返回 null，调用方置空——界面按"凭据缺失"提示重填。
+   */
+  private unsealValue(sealed: string): string | null {
+    if (isV2Sealed(sealed)) {
+      try {
+        return openSeal(sealed)
+      } catch {
+        return null
+      }
+    }
+    try {
+      return safeStorage.decryptString(Buffer.from(sealed, 'base64'))
+    } catch {
+      return null
+    }
+  }
+
   private encryptSecrets(
     params: Record<string, string | number | boolean>,
     secrets: string[]
   ): Record<string, string | number | boolean | { __enc: string }> {
     const out: Record<string, string | number | boolean | { __enc: string }> = {}
-    const canEncrypt = safeStorage.isEncryptionAvailable()
     for (const [key, value] of Object.entries(params)) {
-      if (secrets.includes(key) && canEncrypt && typeof value === 'string' && value.length > 0) {
-        out[key] = { __enc: safeStorage.encryptString(value).toString('base64') }
+      if (secrets.includes(key) && typeof value === 'string' && value.length > 0) {
+        out[key] = { __enc: seal(value) }
         continue
       }
       out[key] = value
@@ -737,16 +762,56 @@ export class StorageService {
     const out: Record<string, string | number | boolean> = {}
     for (const [key, value] of Object.entries(parsed)) {
       if (secrets.includes(key) && value && typeof value === 'object' && '__enc' in value) {
-        try {
-          out[key] = safeStorage.decryptString(Buffer.from(String((value as { __enc: unknown }).__enc), 'base64'))
-        } catch {
-          out[key] = ''
-        }
+        const plain = this.unsealValue(String((value as { __enc: unknown }).__enc))
+        out[key] = plain ?? ''
         continue
       }
       if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') out[key] = value
     }
     return out
+  }
+
+  /**
+   * 启动迁移：库里的旧 safeStorage 密文统一转成 v2（secretBox）。
+   * 解不开的（系统密钥已轮换）保持原样——读出时会落为空，界面照常提示重填，重填后即是 v2。
+   */
+  private migrateLegacySecrets(): void {
+    for (const table of ['model_connections', 'tts_connections']) {
+      let rows: { id: unknown; provider_id: unknown; params: unknown }[]
+      try {
+        rows = this.db.prepare(`SELECT id, provider_id, params FROM ${table}`).all() as typeof rows
+      } catch {
+        continue // 表还没建（全新库）就跳过
+      }
+      const update = this.db.prepare(`UPDATE ${table} SET params = ? WHERE id = ?`)
+      let migrated = 0
+      let unmigratable = 0
+      for (const row of rows) {
+        const secrets = table === 'tts_connections' ? ttsSecretFieldKeys(str(row.provider_id)) : secretFieldKeys(str(row.provider_id))
+        const parsed = parseJson<Record<string, unknown>>(row.params, {})
+        let dirty = false
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!secrets.includes(key)) continue
+          if (!value || typeof value !== 'object' || !('__enc' in value)) continue
+          const sealed = String((value as { __enc: unknown }).__enc)
+          if (isV2Sealed(sealed)) continue
+          try {
+            const plain = safeStorage.decryptString(Buffer.from(sealed, 'base64'))
+            parsed[key] = { __enc: seal(plain) }
+            dirty = true
+          } catch {
+            unmigratable++
+          }
+        }
+        if (dirty) {
+          update.run(JSON.stringify(parsed), str(row.id))
+          migrated++
+        }
+      }
+      if (migrated > 0 || unmigratable > 0) {
+        console.log(`[凭据] ${table} 旧密文迁移：转 v2 ${migrated} 行；解不开 ${unmigratable} 个字段（读出时按缺失提示重填）`)
+      }
+    }
   }
 
   /**
@@ -1156,18 +1221,22 @@ export class StorageService {
     try {
       if (!existsSync(this.configFile)) return structuredClone(DEFAULT_CONFIG)
       const raw = JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
-      // 解密敏感字段
+      // 解密敏感字段；解开的旧 safeStorage 密文标记一下，读完落盘时转 v2
+      let migrated = false
       for (const key of SECRET_KEYS) {
         const value = getPath(raw, key) as StoredValue | undefined
         if (value && typeof value === 'object' && '__enc' in value) {
-          try {
-            setPath(raw, key, safeStorage.decryptString(Buffer.from(value.__enc, 'base64')))
-          } catch {
-            setPath(raw, key, '')
-          }
+          const plain = this.unsealValue(value.__enc)
+          if (!isV2Sealed(value.__enc) && plain) migrated = true
+          setPath(raw, key, plain ?? '')
         }
       }
-      return parseAppConfig(raw)
+      const config = parseAppConfig(raw)
+      if (migrated) {
+        this.config = config
+        this.saveConfig()
+      }
+      return config
     } catch (error) {
       console.error('[AgentAnchor] 读取配置失败，用默认值:', error)
       return structuredClone(DEFAULT_CONFIG)
@@ -1195,12 +1264,10 @@ export class StorageService {
     try {
       mkdirSync(dirname(this.configFile), { recursive: true })
       const clone = JSON.parse(JSON.stringify(this.config)) as Record<string, unknown>
-      if (safeStorage.isEncryptionAvailable()) {
-        for (const key of SECRET_KEYS) {
-          const value = getPath(clone, key)
-          if (typeof value === 'string' && value.length > 0) {
-            setPath(clone, key, { __enc: safeStorage.encryptString(value).toString('base64') })
-          }
+      for (const key of SECRET_KEYS) {
+        const value = getPath(clone, key)
+        if (typeof value === 'string' && value.length > 0) {
+          setPath(clone, key, { __enc: seal(value) })
         }
       }
       writeFileSync(this.configFile, JSON.stringify(clone, null, 2), 'utf8')

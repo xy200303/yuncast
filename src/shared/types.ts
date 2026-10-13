@@ -91,11 +91,11 @@ export interface TtsConfig {
   provider: TtsProvider
   /** @deprecated 迁移用：已迁入 tts_connections，新代码不再读 */
   appId: string
-  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，safeStorage 加密落盘） */
+  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，加密落盘（secretBox）） */
   accessToken: string
   /** @deprecated 迁移用：已迁入 tts_connections */
   cluster: string
-  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，safeStorage 加密落盘） */
+  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，加密落盘（secretBox）） */
   apiKey: string
   /** @deprecated 迁移用：已迁入 tts_connections */
   model: string
@@ -214,7 +214,7 @@ export interface LlmConfig {
   provider: LlmProvider
   /** 模型 id（留空用该服务商默认值） */
   model: string
-  /** API Key（敏感字段，safeStorage 加密落盘，运行时注入 pi，不落 pi 的盘） */
+  /** API Key（敏感字段，加密落盘（secretBox），运行时注入 pi，不落 pi 的盘） */
   apiKey: string
   /** 自定义 API 地址，留空走服务商默认 */
   baseUrl: string
@@ -994,7 +994,7 @@ export interface StreamConfig {
   /** direct=FFmpeg 直推 RTMP；companion=直播伴侣采集系统声音（需从伴侣互动工具入口启动） */
   mode: StreamMode
   serverUrl: string
-  /** 推流密钥（敏感字段，safeStorage 加密落盘） */
+  /** 推流密钥（敏感字段，加密落盘（secretBox）） */
   streamKey: string
 }
 
@@ -1077,7 +1077,7 @@ export interface ConnectorStatus {
 export interface CommentConfig {
   /** 本地连接器 MCP 端口（v2 单一协议：事件推送 + 工具调用都走它） */
   connectorPort: number
-  /** 连接器 MCP Bearer Token（在连接器设置页复制；敏感字段 safeStorage 加密落盘） */
+  /** 连接器 MCP Bearer Token（在连接器设置页复制；敏感字段 加密落盘（secretBox）） */
   connectorToken: string
 }
 

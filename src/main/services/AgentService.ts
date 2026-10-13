@@ -28,7 +28,7 @@ import type { ResolvedModel } from './providers/registry'
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
  * - pi-agent SDK 路线：createAgentSession，资源目录全部重定向到 userData/pi（不碰 ~/.pi）
  * - 关掉全部内置编码工具，只挂主播工具（anchorTools，一切声音走话术池）
- * - 凭据运行时注入 ModelRuntime，不落 pi 的盘；我们的 config 里 safeStorage 加密
+ * - 凭据运行时注入 ModelRuntime，不落 pi 的盘；我们的 config 里 secretBox 加密
  * - text_delta 既累积成"AI 正在组织语言"预览（提词器），也推给对话时间线（docs/09 §11）
  * - 对话时间线照 pi 事件流原样渲染：文本流式 / 工具卡片 / 最终回复，不做二次解释
  *   （thinking_delta 不渲染；ask_director 的工具卡片跳过——它走请示卡片那条通道）

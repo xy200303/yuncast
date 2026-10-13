@@ -666,10 +666,11 @@ function registerIpc(
   // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口
   ipcMain.handle(IPC.planPreflight, (_e, id: string) => launch.preflight(String(id ?? '')))
   ipcMain.handle(IPC.planLaunch, async (_e, id: string) => {
-    const wasRunning = agent.status().state !== 'stopped'
+    // 「在跑」不等于「已开播」：写稿会话（prep）也在跑，prep→live 必须发开播事件（开场白触发器靠它）
+    const statusBefore = agent.status()
+    const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
     const result = await launch.launch(String(id ?? ''))
-    // 真的开起来了才发开播事件（开场白触发器靠它）
-    if (result.ok && !wasRunning) bus.emit('stream.started', {}, 'human')
+    if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
     return result
   })
   /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
@@ -841,6 +842,17 @@ if (!single) {
 
     // 场次底稿库 + 场次启动（docs/07 §8.5）
     const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
+    // 就绪补装：直播中底稿每就绪一段就把当前场景新就绪的装进池（0 就绪开播不空转——边合成边播，不用等整批）
+    const broadcastUtteranceOnly = utterances.onEvent
+    utterances.onEvent = (u) => {
+      broadcastUtteranceOnly?.(u)
+      if (u.status !== 'ready' || !u.id) return
+      if (storage.getConfig().live.activePlanId !== u.planId) return
+      const status = agent?.status()
+      if (status?.state !== 'running' || status.purpose !== 'live') return
+      const loaded = launch.loadActiveSceneUtterances()
+      if (loaded > 0) console.log(`[AgentAnchor] 新就绪底稿补装 ${loaded} 条`)
+    }
     // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
     agent.onSceneAdvanced = () => {
       const loaded = launch.loadActiveSceneUtterances()
@@ -850,10 +862,12 @@ if (!single) {
     agent.onGoLive = async () => {
       const planId = storage.getConfig().live.activePlanId
       if (!planId) return '没有选中场次，开不了播'
-      const wasRunning = agent!.status().state !== 'stopped'
+      // prep 会话也算「在跑」但没开播：prep→live 必须发开播事件（开场白触发器靠它）
+      const statusBefore = agent!.status()
+      const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
       const result = await launch.launch(planId)
       if (!result.ok) return `开播被预检拦下了：${result.error}`
-      if (!wasRunning) bus!.emit('stream.started', {}, 'agent')
+      if (!wasLive) bus!.emit('stream.started', {}, 'agent')
       return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
     }
     // 滚动补货：池见底时把当前场景的就绪底稿装回去循环轮播，别等主播现场救火

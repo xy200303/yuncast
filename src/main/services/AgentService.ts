@@ -99,11 +99,17 @@ export class AgentService {
   /** 播报控制（pause/resume/skip）→ 广播到渲染进程执行 */
   onPlaybackControl: ((action: PlaybackControlAction) => void) | null = null
 
-  /** 本轮序号（agent_start 自增，一次派活 = 一轮，形如 turn-3） */
+  /** 本轮序号（agent_start 自增，一次派活 = 一轮，形如 turn-m3k9x2-3） */
   private turnSeq = 0
-  /** 本轮里的 assistant 消息序号（message_start 自增，形如 turn-3-msg-1） */
+  /**
+   * 本次进程的唯一串，揉进 turn/消息 id：时间线按场次永久落库、按 entry id upsert，
+   * 不带它的话重启后序号从 0 重来，新回复会原地覆盖上一进程同 id 的旧行——
+   * 内容换了、行位置还停在上次启动时，看起来就是「回复跑到提问上面」的错位
+   */
+  private readonly runId = Date.now().toString(36)
+  /** 本轮里的 assistant 消息序号（message_start 自增，形如 turn-m3k9x2-3-msg-1） */
   private msgSeq = 0
-  private turnId = 'turn-0'
+  private turnId = `turn-${this.runId}-0`
   /** 当前正在流式的 assistant 消息（text_delta 都累加到它） */
   private currentMessageId: string | null = null
   /** 本轮各消息的文本快照（本轮开始时清空） */
@@ -500,14 +506,14 @@ export class AgentService {
 
   /**
    * 新一轮（agent_start）：一次派给主播的任务 = 一轮，含中间文本 + 多轮工具调用 + 最终回复。
-   * turnId 形如 turn-3，本轮内每条 assistant 消息形如 turn-3-msg-1。
+   * turnId 形如 turn-m3k9x2-3（runId-序号），本轮内每条 assistant 消息形如 turn-m3k9x2-3-msg-1。
    */
   private beginTurn(): void {
     this.clearTextTimers()
     this.texts.clear()
     this.turnSeq += 1
     this.msgSeq = 0
-    this.turnId = `turn-${this.turnSeq}`
+    this.turnId = `turn-${this.runId}-${this.turnSeq}`
     this.currentMessageId = null
     this.lastTextMessageId = null
     this.turnFinalized = false

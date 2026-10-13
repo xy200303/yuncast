@@ -7,6 +7,7 @@ import {
   DEFAULT_CONFIG,
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  DEFAULT_PLANNED_MINUTES,
   LLM_PROVIDER_META,
   parseAppConfig,
   ttsProviderHasCredentials,
@@ -350,6 +351,8 @@ export class StorageService {
     this.ensureColumn('live_plans', 'gen_config', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('live_plans', 'voice_id', "TEXT NOT NULL DEFAULT ''")
+    // 预设直播时长（分钟）：开播向导按它推算底稿规模
+    this.ensureColumn('live_plans', 'planned_minutes', 'INTEGER NOT NULL DEFAULT 60')
     // 场次话术库（docs/07 §3 utterances：底稿库，与运行态 speech_items 分工）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS utterances (
@@ -1728,6 +1731,7 @@ export class StorageService {
             ...parseJson<Partial<PlanKnowledgeScope>>(r.knowledge_scope, {})
           },
           voiceId: str(r.voice_id),
+          plannedMinutes: num(r.planned_minutes) ?? DEFAULT_PLANNED_MINUTES,
           createdAt: num(r.created_at) ?? 0,
           updatedAt: num(r.updated_at) ?? 0
         }
@@ -1737,12 +1741,13 @@ export class StorageService {
   planSave(plan: LivePlan): void {
     this.db
       .prepare(
-        `INSERT INTO live_plans (id, name, theme, persona_id, style_hint, script_id, current_scene_idx,
-                                 gen_config, knowledge_scope, voice_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO live_plans (id, name, theme, persona_id, style_hint, planned_minutes, script_id,
+                                 current_scene_idx, gen_config, knowledge_scope, voice_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, theme = excluded.theme,
            persona_id = excluded.persona_id, style_hint = excluded.style_hint,
+           planned_minutes = excluded.planned_minutes,
            script_id = excluded.script_id, gen_config = excluded.gen_config,
            knowledge_scope = excluded.knowledge_scope, voice_id = excluded.voice_id,
            updated_at = excluded.updated_at`
@@ -1753,6 +1758,7 @@ export class StorageService {
         plan.theme,
         plan.personaId ?? null,
         plan.styleHint,
+        plan.plannedMinutes,
         plan.scriptId ?? null,
         plan.currentSceneIdx,
         JSON.stringify(plan.genConfig),

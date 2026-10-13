@@ -11,10 +11,16 @@ import { fetchUrlGuarded } from './fetchUrl'
  * 三条约束：价格只走 check_price；来源留痕（save_utterances 带 sources）；成本上限（调用计数器）。
  */
 
-/** 单场生成工具调用上限（docs/07 §4.2 ③） */
+/** 单场生成工具调用上限（docs/07 §4.2 ③）；整版底稿生成时按目标条数上调，见 GenerationService */
 export const GENERATION_TOOL_CALL_CAP = 40
 /** 单次读取上限（字符） */
 const READ_CAP = 8000
+
+/** 工具调用预算：`cap` 由调用方按本轮工作量给（默认单场上限） */
+export interface GenerationBudget {
+  used: number
+  cap: number
+}
 
 export interface GenerationToolDeps {
   knowledge: KnowledgeService
@@ -25,18 +31,17 @@ export interface GenerationToolDeps {
   /** 当前正在生成的场景 id（save_utterances 挂到它下面） */
   getSceneId: () => string
   /** 工具调用计数器（所有工具共用，超限拒绝） */
-  budget: { used: number }
+  budget: GenerationBudget
 }
 
 export function buildGenerationTools(deps: GenerationToolDeps): ToolDefinition[] {
   const { knowledge, utterances, planId, scope, getSceneId, budget } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
+  const overBudget = () => ok(`工具调用次数已达上限（${budget.cap} 次），请用已有信息收尾`)
   const guardTool = (fn: () => string) => {
     try {
       budget.used++
-      if (budget.used > GENERATION_TOOL_CALL_CAP) {
-        return ok(`工具调用次数已达上限（${GENERATION_TOOL_CALL_CAP} 次/场），请用已有信息收尾`)
-      }
+      if (budget.used > budget.cap) return overBudget()
       return ok(fn())
     } catch (error) {
       return ok(`操作失败：${error instanceof Error ? error.message : String(error)}`)
@@ -193,9 +198,7 @@ export function buildGenerationTools(deps: GenerationToolDeps): ToolDefinition[]
     return (async () => {
       try {
         budget.used++
-        if (budget.used > GENERATION_TOOL_CALL_CAP) {
-          return ok(`工具调用次数已达上限（${GENERATION_TOOL_CALL_CAP} 次/场），请用已有信息收尾`)
-        }
+        if (budget.used > budget.cap) return overBudget()
         return ok(await fn())
       } catch (error) {
         return ok(`操作失败：${error instanceof Error ? error.message : String(error)}`)

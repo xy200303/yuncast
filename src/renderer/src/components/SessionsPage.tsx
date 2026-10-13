@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   BookOpenText,
   CalendarDays,
@@ -38,6 +38,7 @@ import { useAppStore } from '../stores/useAppStore'
 import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  DEFAULT_PLANNED_MINUTES,
   type KnowledgeFile,
   type LivePlan,
   type LivePlanInput,
@@ -72,6 +73,10 @@ export function SessionsPage() {
   const [editing, setEditing] = useState<{ plan?: LivePlan } | null>(null)
   const [deleting, setDeleting] = useState<LivePlan | null>(null)
   const [reviewing, setReviewing] = useState<LivePlan | null>(null)
+  /** 开播预检「去生成底稿」带过来的场次：打开话术库后跳过点击直接触发生成 */
+  const [autoGeneratePlanId, setAutoGeneratePlanId] = useState<string | null>(null)
+  const pendingGenerationPlanId = useAppStore((s) => s.pendingGenerationPlanId)
+  const setPendingGenerationPlanId = useAppStore((s) => s.setPendingGenerationPlanId)
 
   const activePlanId = config.live.activePlanId
 
@@ -101,6 +106,16 @@ export function SessionsPage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  // 开播预检「去生成底稿」的接力：直播台跳过来后，自动打开该场次话术库并直接触发生成
+  useEffect(() => {
+    if (!pendingGenerationPlanId || plans.length === 0) return
+    const plan = plans.find((p) => p.id === pendingGenerationPlanId) ?? null
+    setPendingGenerationPlanId(null)
+    if (!plan) return
+    setAutoGeneratePlanId(plan.id)
+    setReviewing(plan)
+  }, [pendingGenerationPlanId, plans, setPendingGenerationPlanId])
 
   const setActive = (id: string) => {
     void window.api.plan.setActive(id === activePlanId ? '' : id).then(async () => {
@@ -220,7 +235,13 @@ export function SessionsPage() {
           plan={reviewing}
           script={scripts.find((s) => s.id === reviewing.scriptId) ?? null}
           open
-          onOpenChange={(open) => !open && setReviewing(null)}
+          autoGenerate={autoGeneratePlanId === reviewing.id}
+          onOpenChange={(open) => {
+            if (!open) {
+              setReviewing(null)
+              setAutoGeneratePlanId(null)
+            }
+          }}
           onChanged={reload}
         />
       )}
@@ -287,6 +308,7 @@ function PlanDialog({
     theme: plan?.theme ?? '',
     personaId: plan?.personaId ?? null,
     styleHint: plan?.styleHint ?? '',
+    plannedMinutes: plan?.plannedMinutes ?? DEFAULT_PLANNED_MINUTES,
     scriptId: plan?.scriptId ?? null,
     genConfig: plan?.genConfig ?? DEFAULT_PLAN_GEN_CONFIG,
     knowledgeScope: plan?.knowledgeScope ?? DEFAULT_PLAN_KNOWLEDGE_SCOPE,
@@ -465,20 +487,17 @@ function PlanDialog({
           />
 
           <div className="rounded-lg border p-3">
-            <p className="mb-2 text-xs font-medium">生成配置（生成话术库时用）</p>
+            <p className="mb-2 text-xs font-medium">底稿规模（生成话术库与开播预检都按它算）</p>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <Label className="mb-1 text-xs text-muted-foreground">每场景变体数</Label>
+                <Label className="mb-1 text-xs text-muted-foreground">预设直播时长（分钟）</Label>
                 <Input
                   type="number"
-                  min={1}
-                  max={10}
-                  value={form.genConfig.variantsPerScene}
+                  min={5}
+                  max={600}
+                  value={form.plannedMinutes}
                   onChange={(e) =>
-                    setForm({
-                      ...form,
-                      genConfig: { ...form.genConfig, variantsPerScene: Math.max(1, Number(e.target.value) || 1) }
-                    })
+                    setForm({ ...form, plannedMinutes: Math.max(5, Number(e.target.value) || DEFAULT_PLANNED_MINUTES) })
                   }
                 />
               </div>
@@ -498,6 +517,9 @@ function PlanDialog({
                 />
               </div>
             </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              按 {form.plannedMinutes} 分钟约生成 {Math.ceil(form.plannedMinutes * 4)} 条底稿，逐场分摊；同一要点会写不同说法轮换
+            </p>
             <div className="mt-3">
               <Label className="mb-1 text-xs text-muted-foreground">语气指令（可选）</Label>
               <Input
@@ -577,12 +599,15 @@ function UtteranceDialog({
   plan,
   script,
   open,
+  autoGenerate,
   onOpenChange,
   onChanged
 }: {
   plan: LivePlan
   script: Script | null
   open: boolean
+  /** 开播预检带过来的「去生成底稿」：打开即触发生成（库里已有底稿时仍需确认清空） */
+  autoGenerate?: boolean
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<void>
 }) {
@@ -654,7 +679,9 @@ function UtteranceDialog({
   }
 
   const startGeneration = async () => {
-    if (items.length > 0) {
+    // 拿实时库里的条数而不是渲染态：自动触发生成时 items 可能还没加载回来
+    const existing = await window.api.utterance.list(plan.id)
+    if (existing.length > 0) {
       const ok = await new Promise<boolean>((resolve) => {
         toast.warning('重新生成会先清空现有话术库', {
           action: { label: '继续生成', onClick: () => resolve(true) },
@@ -669,6 +696,15 @@ function UtteranceDialog({
     const result = await window.api.generation.start(plan.id)
     if (!result.ok) toast.error('生成没起来', { description: result.error })
   }
+
+  // 开播预检「去生成底稿」直达：弹窗一打开就触发生成，只触发一次
+  const autoFiredRef = useRef(false)
+  useEffect(() => {
+    if (!autoGenerate || autoFiredRef.current) return
+    autoFiredRef.current = true
+    void startGeneration()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoGenerate])
 
   const startPresynth = async () => {
     setPresynthRunning(true)

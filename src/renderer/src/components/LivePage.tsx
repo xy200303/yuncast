@@ -17,6 +17,7 @@ import {
   RefreshCw,
   SendHorizontal,
   SlidersHorizontal,
+  Sparkles,
   Square,
   Wrench,
   X,
@@ -264,6 +265,16 @@ function PlanLauncher() {
   const running = agent.state === 'running' || agent.state === 'starting'
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
   const blocked = (checks ?? []).some((item) => item.level === 'block')
+  /** 底稿覆盖不过关：预检弹窗给出「去生成底稿」的直达入口（跳场次页自动触发生成） */
+  const coverageShort = (checks ?? []).some((item) => item.code === 'coverage' && item.level !== 'ok')
+
+  const goGenerate = (): void => {
+    if (!activePlanId) return
+    const store = useAppStore.getState()
+    store.setPendingGenerationPlanId(activePlanId)
+    setChecks(null)
+    store.setPage('sessions')
+  }
 
   const switchPlan = async (id: string): Promise<void> => {
     await window.api.plan.setActive(id)
@@ -426,6 +437,12 @@ function PlanLauncher() {
             <Button variant="outline" onClick={() => setChecks(null)}>
               先去处理
             </Button>
+            {coverageShort && (
+              <Button variant="outline" onClick={goGenerate}>
+                <Sparkles />
+                去生成底稿
+              </Button>
+            )}
             <Button variant="outline" disabled={checking} onClick={() => void runPreflight()}>
               {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               重新预检

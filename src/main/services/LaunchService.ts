@@ -4,6 +4,7 @@ import {
   type PreflightItem,
   type Utterance
 } from '../../shared/types'
+import { coveredMinutes, planTargetLines } from '../../shared/planDuration'
 import type { AgentService } from './AgentService'
 import type { ConnectorService } from './ConnectorService'
 import type { PersonaService } from './PersonaService'
@@ -21,6 +22,14 @@ import { findCloneVoice } from '../../shared/voiceProvider'
 const LIBRARY_SOURCE_ID = 'library'
 /** 超过这么久没重测发音，预检提醒重测（docs/07 §8.5 语音可用性） */
 const VOICE_TEST_STALE_MS = 24 * 3600_000
+/** 就绪底稿覆盖到预设时长的这个比例，预检算「够播」（低于它提醒先补底稿） */
+const COVERAGE_ENOUGH_RATIO = 0.8
+
+/** 分钟数展示：整数不带小数，半分钟保留一位 */
+function formatMinutes(minutes: number): string {
+  const value = Math.round(minutes * 10) / 10
+  return Number.isInteger(value) ? String(value) : value.toFixed(1)
+}
 
 /**
  * 场次启动（docs/07 §8.5）：直播台唯一的开播路径。
@@ -186,7 +195,36 @@ export class LaunchService {
       })
     }
 
-    // ⑤ 接入与推流（都能降级：不打断开播）
+    // ⑤ 底稿覆盖：就绪条目能播多久 vs 预设直播时长。
+    // 一条就绪底稿都没有就是阻断（开播即冷场），不够八成提醒先补。
+    const covered = coveredMinutes(ready.length)
+    const targetLines = script ? planTargetLines(plan, script).total : 0
+    items.push(
+      ready.length === 0
+        ? {
+            code: 'coverage',
+            level: 'block',
+            label: `还没有就绪底稿（预设播 ${plan.plannedMinutes} 分钟）`,
+            detail: script
+              ? `点下方「去生成底稿」自动生成本场约 ${targetLines} 条话术`
+              : '先给场次绑一个剧本，生成 Agent 才能按场景出整版底稿'
+          }
+        : covered < plan.plannedMinutes * COVERAGE_ENOUGH_RATIO
+          ? {
+              code: 'coverage',
+              level: 'warn',
+              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 条）`,
+              detail: '不够播全场，中途靠主播现场补货；建议先去场次页补生成 + 预合成'
+            }
+          : {
+              code: 'coverage',
+              level: 'ok',
+              label: `底稿覆盖 ${formatMinutes(covered)}/${plan.plannedMinutes} 分钟（就绪 ${ready.length} 条）`,
+              detail: '按预设时长够播全场，开播直接轮播'
+            }
+    )
+
+    // ⑥ 接入与推流（都能降级：不打断开播）
     const connector = this.connector.status()
     items.push(
       connector.state === 'connected'

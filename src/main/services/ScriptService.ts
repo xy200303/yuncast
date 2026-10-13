@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  DEFAULT_PLANNED_MINUTES,
+  MIN_PLANNED_MINUTES,
   type LivePlan,
   type LivePlanInput,
   type Script,
@@ -66,12 +68,18 @@ export class ScriptService {
   savePlan(input: LivePlanInput, id?: string): LivePlan {
     if (!input.name.trim()) throw new Error('场次名称不能为空')
     const existing = id ? (this.storage.planList().find((p) => p.id === id) ?? null) : null
+    const planned = Math.round(Number(input.plannedMinutes))
     const plan: LivePlan = {
       id: id ?? `plan-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       name: input.name.trim(),
       theme: input.theme.trim(),
       personaId: input.personaId ?? null,
       styleHint: input.styleHint?.trim() ?? '',
+      // 下限保护：低于 5 分钟的「预设」没有推算意义（一场至少得有几条底稿）
+      plannedMinutes: Math.max(
+        MIN_PLANNED_MINUTES,
+        Number.isFinite(planned) && planned > 0 ? planned : DEFAULT_PLANNED_MINUTES
+      ),
       scriptId: input.scriptId,
       currentSceneIdx: existing?.currentSceneIdx ?? 0,
       genConfig: { ...DEFAULT_PLAN_GEN_CONFIG, ...input.genConfig },

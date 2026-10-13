@@ -878,10 +878,8 @@ export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
 
 // ---------- 场次（docs/01 §5 场次页；docs/07 §8.5 场次=开播单元） ----------
 
-/** 场次话术库生成配置（docs/07 §4 ①） */
+/** 场次话术库生成配置（docs/07 §4 ①）；条数目标由 plannedMinutes 推算（shared/planDuration） */
 export interface PlanGenConfig {
-  /** 每场景变体数 */
-  variantsPerScene: number
   /** 语气指令（注入生成 Agent） */
   toneHint: string
   /** 单条长度上限（字） */
@@ -889,7 +887,6 @@ export interface PlanGenConfig {
 }
 
 export const DEFAULT_PLAN_GEN_CONFIG: PlanGenConfig = {
-  variantsPerScene: 3,
   toneHint: '',
   maxLen: 60
 }
@@ -902,6 +899,10 @@ export interface PlanKnowledgeScope {
 
 export const DEFAULT_PLAN_KNOWLEDGE_SCOPE: PlanKnowledgeScope = { products: '*', files: '*' }
 
+/** 预设直播时长（分钟）的默认值与下限：开播向导按它推算这场要备多少条底稿 */
+export const DEFAULT_PLANNED_MINUTES = 60
+export const MIN_PLANNED_MINUTES = 5
+
 export interface LivePlan {
   id: string
   name: string
@@ -911,6 +912,8 @@ export interface LivePlan {
   personaId: string | null
   /** 演出形式提示（单口/对口相声/幽默/朗诵…，注入 system prompt；docs/07 §5.6） */
   styleHint: string
+  /** 预设直播时长（分钟）：开播向导按它推算本场底稿规模，预检拿就绪覆盖比对 */
+  plannedMinutes: number
   scriptId: string | null
   /** 剧本推进进度（断播续播用），advance_scene 更新 */
   currentSceneIdx: number
@@ -923,6 +926,19 @@ export interface LivePlan {
 }
 
 export type LivePlanInput = Omit<LivePlan, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
+
+/** 新建场次的表单初值（场次页 PlanDialog 用） */
+export const DEFAULT_LIVE_PLAN_INPUT: LivePlanInput = {
+  name: '',
+  theme: '',
+  personaId: null,
+  styleHint: '',
+  plannedMinutes: DEFAULT_PLANNED_MINUTES,
+  scriptId: null,
+  genConfig: DEFAULT_PLAN_GEN_CONFIG,
+  knowledgeScope: DEFAULT_PLAN_KNOWLEDGE_SCOPE,
+  voiceId: ''
+}
 
 // ---------- 话术库（docs/07 §3 utterances：场次底稿库，与运行态 speech_items 分工） ----------
 
@@ -968,6 +984,11 @@ export interface PreflightItem {
   level: PreflightLevel
   label: string
   detail?: string
+  /**
+   * 检查项标识（UI 需要针对性反应时用）：
+   * 'coverage'=底稿覆盖，预检弹窗靠它决定要不要显示「去生成底稿」入口
+   */
+  code?: string
 }
 
 export interface LaunchResult {

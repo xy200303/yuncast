@@ -15,6 +15,7 @@ import {
   type Script,
   type ScriptScene
 } from '../../shared/types'
+import { planTargetLines } from '../../shared/planDuration'
 import type { StorageService } from './StorageService'
 import type { KnowledgeService } from './KnowledgeService'
 import type { UtteranceService } from './UtteranceService'
@@ -82,7 +83,9 @@ export class GenerationService {
       ? (this.persona.list().find((p) => p.id === plan.personaId) ?? this.persona.get())
       : this.persona.get()
 
-    const budget = { used: 0 }
+    // 目标条数按预设直播时长推算（逐场分摊），工具预算跟着目标走：查资料 + 分批入库都得有富余
+    const target = planTargetLines(plan, script)
+    const budget = { used: 0, cap: 20 + Math.ceil(target.total / 8) }
     let currentSceneId = ''
     const tools = buildGenerationTools({
       knowledge: this.knowledge,
@@ -120,7 +123,9 @@ export class GenerationService {
           sceneTotal: script.scenes.length,
           sceneTitle: scene.title
         })
-        await session.prompt(this.scenePrompt(plan, scene, i, script.scenes.length))
+        await session.prompt(
+          this.scenePrompt(plan, scene, i, script.scenes.length, target.perScene[i] ?? 0)
+        )
       }
       const saved = this.utterances.list(planId).length - savedBefore
       this.broadcast({ planId, state: this.cancelled ? 'cancelled' : 'done', saved })
@@ -143,16 +148,22 @@ export class GenerationService {
     await running.session.abort().catch(() => undefined)
   }
 
-  /** 单场景生成指令：目标/要点 + 变体数 + 长度上限 + 入库要求 */
-  private scenePrompt(plan: LivePlan, scene: ScriptScene, index: number, total: number): string {
-    const { variantsPerScene, maxLen, toneHint } = plan.genConfig
+  /** 单场景生成指令：目标/要点 + 本场目标条数（按预设时长分摊）+ 长度上限 + 分批入库要求 */
+  private scenePrompt(
+    plan: LivePlan,
+    scene: ScriptScene,
+    index: number,
+    total: number,
+    targetLines: number
+  ): string {
+    const { maxLen, toneHint } = plan.genConfig
     return (
       `现在为场景「${scene.title}」（第 ${index + 1}/${total} 场）写话术。\n` +
       `场景目标：${scene.goal}\n关键要点：${scene.keyPoints}\n` +
       `要求：\n` +
       `1. 先用工具查知识（list_products 看本场卖什么 → get_product/read_document 拿细节 → check_price 拿价格），别凭印象编\n` +
-      `2. 写 ${variantsPerScene} 条变体（同一要点不同说法，轮换不重复），每条一句完整口语，不超过 ${maxLen} 字\n` +
-      `3. 写好后调用 save_utterances 一次入库，带上每条的来源（sources）\n` +
+      `2. 写 ${targetLines} 条话术：把场景要点拆成一个个小段落循环讲，同一要点写几种不同说法，轮换起来不重复；每条一句完整口语，不超过 ${maxLen} 字\n` +
+      `3. 分批入库：每写完 10~15 条就调用一次 save_utterances（带上每条的来源 sources），写完全部 ${targetLines} 条再结束\n` +
       (toneHint ? `4. 语气：${toneHint}\n` : '') +
       `写完不用再汇报，直接结束这一轮。`
     )

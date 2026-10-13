@@ -45,6 +45,10 @@ interface AppState {
   page: NavPage
   setPage: (page: NavPage) => void
 
+  /** 开播预检「去生成底稿」的跨页接力：跳到场次页后自动打开该场次的话术库并触发生成（消费后置回 null） */
+  pendingGenerationPlanId: string | null
+  setPendingGenerationPlanId: (planId: string | null) => void
+
   /** 设置弹窗开关（设置不是页面，是全局弹窗，对齐 TermPilot） */
   settingsOpen: boolean
   setSettingsOpen: (open: boolean) => void
@@ -108,6 +112,9 @@ interface AppState {
 export const useAppStore = create<AppState>()((set, get) => ({
   page: 'live',
   setPage: (page) => set({ page }),
+
+  pendingGenerationPlanId: null,
+  setPendingGenerationPlanId: (pendingGenerationPlanId) => set({ pendingGenerationPlanId }),
 
   settingsOpen: false,
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),

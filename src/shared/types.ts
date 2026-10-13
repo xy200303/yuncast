@@ -651,6 +651,10 @@ export interface AgentStatus {
   assetsStale?: boolean
   /** 正在生成（一轮没跑完）：对话输入框的发送钮据此变停止钮 */
   busy?: boolean
+  /** 当前上下文估算（tokens，含 system prompt 与工具表开销）；无会话时无 */
+  contextTokens?: number
+  /** 上下文窗口（tokens）：进度条的分母，涨近「窗口 − 预留」会自动压缩 */
+  contextWindow?: number
 }
 
 // ---------- 评论（来自连接器，docs/04） ----------

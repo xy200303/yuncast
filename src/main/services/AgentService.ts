@@ -60,6 +60,8 @@ const COMPACT_KEEP_RECENT_TOKENS = 20_000
 const SUMMARY_TRANSCRIPT_MAX_CHARS = 50_000
 /** HTTP 请求超时：DeepSeek 偶尔挂住连接一个字节都不吐，收紧到 60s——超时变 error 态（可重试） */
 const LLM_TIMEOUT_MS = 60_000
+/** 工具表 schema 的粗估开销（tokens）：26 个主播工具不进 messages 但真实占窗口，状态栏进度条要算上 */
+const TOOL_SCHEMA_OVERHEAD_TOKENS = 4000
 
 /** 一条 assistant 消息在时间线上的文本状态（按 messageId 更新，不重复追加条目） */
 interface TimelineText {
@@ -133,6 +135,12 @@ export class AgentService {
   private compactionCardId: string | null = null
   /** 压缩进行中（transformContext 防重入） */
   private compacting = false
+  /** 本会话的上下文窗口（tokens）：状态栏进度条的分母 */
+  private contextWindow = 0
+  /** system prompt + 工具表的固定开销（tokens，会话出生时估一次） */
+  private contextOverhead = 0
+  /** 上下文估算缓存：消息条数没变就不重算（status 广播很勤，全量估算不便宜） */
+  private contextCache: { messagesLength: number; tokens: number } = { messagesLength: -1, tokens: 0 }
 
   constructor(
     private readonly storage: StorageService,
@@ -179,8 +187,26 @@ export class AgentService {
       // 会话还活着时比对资产：改过人设/模型/剧本就得重启会话才生效
       assetsStale:
         this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint,
-      busy: this.generating
+      busy: this.generating,
+      contextTokens: this.state === 'stopped' ? undefined : this.currentContextTokens(),
+      contextWindow: this.state === 'stopped' ? undefined : this.contextWindow || undefined
     }
+  }
+
+  /** 当前上下文估算（tokens）：消息估算 + system/工具表固定开销；条数没变用缓存 */
+  private currentContextTokens(): number {
+    const messages = this.session?.state.messages
+    if (!messages) return 0
+    if (this.contextCache.messagesLength !== messages.length) {
+      let tokens = this.contextOverhead
+      try {
+        tokens += estimateContextTokens(messages as readonly Message[]).tokens
+      } catch {
+        // 估算失败就给出已知开销，别影响状态广播
+      }
+      this.contextCache = { messagesLength: messages.length, tokens }
+    }
+    return this.contextCache.tokens
   }
 
   /** 打断当前这一轮生成（会话保留，下条指令照常来）；没在生成就是空操作 */
@@ -1005,6 +1031,15 @@ export class AgentService {
     const mode = this.modes.resolve(plan?.modeId)
     // 人设卡的音色即主播的嗓子，必选；没选时不留兜底，合成路由会直接报错（预检也会拦下）
     const systemPrompt = this.persona.buildSystemPrompt(persona, plan, script, mode.promptModule)
+    // 上下文仪表：窗口 + 固定开销（system prompt + 工具表 schema）出生时就位
+    this.contextWindow = contextWindow
+    this.contextOverhead =
+      estimateMsgTokens({
+        role: 'user',
+        content: [{ type: 'text', text: systemPrompt }],
+        timestamp: 0
+      } as unknown as AgentMessage) + TOOL_SCHEMA_OVERHEAD_TOKENS
+    this.contextCache = { messagesLength: -1, tokens: 0 }
 
     const agent = new Agent({
       initialState: {

@@ -69,6 +69,12 @@ const LEGACY_TEMPLATES: Record<string, string[]> = {
   点赞里程碑: ['点赞破 {{payload.count}} 了，谢谢家人们！']
 }
 
+/**
+ * 默认关闭的内建触发器（定时闹钟类：没事也叫 agent，白烧 token）。
+ * 老库里的行如果模板还是内置默认（用户没改过），启动时跟着关；改过的尊重用户。
+ */
+const BUILTIN_DEFAULT_DISABLED = new Set(['整点带节奏'])
+
 /** 内建触发器模板（首次启动播种，用户可关可改） */
 export function builtinTriggers(): TriggerInput[] {
   return [
@@ -142,7 +148,9 @@ export function builtinTriggers(): TriggerInput[] {
     },
     {
       name: '整点带节奏',
-      enabled: true,
+      // 默认关：定时叫醒 agent 是「没事也运行」的 token 元凶（两小时白烧十几轮）。
+      // 低水位有「续写补给」、互动有评论攒批，节奏不需要闹钟；想要节拍器再手动开
+      enabled: false,
       on: { event: 'timer.interval' },
       target: {
         agentId: 'anchor',
@@ -204,6 +212,15 @@ export class TriggerRuntime {
       if (!row) {
         this.storage.triggerSave({ ...input, id: `tr-${randomUUID().replace(/-/g, '').slice(0, 10)}` })
         continue
+      }
+      // 默认关的内建触发器：模板没改过的旧行跟着关
+      if (
+        BUILTIN_DEFAULT_DISABLED.has(input.name) &&
+        row.enabled &&
+        (row.target.promptTemplate ?? '') === (input.target.promptTemplate ?? '')
+      ) {
+        this.storage.triggerSave({ ...row, enabled: false })
+        row.enabled = false
       }
       const legacy = LEGACY_TEMPLATES[input.name]
       // steer/task 的模板在 promptTemplate，tool 直连的在 toolAction.template——两处都可能藏着旧默认

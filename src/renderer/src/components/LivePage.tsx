@@ -1146,6 +1146,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             <Button variant="ghost" size="icon-sm" onClick={() => void pickAttachment()} title="添加附件">
               <Paperclip />
             </Button>
+            <ContextMeter tokens={agent.contextTokens} window={agent.contextWindow} />
             {agent.busy ? (
               <Button
                 size="icon-sm"
@@ -1173,6 +1174,27 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   )
 }
 
+
+/** 上下文仪表：当前会话上下文估算 vs 窗口，涨近上限（自动压缩区）变色提醒 */
+function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; window?: number }) {
+  if (!tokens || !contextWindow) return null
+  const ratio = tokens / contextWindow
+  const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n))
+  const bar = ratio > 0.85 ? 'bg-red-500' : ratio > 0.65 ? 'bg-amber-500' : 'bg-emerald-500'
+  return (
+    <div
+      className="ml-auto flex items-center gap-1.5 pr-1"
+      title={`上下文估算 ${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens（含 system prompt 与工具表）；快涨满时自动压缩旧消息`}
+    >
+      <div className="h-1.5 w-14 overflow-hidden rounded-full bg-border">
+        <div className={`h-full ${bar}`} style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }} />
+      </div>
+      <span className="text-[10px] tabular-nums text-muted-foreground">
+        {fmt(tokens)}/{fmt(contextWindow)}
+      </span>
+    </div>
+  )
+}
 
 /** 右侧操作面板：人工控制入口（人工播报 / 切场景 / 急停 / 场控指令 → 对话 / 调音量） */
 function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {

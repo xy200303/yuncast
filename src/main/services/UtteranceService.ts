@@ -91,6 +91,8 @@ export class UtteranceService {
       planId: input.planId,
       sceneId: input.sceneId,
       variantIdx: input.variantIdx,
+      // 创作序号：编辑保留原序号；新增自动排到场景末尾（装池按它恢复叙事顺序）
+      seq: input.seq ?? existing?.seq ?? this.storage.utteranceNextSeq(input.planId, input.sceneId),
       text: input.text.trim(),
       bitType: input.bitType?.trim() ?? existing?.bitType ?? '',
       delivery: input.delivery?.trim() ?? existing?.delivery ?? '',

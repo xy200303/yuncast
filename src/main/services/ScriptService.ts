@@ -143,4 +143,98 @@ export class ScriptService {
   resetScene(planId: string): void {
     this.storage.planSetSceneIdx(planId, 0)
   }
+
+  // ---------- 主播自编剧本（create_scene/update_scene/remove_scene 工具的后端） ----------
+
+  /**
+   * 确保场次绑着一本剧本：没绑就现场建一本「主播自编」并绑上。
+   * 主播自己编排场景序列用——场次可以不预绑剧本，主播开播/备稿时自己搭架子。
+   */
+  ensurePlanScript(planId: string): { plan: LivePlan; script: Script; created: boolean } {
+    const plan = this.storage.planList().find((p) => p.id === planId) ?? null
+    if (!plan) throw new Error('场次不存在')
+    const bound = this.getScript(plan.scriptId)
+    if (bound) return { plan, script: bound, created: false }
+    const script: Script = {
+      id: `sc-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
+      title: `${plan.name} · 主播自编`,
+      theme: plan.theme,
+      scenes: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    }
+    this.storage.scriptSave(script)
+    this.storage.planSave({ ...plan, scriptId: script.id, updatedAt: Date.now() })
+    return { plan, script, created: true }
+  }
+
+  /** 加一场（position 省略 = 追加到末尾；序号从 1 数起）。返回新场景和全场序列 */
+  appendScene(
+    planId: string,
+    scene: { title: string; goal: string; keyPoints: string; estDurationMin?: number },
+    position?: number
+  ): { script: Script; index: number; total: number } {
+    const { script } = this.ensurePlanScript(planId)
+    if (!scene.title.trim()) throw new Error('场景名不能为空')
+    const scenes = [...script.scenes]
+    const insertAt =
+      position === undefined
+        ? scenes.length
+        : Math.min(Math.max(Math.floor(position) - 1, 0), scenes.length)
+    // id 不跟序号走（插删后不重号）：取现有最大数字 +1
+    const maxId = scenes.reduce((max, s) => {
+      const m = /^scene-(\d+)$/.exec(s.id)
+      return m ? Math.max(max, Number(m[1])) : max
+    }, 0)
+    scenes.splice(insertAt, 0, {
+      id: `scene-${maxId + 1}`,
+      title: scene.title.trim(),
+      goal: scene.goal.trim(),
+      keyPoints: scene.keyPoints.trim(),
+      estDurationMin: Math.max(1, Math.round(scene.estDurationMin ?? 5))
+    })
+    this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
+    return { script: this.getScript(script.id)!, index: insertAt, total: scenes.length }
+  }
+
+  /** 改某一场（序号从 1 数起）；只传要改的字段 */
+  updateScene(
+    planId: string,
+    index: number,
+    patch: { title?: string; goal?: string; keyPoints?: string; estDurationMin?: number }
+  ): { script: Script; index: number; total: number } {
+    const { script } = this.ensurePlanScript(planId)
+    const i = Math.floor(index) - 1
+    if (i < 0 || i >= script.scenes.length) throw new Error(`没有第 ${index} 场（现在共 ${script.scenes.length} 场）`)
+    const scenes = script.scenes.map((s, at) =>
+      at === i
+        ? {
+            ...s,
+            title: patch.title?.trim() || s.title,
+            goal: patch.goal?.trim() ?? s.goal,
+            keyPoints: patch.keyPoints?.trim() ?? s.keyPoints,
+            estDurationMin:
+              patch.estDurationMin !== undefined ? Math.max(1, Math.round(patch.estDurationMin)) : s.estDurationMin
+          }
+        : s
+    )
+    this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
+    return { script: this.getScript(script.id)!, index: i, total: scenes.length }
+  }
+
+  /** 删某一场（序号从 1 数起）；当前进度在被删场之后则回退一格 */
+  removeScene(planId: string, index: number): { script: Script; total: number } {
+    const { plan, script } = this.ensurePlanScript(planId)
+    const i = Math.floor(index) - 1
+    if (i < 0 || i >= script.scenes.length) throw new Error(`没有第 ${index} 场（现在共 ${script.scenes.length} 场）`)
+    const scenes = script.scenes.filter((_, at) => at !== i)
+    // 删到空剧本允许（主播自编可能推倒重来）：saveScript 校验至少要有一场，空序列直接落库
+    if (scenes.length === 0) {
+      this.storage.scriptSave({ ...script, scenes: [], updatedAt: Date.now() })
+    } else {
+      this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
+    }
+    if (plan.currentSceneIdx > i) this.storage.planSetSceneIdx(planId, plan.currentSceneIdx - 1)
+    return { script: this.getScript(script.id)!, total: scenes.length }
+  }
 }

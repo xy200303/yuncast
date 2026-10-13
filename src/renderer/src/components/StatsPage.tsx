@@ -11,6 +11,7 @@ const EVENT_LABEL: Record<string, string> = {
   'gift.received': '礼物',
   'like.burst': '点赞',
   'pool.empty': '池空',
+  'pool.low': '低水位',
   'timer.interval': '节拍',
   'stream.started': '开播',
   'stream.ended': '下播',

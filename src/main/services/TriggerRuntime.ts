@@ -128,6 +128,18 @@ export function builtinTriggers(): TriggerInput[] {
       throttle: { cooldownMs: 120_000 }
     },
     {
+      name: '续写补给',
+      enabled: true,
+      on: { event: 'pool.low' },
+      target: {
+        agentId: 'anchor',
+        mode: 'steer',
+        promptTemplate:
+          '话术池只剩 {{payload.remaining}} 段了，撑不了几分钟。list_drafts 看看底稿库：还有没轮到的存货就按节奏播（循环会接上）；存货见底了就现场写一个新桥段直接 say 播出——接着刚才的内容往下讲，返场不返词，别冷场。'
+      },
+      throttle: { cooldownMs: 180_000 }
+    },
+    {
       name: '整点带节奏',
       enabled: true,
       on: { event: 'timer.interval' },

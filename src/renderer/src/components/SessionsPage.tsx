@@ -536,6 +536,24 @@ function PlanDialog({
               每段 30~90 秒连续讲述，故事/算账/包袱/场景化等形态穿插
             </p>
             <div className="mt-3">
+              <Label className="mb-1 text-xs text-muted-foreground">话术段数上限（0 = 按时长推算）</Label>
+              <Input
+                type="number"
+                min={0}
+                max={2000}
+                value={form.genConfig.maxBits}
+                onChange={(e) =>
+                  setForm({
+                    ...form,
+                    genConfig: { ...form.genConfig, maxBits: Math.max(0, Math.floor(Number(e.target.value) || 0)) }
+                  })
+                }
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                成本闸：写够上限就停；开播后池空了循环已有底稿，音频直接复用缓存，不重新合成
+              </p>
+            </div>
+            <div className="mt-3">
               <Label className="mb-1 text-xs text-muted-foreground">语气指令（可选）</Label>
               <Input
                 value={form.genConfig.toneHint}

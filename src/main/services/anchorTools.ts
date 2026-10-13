@@ -1,6 +1,7 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type, type TSchema } from 'typebox'
-import type { LiveComment, Persona, PlaybackControlAction, UtteranceSource, UtteranceStatus } from '../../shared/types'
+import type { LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource, UtteranceStatus } from '../../shared/types'
+import { planMaxBits } from '../../shared/planDuration'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
@@ -118,6 +119,21 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
   const requirePlan = (): string | null => {
     const planId = activePlanId()
     return planId ? null : '当前没有场次，没有底稿可管'
+  }
+  /**
+   * 底稿段数上限（成本闸）：写够就停，开播后池空了循环已有底稿（音频复用零重合成）。
+   * 到上限返回提示文案，没到返回 null。
+   */
+  const draftCapHit = (): string | null => {
+    const planId = activePlanId()
+    if (!planId) return null
+    const plan = script.getActive().plan
+    if (!plan) return null
+    const cap = planMaxBits(plan)
+    const count = utterances.list(planId).length
+    return count >= cap
+      ? `底稿库已到本场上限（${count}/${cap} 段），不能再入库了——这是成本闸：开播后池子空了会循环已有底稿（音频复用，不重新合成）。要加新说法先 remove_draft 腾位置，或让导演调大场次的话术上限`
+      : null
   }
 
   return [
@@ -332,7 +348,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         '把一段新内容记进底稿库（默认记到当前场景），合成完进入轮播。现场临时编的好桥段值得记；想现在就播直接用 say，别用它。',
       parameters: Type.Object({
         text: Type.String({ description: '底稿文本（桥段就整段，单句就一句）' }),
-        type: Type.Optional(Type.String({ description: '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/general）' })),
+        type: Type.Optional(Type.String({ description: '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/closer/general；closer=收尾段，不进自动轮播）' })),
         delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
         sceneId: Type.Optional(Type.String({ description: '记到哪个场景；不传记到当前场景，没有剧本则记为全场通用' }))
       }),
@@ -340,6 +356,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         guardTool(() => {
           const noPlan = requirePlan()
           if (noPlan) return noPlan
+          const capped = draftCapHit()
+          if (capped) return capped
           const planId = activePlanId()!
           const sceneId = params.sceneId?.trim() ?? currentSceneId()
           const siblings = utterances.list(planId).filter((u) => u.sceneId === sceneId)
@@ -383,7 +401,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       description:
         '编剧模式批量入库：把为某个场景写好的桥段存进底稿库（一次 1~4 段，写稿任务书里有逐场目标段数和 sceneId）。' +
         '桥段 = 一段 30~90 秒的连续讲述（多句、150~350 字），是合成和播放的最小单元——写成一个有起承转合的整体，别拆成单句。' +
-        'type 标内容形态：hook 开场钩 / story 故事 / scene 场景化 / math 算账 / compare 对比 / punchline 包袱（歇后语、顺口溜、段子）/ interact 互动 / cta 催单 / transition 转场 / general 通用。' +
+        'type 标内容形态：hook 开场钩 / story 故事 / scene 场景化 / math 算账 / compare 对比 / punchline 包袱（歇后语、顺口溜、段子）/ interact 互动 / cta 催单 / transition 转场 / closer 收尾（不进自动轮播，收尾时你自己 say 出去）/ general 通用。' +
         'delivery 写表演指示（一句话：情绪、语速、哪里停顿，比如「压低声音像说悄悄话，报价格前停一拍」）。' +
         'sources 填每段参考过的来源名（商品名/文件名），没参考就空数组。入库是待合成状态，导演审完统一预合成，不用你管音频。',
       parameters: Type.Object({
@@ -411,6 +429,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         guardTool(() => {
           const noPlan = requirePlan()
           if (noPlan) return noPlan
+          const capped = draftCapHit()
+          if (capped) return capped
           const saved = utterances.saveMany(
             activePlanId()!,
             params.sceneId.trim(),
@@ -427,9 +447,12 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const sceneCount = utterances
             .list(activePlanId()!)
             .filter((u) => u.sceneId === params.sceneId.trim()).length
+          const plan = script.getActive().plan
+          const totalCount = utterances.list(activePlanId()!).length
+          const capLine = plan ? `；全场 ${totalCount}/${planMaxBits(plan)} 段` : ''
           const monotony = bitTypeMonotony(params.items.map((item) => item.type))
           return (
-            `已入库 ${saved.length} 段到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 段）` +
+            `已入库 ${saved.length} 段到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 段${capLine}）` +
             (monotony ? `\n注意：${monotony}——一场戏全是同一种形态会很平，下批换类型（故事/算账/包袱/场景化穿插着来）` : '')
           )
         })
@@ -560,6 +583,78 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         })
     }),
     defineTool({
+      name: 'create_scene',
+      label: '加一场（自编剧本）',
+      description:
+        '给本场剧本加一场景：场次没绑剧本时自动建一本你自编的剧本并绑上。你自己编排直播结构用——' +
+        '先想清楚这场直播分几幕（开场留人/痛点/讲解/互动/催单/收尾），逐场建好，再按场景写稿或播讲。position 省略 = 追加到末尾。',
+      parameters: Type.Object({
+        title: Type.String({ description: '场景名，比如「痛点共鸣」「催单收尾」' }),
+        goal: Type.String({ description: '这场要达成什么，一句话' }),
+        keyPoints: Type.String({ description: '必讲要点，一行一条' }),
+        estDurationMin: Type.Optional(Type.Number({ description: '预计时长（分钟），默认 5' })),
+        position: Type.Optional(Type.Number({ description: '插到第几场（序号从 1 数起），省略 = 追加到末尾' }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const planId = activePlanId()
+          if (!planId) return '当前没有场次，没法编剧本'
+          const result = script.appendScene(
+            planId,
+            {
+              title: params.title,
+              goal: params.goal,
+              keyPoints: params.keyPoints,
+              estDurationMin: params.estDurationMin
+            },
+            params.position
+          )
+          onSceneChanged()
+          return sceneListReport('已加一场', result.script)
+        })
+    }),
+    defineTool({
+      name: 'update_scene',
+      label: '改一场（自编剧本）',
+      description: '改某一场的名字/目标/要点/时长（序号从 1 数起，只传要改的字段）。临场调整剧本结构用。',
+      parameters: Type.Object({
+        index: Type.Number({ description: '第几场（序号从 1 数起）' }),
+        title: Type.Optional(Type.String({ description: '场景名' })),
+        goal: Type.Optional(Type.String({ description: '这场要达成什么' })),
+        keyPoints: Type.Optional(Type.String({ description: '必讲要点，一行一条' })),
+        estDurationMin: Type.Optional(Type.Number({ description: '预计时长（分钟）' }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const planId = activePlanId()
+          if (!planId) return '当前没有场次，没法改剧本'
+          const result = script.updateScene(planId, params.index, {
+            title: params.title,
+            goal: params.goal,
+            keyPoints: params.keyPoints,
+            estDurationMin: params.estDurationMin
+          })
+          onSceneChanged()
+          return sceneListReport(`已改第 ${result.index + 1} 场`, result.script)
+        })
+    }),
+    defineTool({
+      name: 'remove_scene',
+      label: '删一场（自编剧本）',
+      description: '删掉某一场（序号从 1 数起）。写在这个场景里的底稿不会跟着删（变成孤儿段，可按 sceneId 清理）。',
+      parameters: Type.Object({
+        index: Type.Number({ description: '第几场（序号从 1 数起）' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const planId = activePlanId()
+          if (!planId) return '当前没有场次，没法改剧本'
+          const result = script.removeScene(planId, params.index)
+          onSceneChanged()
+          return sceneListReport('已删一场', result.script)
+        })
+    }),
+    defineTool({
       name: 'set_voice',
       label: '换音色',
       description:
@@ -637,4 +732,13 @@ function bitTypeMonotony(types: string[]): string | null {
   if (!first) return null
   if (types.every((t) => t.trim() === first)) return `这批 ${types.length} 段全是「${first}」类型`
   return null
+}
+
+/** 剧本工具的统一回报：动作结果 + 最新场景序列（system prompt 里的清单是出生时快照，改完以这里为准） */
+function sceneListReport(action: string, script: Script): string {
+  if (script.scenes.length === 0) return `${action}。剧本现在是空的，用 create_scene 重新编排`
+  const list = script.scenes
+    .map((s, i) => `${i + 1}. ${s.title}（约 ${s.estDurationMin} 分钟）目标：${s.goal}`)
+    .join('\n')
+  return `${action}。最新场景序列（system prompt 里那份是开播时的快照，以这份为准）：\n${list}`
 }

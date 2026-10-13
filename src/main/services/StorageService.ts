@@ -418,6 +418,8 @@ export class StorageService {
     // 桥段制：内容形态标签（BIT_TYPES；'' = 旧式单句）+ 表演指示（情绪/语速/停顿）
     this.ensureColumn('utterances', 'bit_type', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('utterances', 'delivery', "TEXT NOT NULL DEFAULT ''")
+    // 场景内创作顺序号：装池按它排（首轮严格按叙事顺序播放）
+    this.ensureColumn('utterances', 'seq', 'INTEGER NOT NULL DEFAULT 0')
     // 音色库（M8 声音克隆）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS voices (
@@ -2028,20 +2030,32 @@ export class StorageService {
   // ---------- 话术库（utterances） ----------
 
   utteranceList(planId: string): Utterance[] {
+    // 列表顺序 = 叙事顺序：场景段在前（按场景内创作序号 seq），全场通用沉底
     return this.db
-      .prepare('SELECT * FROM utterances WHERE plan_id = ? ORDER BY scene_id ASC, variant_idx ASC, created_at ASC')
+      .prepare(
+        `SELECT * FROM utterances WHERE plan_id = ?
+         ORDER BY CASE WHEN scene_id = '' THEN 1 ELSE 0 END, scene_id ASC, seq ASC, created_at ASC`
+      )
       .all(planId)
       .map((row) => rowToUtterance(row as Record<string, unknown>))
+  }
+
+  /** 场景内下一个创作序号（write_bits/手动新增都用它；老数据 seq=0 时从 max(created 序) 续） */
+  utteranceNextSeq(planId: string, sceneId: string): number {
+    const row = this.db
+      .prepare('SELECT MAX(seq) AS m FROM utterances WHERE plan_id = ? AND scene_id = ?')
+      .get(planId, sceneId) as Record<string, unknown>
+    return (num(row.m) ?? 0) + 1
   }
 
   utteranceSave(u: Utterance): void {
     this.db
       .prepare(
-        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, text, bit_type, delivery, voice_id, audio_path,
+        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, seq, text, bit_type, delivery, voice_id, audio_path,
                                  status, error, source, sources, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           scene_id = excluded.scene_id, variant_idx = excluded.variant_idx,
+           scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
            text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
            voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
@@ -2052,6 +2066,7 @@ export class StorageService {
         u.planId,
         u.sceneId,
         u.variantIdx,
+        u.seq,
         u.text,
         u.bitType,
         u.delivery,
@@ -2115,6 +2130,7 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     planId: str(r.plan_id),
     sceneId: str(r.scene_id),
     variantIdx: num(r.variant_idx) ?? 0,
+    seq: num(r.seq) ?? 0,
     text: str(r.text),
     bitType: str(r.bit_type),
     delivery: str(r.delivery),

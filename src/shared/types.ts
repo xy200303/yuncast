@@ -570,6 +570,8 @@ export const POOL_LIMITS = {
   libraryPerSourcePerMinute: 300,
   /** 预合成窗口：队列前 N 条提前送 TTS */
   synthWindow: 5,
+  /** 低水位阈值（未播条目数）：降到这就发 pool.low 叫主播续写——等空了再叫必然冷场 */
+  lowWater: 3,
   /** 单条话术字数上限（桥段 = 多句连续讲述，90 秒约 500~700 字） */
   textMaxLength: 800
 } as const
@@ -938,10 +940,16 @@ export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
 export interface PlanGenConfig {
   /** 语气指令（注入生成 Agent） */
   toneHint: string
+  /**
+   * 底稿段数上限（成本闸）：写够就停，开播后池空了循环已有底稿（音频复用零重合成）。
+   * 0 = 按预设时长推算（planMaxBits）
+   */
+  maxBits: number
 }
 
 export const DEFAULT_PLAN_GEN_CONFIG: PlanGenConfig = {
-  toneHint: ''
+  toneHint: '',
+  maxBits: 0
 }
 
 /** 场次知识库范围：'*' = 全部，否则是 id 白名单（docs/07 §3 plan_knowledge） */
@@ -1085,9 +1093,14 @@ export interface UtteranceSource {
 export interface Utterance {
   id: string
   planId: string
-  /** 所属场景 id；'' = 全场通用（暖场/兜底） */
+  /** 所属场景 id；'' = 全场通用（暖场/兜底，不许写开场和收尾） */
   sceneId: string
   variantIdx: number
+  /**
+   * 场景内创作顺序号（同场景递增）：装池按它排，首轮严格按叙事顺序播放——
+   * 写作时建立的铺垫→展开→落点不再被轮换打乱
+   */
+  seq: number
   text: string
   /**
    * 桥段类型（BIT_TYPES 之一）；'' = 旧式单句（桥段制之前的底稿）。
@@ -1111,9 +1124,13 @@ export interface Utterance {
   createdAt: number
 }
 
-export type UtteranceInput = Omit<Utterance, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error'>
+export type UtteranceInput = Omit<Utterance, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error' | 'seq'> & {
+  /** 不传 = 自动排到这个场景末尾（编辑已有条目时保留原序号） */
+  seq?: number
+}
 
-/** 桥段类型（内容形态标签）：写稿/展示/防单调都用它；自定义类型也允许（存档原样展示） */
+/** 桥段类型（内容形态标签）：写稿/展示/防单调都用它；自定义类型也允许（存档原样展示）。
+ *  closer 特殊：收尾段不进自动轮播（播到一半来句「下回接着聊」就穿帮了），主播要收尾时自己 say 出去 */
 export const BIT_TYPES = [
   { id: 'hook', label: '开场钩' },
   { id: 'story', label: '故事' },
@@ -1124,6 +1141,7 @@ export const BIT_TYPES = [
   { id: 'interact', label: '互动' },
   { id: 'cta', label: '催单' },
   { id: 'transition', label: '转场' },
+  { id: 'closer', label: '收尾' },
   { id: 'general', label: '通用' }
 ] as const
 

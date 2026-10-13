@@ -3,6 +3,7 @@ import { setDefaultResultOrder } from 'node:dns'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
 import { IPC } from '../shared/ipc-channels'
+import { POOL_LIMITS } from '../shared/types'
 import {
   type AgentStatus,
   type AppConfig,
@@ -175,17 +176,23 @@ function createWindow(storage: StorageService): void {
   }
 }
 
-/** 池快照广播给所有窗口；顺带探测 pool.empty（空了一次只发一次，恢复后再次为空可再发） */
+/** 池快照广播给所有窗口；顺带探测 pool.empty / pool.low（沿只发一次，恢复后可再发） */
 let poolWasEmpty = true
+let poolWasLow = false
 function broadcastPool(snapshot: PoolSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.poolSnapshotEvent, snapshot)
   }
   // 池里可能刚来了新话术：叫醒主进程的播放循环，不用等满一个睡眠周期
   playback?.kick()
-  const empty = snapshot.items.length === 0
+  const remaining = snapshot.items.length
+  const empty = remaining === 0
   if (empty && !poolWasEmpty) bus?.emit('pool.empty', {}, 'pool')
   poolWasEmpty = empty
+  // 低水位：还剩几段但不够播多久了，提前叫主播续写——等空了再叫必然冷场（写稿+合成要时间）
+  const low = !empty && remaining <= POOL_LIMITS.lowWater
+  if (low && !poolWasLow) bus?.emit('pool.low', { remaining }, 'pool')
+  poolWasLow = low
 }
 
 /** Agent 状态（含生成中预览）广播给所有窗口 */
@@ -226,6 +233,7 @@ function broadcastUtteranceDone(planId: string): void {
         planId,
         sceneId: '',
         variantIdx: 0,
+        seq: 0,
         text: '',
         bitType: '',
         delivery: '',

@@ -289,11 +289,16 @@ export class LaunchService {
     const sceneIndex = this.sceneIndex(plan, script.scenes.length)
     const sceneId = script.scenes[sceneIndex].id
     const library = this.utterances.list(plan.id)
-    const ready = library.filter((u) => u.status === 'ready' && (u.sceneId === sceneId || u.sceneId === ''))
-    // 轮播公平排序：没进过池的优先，进过的按最久没进排——容量只装得下一波时，
-    // 每一波都换没播过的上，整个场景的底稿轮得到，队尾不饿死
+    // closer（收尾段）不进自动轮播：播到一半来句「下回接着聊」就穿帮了——主播要收尾时自己 say 出去
+    const ready = library.filter(
+      (u) => u.status === 'ready' && u.bitType !== 'closer' && (u.sceneId === sceneId || u.sceneId === '')
+    )
+    // 轮播公平 + 叙事顺序：主键「最久没进池」（队尾不饿死，底稿轮得到），
+    // 同轮次内按创作序号 seq——首轮全部 lastLoaded=0，等于严格按写作顺序播，铺垫→展开→落点不乱
     const lastLoaded = this.storage.speechLastLoadedByOrigin()
-    ready.sort((a, b) => (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0))
+    ready.sort(
+      (a, b) => (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0) || a.seq - b.seq || a.createdAt - b.createdAt
+    )
     // 段落位置：同 paraId 的条目按库顺序数位置（整段合成切句产物，池里按它展示/调度）
     const paraGroups = new Map<string, Utterance[]>()
     for (const u of library) {

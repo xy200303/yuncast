@@ -247,6 +247,12 @@ export class SpeechPool {
 
   // ---------- 播放出口 ----------
 
+  /** 看一眼播出顺序上的第一个 ready 条目（不取走）：播放循环用它判断下一条急不急，决定要不要留白 */
+  peek(): SpeechItem | null {
+    this.sweepExpired()
+    return orderedForPlay(this.storage.speechActive()).find((entry) => entry.status === 'ready') ?? null
+  }
+
   /** 取播出顺序上第一个 ready 条目并置 playing；没有就返回 null（调用方等待重试） */
   next(): SpeechItem | null {
     this.sweepExpired()

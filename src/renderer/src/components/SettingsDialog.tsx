@@ -1179,6 +1179,9 @@ function TtsSection() {
         </div>
       </div>
 
+      <SynthQueueCard />
+      <PlaybackGapCard />
+
       {adding && (
         <TtsProviderPickerDialog
           providers={providers}
@@ -1222,6 +1225,74 @@ function TtsSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  )
+}
+
+/** 批量预合成队列：限流间隔 + 失败重试（config.tts.synthIntervalMs / synthRetries） */
+function SynthQueueCard() {
+  const config = useAppStore((s) => s.config)
+  const saveConfig = useAppStore((s) => s.saveConfig)
+  return (
+    <div className="rounded-lg border bg-card px-5 py-4">
+      <p className="text-[14px] font-medium">批量预合成队列</p>
+      <p className="mt-0.5 text-[13px] text-muted-foreground">
+        桥段整段合成本来就省请求，这两个旋钮对付服务商的频率限制；瞬时失败自动退避重试
+      </p>
+      <div className="mt-3 grid grid-cols-2 gap-3">
+        <div>
+          <Label className="mb-1 text-xs text-muted-foreground">请求间隔（毫秒，0 = 不限）</Label>
+          <Input
+            type="number"
+            min={0}
+            max={10000}
+            value={config.tts.synthIntervalMs}
+            onChange={(e) =>
+              void saveConfig({ tts: { synthIntervalMs: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })
+            }
+          />
+        </div>
+        <div>
+          <Label className="mb-1 text-xs text-muted-foreground">失败重试（次，2s/4s 退避）</Label>
+          <Input
+            type="number"
+            min={0}
+            max={5}
+            value={config.tts.synthRetries}
+            onChange={(e) =>
+              void saveConfig({
+                tts: { synthRetries: Math.max(0, Math.min(5, Math.floor(Number(e.target.value) || 0))) }
+              })
+            }
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** 桥段间留白（config.live.bitGapMs）：段与段之间的呼吸停顿，插播不等待 */
+function PlaybackGapCard() {
+  const config = useAppStore((s) => s.config)
+  const saveConfig = useAppStore((s) => s.saveConfig)
+  return (
+    <div className="rounded-lg border bg-card px-5 py-4">
+      <p className="text-[14px] font-medium">播放留白</p>
+      <p className="mt-0.5 text-[13px] text-muted-foreground">
+        正常内容播完一条后的停顿（真人主播段与段之间有呼吸）；回复评论等插播不等待，0 = 不留白
+      </p>
+      <div className="mt-3">
+        <Label className="mb-1 text-xs text-muted-foreground">桥段间留白（毫秒）</Label>
+        <Input
+          type="number"
+          min={0}
+          max={10000}
+          value={config.live.bitGapMs}
+          onChange={(e) =>
+            void saveConfig({ live: { bitGapMs: Math.max(0, Math.floor(Number(e.target.value) || 0)) } })
+          }
+        />
+      </div>
     </div>
   )
 }

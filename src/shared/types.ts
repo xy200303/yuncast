@@ -113,6 +113,10 @@ export interface TtsConfig {
   realtime: boolean
   /** 语气指令（instruction，≤100 字符）：自然语言描述语音表现，如「语速稍快，语气热情」 */
   instruction: string
+  /** 批量预合成队列：两次合成请求的最小间隔（毫秒），对付服务商的频率限制；0 = 不限 */
+  synthIntervalMs: number
+  /** 批量预合成队列：瞬时错误的重试次数（指数退避 2s/4s）；鉴权类硬错误不重试 */
+  synthRetries: number
   /** @deprecated 迁移用：已折入接入模型的 models[].params（format），新代码不再读 */
   format: 'mp3' | 'wav' | 'pcm'
   /** @deprecated 迁移用：已折入接入模型的 models[].params（sample_rate），新代码不再读 */
@@ -136,6 +140,8 @@ export const DEFAULT_TTS_CONFIG: TtsConfig = {
   speed: 1.0,
   realtime: false,
   instruction: '',
+  synthIntervalMs: 500,
+  synthRetries: 2,
   format: 'mp3',
   sampleRate: 24000,
   lastTestAt: 0
@@ -307,9 +313,11 @@ export const DEFAULT_TRIGGER_CONFIG: TriggerConfig = {
 export interface LiveStateConfig {
   /** 当前选中的场次 id（空串 = 未选择） */
   activePlanId: string
+  /** 桥段间留白（毫秒）：正常/兜底车道播完一条后的呼吸停顿；插播/互动车道不等，0 = 不留白 */
+  bitGapMs: number
 }
 
-export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activePlanId: '' }
+export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activePlanId: '', bitGapMs: 1200 }
 
 export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUrl: '', streamKey: '' }
 
@@ -397,6 +405,14 @@ export function parseAppConfig(input: unknown): AppConfig {
     realtime: ttsRow.realtime === true,
     workspaceId: typeof ttsRow.workspaceId === 'string' ? ttsRow.workspaceId : '',
     instruction: typeof ttsRow.instruction === 'string' ? ttsRow.instruction : '',
+    synthIntervalMs:
+      typeof ttsRow.synthIntervalMs === 'number' && ttsRow.synthIntervalMs >= 0
+        ? ttsRow.synthIntervalMs
+        : DEFAULT_TTS_CONFIG.synthIntervalMs,
+    synthRetries:
+      typeof ttsRow.synthRetries === 'number' && ttsRow.synthRetries >= 0
+        ? Math.floor(ttsRow.synthRetries)
+        : DEFAULT_TTS_CONFIG.synthRetries,
     format:
       ttsRow.format === 'wav' || ttsRow.format === 'pcm'
         ? ttsRow.format
@@ -430,7 +446,13 @@ export function parseAppConfig(input: unknown): AppConfig {
     tts,
     llm,
     trigger,
-    live: { activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '' },
+    live: {
+      activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '',
+      bitGapMs:
+        typeof liveRow.bitGapMs === 'number' && liveRow.bitGapMs >= 0
+          ? liveRow.bitGapMs
+          : DEFAULT_LIVE_CONFIG.bitGapMs
+    },
     stream: parseStream(row.stream),
     bgm: parseBgm(row.bgm),
     comment: parseComment(row.comment)

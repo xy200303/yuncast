@@ -809,7 +809,7 @@ if (!single) {
       sendEnd: broadcastAudioEnd
     })
     // 播放循环搬到了主进程：渲染层不再参与播放调度
-    playback = new PlaybackLoop(pool, () => ttsStream, pipeline)
+    playback = new PlaybackLoop(pool, () => ttsStream, pipeline, () => storage.getConfig().live.bitGapMs)
     playback.start()
 
     // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（任何事件源下游都无感知）

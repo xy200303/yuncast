@@ -172,6 +172,14 @@ export class UtteranceService {
 
     let done = 0
     let failed = 0
+    // 合成队列节奏（config.tts）：请求最小间隔对付服务商频率限制；瞬时错误退避重试
+    const { synthIntervalMs, synthRetries } = this.storage.getConfig().tts
+    let lastRequestAt = 0
+    const pace = async () => {
+      const waitMs = synthIntervalMs - (Date.now() - lastRequestAt)
+      if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
+      lastRequestAt = Date.now()
+    }
     for (const group of groups) {
       if (signal?.aborted) break
       if (group.length >= PARAGRAPH_MIN_ITEMS) {
@@ -189,12 +197,8 @@ export class UtteranceService {
         this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
         onProgress?.({ ...u, status: 'synthesizing' })
         try {
-          const audioPath = await this.tts.synthesize(
-            `utterance-${u.id}`,
-            u.text,
-            voice || undefined,
-            signal
-          )
+          await pace()
+          const audioPath = await this.synthesizeWithRetry(u, voice, synthRetries, signal)
           this.storage.utteranceSetPara([u.id], '')
           this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
           onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
@@ -208,6 +212,35 @@ export class UtteranceService {
       }
     }
     return { done, failed }
+  }
+
+  /**
+   * 带退避重试的单条合成：瞬时错误（网络抖动/限流 429/5xx）按 2s/4s 退避重来；
+   * 鉴权与参数类硬错误（401/403/invalid）重试也没意义，一次就抛；中止信号立即抛。
+   */
+  private async synthesizeWithRetry(
+    u: Utterance,
+    voice: string,
+    retries: number,
+    signal?: AbortSignal
+  ): Promise<string> {
+    const hardError = (message: string) => /401|403|鉴权|凭据|invalid|unauthorized|forbidden/i.test(message)
+    let lastError: unknown
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (signal?.aborted) throw new Error('已中止')
+      if (attempt > 0) {
+        console.warn(`[话术库] 合成重试（${u.id} 第 ${attempt} 次）`)
+        await new Promise((resolve) => setTimeout(resolve, 2000 * attempt))
+      }
+      try {
+        return await this.tts.synthesize(`utterance-${u.id}`, u.text, voice || undefined, signal)
+      } catch (error) {
+        lastError = error
+        const message = error instanceof Error ? error.message : String(error)
+        if (signal?.aborted || hardError(message) || attempt === retries) break
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
   }
 
   /**

@@ -28,7 +28,9 @@ export class PlaybackLoop {
   constructor(
     private readonly pool: SpeechPool,
     private readonly ttsStream: () => TtsStreamService | null,
-    private readonly pipeline: AudioPipeline
+    private readonly pipeline: AudioPipeline,
+    /** 桥段间留白（毫秒，读 config.live.bitGapMs）：下一条是正常/兜底车道才留，插播不等 */
+    private readonly gapMs: () => number = () => 0
   ) {}
 
   get isRunning(): boolean {
@@ -109,6 +111,16 @@ export class PlaybackLoop {
       else if (result.stopped) this.pool.markDone(item.id)
       else this.pool.markFailed(item.id, result.error ?? '播放失败')
       this.current = null
+      // 桥段间留白：播完一条正常/兜底内容后留口气（真人主播段与段之间有停顿）。
+      // 下一条是插播/打断车道（回评论/急事）不等；池子有任何变化（新话术进来）都会提前叫醒
+      if (result.ok) {
+        const gap = this.gapMs()
+        const next = gap > 0 ? this.pool.peek() : null
+        if (next && (next.lane === 'normal' || next.lane === 'filler')) {
+          await this.wait(gap)
+          if (!this.running) break
+        }
+      }
     }
   }
 

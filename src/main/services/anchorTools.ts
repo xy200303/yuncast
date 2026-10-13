@@ -1,7 +1,7 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type, type TSchema } from 'typebox'
 import type { LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource, UtteranceStatus } from '../../shared/types'
-import { planMaxBits } from '../../shared/planDuration'
+import { planBroadcastCap } from '../../shared/planDuration'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
@@ -121,19 +121,29 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
     return planId ? null : '当前没有场次，没有底稿可管'
   }
   /**
-   * 底稿段数上限（成本闸）：写够就停，开播后池空了循环已有底稿（音频复用零重合成）。
-   * 到上限返回提示文案，没到返回 null。
+   * 场次播报成本阀（段数上限）：写满就停，开播后池空了循环已有底稿（音频复用零重合成）。
+   * 0 = 无限不封顶。到顶返回提示文案，没到（或无限）返回 null。
    */
   const draftCapHit = (): string | null => {
     const planId = activePlanId()
     if (!planId) return null
     const plan = script.getActive().plan
     if (!plan) return null
-    const cap = planMaxBits(plan)
+    const cap = planBroadcastCap(plan)
+    if (!Number.isFinite(cap)) return null
     const count = utterances.list(planId).length
     return count >= cap
-      ? `底稿库已到本场上限（${count}/${cap} 段），不能再入库了——这是成本闸：开播后池子空了会循环已有底稿（音频复用，不重新合成）。要加新说法先 remove_draft 腾位置，或让导演调大场次的话术上限`
+      ? `底稿库已到场次播报上限（${count}/${cap} 段），不能再入库了——这是成本阀：开播后池子空了会循环已有底稿（音频复用，不重新合成）。要加新说法先 remove_draft 腾位置，或让导演调大场次的段数上限（也可以设成无限）`
       : null
+  }
+  /** 结果行里的库存展示：有限阀带进度，无限只报数 */
+  const draftStockLine = (): string => {
+    const planId = activePlanId()
+    const plan = script.getActive().plan
+    if (!planId || !plan) return ''
+    const total = utterances.list(planId).length
+    const cap = planBroadcastCap(plan)
+    return Number.isFinite(cap) ? `；全场 ${total}/${cap} 段` : `；全场 ${total} 段（无上限）`
   }
 
   return [
@@ -473,12 +483,9 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const sceneCount = utterances
             .list(activePlanId()!)
             .filter((u) => u.sceneId === params.sceneId.trim()).length
-          const plan = script.getActive().plan
-          const totalCount = utterances.list(activePlanId()!).length
-          const capLine = plan ? `；全场 ${totalCount}/${planMaxBits(plan)} 段` : ''
           const monotony = bitTypeMonotony(params.items.map((item) => item.type))
           return (
-            `已入库 ${saved.length} 段到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 段${capLine}）` +
+            `已入库 ${saved.length} 段到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${sceneCount} 段${draftStockLine()}）` +
             (monotony ? `\n注意：${monotony}——一场戏全是同一种形态会很平，下批换类型（故事/算账/包袱/场景化穿插着来）` : '')
           )
         })

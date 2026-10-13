@@ -13,13 +13,14 @@ export const AVG_BIT_SECONDS = 45
 export const BITS_PER_MINUTE = 0.8
 
 /**
- * 本场底稿段数上限（成本闸）：genConfig.maxBits > 0 用显式值，否则按预设时长推算。
- * 写够上限就停；开播后池空了循环已有底稿（音频复用，零重合成）——合成总次数收敛在上限附近。
+ * 场次播报的成本阀（段数上限）：控制底稿库能存多少段。
+ * 写满上限 write_bits/add_draft 就拒，开播后池空了循环已有底稿（音频复用零重合成）；
+ * 0 = 无限——不封顶，主播可以一直续写新段（低水位补给会一直生产新内容）。
+ * 注意这不是底稿的属性：底稿可反复生成、反复改，阀管的是「这场播出同时存多少段」。
  */
-export function planMaxBits(plan: { plannedMinutes: number; genConfig?: { maxBits?: number } }): number {
+export function planBroadcastCap(plan: { genConfig?: { maxBits?: number } }): number {
   const explicit = plan.genConfig?.maxBits ?? 0
-  if (explicit > 0) return Math.floor(explicit)
-  return Math.max(1, Math.ceil(plan.plannedMinutes * BITS_PER_MINUTE))
+  return explicit > 0 ? Math.floor(explicit) : Number.POSITIVE_INFINITY
 }
 
 /** 这么多个就绪桥段大概能播多久（分钟） */
@@ -27,13 +28,14 @@ export function coveredMinutes(bits: number): number {
   return (bits * AVG_BIT_SECONDS) / 60
 }
 
-/** 按预设时长推算本场底稿目标：总量 + 逐场分摊（前面的场次多摊余数，开场通常更费话）。
- *  总量走 planMaxBits：配了段数上限就以它为准（上限即目标，写够就停） */
+/** 本次生成的底稿目标：总量 + 逐场分摊（前面的场次多摊余数，开场通常更费话）。
+ *  总量由「生成时填的预生成时长」推算（一次性配置），再被场次播报成本阀截顶 */
 export function planTargetBits(
   plan: { plannedMinutes: number; genConfig?: { maxBits?: number } },
   script: { scenes: unknown[] }
 ): { total: number; perScene: number[] } {
-  const total = planMaxBits(plan)
+  const target = Math.max(1, Math.ceil(plan.plannedMinutes * BITS_PER_MINUTE))
+  const total = Math.min(target, planBroadcastCap(plan))
   const count = Math.max(1, script.scenes.length)
   const base = Math.floor(total / count)
   const remainder = total % count

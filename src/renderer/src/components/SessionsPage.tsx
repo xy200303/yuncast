@@ -519,9 +519,9 @@ function PlanDialog({
           />
 
           <div className="rounded-lg border p-3">
-            <p className="mb-2 text-xs font-medium">底稿成本闸（真正的硬限制只有段数上限）</p>
+            <p className="mb-2 text-xs font-medium">播报成本阀（管这场播出同时存多少段，不管底稿怎么写）</p>
             <div>
-              <Label className="mb-1 text-xs text-muted-foreground">话术段数上限（0 = 按生成时填的预生成时长推算）</Label>
+              <Label className="mb-1 text-xs text-muted-foreground">段数上限（0 = 无限）</Label>
               <Input
                 type="number"
                 min={0}
@@ -535,19 +535,9 @@ function PlanDialog({
                 }
               />
               <p className="mt-1 text-xs text-muted-foreground">
-                写够上限就停；开播后池空了循环已有底稿，音频直接复用缓存，不重新合成。
-                写多少由生成时填的预生成时长决定，不在这里配
+                写满上限就停，开播后池空了循环已有底稿（音频复用，不重新合成）；
+                无限 = 不封顶，主播低水位会一直续写新段。生成时长和语气在「生成底稿」时填，是一次性配置
               </p>
-            </div>
-            <div className="mt-3">
-              <Label className="mb-1 text-xs text-muted-foreground">语气指令（可选）</Label>
-              <Input
-                value={form.genConfig.toneHint}
-                onChange={(e) =>
-                  setForm({ ...form, genConfig: { ...form.genConfig, toneHint: e.target.value } })
-                }
-                placeholder="例如：节奏明快、多讲故事、少喊口号"
-              />
             </div>
           </div>
         </div>

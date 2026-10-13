@@ -146,7 +146,7 @@ function selectedModelOf(
 }
 
 /**
- * LLM 会话准备（AgentService 与 GenerationService 共用）：
+ * LLM 会话准备（主播会话用，直播/写稿同一条装配线）：
  * 自定义端点写 models.json → ModelRuntime → 运行时注入凭据（不落 pi 的 auth.json）→ 取模型。
  */
 export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string) {

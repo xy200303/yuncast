@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   BookOpenText,
   CalendarDays,
@@ -49,7 +49,6 @@ import {
   type UtteranceStatus,
   type VoiceRecord
 } from '../../../shared/types'
-import type { GenerationProgress } from '../../../main/services/GenerationService'
 
 const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
   pending: { label: '待合成', variant: 'outline' },
@@ -73,10 +72,6 @@ export function SessionsPage() {
   const [editing, setEditing] = useState<{ plan?: LivePlan } | null>(null)
   const [deleting, setDeleting] = useState<LivePlan | null>(null)
   const [reviewing, setReviewing] = useState<LivePlan | null>(null)
-  /** 开播预检「去生成底稿」带过来的场次：打开话术库后跳过点击直接触发生成 */
-  const [autoGeneratePlanId, setAutoGeneratePlanId] = useState<string | null>(null)
-  const pendingGenerationPlanId = useAppStore((s) => s.pendingGenerationPlanId)
-  const setPendingGenerationPlanId = useAppStore((s) => s.setPendingGenerationPlanId)
 
   const activePlanId = config.live.activePlanId
 
@@ -106,16 +101,6 @@ export function SessionsPage() {
   useEffect(() => {
     void reload()
   }, [reload])
-
-  // 开播预检「去生成底稿」的接力：直播台跳过来后，自动打开该场次话术库并直接触发生成
-  useEffect(() => {
-    if (!pendingGenerationPlanId || plans.length === 0) return
-    const plan = plans.find((p) => p.id === pendingGenerationPlanId) ?? null
-    setPendingGenerationPlanId(null)
-    if (!plan) return
-    setAutoGeneratePlanId(plan.id)
-    setReviewing(plan)
-  }, [pendingGenerationPlanId, plans, setPendingGenerationPlanId])
 
   const setActive = (id: string) => {
     void window.api.plan.setActive(id === activePlanId ? '' : id).then(async () => {
@@ -235,12 +220,8 @@ export function SessionsPage() {
           plan={reviewing}
           script={scripts.find((s) => s.id === reviewing.scriptId) ?? null}
           open
-          autoGenerate={autoGeneratePlanId === reviewing.id}
           onOpenChange={(open) => {
-            if (!open) {
-              setReviewing(null)
-              setAutoGeneratePlanId(null)
-            }
+            if (!open) setReviewing(null)
           }}
           onChanged={reload}
         />
@@ -599,20 +580,16 @@ function UtteranceDialog({
   plan,
   script,
   open,
-  autoGenerate,
   onOpenChange,
   onChanged
 }: {
   plan: LivePlan
   script: Script | null
   open: boolean
-  /** 开播预检带过来的「去生成底稿」：打开即触发生成（库里已有底稿时仍需确认清空） */
-  autoGenerate?: boolean
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<void>
 }) {
   const [items, setItems] = useState<Utterance[]>([])
-  const [progress, setProgress] = useState<GenerationProgress | null>(null)
   const [presynthRunning, setPresynthRunning] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -625,22 +602,8 @@ function UtteranceDialog({
     void reload()
   }, [reload])
 
-  // 生成进度 + 预合成进度订阅
+  // 预合成进度订阅（主播写稿入库走直播台时间线，这里只关心音频状态变化）
   useEffect(() => {
-    const offGen = window.api.generation.onEvent((p) => {
-      if (p.planId !== plan.id) return
-      setProgress(p.state === 'running' ? p : null)
-      if (p.state === 'done') {
-        toast.success(`话术库生成完成`, { description: `本次入库 ${p.saved ?? 0} 条，逐条审阅后点「预合成」` })
-        void reload().then(onChanged)
-      } else if (p.state === 'error') {
-        toast.error('生成中断', { description: p.error })
-        void reload()
-      } else if (p.state === 'cancelled') {
-        toast.message('生成已取消', { description: '已入库的部分保留' })
-        void reload().then(onChanged)
-      }
-    })
     const offUt = window.api.utterance.onEvent((u) => {
       if (u.planId !== plan.id) return
       if (u.id === '') {
@@ -651,7 +614,6 @@ function UtteranceDialog({
       setItems((prev) => prev.map((it) => (it.id === u.id ? u : it)))
     })
     return () => {
-      offGen()
       offUt()
     }
   }, [plan.id, reload, onChanged])
@@ -678,33 +640,24 @@ function UtteranceDialog({
     failed: items.filter((u) => u.status === 'failed').length
   }
 
-  const startGeneration = async () => {
-    // 拿实时库里的条数而不是渲染态：自动触发生成时 items 可能还没加载回来
-    const existing = await window.api.utterance.list(plan.id)
-    if (existing.length > 0) {
+  // 「生成话术库」：跳直播台派主播写稿（编剧模式）——过程在对话区可见，随时插话改口径
+  const goDraft = async () => {
+    if (items.length > 0) {
       const ok = await new Promise<boolean>((resolve) => {
-        toast.warning('重新生成会先清空现有话术库', {
-          action: { label: '继续生成', onClick: () => resolve(true) },
+        toast.warning(`库里已有 ${items.length} 条底稿`, {
+          description: '主播会在此基础上续写；想推倒重写，到直播台让它先清空再写',
+          action: { label: '继续', onClick: () => resolve(true) },
           cancel: { label: '取消', onClick: () => resolve(false) },
           duration: 8000
         })
       })
       if (!ok) return
-      await window.api.utterance.clear(plan.id)
-      await reload()
     }
-    const result = await window.api.generation.start(plan.id)
-    if (!result.ok) toast.error('生成没起来', { description: result.error })
+    onOpenChange(false)
+    useAppStore.getState().setPage('live')
+    const result = await window.api.agent.draftStart(plan.id)
+    if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
   }
-
-  // 开播预检「去生成底稿」直达：弹窗一打开就触发生成，只触发一次
-  const autoFiredRef = useRef(false)
-  useEffect(() => {
-    if (!autoGenerate || autoFiredRef.current) return
-    autoFiredRef.current = true
-    void startGeneration()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoGenerate])
 
   const startPresynth = async () => {
     setPresynthRunning(true)
@@ -734,8 +687,6 @@ function UtteranceDialog({
     }
   }
 
-  const generating = progress !== null
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
@@ -750,29 +701,15 @@ function UtteranceDialog({
         </DialogHeader>
 
         <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" disabled={generating} onClick={() => void startGeneration()}>
-            {generating ? <Loader2 className="animate-spin" /> : <Sparkles />}
-            {generating ? '生成中…' : items.length > 0 ? '重新生成' : '生成话术库'}
+          <Button size="sm" onClick={() => void goDraft()}>
+            <Sparkles />
+            {items.length > 0 ? '去直播台续写' : '生成话术库'}
           </Button>
-          {generating && (
-            <>
-              <span className="text-xs text-muted-foreground">
-                第 {(progress.sceneIndex ?? 0) + 1}/{progress.sceneTotal} 场「{progress.sceneTitle}」
-              </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void window.api.generation.cancel()}
-              >
-                取消
-              </Button>
-            </>
-          )}
           <div className="ml-auto">
             <Button
               size="sm"
               variant="outline"
-              disabled={presynthRunning || generating || stats.total === 0 || stats.ready === stats.total}
+              disabled={presynthRunning || stats.total === 0 || stats.ready === stats.total}
               onClick={() => void startPresynth()}
             >
               {presynthRunning ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
@@ -786,7 +723,7 @@ function UtteranceDialog({
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
               <BookOpenText className="size-8" strokeWidth={1.25} />
               <p className="text-xs">
-                {generating ? '生成 Agent 正在查资料写话术…' : '还没有话术。点「生成话术库」，生成 Agent 会自己查知识库写底稿'}
+                还没有话术。点「生成话术库」，主播会在直播台写稿——过程看得见，随时可以插话改口径
               </p>
             </div>
           ) : (

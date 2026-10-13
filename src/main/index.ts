@@ -50,7 +50,6 @@ import { TempUploadService } from './services/TempUpload'
 import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
-import { GenerationService, type GenerationProgress } from './services/GenerationService'
 import { LaunchService } from './services/LaunchService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
@@ -244,13 +243,6 @@ function broadcastUtteranceDone(planId: string): void {
   }
 }
 
-/** 话术库生成进度广播 */
-function broadcastGeneration(progress: GenerationProgress): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.generationEvent, progress)
-  }
-}
-
 /** 推流状态广播 */
 function broadcastStream(stats: StreamStats): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -332,7 +324,6 @@ function registerIpc(
   stream: StreamService,
   connector: ConnectorService,
   utterances: UtteranceService,
-  generation: GenerationService,
   launch: LaunchService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
@@ -639,16 +630,15 @@ function registerIpc(
     return { ok: true }
   })
 
-  // ---------- 话术库生成 Agent ----------
-  ipcMain.handle(IPC.generationStart, (_e, planId: string) => {
+  // ---------- 编剧模式：主播自己写底稿 ----------
+  ipcMain.handle(IPC.agentDraftStart, async (_e, planId: string) => {
     try {
-      generation.start(String(planId))
+      await agent.startDrafting(String(planId))
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
-  ipcMain.handle(IPC.generationCancel, () => generation.cancel())
 
   // ---------- 系统对话框 ----------
   ipcMain.handle(IPC.dialogPickFile, async (_e, filtersName: string, extensions: string[]) => {
@@ -770,8 +760,7 @@ if (!single) {
       return started
     })
 
-    // 话术库（场次底稿）+ 生成 Agent（docs/07 §4，P1）+ 场次启动（§8.5）
-    const generation = new GenerationService(storage, knowledge, utterances, persona, script, broadcastGeneration)
+    // 场次底稿库 + 场次启动（docs/07 §8.5）
     const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
     // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
     agent.onSceneAdvanced = () => {
@@ -781,7 +770,8 @@ if (!single) {
     // 滚动补货：池见底时把当前场景的就绪底稿装回去循环轮播，别等主播现场救火
     bus.subscribe((event) => {
       if (event.type !== 'pool.empty') return
-      if (agent?.status().state !== 'running') return
+      const status = agent?.status()
+      if (status?.state !== 'running' || status.purpose !== 'live') return
       const loaded = launch.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
     })
@@ -819,7 +809,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, generation, launch)
+    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, launch)
     createWindow(storage)
 
     app.on('activate', () => {

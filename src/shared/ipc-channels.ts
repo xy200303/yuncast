@@ -48,6 +48,8 @@ export const IPC = {
   agentStop: 'agent:stop',
   agentRestart: 'agent:restart',
   agentStatus: 'agent:status',
+  /** 编剧模式：跳到直播台，派主播给该场次写底稿（过程走对话时间线） */
+  agentDraftStart: 'agent:draft-start',
   /** main → renderer：Agent 状态 + 生成中预览 */
   agentStatusEvent: 'agent:status-event',
 
@@ -152,12 +154,6 @@ export const IPC = {
   utterancePresynth: 'utterance:presynth',
   /** main → renderer：单条话术状态变化（预合成进度） */
   utteranceEvent: 'utterance:event',
-
-  // 话术库生成 Agent
-  generationStart: 'generation:start',
-  generationCancel: 'generation:cancel',
-  /** main → renderer：生成进度（逐场景） */
-  generationEvent: 'generation:event',
 
   // 系统对话框
   dialogPickFile: 'dialog:pick-file',

@@ -262,18 +262,19 @@ function PlanLauncher() {
     void window.api.plan.list().then(setPlans)
   }, [])
 
-  const running = agent.state === 'running' || agent.state === 'starting'
+  /** 直播中的判定：写稿会话（prep）不算开播，仍然显示「启动场次」 */
+  const running = (agent.state === 'running' || agent.state === 'starting') && agent.purpose !== 'prep'
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
   const blocked = (checks ?? []).some((item) => item.level === 'block')
-  /** 底稿覆盖不过关：预检弹窗给出「去生成底稿」的直达入口（跳场次页自动触发生成） */
+  /** 底稿覆盖不过关：预检弹窗给出「去生成底稿」的直达入口（跳直播台派主播写稿） */
   const coverageShort = (checks ?? []).some((item) => item.code === 'coverage' && item.level !== 'ok')
 
   const goGenerate = (): void => {
     if (!activePlanId) return
-    const store = useAppStore.getState()
-    store.setPendingGenerationPlanId(activePlanId)
     setChecks(null)
-    store.setPage('sessions')
+    void window.api.agent.draftStart(activePlanId).then((result) => {
+      if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
+    })
   }
 
   const switchPlan = async (id: string): Promise<void> => {

@@ -46,7 +46,6 @@ import type {
   TriggerInput,
   ViewerProfile
 } from '../shared/types'
-import type { GenerationProgress } from '../main/services/GenerationService'
 import type { LlmProviderManifest, TtsProviderManifest } from '../main/services/providers/registry'
 import type { TtsTestInput, TtsTestResult } from '../main/services/TtsService'
 import type { VoiceCloneInput } from '../main/services/VoiceService'
@@ -146,6 +145,9 @@ const api = {
     stop: () => ipcRenderer.invoke(IPC.agentStop) as Promise<void>,
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
+    /** 编剧模式：派主播给该场次写底稿（跳直播台看过程，随时可插话改口径） */
+    draftStart: (planId: string) =>
+      ipcRenderer.invoke(IPC.agentDraftStart, planId) as Promise<{ ok: boolean; error?: string }>,
     /** 暂停/恢复主播产出（统一开播控制里的暂停：停播报 + 停生成） */
     setSpeakingPaused: (paused: boolean) =>
       ipcRenderer.invoke(IPC.playbackSetPaused, paused) as Promise<void>,
@@ -347,18 +349,6 @@ const api = {
       ipcRenderer.on(IPC.utteranceEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.utteranceEvent, listener)
-      }
-    }
-  },
-  generation: {
-    start: (planId: string) =>
-      ipcRenderer.invoke(IPC.generationStart, planId) as Promise<{ ok: boolean; error?: string }>,
-    cancel: () => ipcRenderer.invoke(IPC.generationCancel) as Promise<void>,
-    onEvent: (cb: (progress: GenerationProgress) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, progress: GenerationProgress) => cb(progress)
-      ipcRenderer.on(IPC.generationEvent, listener)
-      return () => {
-        ipcRenderer.removeListener(IPC.generationEvent, listener)
       }
     }
   },

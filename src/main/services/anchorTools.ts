@@ -1,6 +1,6 @@
 import { defineTool, type ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-import type { LiveComment, Persona, PlaybackControlAction, UtteranceStatus } from '../../shared/types'
+import type { LiveComment, Persona, PlaybackControlAction, UtteranceSource, UtteranceStatus } from '../../shared/types'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
@@ -61,6 +61,8 @@ export interface AnchorToolDeps {
   onPlaybackControl?: (action: PlaybackControlAction) => void
   /** 播报是否被暂停：暂停期间 say / insert_next 直接拒（说出去的话收不回） */
   getSpeakingPaused?: () => boolean
+  /** 会话用途：prep=写稿备播（say/insert_next 关闭，产出只走 write_drafts），live=直播中 */
+  getPurpose?: () => 'prep' | 'live'
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
@@ -78,7 +80,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     onDirectorAsk,
     setPlanVoice,
     onPlaybackControl,
-    getSpeakingPaused
+    getSpeakingPaused,
+    getPurpose
   } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
@@ -122,6 +125,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
+          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_drafts 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
           const voiceId = resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.())
           pool.say({
@@ -152,6 +156,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
+          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_drafts 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：插播也播不出去，等导演恢复'
           const comment = getLastComment()
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
@@ -351,6 +356,49 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
         })
     }),
     defineTool({
+      name: 'write_drafts',
+      label: '批量写底稿',
+      description:
+        '编剧模式批量入库：把为某个场景写好的一批底稿存进底稿库（每批 10~15 条，写稿任务书里有逐场目标条数和 sceneId）。' +
+        'sources 填每条参考过的来源名（商品名/文件名），没参考就空数组。入库是待合成状态，导演审完统一预合成，不用你管音频。',
+      parameters: Type.Object({
+        sceneId: Type.String({ description: '写到哪个场景（写稿任务书里的 sceneId）' }),
+        items: Type.Array(
+          Type.Object({
+            text: Type.String({ description: '一条底稿，一句完整口语' }),
+            sources: Type.Optional(
+              Type.Array(
+                Type.Object({
+                  type: Type.Union([Type.Literal('file'), Type.Literal('url'), Type.Literal('product')]),
+                  name: Type.String({ description: '来源名（商品名/文件名/网址）' }),
+                  snippet: Type.String({ description: '引用的关键信息，一句话' })
+                }),
+                { description: '这条参考的来源' }
+              )
+            )
+          }),
+          { description: '本批底稿（10~15 条）' }
+        )
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const noPlan = requirePlan()
+          if (noPlan) return noPlan
+          const saved = utterances.saveMany(
+            activePlanId()!,
+            params.sceneId.trim(),
+            params.items.map((item) => ({
+              text: item.text,
+              sources: (item.sources ?? []).map(
+                (s): UtteranceSource => ({ type: s.type, id: '', name: s.name, snippet: s.snippet })
+              )
+            }))
+          )
+          // 不自动合成：写稿阶段量大，审阅后由「预合成全部」统一跑（edit_draft/add_draft 的单条急用才自动合成）
+          return `已入库 ${saved.length} 条到「${sceneTitleOf(params.sceneId.trim())}」（待合成；本场景现有 ${utterances.list(activePlanId()!).filter((u) => u.sceneId === params.sceneId.trim()).length} 条）`
+        })
+    }),
+    defineTool({
       name: 'advance_scene',
       label: '推进剧本场景',
       description: '把剧本推进到下一场景。返回新场景的目标和要点。已经是最后一场时返回提示——收尾还是循环由你自己判断。',
@@ -538,6 +586,7 @@ export const ANCHOR_TOOL_NAMES = [
   'edit_draft',
   'add_draft',
   'remove_draft',
+  'write_drafts',
   'advance_scene',
   'goto_scene',
   'set_voice',

@@ -12,8 +12,11 @@ import {
   type AgentStatus,
   type DirectorTimelineEvent,
   type LiveComment,
-  type PlaybackControlAction
+  type LivePlan,
+  type PlaybackControlAction,
+  type Script
 } from '../../shared/types'
+import { planTargetLines } from '../../shared/planDuration'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { PersonaService } from './PersonaService'
@@ -61,6 +64,8 @@ export class AgentService {
   private modelLabel: string | undefined
   private draft = ''
   private busy = false
+  /** 会话用途：一个脑管全场——prep 写稿备播（播出通道关闭），live 直播中 */
+  private sessionPurpose: 'live' | 'prep' = 'live'
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
   private lastComment: LiveComment | null = null
   /** 本场开播时间（下播总结用） */
@@ -132,6 +137,7 @@ export class AgentService {
       model: this.modelLabel,
       personaName: this.state === 'stopped' ? undefined : this.persona.get().name,
       draft: this.draft,
+      purpose: this.state === 'stopped' ? undefined : this.sessionPurpose,
       scene: current
         ? { title: current.scene.title, index: current.index, total: current.total }
         : undefined,
@@ -177,7 +183,7 @@ export class AgentService {
   }
 
   /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。 */
-  async start(): Promise<void> {
+  async start(purpose: 'live' | 'prep' = 'live'): Promise<void> {
     if (this.session) return
     // 大脑只用这张卡选的接入与模型；没选时只能临时顶旧配置（预检会把这种情况列成阻断项）
     const resolved = resolveModelForPersona(this.storage, this.persona.get())
@@ -188,6 +194,7 @@ export class AgentService {
       this.setState('error', error instanceof Error ? error.message : String(error))
       throw error
     }
+    this.sessionPurpose = purpose
     this.setState('running')
     this.startedAt = Date.now()
     this.exchanges = 0
@@ -203,8 +210,8 @@ export class AgentService {
     this.draft = ''
     this.lastComment = null
     if (session) {
-      // 下播总结：本场有过对话就让主播自我复盘，写进场次摘要（本场记忆）
-      if (this.exchanges > 0 && this.state === 'running') {
+      // 下播总结：直播会话有过对话就让主播自我复盘，写进场次摘要；写稿会话不复盘
+      if (this.exchanges > 0 && this.state === 'running' && this.sessionPurpose === 'live') {
         await this.summarizeEpisode(session).catch(() => undefined)
       }
       try {
@@ -225,12 +232,14 @@ export class AgentService {
 
   async restart(): Promise<void> {
     await this.stop()
-    await this.start()
+    await this.start(this.sessionPurpose)
   }
 
   /** 评论入口（连接器）：主播自己决定回不回、怎么回。老粉画像随评论注入。 */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    // 写稿会话不接评论：没开播，评论不存在也不该打断写稿
+    if (this.sessionPurpose !== 'live') return
     // 暂停期间评论只进事件队列（EventBus 已记下），不派给 LLM（同 docs/07 §8.5 人工接管的处理）
     if (this.speakingPaused) return
     // 先查画像（老粉识别），再记一次互动
@@ -251,6 +260,8 @@ export class AgentService {
   /** 触发器入口（docs/01 §3.5）：steer=生成中插一句，task=派一个任务。主播没在跑/已暂停就丢弃。 */
   inject(text: string, mode: 'steer' | 'task'): void {
     if (this.speakingPaused) return
+    // 写稿会话不接触发器（开场白/催单这些是直播节拍，写稿时别来打扰）
+    if (this.sessionPurpose !== 'live') return
     this.deliver(text, mode)
   }
 
@@ -279,6 +290,56 @@ export class AgentService {
     this.deliver(
       `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完直接说一句执行情况（你说的话会出现在导演对话面板，不会被播报）。`,
       'steer'
+    )
+  }
+
+  /**
+   * 编剧模式（直播前写稿）：主播自己写自己的底稿——跟开播用同一个人设/场次/音色，
+   * 区别在于 purpose=prep：say/insert_next 关着，产出只走 write_drafts 进底稿库。
+   * 同场次已有写稿会话就复用（多轮续写/改稿），不同场次换场重开；直播中拒绝。
+   */
+  async startDrafting(planId: string): Promise<void> {
+    const plan = this.storage.planList().find((p) => p.id === planId)
+    if (!plan) throw new Error('场次不存在')
+    const script = this.script.getScript(plan.scriptId)
+    if (!script || script.scenes.length === 0) {
+      throw new Error('先给场次绑定剧本——写稿按场景逐场产出')
+    }
+    if (this.session && this.sessionPurpose === 'live') {
+      throw new Error('正在直播：写稿先下播，或者用对话直接改底稿')
+    }
+    // 换场次就重开会话（旧会话的上下文是另一场的）；同场次复用，能接着聊接着改
+    if (this.session && this.script.getActive().plan?.id !== plan.id) await this.stop()
+    // 资产切换跟开播装载同一套：场次 → 人设 → 音色
+    this.script.setActivePlan(plan.id)
+    if (plan.personaId && plan.personaId !== this.persona.get().id) {
+      this.persona.setActive(plan.personaId)
+    }
+    this.setPlanVoice(plan.voiceId)
+    if (!this.session) await this.start('prep')
+    this.directorSay(this.composeDraftBrief(plan, script))
+  }
+
+  /** 写稿任务书：逐场目标条数（按预设时长分摊）+ 查证纪律 + 分批入库要求 */
+  private composeDraftBrief(plan: LivePlan, script: Script): string {
+    const target = planTargetLines(plan, script)
+    const { maxLen, toneHint } = plan.genConfig
+    const scenes = script.scenes
+      .map(
+        (scene, i) =>
+          `  ${i + 1}. 「${scene.title}」（sceneId=${scene.id}，约 ${scene.estDurationMin} 分钟，目标 ${target.perScene[i] ?? 0} 条）` +
+          `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
+      )
+      .join('\n')
+    return (
+      `直播前备稿：为这场直播写口播底稿，预设播 ${plan.plannedMinutes} 分钟，全场约 ${target.total} 条，逐场景写：\n${scenes}\n` +
+      '要求：\n' +
+      '1. 先查资料再动笔：search_knowledge 看卖点、check_price 拿价格，别凭印象编\n' +
+      `2. 每条一句完整口语、不超过 ${maxLen} 字；同一要点写几种不同说法，轮换起来不重复\n` +
+      '3. 分批入库：每写完 10~15 条调一次 write_drafts（带上 sceneId），一场写完再写下一场\n' +
+      '4. 写稿阶段播出通道是关的（say/insert_next 会被拒），底稿只走 write_drafts\n' +
+      (toneHint ? `5. 语气：${toneHint}\n` : '') +
+      '写完汇报一下各场各写了多少条。'
     )
   }
 
@@ -531,7 +592,8 @@ export class AgentService {
         onDirectorAsk: (ask) => this.onDirectorAsk?.(ask),
         setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
         onPlaybackControl: (action) => this.onPlaybackControl?.(action),
-        getSpeakingPaused: () => this.speakingPaused
+        getSpeakingPaused: () => this.speakingPaused,
+        getPurpose: () => this.sessionPurpose
       }),
       tools: [...ANCHOR_TOOL_NAMES],
       sessionManager: SessionManager.inMemory(agentDir),

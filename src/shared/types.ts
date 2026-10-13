@@ -625,6 +625,8 @@ export interface AgentStatus {
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
   scene?: { title: string; index: number; total: number }
+  /** 会话用途：prep=直播前写稿（播出通道关闭），live=直播中。stopped 时无意义 */
+  purpose?: 'prep' | 'live'
   /** 会话出生后资产改过（人设/模型/剧本/场次结构）：改动要重启会话才生效（docs/07 §8.5） */
   assetsStale?: boolean
 }

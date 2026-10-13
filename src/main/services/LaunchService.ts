@@ -266,7 +266,10 @@ export class LaunchService {
       }
       this.agent.setPlanVoice(plan.voiceId)
       const loaded = this.loadSceneUtterances(plan.id)
-      await this.agent.start()
+      // 开播必须是干净的直播会话：写稿会话（prep）还挂着就先停掉，不带写稿上下文上场
+      const status = this.agent.status()
+      if (status.state !== 'stopped' && status.purpose === 'prep') await this.agent.stop()
+      await this.agent.start('live')
       return { ok: true, loaded }
     } catch (error) {
       if (switched) this.persona.setActive(personaBefore)

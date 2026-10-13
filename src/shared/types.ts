@@ -1177,7 +1177,8 @@ export interface PreflightItem {
   detail?: string
   /**
    * 检查项标识（UI 需要针对性反应时用）：
-   * 'coverage'=底稿覆盖，预检弹窗靠它决定要不要显示「去生成底稿」入口
+   * 'draft-empty'=一段底稿都没写（给「去生成底稿」入口）；'presynth'=写了没合成（给「预合成全部」入口）；
+   * 'coverage'=底稿就绪（通常 ok 级，无需动作）
    */
   code?: string
 }

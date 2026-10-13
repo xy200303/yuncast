@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
+  AudioWaveform,
   Bot,
   CheckCircle2,
   ChevronRight,
@@ -268,14 +269,21 @@ function PlanLauncher() {
   const running = (agent.state === 'running' || agent.state === 'starting') && agent.purpose !== 'prep'
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
   const blocked = (checks ?? []).some((item) => item.level === 'block')
-  /** 底稿覆盖不过关：预检弹窗给出「去生成底稿」的直达入口（跳直播台派主播写稿） */
-  const coverageShort = (checks ?? []).some((item) => item.code === 'coverage' && item.level !== 'ok')
+  /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
+  const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
+  const presynthShort = (checks ?? []).some((item) => item.code === 'presynth')
   const [draftAsk, setDraftAsk] = useState(false)
 
   const goGenerate = (): void => {
     if (!activePlanId) return
     setChecks(null)
     setDraftAsk(true)
+  }
+
+  const startPresynth = (): void => {
+    if (!activePlanId) return
+    void window.api.utterance.presynth(activePlanId)
+    toast.success('已开始批量预合成', { description: '合成在后台跑，完成后点「重新预检」看结果' })
   }
 
   const startDraft = (): void => {
@@ -446,7 +454,13 @@ function PlanLauncher() {
             <Button variant="outline" onClick={() => setChecks(null)}>
               先去处理
             </Button>
-            {coverageShort && (
+            {presynthShort && (
+              <Button variant="outline" onClick={startPresynth}>
+                <AudioWaveform />
+                预合成全部
+              </Button>
+            )}
+            {draftEmpty && (
               <Button variant="outline" onClick={goGenerate}>
                 <Sparkles />
                 去生成底稿

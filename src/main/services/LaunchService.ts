@@ -192,26 +192,36 @@ export class LaunchService {
       })
     }
 
-    // ⑤ 底稿就绪：一段就绪桥段都没有就是阻断（开播即冷场）。
-    // 时长不是硬口径（写多少由生成时填的预生成时长决定），这里只报库存和约能播多久
+    // ⑤ 底稿管线状态：没写（阻断，去生成）→ 写了没合成（警告，去预合成）→ 有就绪（通过）。
+    // 0 就绪不是阻断：开场触发器会让主播现场 say、实时合成照样出声，只是不够平滑
     const covered = coveredMinutes(ready.length)
-    items.push(
-      ready.length === 0
-        ? {
-            code: 'coverage',
-            level: 'block',
-            label: '还没有就绪底稿',
-            detail: script
-              ? '点下方「去生成底稿」，填预生成时长让主播写稿'
-              : '先给场次绑一个剧本，生成 Agent 才能按场景出整版底稿'
-          }
-        : {
-            code: 'coverage',
-            level: 'ok',
-            label: `底稿就绪 ${ready.length} 段（约能播 ${formatMinutes(covered)}）`,
-            detail: '播完循环复用音频；池子水位低了主播会现场续写'
-          }
-    )
+    if (library.length === 0) {
+      items.push({
+        code: 'draft-empty',
+        level: 'block',
+        label: '还没有底稿',
+        detail: script
+          ? '点下方「去生成底稿」，填预生成时长让主播写稿'
+          : '先给场次绑一个剧本，生成 Agent 才能按场景出整版底稿'
+      })
+    } else if (ready.length === 0) {
+      items.push({
+        code: 'presynth',
+        level: 'warn',
+        label: `底稿 ${library.length} 段写好了，还没有合成音频`,
+        detail: '点下方「预合成全部」（几分钟）；也可以直接开播，靠现场合成先顶着'
+      })
+    } else {
+      items.push({
+        code: 'coverage',
+        level: 'ok',
+        label: `底稿就绪 ${ready.length} 段（约能播 ${formatMinutes(covered)}）`,
+        detail:
+          ready.length < library.length
+            ? `另有 ${library.length - ready.length} 段待合成，播完循环复用音频；池子水位低了主播会现场续写`
+            : '播完循环复用音频；池子水位低了主播会现场续写'
+      })
+    }
 
     // ⑥ 接入与推流（都能降级：不打断开播）
     const connector = this.connector.status()

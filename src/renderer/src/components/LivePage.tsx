@@ -1165,7 +1165,6 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             {agent.busy ? (
               <Button
                 size="icon-sm"
-                className="ml-auto"
                 onClick={() => void window.api.agent.abort()}
                 title="停止这一轮生成（会话保留，可继续对话）"
               >
@@ -1174,7 +1173,6 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             ) : (
               <Button
                 size="icon-sm"
-                className="ml-auto"
                 disabled={!canSend}
                 onClick={() => send(input)}
                 title="发送（Enter）"

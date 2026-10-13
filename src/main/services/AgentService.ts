@@ -24,6 +24,7 @@ import { planTargetLines } from '../../shared/planDuration'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { PersonaService } from './PersonaService'
+import type { PromptTemplateService } from './PromptTemplateService'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
@@ -122,6 +123,7 @@ export class AgentService {
     private readonly storage: StorageService,
     private readonly pool: SpeechPool,
     private readonly persona: PersonaService,
+    private readonly prompts: PromptTemplateService,
     private readonly knowledge: KnowledgeService,
     private readonly memory: MemoryService,
     private readonly script: ScriptService,
@@ -194,7 +196,9 @@ export class AgentService {
           : null,
         legacy: [llm.provider, llm.model, llm.apiKey, llm.baseUrl],
         plan: [plan?.id, plan?.personaId, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
-        script: script ? [script.title, script.scenes] : null
+        script: script ? [script.title, script.scenes] : null,
+        // 主播手册（提示词模板）任何一条改过，活着的会话都得重开才生效
+        prompts: this.prompts.fingerprint()
       })
     )
   }
@@ -320,9 +324,11 @@ export class AgentService {
       ? `\n[老粉画像] ${comment.author}：${this.memory.describeViewer(known)}`
       : '\n[新观众] 没见过这位观众'
     void this.ask(
-      `[观众评论] ${comment.author} 说：「${comment.content}」${profileHint}\n` +
-        '值得回应就用 insert_next 回一句（口语、简短）；答不上来的商品信息先用 search_knowledge / check_price 查；' +
-        '聊出值得记住的偏好就顺手 remember_viewer 记一笔；不值得回应就忽略它，继续你的节奏。'
+      this.prompts.render('user.comment', {
+        author: comment.author,
+        content: comment.content,
+        profileHint
+      })
     )
   }
 
@@ -356,10 +362,7 @@ export class AgentService {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
       throw new Error('主播没在跑：先在直播台启动场次')
     }
-    this.deliver(
-      `[导演指令] ${text}\n这是对导演（真人场控）指令的执行请求，照做；做完直接说一句执行情况（你说的话会出现在导演对话面板，不会被播报）。`,
-      'steer'
-    )
+    this.deliver(this.prompts.render('user.director_wrap', { text }), 'steer')
   }
 
   /**
@@ -463,7 +466,7 @@ export class AgentService {
     this.directorSay(this.composeDraftBrief(plan, script))
   }
 
-  /** 写稿任务书：逐场目标条数（按预设时长分摊）+ 查证纪律 + 分批入库要求 */
+  /** 写稿任务书：场景行（id/时长/目标条数/要点）代码拼好，主文案走主播手册（user.draft_brief） */
   private composeDraftBrief(plan: LivePlan, script: Script): string {
     const target = planTargetLines(plan, script)
     const { maxLen, toneHint } = plan.genConfig
@@ -474,17 +477,13 @@ export class AgentService {
           `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
       )
       .join('\n')
-    return (
-      `直播前备稿：为这场直播写口播底稿，预设播 ${plan.plannedMinutes} 分钟，全场约 ${target.total} 条，逐场景写：\n${scenes}\n` +
-      '要求：\n' +
-      '1. 先查资料再动笔：search_knowledge 看卖点、check_price 拿价格，别凭印象编\n' +
-      `2. 每条一句完整口语、不超过 ${maxLen} 字；同一要点换着角度讲（提问/算账/场景/对比），不是换个说法抄一遍\n` +
-      '3. 开头必须多样：称呼（家人们之类）一批里最多两三条带，连续两条不许同一个开头，多用品名/数字/提问/场景直接切入\n' +
-      '4. 分批入库：每写完 10~15 条调一次 write_drafts（带上 sceneId），一场写完再写下一场\n' +
-      '5. 写稿阶段播出通道是关的（say/insert_next 会被拒），底稿只走 write_drafts\n' +
-      (toneHint ? `6. 语气：${toneHint}\n` : '') +
-      '写完汇报一下各场各写了多少条。'
-    )
+    return this.prompts.render('user.draft_brief', {
+      plannedMinutes: plan.plannedMinutes,
+      total: target.total,
+      scenes,
+      maxLen,
+      toneHintLine: toneHint ? `6. 语气：${toneHint}\n` : ''
+    })
   }
 
   /** 急停（配合 renderer 停播放 + 清池）：停会话即可，池由调用方清 */
@@ -645,7 +644,13 @@ export class AgentService {
     const current = this.script.currentScene()
     if (!current) return ''
     const { scene, index, total } = current
-    return `[当前场景：${scene.title}（第 ${index + 1}/${total} 场）目标：${scene.goal}；要点：${scene.keyPoints}]\n`
+    return this.prompts.render('user.scene_prefix', {
+      title: scene.title,
+      index: index + 1,
+      total,
+      goal: scene.goal,
+      keyPoints: scene.keyPoints
+    })
   }
 
   /** 给主播派一句话：生成中走 steer 插队，空闲走 prompt；失败记状态不崩溃 */
@@ -677,9 +682,7 @@ export class AgentService {
     await Promise.race([
       (async () => {
         await session.waitForIdle()
-        await session.prompt(
-          '直播结束了。不要用任何工具，直接用一段话复盘本场：亮点、翻车、观众高频问题，120 字以内。'
-        )
+        await session.prompt(this.prompts.render('user.episode_summary'))
       })(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('总结超时')), 30_000))
     ])
@@ -774,10 +777,7 @@ export class AgentService {
           content: [
             {
               type: 'text',
-              text:
-                '你是直播主播的笔记整理员。把下面这段直播工作记录压缩成要点摘要（分点、中文、200 字以内），必须保留：' +
-                '已查证的事实与数字（价格/库存/材质/优惠口径）、对观众或导演的承诺、观众偏好记录、当前进度与接下来要做的事、未处理的导演指令。\n\n' +
-                transcript
+              text: this.prompts.render('compact.summary_prompt', { transcript })
             }
           ],
           timestamp: Date.now()
@@ -802,14 +802,14 @@ export class AgentService {
         if (result.stopReason === 'error' || result.stopReason === 'aborted' || !summaryText) {
           throw new Error(result.errorMessage ?? '摘要为空')
         }
-        noteText = `【前情摘要】更早的对话已压缩成这份笔记：\n${summaryText}`
+        noteText = this.prompts.render('compact.summary_note', { summary: summaryText })
       } catch (error) {
         // 摘要失败：硬截断保命（插一条说明消息顶替旧部分），卡片如实标错
         console.error('[AgentAnchor] 上下文压缩的摘要失败，改硬截断:', error)
         this.endCompactionError(
           `摘要失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}），已直接丢弃最旧记录`
         )
-        noteText = '【上下文已满】早期记录整理失败，最旧部分已直接丢弃；重要口径请从此刻起重新查证。'
+        noteText = this.prompts.render('compact.overflow_note')
         const note: UserMessage = {
           role: 'user',
           content: [{ type: 'text', text: noteText }],

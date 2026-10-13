@@ -326,6 +326,14 @@ export class StorageService {
       )
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS event_log_ts ON event_log(ts)')
+    // 提示词模板（主播手册：缺 key 播种默认，用户改过的不动）
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS prompt_templates (
+        key TEXT PRIMARY KEY,
+        content TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `)
     // 剧本 + 场次（M6）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS scripts (
@@ -1795,6 +1803,25 @@ export class StorageService {
 
   triggerDelete(id: string): void {
     this.db.prepare('DELETE FROM triggers WHERE id = ?').run(id)
+  }
+
+  // ---------- 提示词模板（主播手册） ----------
+
+  promptTemplateGet(key: string): { content: string; updatedAt: number } | null {
+    const row = this.db
+      .prepare('SELECT content, updated_at FROM prompt_templates WHERE key = ?')
+      .get(key) as Record<string, unknown> | undefined
+    if (!row) return null
+    return { content: String(row.content), updatedAt: Number(row.updated_at) }
+  }
+
+  promptTemplateUpsert(key: string, content: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO prompt_templates (key, content, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`
+      )
+      .run(key, content, Date.now())
   }
 
   // ---------- 事件日志 ----------

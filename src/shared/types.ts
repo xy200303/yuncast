@@ -727,6 +727,19 @@ export interface DirectorTimelineReset {
 /** 播报控制（主播工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */
 export type PlaybackControlAction = 'pause' | 'resume' | 'skip'
 
+// ---------- 提示词模板（设置 → 主播手册） ----------
+
+export interface PromptTemplateInfo {
+  key: string
+  label: string
+  /** 用在哪 + 可用变量说明（编辑界面展示） */
+  description: string
+  content: string
+  updatedAt: number
+  /** 内容 = 内置默认（用户没改过） */
+  isDefault: boolean
+}
+
 // ---------- 音色库（M8 声音克隆） ----------
 
 export type VoiceProvider = 'volcano' | 'bailian'

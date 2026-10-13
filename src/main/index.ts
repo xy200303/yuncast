@@ -36,6 +36,7 @@ import { StorageService } from './services/StorageService'
 import { TtsService, type TtsTestInput } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
 import { PersonaService } from './services/PersonaService'
+import { PromptTemplateService } from './services/PromptTemplateService'
 import { AgentService } from './services/AgentService'
 import { KnowledgeService } from './services/KnowledgeService'
 import { MemoryService } from './services/MemoryService'
@@ -308,6 +309,7 @@ function registerIpc(
   pool: SpeechPool,
   agent: AgentService,
   persona: PersonaService,
+  prompts: PromptTemplateService,
   knowledge: KnowledgeService,
   memory: MemoryService,
   bus: EventBus,
@@ -495,6 +497,25 @@ function registerIpc(
   ipcMain.handle(IPC.directorTimelineList, (_e, planId: string) =>
     storage.timelineList(String(planId ?? '')).map((row) => JSON.parse(row.payload) as unknown)
   )
+
+  // ---------- 主播手册（提示词模板） ----------
+  ipcMain.handle(IPC.promptTemplatesList, () => prompts.list())
+  ipcMain.handle(IPC.promptTemplatesSave, (_e, key: string, content: string) => {
+    try {
+      prompts.save(String(key ?? ''), String(content ?? ''))
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+  ipcMain.handle(IPC.promptTemplatesReset, (_e, key: string) => {
+    try {
+      prompts.reset(String(key ?? ''))
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
 
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
@@ -721,7 +742,8 @@ if (!single) {
     const tts = new TtsService(storage)
     ttsRealtime = new TtsRealtimeService(storage, tts)
     pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime)
-    const persona = new PersonaService(storage)
+    const prompts = new PromptTemplateService(storage)
+    const persona = new PersonaService(storage, prompts)
     const knowledge = new KnowledgeService(storage)
     const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
@@ -734,6 +756,7 @@ if (!single) {
       storage,
       pool,
       persona,
+      prompts,
       knowledge,
       memory,
       script,
@@ -834,7 +857,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, launch)
+    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, launch)
     createWindow(storage)
 
     app.on('activate', () => {

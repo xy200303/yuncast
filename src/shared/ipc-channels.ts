@@ -59,6 +59,10 @@ export const IPC = {
   directorTimeline: 'director:timeline',
   /** renderer → main：拉某场次持久化的对话时间线（切场/刷新/重启后恢复） */
   directorTimelineList: 'director:timeline-list',
+  /** 提示词模板（主播手册）：列表 / 保存 / 恢复默认 */
+  promptTemplatesList: 'prompt-templates:list',
+  promptTemplatesSave: 'prompt-templates:save',
+  promptTemplatesReset: 'prompt-templates:reset',
   /** renderer → main：播报控制（暂停时连主播产出一起停） */
   playbackSetPaused: 'playback:set-paused',
   /** main → renderer：播报控制（主播工具 pause_broadcast/resume_broadcast/skip_current 触发） */

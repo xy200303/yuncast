@@ -24,6 +24,7 @@ import type {
   ModelConnectionSafe,
   PartialDeep,
   Persona,
+  PromptTemplateInfo,
   PlaybackControlAction,
   PoolResult,
   PoolSayInput,
@@ -177,6 +178,14 @@ const api = {
         ipcRenderer.removeListener(IPC.directorTimeline, listener)
       }
     }
+  },
+  /** 提示词模板（设置 → 主播手册）：主播人格/导演包装/评论注入等全部可编辑 */
+  promptTemplates: {
+    list: () => ipcRenderer.invoke(IPC.promptTemplatesList) as Promise<PromptTemplateInfo[]>,
+    save: (key: string, content: string) =>
+      ipcRenderer.invoke(IPC.promptTemplatesSave, key, content) as Promise<{ ok: boolean; error?: string }>,
+    reset: (key: string) =>
+      ipcRenderer.invoke(IPC.promptTemplatesReset, key) as Promise<{ ok: boolean; error?: string }>
   },
   /** 订阅播报控制（主播工具 pause/resume/skip 触发），返回取消订阅函数 */
   playback: {

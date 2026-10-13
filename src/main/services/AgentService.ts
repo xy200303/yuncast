@@ -6,11 +6,14 @@ import {
   SessionManager,
   SettingsManager,
   type AgentSession,
+  type FileEntry,
   type ResourceLoader
 } from '@earendil-works/pi-coding-agent'
 import {
   type AgentStatus,
+  type ChatEntry,
   type DirectorTimelineEvent,
+  type DirectorTimelineReset,
   type LiveComment,
   type LivePlan,
   type PlaybackControlAction,
@@ -66,6 +69,8 @@ export class AgentService {
   private busy = false
   /** 会话用途：一个脑管全场——prep 写稿备播（播出通道关闭），live 直播中 */
   private sessionPurpose: 'live' | 'prep' = 'live'
+  /** 本会话绑定的场次 id（选场次切换时判断要不要换场重开） */
+  private sessionPlanId = ''
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
   private lastComment: LiveComment | null = null
   /** 本场开播时间（下播总结用） */
@@ -114,7 +119,7 @@ export class AgentService {
     private readonly script: ScriptService,
     private readonly utterances: UtteranceService,
     private readonly broadcast: (status: AgentStatus) => void,
-    private readonly onDirectorTimeline?: (event: DirectorTimelineEvent) => void
+    private readonly onDirectorTimeline?: (event: DirectorTimelineEvent | DirectorTimelineReset) => void
   ) {}
 
   /** 设置本场音色（开播装载时写入场次音色；运行中热切换音色也走这里） */
@@ -186,19 +191,21 @@ export class AgentService {
     )
   }
 
-  /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。 */
-  async start(purpose: 'live' | 'prep' = 'live'): Promise<void> {
+  /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。
+   *  restoredEntries：该场次上次存下的会话 entries（场次即会话，切回来接着聊）。 */
+  async start(purpose: 'live' | 'prep' = 'live', restoredEntries?: FileEntry[]): Promise<void> {
     if (this.session) return
     // 大脑只用这张卡选的接入与模型；没选时只能临时顶旧配置（预检会把这种情况列成阻断项）
     const resolved = resolveModelForPersona(this.storage, this.persona.get())
     this.setState('starting')
     try {
-      this.session = await this.createSession(resolved)
+      this.session = await this.createSession(resolved, restoredEntries)
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error))
       throw error
     }
     this.sessionPurpose = purpose
+    this.sessionPlanId = this.script.getActive().plan?.id ?? ''
     this.setState('running')
     this.startedAt = Date.now()
     this.exchanges = 0
@@ -207,17 +214,58 @@ export class AgentService {
     // 开场白由「开场白」触发器（stream.started → task）负责，见 TriggerRuntime
   }
 
+  /** 把当前会话的 entries 存进 DB（场次即会话：stop/切场/每轮结束时都存，崩溃也丢不了多少）。
+   *  带上 session header 存：恢复时走 pi 的正经分支（保留 sessionId、正常做版本迁移） */
+  private persistSession(): void {
+    if (!this.session || !this.sessionPlanId) return
+    try {
+      const header = this.session.sessionManager.getHeader()
+      const entries = this.session.sessionManager.getEntries()
+      this.storage.savePlanSession(
+        this.sessionPlanId,
+        this.sessionPurpose,
+        JSON.stringify(header ? [header, ...entries] : entries)
+      )
+    } catch (error) {
+      console.error('[AgentAnchor] 会话落库失败:', error)
+    }
+  }
+
+  /** 该场次上次存下的会话 entries（没有 = 全新对话） */
+  private restoredEntriesFor(planId: string): FileEntry[] | undefined {
+    const saved = this.storage.loadPlanSession(planId)
+    if (!saved) return undefined
+    try {
+      const entries = JSON.parse(saved.entries) as FileEntry[]
+      // 修剪尾部脏状态：上轮被强杀时末尾可能挂着 error/aborted 的 assistant 消息，
+      // 带着它恢复会让 prompt 的压缩判定踩 pi 的 overflow-recovery 分支（恢复消息不跳过 aborted 检查）
+      while (entries.length > 0) {
+        const last = entries[entries.length - 1] as {
+          type?: string
+          message?: { role?: string; stopReason?: string }
+        }
+        const dirty =
+          last.type === 'message' &&
+          last.message?.role === 'assistant' &&
+          (last.message.stopReason === 'error' || last.message.stopReason === 'aborted')
+        if (!dirty) break
+        entries.pop()
+      }
+      return entries.length > 1 ? entries : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async stop(): Promise<void> {
     const session = this.session
-    this.session = null
-    this.sessionFingerprint = null
-    this.draft = ''
-    this.lastComment = null
     if (session) {
       // 下播总结：直播会话有过对话就让主播自我复盘，写进场次摘要；写稿会话不复盘
       if (this.exchanges > 0 && this.state === 'running' && this.sessionPurpose === 'live') {
         await this.summarizeEpisode(session).catch(() => undefined)
       }
+      // 场次即会话：关掉之前把会话存回该场次名下，下次切回来/重启接着聊
+      this.persistSession()
       try {
         await session.abort()
       } catch {
@@ -225,6 +273,11 @@ export class AgentService {
       }
       session.dispose()
     }
+    this.session = null
+    this.sessionFingerprint = null
+    this.sessionPlanId = ''
+    this.draft = ''
+    this.lastComment = null
     // 停了就不再收尾当前这一轮（abort 后可能还有 agent_settled 飘过来）
     this.clearTextTimers()
     this.texts.clear()
@@ -304,11 +357,59 @@ export class AgentService {
    * 已有会话（写稿中/直播中）直接投递，不动它。
    */
   async chat(text: string): Promise<void> {
+    // 选中场次换了（且不在直播中）：旧会话存回它自己场次名下，切回目标场次原来的对话——
+    // 场次即会话，各场次的记录互不串味，切回来还能接着聊
+    const activePlanId = this.storage.getConfig().live.activePlanId
+    if (this.session && this.sessionPurpose === 'prep' && activePlanId && this.sessionPlanId !== activePlanId) {
+      const plan = this.storage.planList().find((p) => p.id === activePlanId)
+      await this.stop()
+      this.emitNote(`—— 已切到「${plan?.name ?? '新场次'}」，主播带着这场原来的记录就位 ——`)
+    }
     await this.ensurePrepSession()
     this.directorSay(text)
   }
 
-  /** 主播就位（无会话时）：绑当前选中场次的资产（场次 → 人设 → 音色），起 prep 会话 */
+  /** 时间线系统提示（换场重开等）：以一段文本条目上屏，不走 LLM */
+  private emitNote(text: string): void {
+    this.emitTimeline({
+      turnId: this.turnId,
+      entry: { type: 'text', id: `note-${Date.now()}`, text, final: false }
+    })
+  }
+
+  /**
+   * 时间线条目出口：先按场次落库（ChatEntry 形状，切场/刷新/重启后整段恢复），再广播给渲染层。
+   * 落库失败不影响直播。
+   */
+  private emitTimeline(event: DirectorTimelineEvent): void {
+    const planId = this.sessionPlanId || this.storage.getConfig().live.activePlanId
+    if (planId) {
+      const entry = event.entry
+      const ts = Date.now()
+      const chat: ChatEntry =
+        entry.type === 'text'
+          ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId }
+          : {
+              type: 'tool',
+              id: entry.id,
+              ts,
+              turnId: event.turnId,
+              name: entry.name,
+              args: entry.args,
+              status: entry.status,
+              result: entry.result,
+              durationMs: entry.durationMs
+            }
+      try {
+        this.storage.timelineAppend(planId, entry.id, event.turnId, ts, JSON.stringify(chat))
+      } catch {
+        // 落库失败静默：时间线只是记录，不能反过来影响主播
+      }
+    }
+    this.onDirectorTimeline?.(event)
+  }
+
+  /** 主播就位（无会话时）：绑当前选中场次的资产（场次 → 人设 → 音色），恢复该场次存下的对话（没有就新起） */
   private async ensurePrepSession(): Promise<void> {
     if (this.session) return
     const planId = this.storage.getConfig().live.activePlanId
@@ -319,7 +420,7 @@ export class AgentService {
       this.persona.setActive(plan.personaId)
     }
     this.setPlanVoice(plan.voiceId)
-    await this.start('prep')
+    await this.start('prep', this.restoredEntriesFor(plan.id))
   }
 
   /**
@@ -337,7 +438,7 @@ export class AgentService {
     if (this.session && this.sessionPurpose === 'live') {
       throw new Error('正在直播：写稿先下播，或者用对话直接改底稿')
     }
-    // 换场次就重开会话（旧会话的上下文是另一场的）；同场次复用，能接着聊接着改
+    // 换场次：旧会话存回它自己场次名下，目标场次恢复它原来的对话接着写；同场次复用
     if (this.session && this.script.getActive().plan?.id !== plan.id) await this.stop()
     // 资产切换跟开播装载同一套：场次 → 人设 → 音色
     this.script.setActivePlan(plan.id)
@@ -345,7 +446,7 @@ export class AgentService {
       this.persona.setActive(plan.personaId)
     }
     this.setPlanVoice(plan.voiceId)
-    if (!this.session) await this.start('prep')
+    if (!this.session) await this.start('prep', this.restoredEntriesFor(plan.id))
     this.directorSay(this.composeDraftBrief(plan, script))
   }
 
@@ -446,7 +547,7 @@ export class AgentService {
     this.lastTextEmitAt = Date.now()
     state.sent = state.text
     if (final) state.finalSent = true
-    this.onDirectorTimeline?.({
+    this.emitTimeline({
       turnId: state.turnId,
       entry: { type: 'text', id, text: state.text, ...(final ? { final: true } : {}) }
     })
@@ -475,7 +576,7 @@ export class AgentService {
   /** 工具开始：发一张"运行中"的工具卡片（按 toolCallId 更新，不追加新条目） */
   private startTool(toolCallId: string, toolName: string, args: unknown): void {
     if (toolName === 'ask_director') return
-    this.onDirectorTimeline?.({
+    this.emitTimeline({
       turnId: this.turnId,
       entry: {
         type: 'tool',
@@ -496,7 +597,7 @@ export class AgentService {
     durationMs?: number
   ): void {
     if (toolName === 'ask_director') return
-    this.onDirectorTimeline?.({
+    this.emitTimeline({
       turnId: this.turnId,
       entry: {
         type: 'tool',
@@ -573,7 +674,7 @@ export class AgentService {
     if (summary) this.memory.saveEpisodeSummary(this.startedAt, endedAt, summary)
   }
 
-  private async createSession(resolved: ResolvedModel): Promise<AgentSession> {
+  private async createSession(resolved: ResolvedModel, restoredEntries?: FileEntry[]): Promise<AgentSession> {
     const agentDir = join(app.getPath('userData'), 'pi')
     const { model, modelRuntime, modelLabel } = await prepareLlmModel(resolved, agentDir)
     this.modelLabel = modelLabel
@@ -627,9 +728,13 @@ export class AgentService {
         onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动场次」'
       }),
       tools: [...ANCHOR_TOOL_NAMES],
-      sessionManager: SessionManager.inMemory(agentDir),
+      // 场次即会话：恢复时把该场次存下的 entries 重建进内存会话，上下文原样回来
+      sessionManager: SessionManager.inMemory(agentDir, undefined, restoredEntries),
       settingsManager: SettingsManager.inMemory({
         retry: { enabled: true, maxRetries: 2 },
+        // HTTP 空闲超时：DeepSeek 偶尔挂住连接一个字节都不吐，pi 默认等 300s（假死外观），
+        // 收紧到 60s——超时变 error 态（可重试），别让整个主播像死了一样
+        httpIdleTimeoutMs: 60_000,
         // 长会话自动压缩：上下文逼近窗口（窗口 - 16k）时把旧消息摘要成一段，保留最近 20k。
         // pi 默认就开着，这里写死防上游改默认值——写稿/长直播都靠它撑住上下文
         compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }
@@ -677,6 +782,8 @@ export class AgentService {
         // 整轮结束：最后一条 assistant 消息的文本 = 最终回复
         this.flushText()
         this.finalizeTurn()
+        // 场次即会话：每轮落一次库，崩溃/强杀也丢不了多少
+        this.persistSession()
       } else if (event.type === 'message_end') {
         // 这条消息说完了：把节流压着的尾巴推出去（还接着调工具时，它仍是中间文本）
         this.flushText()
@@ -694,7 +801,7 @@ export class AgentService {
       } else if (event.type === 'compaction_start') {
         // 自动压缩（长写稿/长直播的救命机制）：上时间线让导演知道主播在"整理笔记"
         this.compactionCardId = `compaction-${Date.now()}`
-        this.onDirectorTimeline?.({
+        this.emitTimeline({
           turnId: this.turnId,
           entry: {
             type: 'tool',
@@ -709,19 +816,44 @@ export class AgentService {
         this.compactionCardId = null
         if (id) {
           const result = event.result
-          this.onDirectorTimeline?.({
-            turnId: this.turnId,
-            entry: {
+          const succeeded = !!result && !event.aborted
+          const resultText = result
+            ? `压缩前约 ${Math.round(result.tokensBefore / 1000)}k tokens → 摘要 + 最近对话继续（不丢价格/口径等已查证事实）`
+            : (event.errorMessage ?? '压缩中断')
+          if (succeeded) {
+            // 压缩后可见历史全清（只留这张压缩卡）：有多少聊天记录 = 实际有多长上下文，所见即所得
+            const planId = this.sessionPlanId || this.storage.getConfig().live.activePlanId
+            if (planId) this.storage.timelineClear(planId)
+            const card: ChatEntry = {
               type: 'tool',
               id,
+              ts: Date.now(),
+              turnId: this.turnId,
               name: 'context_compact',
-              status: result && !event.aborted ? 'ok' : 'error',
-              result: result
-                ? `压缩前约 ${Math.round(result.tokensBefore / 1000)}k tokens → 摘要 + 最近对话继续（不丢价格/口径等已查证事实）`
-                : (event.errorMessage ?? '压缩中断'),
-              isError: !result || event.aborted
+              status: 'ok',
+              result: resultText
             }
-          })
+            if (planId) {
+              try {
+                this.storage.timelineAppend(planId, id, this.turnId, card.ts, JSON.stringify(card))
+              } catch {
+                // 落库失败静默
+              }
+            }
+            this.onDirectorTimeline?.({ type: 'reset', entries: [card] })
+          } else {
+            this.emitTimeline({
+              turnId: this.turnId,
+              entry: {
+                type: 'tool',
+                id,
+                name: 'context_compact',
+                status: 'error',
+                result: resultText,
+                isError: true
+              }
+            })
+          }
         }
       }
     })

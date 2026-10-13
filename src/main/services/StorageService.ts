@@ -442,8 +442,84 @@ export class StorageService {
     this.migrateModelProfiles()
     this.migrateLegacyLlm()
     this.migratePersonaBrains()
+    // 场次即会话：每个场次一份持久对话（pi 会话 entries + 可见时间线），切场/重启后恢复
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS plan_sessions (
+        plan_id TEXT PRIMARY KEY,
+        purpose TEXT NOT NULL DEFAULT 'prep',
+        entries TEXT NOT NULL DEFAULT '[]',
+        updated_at INTEGER NOT NULL
+      )
+    `)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS director_timeline (
+        plan_id TEXT NOT NULL,
+        entry_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL DEFAULT '',
+        ts INTEGER NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (plan_id, entry_id)
+      )
+    `)
     // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
     this.migrateLegacySecrets()
+  }
+
+  // ---------- 场次会话持久化（场次即会话） ----------
+
+  /** 保存某场次的 pi 会话 entries（stop/切场/每轮结束时覆盖写） */
+  savePlanSession(planId: string, purpose: string, entriesJson: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO plan_sessions (plan_id, purpose, entries, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(plan_id) DO UPDATE SET purpose = excluded.purpose, entries = excluded.entries, updated_at = excluded.updated_at`
+      )
+      .run(planId, purpose, entriesJson, Date.now())
+  }
+
+  loadPlanSession(planId: string): { purpose: string; entries: string } | null {
+    const row = this.db.prepare('SELECT purpose, entries FROM plan_sessions WHERE plan_id = ?').get(planId) as
+      | { purpose: string; entries: string }
+      | undefined
+    return row ?? null
+  }
+
+  deletePlanSession(planId: string): void {
+    this.db.prepare('DELETE FROM plan_sessions WHERE plan_id = ?').run(planId)
+    this.db.prepare('DELETE FROM director_timeline WHERE plan_id = ?').run(planId)
+  }
+
+  /** 时间线条目落库（按 entry_id upsert：流式快照/工具状态更新都收敛到同一行），每场次修剪到最近 500 条 */
+  timelineAppend(planId: string, entryId: string, turnId: string, ts: number, payload: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO director_timeline (plan_id, entry_id, turn_id, ts, payload) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(plan_id, entry_id) DO UPDATE SET payload = excluded.payload`
+      )
+      .run(planId, entryId, turnId, ts, payload)
+    this.db
+      .prepare(
+        `DELETE FROM director_timeline WHERE plan_id = ? AND entry_id NOT IN (
+           SELECT entry_id FROM director_timeline WHERE plan_id = ? ORDER BY ts DESC LIMIT 500
+         )`
+      )
+      .run(planId, planId)
+  }
+
+  /** 拉某场次的可见时间线（最近 limit 条，按时间正序） */
+  timelineList(planId: string, limit = 200): { turnId: string; payload: string }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT turn_id, payload FROM (
+           SELECT turn_id, payload, ts FROM director_timeline WHERE plan_id = ? ORDER BY ts DESC LIMIT ?
+         ) ORDER BY ts ASC`
+      )
+      .all(planId, limit) as { turn_id: string; payload: string }[]
+    return rows.map((r) => ({ turnId: r.turn_id, payload: r.payload }))
+  }
+
+  timelineClear(planId: string): void {
+    this.db.prepare('DELETE FROM director_timeline WHERE plan_id = ?').run(planId)
   }
 
   // ---------- 音色库（M8） ----------

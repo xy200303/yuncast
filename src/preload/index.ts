@@ -10,8 +10,10 @@ import type {
   AudioLevelPayload,
   AudioPcmPayload,
   ConnectorStatus,
+  ChatEntry,
   DirectorMessage,
   DirectorTimelineEvent,
+  DirectorTimelineReset,
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
@@ -161,9 +163,12 @@ const api = {
     }
   },
   director: {
-    /** 导演指令 → 主播（最高优先级，steer 插队） */
-    send: (text: string) =>
-      ipcRenderer.invoke(IPC.directorSend, text) as Promise<{ ok: boolean; error?: string }>,
+    /** 导演指令 → 主播（最高优先级，steer 插队）；localId = 本地回显条目 id，落库恢复不重复 */
+    send: (text: string, localId?: string) =>
+      ipcRenderer.invoke(IPC.directorSend, text, localId) as Promise<{ ok: boolean; error?: string }>,
+    /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复） */
+    timelineList: (planId: string) =>
+      ipcRenderer.invoke(IPC.directorTimelineList, planId) as Promise<ChatEntry[]>,
     /** 订阅主播请示（ask_director）卡片，返回取消订阅函数 */
     onEvent: (cb: (message: DirectorMessage) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, message: DirectorMessage) => cb(message)
@@ -172,9 +177,10 @@ const api = {
         ipcRenderer.removeListener(IPC.directorEvent, listener)
       }
     },
-    /** 订阅对话时间线（文本流式 / 工具调用；同一 entry.id 会重复推更新，渲染层按 id upsert） */
-    onTimeline: (cb: (event: DirectorTimelineEvent) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, event: DirectorTimelineEvent) => cb(event)
+    /** 订阅对话时间线（文本流式 / 工具调用 / reset 整体替换；同一 entry.id 会重复推更新，渲染层按 id upsert） */
+    onTimeline: (cb: (event: DirectorTimelineEvent | DirectorTimelineReset) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, event: DirectorTimelineEvent | DirectorTimelineReset) =>
+        cb(event)
       ipcRenderer.on(IPC.directorTimeline, listener)
       return () => {
         ipcRenderer.removeListener(IPC.directorTimeline, listener)

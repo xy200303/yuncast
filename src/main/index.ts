@@ -14,6 +14,7 @@ import {
   type ConnectorStatus,
   type DirectorMessage,
   type DirectorTimelineEvent,
+  type DirectorTimelineReset,
   type LiveComment,
   type ModelConnectionInput,
   type PartialDeep,
@@ -207,8 +208,8 @@ function broadcastDirector(message: DirectorMessage): void {
   }
 }
 
-/** 对话时间线广播（文本流式 / 工具调用；同一 entry.id 会重复推更新，渲染层按 id upsert） */
-function broadcastDirectorTimeline(event: DirectorTimelineEvent): void {
+/** 对话时间线广播（文本流式 / 工具调用；同一 entry.id 会重复推更新，渲染层按 id upsert；reset = 压缩后整体替换） */
+function broadcastDirectorTimeline(event: DirectorTimelineEvent | DirectorTimelineReset): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.directorTimeline, event)
   }
@@ -474,14 +475,35 @@ function registerIpc(
 
   // ---------- 导演对话 ----------
   // chat：无会话时自动按当前选中场次起 prep 会话再投递（选中场次即可开聊，不必先启动场次）
-  ipcMain.handle(IPC.directorSend, async (_e, text: string) => {
+  // localId：渲染层本地回显条目的 id，main 以同一 id 落库——重载/切场恢复时不重复
+  ipcMain.handle(IPC.directorSend, async (_e, text: string, localId?: string) => {
+    const content = String(text ?? '').slice(0, 500)
+    const planId = storage.getConfig().live.activePlanId
+    if (planId && content) {
+      const id = String(localId ?? '').trim() || `dm-${Date.now()}`
+      try {
+        storage.timelineAppend(
+          planId,
+          id,
+          '',
+          Date.now(),
+          JSON.stringify({ type: 'director', id, ts: Date.now(), text: content })
+        )
+      } catch {
+        // 落库失败不影响发送
+      }
+    }
     try {
-      await agent.chat(String(text ?? '').slice(0, 500))
+      await agent.chat(content)
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
+  /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复；载荷已是 ChatEntry JSON） */
+  ipcMain.handle(IPC.directorTimelineList, (_e, planId: string) =>
+    storage.timelineList(String(planId ?? '')).map((row) => JSON.parse(row.payload) as unknown)
+  )
 
   // ---------- 人设卡 ----------
   ipcMain.handle(IPC.personaGet, () => persona.get())
@@ -603,7 +625,13 @@ function registerIpc(
   ipcMain.handle(IPC.planSave, (_e, input: LivePlanInput, id?: string) =>
     guard(() => script.savePlan(input, id))
   )
-  ipcMain.handle(IPC.planDelete, (_e, id: string) => guard(() => script.deletePlan(id)))
+  ipcMain.handle(IPC.planDelete, (_e, id: string) =>
+    guard(() => {
+      script.deletePlan(id)
+      // 场次的持久对话（会话 entries + 时间线）跟着场次一起走
+      storage.deletePlanSession(String(id ?? ''))
+    })
+  )
   ipcMain.handle(IPC.planSetActive, (_e, id: string) => {
     script.setActivePlan(String(id ?? ''))
     return storage.getConfig().live.activePlanId
@@ -794,15 +822,31 @@ if (!single) {
     })
     // 主播请示（ask_director）：进导演对话面板高亮卡片；不阻塞直播（docs/07 §8.8.6 ④）
     agent.onDirectorAsk = (ask) => {
-      broadcastDirector({
+      const message = {
         id: `dm-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
         ts: Date.now(),
-        kind: 'ask',
+        kind: 'ask' as const,
         text: ask.text,
         options: ask.options,
         timeoutSec: ask.timeoutSec,
         defaultAction: ask.defaultAction
-      })
+      }
+      broadcastDirector(message)
+      // 请示卡片也按场次落库（切场/重载后还在；回答是另一条 director 条目）
+      const planId = storage.getConfig().live.activePlanId
+      if (planId) {
+        try {
+          storage.timelineAppend(
+            planId,
+            message.id,
+            '',
+            message.ts,
+            JSON.stringify({ type: 'ask', id: message.id, ts: message.ts, message })
+          )
+        } catch {
+          // 落库失败静默
+        }
+      }
     }
     // 播报控制（pause/resume/skip）：主播工具改播放状态，转给渲染进程的播放循环
     agent.onPlaybackControl = (action) => {

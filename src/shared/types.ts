@@ -694,6 +694,35 @@ export interface DirectorTimelineEvent {
   entry: DirectorTimelineEntry
 }
 
+/**
+ * 对话面板的一行（渲染层完整条目，含导演自己的指令和请示卡片）。
+ * main 侧按场次持久化（director_timeline 表），切场/刷新/重启后整段恢复。
+ */
+export type ChatEntry =
+  | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
+  | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string }
+  | {
+      type: 'tool'
+      id: string
+      ts: number
+      turnId: string
+      name: string
+      args?: string
+      status: 'running' | 'ok' | 'error'
+      result?: string
+      durationMs?: number
+    }
+  | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
+
+/**
+ * 时间线整体替换指令：自动压缩成功后 main 清掉该场次的可见历史（留一张压缩卡），
+ * 让「有多少聊天记录 = 实际有多长上下文」成立。走 directorTimeline 同一个通道。
+ */
+export interface DirectorTimelineReset {
+  type: 'reset'
+  entries: ChatEntry[]
+}
+
 /** 播报控制（主播工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */
 export type PlaybackControlAction = 'pause' | 'resume' | 'skip'
 

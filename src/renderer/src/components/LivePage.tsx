@@ -44,6 +44,7 @@ import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import type {
+  ChatEntry,
   DirectorMessage,
   LiveComment,
   LivePlan,
@@ -642,23 +643,6 @@ function AskCard({
   )
 }
 
-/** 对话时间线的一条：导演指令（右）/ 主播文本（左，中间文本或最终回复）/ 工具卡片 / 请示卡片 */
-type ChatEntry =
-  | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
-  | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string }
-  | {
-      type: 'tool'
-      id: string
-      ts: number
-      turnId: string
-      name: string
-      args?: string
-      status: 'running' | 'ok' | 'error'
-      result?: string
-      durationMs?: number
-    }
-  | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
-
 /** 连续同名工具并成一行（say ×4 · 65ms），点开看每一条 */
 function ToolGroup({ items }: { items: Extract<ChatEntry, { type: 'tool' }>[] }) {
   const [open, setOpen] = useState(false)
@@ -765,6 +749,7 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
 function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
+  const activePlanId = useAppStore((s) => s.config.live.activePlanId)
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
@@ -797,10 +782,34 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     if (first && !activeRef.current) onUnreadRef.current()
   }
 
-  // 订阅对话时间线（文本流式 + 工具卡片）与请示卡片
+  // 场次即会话：切场（或首次挂载/刷新）时整段恢复该场次的聊天记录
+  useEffect(() => {
+    if (!('api' in window)) return
+    setEntries([])
+    seenRef.current = new Set()
+    if (!activePlanId) return
+    let cancelled = false
+    void window.api.director.timelineList(activePlanId).then((stored) => {
+      if (cancelled) return
+      for (const entry of stored) seenRef.current.add(entry.id)
+      setEntries(stored)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [activePlanId])
+
+  // 订阅对话时间线（文本流式 + 工具卡片 + 压缩后 reset）与请示卡片
   useEffect(() => {
     if (!('api' in window)) return
     const offTimeline = window.api.director.onTimeline((event) => {
+      // 压缩成功 → 可见历史整体替换（只剩压缩卡）：有多少记录 = 实际有多长上下文
+      if ('type' in event && event.type === 'reset') {
+        setEntries(event.entries)
+        seenRef.current = new Set(event.entries.map((entry) => entry.id))
+        return
+      }
+      if (!('entry' in event)) return
       const entry = event.entry
       if (entry.type === 'text') {
         upsert({
@@ -937,7 +946,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     if (text && runQuickCommand(text)) return
     const payload =
       files.length > 0 ? `${text}\n${files.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
-    void window.api.director.send(payload).then((result) => {
+    // 本地回显的 id 一起发给 main：落库用同一 id，切场/重载恢复时不重复
+    void window.api.director.send(payload, id).then((result) => {
       if (!result.ok) toast.error('指令没送达', { description: result.error })
     })
   }

@@ -820,6 +820,9 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           text: entry.text,
           final: entry.final === true
         })
+      } else if (entry.type === 'ask') {
+        // 主播请示卡片：与文本/工具同一条单通道
+        upsert({ type: 'ask', id: entry.id, ts: entry.message.ts, message: entry.message })
       } else {
         upsert({
           type: 'tool',
@@ -835,13 +838,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       }
       landed(entry.id)
     })
-    const offAsk = window.api.director.onEvent((message) => {
-      upsert({ type: 'ask', id: message.id, ts: message.ts, message })
-      landed(message.id)
-    })
     return () => {
       offTimeline()
-      offAsk()
     }
   }, [])
 

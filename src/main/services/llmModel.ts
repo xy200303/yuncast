@@ -1,7 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { app } from 'electron'
-import { ModelRuntime } from '@earendil-works/pi-coding-agent'
+import type { Model } from '@earendil-works/pi-ai'
 import { legacyLlmConfigured, type ModelConnection, type Persona } from '../../shared/types'
 import {
   connectionFirstModel,
@@ -10,13 +7,6 @@ import {
   type ResolvedModel
 } from './providers/registry'
 import type { StorageService } from './StorageService'
-
-/** pi 内置服务商映射；其余（qwen/doubao/local-openai）走 models.json 的自定义 provider */
-const BUILTIN_PROVIDERS: Record<string, string> = {
-  deepseek: 'deepseek',
-  kimi: 'moonshotai-cn',
-  zai: 'zai'
-}
 
 const MODEL_MISSING_HINT = '还没有可用的语言模型：到主播团里给主播卡选一个接入和模型'
 
@@ -30,33 +20,12 @@ function missingBrainHint(personaName: string): string {
 /** 连通性测试的超时（本地服务拉不起来时不要让 UI 一直转） */
 const TEST_TIMEOUT_MS = 10_000
 
-/** pi 内置模型目录（只读、不联网）：给设置页的「可用模型」下拉列真实存在的模型 id */
-let catalogRuntime: Promise<ModelRuntime> | null = null
+/** 上下文窗口兜底值：服务商没声明、接入上也没配模型级窗口时用 */
+const FALLBACK_CONTEXT_WINDOW = 128_000
 
-function getCatalogRuntime(): Promise<ModelRuntime> {
-  catalogRuntime ??= ModelRuntime.create({
-    modelsPath: join(app.getPath('userData'), 'pi-catalog', 'models.json'),
-    refreshOnCreate: false,
-    allowModelNetwork: false
-  }).catch((error) => {
-    catalogRuntime = null
-    throw error
-  })
-  return catalogRuntime
-}
-
-/** 该服务商真实可用的模型 id：pi 目录 → manifest 建议 → 空（本地服务只能手打） */
+/** 该服务商的模型 id 建议（设置页模型列表的下拉建议；本地服务只能手打） */
 export async function listProviderModels(providerId: string): Promise<string[]> {
-  const def = getLlmProvider(providerId)
-  const builtin = BUILTIN_PROVIDERS[providerId] ?? providerId
-  try {
-    const runtime = await getCatalogRuntime()
-    const ids = runtime.getModels(builtin).map((model) => model.id)
-    if (ids.length > 0) return ids
-  } catch (error) {
-    console.error('[AgentAnchor] 读取 pi 模型目录失败:', error)
-  }
-  return def?.modelSuggestions ?? []
+  return getLlmProvider(providerId)?.modelSuggestions ?? []
 }
 
 /**
@@ -149,59 +118,41 @@ function selectedModelOf(
   }
 }
 
+export interface PreparedLlm {
+  /** 手工构造的 OpenAI 兼容模型描述（pi-ai 直接吃，不需要 models.json/目录） */
+  model: Model<'openai-completions'>
+  /** 凭据：随 stream options 注入，不落盘 */
+  apiKey: string
+  modelLabel: string
+  /** 自动压缩的标尺：接入上配的模型级窗口 > 服务商声明 > 128k 兜底 */
+  contextWindow: number
+}
+
 /**
  * LLM 会话准备（主播会话用，直播/写稿同一条装配线）：
- * 自定义端点写 models.json → ModelRuntime → 运行时注入凭据（不落 pi 的 auth.json）→ 取模型。
+ * 接入配置 → 手工构造 Model 对象。所有接入统一走 OpenAI 兼容协议（manifest 的 toModelConfig 给出地址/密钥/模型名）。
  */
-export async function prepareLlmModel(resolved: ResolvedModel, agentDir: string) {
+export async function prepareLlmModel(resolved: ResolvedModel): Promise<PreparedLlm> {
   const def = getLlmProvider(resolved.providerId)
   if (!def) throw new Error(`不认识的服务商：${resolved.providerId}（到设置 → 语言模型里重新选一个）`)
 
   const { baseUrl, apiKey, model: modelId } = def.toModelConfig(resolved.params, resolved.model)
   if (!modelId) throw new Error(`还没选模型：${def.label}（设置 → 语言模型里给它加一个模型）`)
 
-  mkdirSync(agentDir, { recursive: true })
-
-  const providerId = BUILTIN_PROVIDERS[resolved.providerId] ?? resolved.providerId
-  // params 留空时的地址就是官方默认地址，拿它判断用户有没有自定义端点
-  const defaultBaseUrl = def.toModelConfig({}, def.defaultModel).baseUrl
-  const isBuiltin = resolved.providerId in BUILTIN_PROVIDERS
-  // 上下文窗口（自动压缩的标尺）：接入上配的模型级窗口 > 服务商声明 > pi 内置目录/128k 兜底
-  const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow
-  const needModelsJson = !isBuiltin || baseUrl !== defaultBaseUrl || resolved.contextWindow !== undefined
-  const modelsPath = join(agentDir, 'models.json')
-  if (needModelsJson) {
-    const models = [{ id: modelId, ...(contextWindow ? { contextWindow } : {}) }]
-    const providerEntry: Record<string, unknown> =
-      isBuiltin && resolved.contextWindow === undefined
-        ? { baseUrl }
-        : { baseUrl, ...(isBuiltin ? {} : { api: 'openai-completions' }), models }
-    writeFileSync(modelsPath, JSON.stringify({ providers: { [providerId]: providerEntry } }, null, 2), 'utf8')
-  } else {
-    // 配置回退到默认时清掉旧的自定义文件，避免残留旧端点
-    writeFileSync(modelsPath, JSON.stringify({ providers: {} }, null, 2), 'utf8')
+  const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow ?? FALLBACK_CONTEXT_WINDOW
+  const model: Model<'openai-completions'> = {
+    id: modelId,
+    name: modelId,
+    api: 'openai-completions',
+    provider: resolved.providerId,
+    baseUrl,
+    input: ['text'],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    reasoning: false,
+    contextWindow,
+    maxTokens: 8192
   }
-
-  const modelRuntime = await ModelRuntime.create({
-    authPath: join(agentDir, 'auth.json'),
-    modelsPath
-  })
-  // 凭据运行时注入，不落 pi 的 auth.json
-  await modelRuntime.setRuntimeApiKey(providerId, apiKey)
-
-  const model = modelRuntime.getModel(providerId, modelId)
-  if (!model) {
-    // pi 只认它目录里的模型名：带上「它认识哪些」，免得用户对着报错猜
-    const known = modelRuntime
-      .getModels(providerId)
-      .map((item) => item.id)
-      .slice(0, 8)
-    throw new Error(
-      `模型不可用：${def.label} 不认识「${modelId}」` +
-        (known.length > 0 ? `（可用：${known.join(' / ')}）` : '（检查设置页模型列表里的名字）')
-    )
-  }
-  return { model, modelRuntime, modelLabel: `${def.label} · ${modelId}` }
+  return { model, apiKey, modelLabel: `${def.label} · ${modelId}`, contextWindow }
 }
 
 /**

@@ -1,5 +1,5 @@
-import { defineTool, type ToolDefinition } from '@earendil-works/pi-coding-agent'
-import { Type } from 'typebox'
+import type { AgentTool } from '@earendil-works/pi-agent-core'
+import { Type, type TSchema } from 'typebox'
 import type { LiveComment, Persona, PlaybackControlAction, UtteranceSource, UtteranceStatus } from '../../shared/types'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
@@ -10,8 +10,13 @@ import type { UtteranceService } from './UtteranceService'
 
 /**
  * 主播 Agent 的工具表（docs/01 §3.3）。
- * 抽成独立工厂是为了无头测试：不建会话也能直接调 execute 验证逻辑。
+ * 抽成独立工厂是为结构而抽：依赖注入让工具层与会话装配解耦，换引擎/读逻辑都只看这一层。
  */
+
+/** defineTool：AgentTool 对象字面量的 typing 辅助（pi-agent-core 没有自带） */
+function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): AgentTool<TParameters> {
+  return def
+}
 
 /** 主播的来源 id（话术池限流按来源算） */
 export const AGENT_SOURCE_ID = 'anchor'
@@ -67,7 +72,7 @@ export interface AnchorToolDeps {
   onGoLive?: () => Promise<string>
 }
 
-export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
+export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
   const {
     pool,
     knowledge,
@@ -602,32 +607,6 @@ export function buildAnchorTools(deps: AnchorToolDeps): ToolDefinition[] {
     })
   ]
 }
-
-/** 主播工具名清单（createAgentSession 的 tools allowlist 要逐项点名） */
-export const ANCHOR_TOOL_NAMES = [
-  'say',
-  'insert_next',
-  'get_pool_status',
-  'get_recent_played',
-  'revise_item',
-  'list_drafts',
-  'edit_draft',
-  'add_draft',
-  'remove_draft',
-  'write_drafts',
-  'advance_scene',
-  'goto_scene',
-  'set_voice',
-  'pause_broadcast',
-  'resume_broadcast',
-  'skip_current',
-  'start_live',
-  'search_knowledge',
-  'check_price',
-  'lookup_viewer',
-  'remember_viewer',
-  'ask_director'
-]
 
 /**
  * 开头单调性检测（write_drafts 的软反馈）：批量写稿时模型容易锁定同一个开头模板，

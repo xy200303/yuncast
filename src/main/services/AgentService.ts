@@ -1,17 +1,18 @@
-import { join } from 'node:path'
-import { app } from 'electron'
+import { randomUUID } from 'node:crypto'
+import { Agent, type AgentMessage } from '@earendil-works/pi-agent-core'
 import {
-  createAgentSession,
-  createExtensionRuntime,
-  SessionManager,
-  SettingsManager,
-  type AgentSession,
-  type FileEntry,
-  type ResourceLoader
-} from '@earendil-works/pi-coding-agent'
+  normalizeContext,
+  retryAssistantCall,
+  type Message,
+  type Model,
+  type UserMessage
+} from '@earendil-works/pi-ai'
+import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
+import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import {
   type AgentStatus,
   type ChatEntry,
+  type DirectorMessage,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
@@ -27,18 +28,19 @@ import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
 import type { UtteranceService } from './UtteranceService'
-import { ANCHOR_TOOL_NAMES, buildAnchorTools } from './anchorTools'
+import { buildAnchorTools } from './anchorTools'
 import { prepareLlmModel, resolveModelForPersona } from './llmModel'
 import type { ResolvedModel } from './providers/registry'
 
 /**
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
- * - pi-agent SDK 路线：createAgentSession，资源目录全部重定向到 userData/pi（不碰 ~/.pi）
- * - 关掉全部内置编码工具，只挂主播工具（anchorTools，一切声音走话术池）
- * - 凭据运行时注入 ModelRuntime，不落 pi 的盘；我们的 config 里 secretBox 加密
+ * - 引擎：pi-agent-core 的 Agent 裸用。会话树/models.json/资源发现都不存在也不需要——
+ *   会话按场次自己存 SQLite（线性消息数组），system prompt 就是人设卡 + 场次
+ * - 只挂主播工具（anchorTools，一切声音走话术池）；core 没有内置工具，不用 allowlist
+ * - 模型：手工构造 OpenAI 兼容 Model，凭据随 stream options 注入不落盘；我们的 config 里 secretBox 加密
+ * - 上下文压缩：transformContext 钩子里自研——估算超阈值就把旧消息发给 LLM 摘要，替换 state.messages
  * - text_delta 既累积成"AI 正在组织语言"预览（提词器），也推给对话时间线（docs/09 §11）
- * - 对话时间线照 pi 事件流原样渲染：文本流式 / 工具卡片 / 最终回复，不做二次解释
- *   （thinking_delta 不渲染；ask_director 的工具卡片跳过——它走请示卡片那条通道）
+ * - 对话时间线照事件流原样渲染：文本流式 / 工具卡片 / 请示卡片，不做二次解释（thinking_delta 不渲染）
  */
 
 /** 中间文本的节流间隔：text_delta 又密又碎，攒够这个间隔再推一次全文快照 */
@@ -47,6 +49,14 @@ const TEXT_THROTTLE_MS = 60
 const TOOL_ARGS_MAX = 120
 /** 工具卡片里结果压成一行后的长度上限 */
 const TOOL_RESULT_MAX = 200
+/** 自动压缩：估算 tokens 超过「窗口 - 这个值」就触发（给回复留空间） */
+const COMPACT_RESERVE_TOKENS = 16_384
+/** 压缩时保留的最近对话额度：旧的部分进摘要，这部分原样留下 */
+const COMPACT_KEEP_RECENT_TOKENS = 20_000
+/** 喂给摘要模型的旧对话文本上限（字符）：再老的记录截掉，保住摘要调用本身不溢出 */
+const SUMMARY_TRANSCRIPT_MAX_CHARS = 50_000
+/** HTTP 请求超时：DeepSeek 偶尔挂住连接一个字节都不吐，收紧到 60s——超时变 error 态（可重试） */
+const LLM_TIMEOUT_MS = 60_000
 
 /** 一条 assistant 消息在时间线上的文本状态（按 messageId 更新，不重复追加条目） */
 interface TimelineText {
@@ -61,7 +71,7 @@ interface TimelineText {
 }
 
 export class AgentService {
-  private session: AgentSession | null = null
+  private session: Agent | null = null
   private state: AgentStatus['state'] = 'stopped'
   private error: string | undefined
   private modelLabel: string | undefined
@@ -85,10 +95,6 @@ export class AgentService {
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
   /** 主播自己开播（start_live 工具）：LaunchService 接上，返回给主播看的成败说明 */
   onGoLive: (() => Promise<string>) | null = null
-  /** 主播请示（ask_director）→ 导演对话面板高亮卡片；不阻塞 run（docs/07 §8.8.6 ④） */
-  onDirectorAsk:
-    | ((ask: { text: string; options: string[]; timeoutSec: number; defaultAction?: string }) => void)
-    | null = null
   /** 播报控制（pause/resume/skip）→ 广播到渲染进程执行 */
   onPlaybackControl: ((action: PlaybackControlAction) => void) | null = null
 
@@ -105,10 +111,12 @@ export class AgentService {
   private lastTextEmitAt = 0
   /** 本轮最后一条有正文的 assistant 消息 = 最终回复（装得下工具轮次里的中间文本） */
   private lastTextMessageId: string | null = null
-  /** 本轮是否已标过最终回复（agent_end / agent_settled 兜底时不重复推） */
+  /** 本轮是否已标过最终回复（agent_end 兜底时不重复推） */
   private turnFinalized = false
-  /** 正在进行的上下文压缩的时间线卡片 id（compaction_start 建、compaction_end 更新） */
+  /** 正在进行的上下文压缩的时间线卡片 id */
   private compactionCardId: string | null = null
+  /** 压缩进行中（transformContext 防重入） */
+  private compacting = false
 
   constructor(
     private readonly storage: StorageService,
@@ -192,14 +200,14 @@ export class AgentService {
   }
 
   /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。
-   *  restoredEntries：该场次上次存下的会话 entries（场次即会话，切回来接着聊）。 */
-  async start(purpose: 'live' | 'prep' = 'live', restoredEntries?: FileEntry[]): Promise<void> {
+   *  restoredMessages：该场次上次存下的会话消息（场次即会话，切回来接着聊）。 */
+  async start(purpose: 'live' | 'prep' = 'live', restoredMessages?: AgentMessage[]): Promise<void> {
     if (this.session) return
     // 大脑只用这张卡选的接入与模型；没选时只能临时顶旧配置（预检会把这种情况列成阻断项）
     const resolved = resolveModelForPersona(this.storage, this.persona.get())
     this.setState('starting')
     try {
-      this.session = await this.createSession(resolved, restoredEntries)
+      this.session = await this.createSession(resolved, restoredMessages)
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error))
       throw error
@@ -214,44 +222,47 @@ export class AgentService {
     // 开场白由「开场白」触发器（stream.started → task）负责，见 TriggerRuntime
   }
 
-  /** 把当前会话的 entries 存进 DB（场次即会话：stop/切场/每轮结束时都存，崩溃也丢不了多少）。
-   *  带上 session header 存：恢复时走 pi 的正经分支（保留 sessionId、正常做版本迁移） */
+  /** 把当前会话的消息存进 DB（场次即会话：stop/切场/每轮结束时都存，崩溃也丢不了多少）。
+   *  线性消息数组直接 JSON——首位是 system 消息，恢复时剥掉换当前人设卡的。 */
   private persistSession(): void {
     if (!this.session || !this.sessionPlanId) return
     try {
-      const header = this.session.sessionManager.getHeader()
-      const entries = this.session.sessionManager.getEntries()
       this.storage.savePlanSession(
         this.sessionPlanId,
         this.sessionPurpose,
-        JSON.stringify(header ? [header, ...entries] : entries)
+        JSON.stringify(this.session.state.messages)
       )
     } catch (error) {
       console.error('[AgentAnchor] 会话落库失败:', error)
     }
   }
 
-  /** 该场次上次存下的会话 entries（没有 = 全新对话） */
-  private restoredEntriesFor(planId: string): FileEntry[] | undefined {
+  /** 该场次上次存下的会话消息（没有 = 全新对话）。
+   *  兼容旧格式：pi-coding-agent 时代的 FileEntry 树形 entries 一次性转成线性消息（我们从不分叉，文件序即时间序）。 */
+  private restoredMessagesFor(planId: string): AgentMessage[] | undefined {
     const saved = this.storage.loadPlanSession(planId)
     if (!saved) return undefined
     try {
-      const entries = JSON.parse(saved.entries) as FileEntry[]
-      // 修剪尾部脏状态：上轮被强杀时末尾可能挂着 error/aborted 的 assistant 消息，
-      // 带着它恢复会让 prompt 的压缩判定踩 pi 的 overflow-recovery 分支（恢复消息不跳过 aborted 检查）
-      while (entries.length > 0) {
-        const last = entries[entries.length - 1] as {
-          type?: string
-          message?: { role?: string; stopReason?: string }
-        }
-        const dirty =
-          last.type === 'message' &&
-          last.message?.role === 'assistant' &&
-          (last.message.stopReason === 'error' || last.message.stopReason === 'aborted')
-        if (!dirty) break
-        entries.pop()
+      const parsed = JSON.parse(saved.entries) as Record<string, unknown>[]
+      if (!Array.isArray(parsed) || parsed.length === 0) return undefined
+      // 旧格式：元素是 { type: 'session' | 'message' | ..., parentId }；新格式：元素是 { role, content }
+      const legacy = typeof parsed[0]?.type === 'string' && !('role' in parsed[0])
+      let messages = (
+        legacy ? parsed.filter((e) => e.type === 'message').map((e) => e.message) : parsed
+      ) as AgentMessage[]
+      // 剥掉首部 system 消息：恢复时让当前人设卡的 systemPrompt 重新 prepend（人设改过重开才生效）
+      while (messages.length > 0 && (messages[0] as { role?: string }).role === 'system') {
+        messages = messages.slice(1)
       }
-      return entries.length > 1 ? entries : undefined
+      // 修剪尾部脏状态：上轮被强杀时末尾可能挂着 error/aborted 的 assistant 消息，带着它恢复没意义
+      while (messages.length > 0) {
+        const last = messages[messages.length - 1] as { role?: string; stopReason?: string }
+        const dirty =
+          last.role === 'assistant' && (last.stopReason === 'error' || last.stopReason === 'aborted')
+        if (!dirty) break
+        messages = messages.slice(0, -1)
+      }
+      return messages.length > 0 ? messages : undefined
     } catch {
       return undefined
     }
@@ -267,24 +278,24 @@ export class AgentService {
       // 场次即会话：关掉之前把会话存回该场次名下，下次切回来/重启接着聊
       this.persistSession()
       try {
-        await session.abort()
+        session.abort()
       } catch {
         // 停止时 abort 失败不影响关闭
       }
-      session.dispose()
     }
     this.session = null
     this.sessionFingerprint = null
     this.sessionPlanId = ''
     this.draft = ''
     this.lastComment = null
-    // 停了就不再收尾当前这一轮（abort 后可能还有 agent_settled 飘过来）
+    // 停了就不再收尾当前这一轮（abort 后可能还有事件飘过来）
     this.clearTextTimers()
     this.texts.clear()
     this.currentMessageId = null
     this.lastTextMessageId = null
     this.turnFinalized = true
     this.compactionCardId = null
+    this.compacting = false
     this.setState('stopped')
   }
 
@@ -328,7 +339,7 @@ export class AgentService {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     if (mode === 'steer' && this.busy) {
       try {
-        this.session.steer(text)
+        this.session.steer({ role: 'user', content: text, timestamp: Date.now() } as AgentMessage)
       } catch (error) {
         console.error('[AgentAnchor] steer 失败:', error)
       }
@@ -339,7 +350,7 @@ export class AgentService {
 
   /**
    * 导演指令入口（docs/07 §8.8）：最高优先级，生成中就 steer 插队，空闲直接派。
-   * 暂停期间照常送达（不然喊不出「继续」）；执行过程与结果由对话时间线按 pi 事件流原样呈现。
+   * 暂停期间照常送达（不然喊不出「继续」）；执行过程与结果由对话时间线照事件流原样呈现。
    */
   directorSay(text: string): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
@@ -389,17 +400,19 @@ export class AgentService {
       const chat: ChatEntry =
         entry.type === 'text'
           ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId }
-          : {
-              type: 'tool',
-              id: entry.id,
-              ts,
-              turnId: event.turnId,
-              name: entry.name,
-              args: entry.args,
-              status: entry.status,
-              result: entry.result,
-              durationMs: entry.durationMs
-            }
+          : entry.type === 'ask'
+            ? { type: 'ask', id: entry.id, ts, message: entry.message }
+            : {
+                type: 'tool',
+                id: entry.id,
+                ts,
+                turnId: event.turnId,
+                name: entry.name,
+                args: entry.args,
+                status: entry.status,
+                result: entry.result,
+                durationMs: entry.durationMs
+              }
       try {
         this.storage.timelineAppend(planId, entry.id, event.turnId, ts, JSON.stringify(chat))
       } catch {
@@ -420,7 +433,7 @@ export class AgentService {
       this.persona.setActive(plan.personaId)
     }
     this.setPlanVoice(plan.voiceId)
-    await this.start('prep', this.restoredEntriesFor(plan.id))
+    await this.start('prep', this.restoredMessagesFor(plan.id))
   }
 
   /**
@@ -446,7 +459,7 @@ export class AgentService {
       this.persona.setActive(plan.personaId)
     }
     this.setPlanVoice(plan.voiceId)
-    if (!this.session) await this.start('prep', this.restoredEntriesFor(plan.id))
+    if (!this.session) await this.start('prep', this.restoredMessagesFor(plan.id))
     this.directorSay(this.composeDraftBrief(plan, script))
   }
 
@@ -484,7 +497,7 @@ export class AgentService {
     this.broadcast(this.status())
   }
 
-  // ---------- 对话时间线（docs/09 §11：照 pi 事件流原样渲染，不做二次解释） ----------
+  // ---------- 对话时间线（docs/09 §11：照事件流原样渲染，不做二次解释） ----------
 
   /**
    * 新一轮（agent_start）：一次派给主播的任务 = 一轮，含中间文本 + 多轮工具调用 + 最终回复。
@@ -642,7 +655,7 @@ export class AgentService {
     const full = this.scenePrefix() + text
     try {
       if (this.busy) {
-        session.steer(full)
+        session.steer({ role: 'user', content: full, timestamp: Date.now() } as AgentMessage)
         return
       }
       this.busy = true
@@ -659,7 +672,7 @@ export class AgentService {
   }
 
   /** 下播总结：让主播自我复盘本场亮点/高频问题，写入 episode_summaries。失败静默，不挡下播。 */
-  private async summarizeEpisode(session: AgentSession): Promise<void> {
+  private async summarizeEpisode(session: Agent): Promise<void> {
     const endedAt = Date.now()
     await Promise.race([
       (async () => {
@@ -670,13 +683,211 @@ export class AgentService {
       })(),
       new Promise((_, reject) => setTimeout(() => reject(new Error('总结超时')), 30_000))
     ])
-    const summary = session.getLastAssistantText()?.trim()
+    const summary = lastAssistantText(session.state.messages)?.trim()
     if (summary) this.memory.saveEpisodeSummary(this.startedAt, endedAt, summary)
   }
 
-  private async createSession(resolved: ResolvedModel, restoredEntries?: FileEntry[]): Promise<AgentSession> {
-    const agentDir = join(app.getPath('userData'), 'pi')
-    const { model, modelRuntime, modelLabel } = await prepareLlmModel(resolved, agentDir)
+  /** 主播请示（ask_director）：高亮卡片走对话时间线单通道（与文本/工具同路，切场/重启后还在）；不阻塞直播（docs/07 §8.8.6 ④） */
+  private handleDirectorAsk(ask: {
+    text: string
+    options: string[]
+    timeoutSec: number
+    defaultAction?: string
+  }): void {
+    const message: DirectorMessage = {
+      id: `dm-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+      ts: Date.now(),
+      kind: 'ask',
+      text: ask.text,
+      options: ask.options,
+      timeoutSec: ask.timeoutSec,
+      defaultAction: ask.defaultAction
+    }
+    this.emitTimeline({ turnId: this.turnId, entry: { type: 'ask', id: message.id, message } })
+  }
+
+  // ---------- 上下文压缩（transformContext 钩子：超过阈值就把旧消息摘要成一条） ----------
+
+  /**
+   * 压缩阈值：窗口 - reserve。reserve 取 16k 与窗口 40% 的小者——窗口配置偏小时留的比例不变，
+   * 否则「system prompt + 22 个工具的 schema」这个地板就可能比阈值还高，压完立刻又超，每轮白压一遍。
+   */
+  private compactThreshold(contextWindow: number): number {
+    return contextWindow - Math.min(COMPACT_RESERVE_TOKENS, Math.floor(contextWindow * 0.4))
+  }
+
+  /**
+   * 每次 LLM 请求前调用。估算 tokens 超「窗口 - reserve」就压缩：
+   * 旧消息发给同一模型摘要成一条「前情摘要」user 消息，连同最近对话一起替换 state.messages（持久生效），
+   * 同时清屏 + 上压缩卡（有多少聊天记录 = 实际有多长上下文）。摘要失败硬截断保命，长直播不死。
+   */
+  private async compactIfNeeded(
+    agent: Agent,
+    messages: AgentMessage[],
+    contextWindow: number,
+    model: Model<'openai-completions'>,
+    apiKey: string,
+    signal?: AbortSignal
+  ): Promise<AgentMessage[]> {
+    if (this.compacting) return messages
+    let tokensBefore: number
+    try {
+      tokensBefore = estimateContextTokens(messages as readonly Message[]).tokens
+    } catch {
+      return messages
+    }
+    if (tokensBefore <= this.compactThreshold(contextWindow)) return messages
+    this.compacting = true
+    try {
+      const system = (messages[0] as { role?: string })?.role === 'system' ? messages[0] : undefined
+      const body = system ? messages.slice(1) : messages.slice()
+      // 切分点只落在 user 消息上（不拆散 assistant 的 toolCall 与它的 toolResult）：
+      // 从尾部往前往返，保留额度用光时停在最近一条 user；保留额度取「阈值的一半」与固定值的小者，
+      // 保证压完真的低于阈值（否则窗口配置偏小时会每轮都压一遍，永远停不下来）
+      const keepLimit = Math.min(
+        COMPACT_KEEP_RECENT_TOKENS,
+        Math.max(2000, Math.floor(this.compactThreshold(contextWindow) / 2))
+      )
+      let keepTokens = 0
+      let split = -1
+      for (let i = body.length - 1; i >= 0; i--) {
+        keepTokens += estimateMsgTokens(body[i])
+        if ((body[i] as { role?: string }).role === 'user') {
+          split = i
+          if (keepTokens > keepLimit) break
+        }
+      }
+      // 没啥可压：旧部分为空（全部对话都在保留额度内）——放弃这次，也别上卡片
+      if (split <= 0) return messages
+      const oldPart = body.slice(0, split)
+      const recent = body.slice(split)
+      this.beginCompactionCard()
+
+      let noteText: string
+      try {
+        const transcript = oldPart
+          .map(renderMessageForSummary)
+          .join('\n')
+          .slice(-SUMMARY_TRANSCRIPT_MAX_CHARS)
+        const summaryMessage: UserMessage = {
+          role: 'user',
+          content: [
+            {
+              type: 'text',
+              text:
+                '你是直播主播的笔记整理员。把下面这段直播工作记录压缩成要点摘要（分点、中文、200 字以内），必须保留：' +
+                '已查证的事实与数字（价格/库存/材质/优惠口径）、对观众或导演的承诺、观众偏好记录、当前进度与接下来要做的事、未处理的导演指令。\n\n' +
+                transcript
+            }
+          ],
+          timestamp: Date.now()
+        }
+        // 摘要是非流式一次性调用：用 retryAssistantCall 做应用层重试（瞬断自动再来，quota 类错误快速失败）
+        const result = await retryAssistantCall(
+          async () => {
+            const stream = await streamSimple(
+              model,
+              normalizeContext({ messages: [summaryMessage] }),
+              { apiKey, timeoutMs: LLM_TIMEOUT_MS, maxRetries: 2, signal }
+            )
+            return stream.result()
+          },
+          { enabled: true, maxRetries: 2, baseDelayMs: 1000 },
+          signal
+        )
+        const summaryText = result.content
+          .map((part) => (part.type === 'text' ? part.text : ''))
+          .join('')
+          .trim()
+        if (result.stopReason === 'error' || result.stopReason === 'aborted' || !summaryText) {
+          throw new Error(result.errorMessage ?? '摘要为空')
+        }
+        noteText = `【前情摘要】更早的对话已压缩成这份笔记：\n${summaryText}`
+      } catch (error) {
+        // 摘要失败：硬截断保命（插一条说明消息顶替旧部分），卡片如实标错
+        console.error('[AgentAnchor] 上下文压缩的摘要失败，改硬截断:', error)
+        this.endCompactionError(
+          `摘要失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}），已直接丢弃最旧记录`
+        )
+        noteText = '【上下文已满】早期记录整理失败，最旧部分已直接丢弃；重要口径请从此刻起重新查证。'
+        const note: UserMessage = {
+          role: 'user',
+          content: [{ type: 'text', text: noteText }],
+          timestamp: Date.now()
+        }
+        agent.state.messages = [...(system ? [system] : []), note as AgentMessage, ...recent]
+        this.persistSession()
+        return agent.state.messages
+      }
+
+      const note: UserMessage = {
+        role: 'user',
+        content: [{ type: 'text', text: noteText }],
+        timestamp: Date.now()
+      }
+      agent.state.messages = [...(system ? [system] : []), note as AgentMessage, ...recent]
+      this.endCompactionOk(tokensBefore)
+      this.persistSession()
+      return agent.state.messages
+    } finally {
+      this.compacting = false
+    }
+  }
+
+  /** 压缩开始：上时间线卡片让导演知道主播在"整理笔记" */
+  private beginCompactionCard(): void {
+    this.compactionCardId = `compaction-${Date.now()}`
+    this.emitTimeline({
+      turnId: this.turnId,
+      entry: {
+        type: 'tool',
+        id: this.compactionCardId,
+        name: 'context_compact',
+        args: '上下文接近上限，把旧消息整理成摘要',
+        status: 'running'
+      }
+    })
+  }
+
+  /** 压缩成功：可见历史全清（只留这张压缩卡）：有多少聊天记录 = 实际有多长上下文，所见即所得 */
+  private endCompactionOk(tokensBefore: number): void {
+    const id = this.compactionCardId
+    this.compactionCardId = null
+    if (!id) return
+    const planId = this.sessionPlanId || this.storage.getConfig().live.activePlanId
+    if (planId) this.storage.timelineClear(planId)
+    const card: ChatEntry = {
+      type: 'tool',
+      id,
+      ts: Date.now(),
+      turnId: this.turnId,
+      name: 'context_compact',
+      status: 'ok',
+      result: `压缩前约 ${Math.round(tokensBefore / 1000)}k tokens → 摘要 + 最近对话继续（不丢价格/口径等已查证事实）`
+    }
+    if (planId) {
+      try {
+        this.storage.timelineAppend(planId, id, this.turnId, card.ts, JSON.stringify(card))
+      } catch {
+        // 落库失败静默
+      }
+    }
+    this.onDirectorTimeline?.({ type: 'reset', entries: [card] })
+  }
+
+  /** 压缩失败：卡片标错（随后会硬截断，直播继续） */
+  private endCompactionError(detail: string): void {
+    const id = this.compactionCardId
+    this.compactionCardId = null
+    if (!id) return
+    this.emitTimeline({
+      turnId: this.turnId,
+      entry: { type: 'tool', id, name: 'context_compact', status: 'error', result: detail, isError: true }
+    })
+  }
+
+  private async createSession(resolved: ResolvedModel, restoredMessages?: AgentMessage[]): Promise<Agent> {
+    const { model, apiKey, modelLabel, contextWindow } = await prepareLlmModel(resolved)
     this.modelLabel = modelLabel
     // 记下出生时的资产指纹：之后 UI 靠它判断"本场是不是旧版本"
     this.sessionFingerprint = this.assetFingerprint()
@@ -686,62 +897,47 @@ export class AgentService {
     // 人设卡的音色即主播的嗓子，必选；没选时不留兜底，合成路由会直接报错（预检也会拦下）
     const systemPrompt = this.persona.buildSystemPrompt(persona, plan, script)
 
-    // 全自定义 ResourceLoader：不读 ~/.pi，不发现项目资源，system prompt 就是人设卡 + 场次
-    const resourceLoader: ResourceLoader = {
-      getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-      getSkills: () => ({ skills: [], diagnostics: [] }),
-      getPrompts: () => ({ prompts: [], diagnostics: [] }),
-      getThemes: () => ({ themes: [], diagnostics: [] }),
-      getAgentsFiles: () => ({ agentsFiles: [] }),
-      getSystemPrompt: () => systemPrompt,
-      getSystemPromptSource: () => undefined,
-      getAppendSystemPrompt: () => [],
-      getAppendSystemPromptSources: () => [],
-      extendResources: () => {},
-      reload: async () => {}
-    }
-
-    const { session } = await createAgentSession({
-      cwd: agentDir,
-      agentDir,
-      model,
-      thinkingLevel: 'off',
-      modelRuntime,
-      resourceLoader,
-      // 只启用主播工具（allowlist 逐项点名——M3 踩过坑：tools: [] 会连 customTools 一起清掉）
-      customTools: buildAnchorTools({
-        pool: this.pool,
-        knowledge: this.knowledge,
-        memory: this.memory,
-        persona: this.persona,
-        script: this.script,
-        utterances: this.utterances,
-        getLastComment: () => this.lastComment,
-        onSceneChanged: () => this.notifySceneChanged(),
-        getPlanVoice: () => this.planVoiceId,
-        onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
-        onDirectorAsk: (ask) => this.onDirectorAsk?.(ask),
-        setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
-        onPlaybackControl: (action) => this.onPlaybackControl?.(action),
-        getSpeakingPaused: () => this.speakingPaused,
-        getPurpose: () => this.sessionPurpose,
-        onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动场次」'
-      }),
-      tools: [...ANCHOR_TOOL_NAMES],
-      // 场次即会话：恢复时把该场次存下的 entries 重建进内存会话，上下文原样回来
-      sessionManager: SessionManager.inMemory(agentDir, undefined, restoredEntries),
-      settingsManager: SettingsManager.inMemory({
-        retry: { enabled: true, maxRetries: 2 },
-        // HTTP 空闲超时：DeepSeek 偶尔挂住连接一个字节都不吐，pi 默认等 300s（假死外观），
-        // 收紧到 60s——超时变 error 态（可重试），别让整个主播像死了一样
-        httpIdleTimeoutMs: 60_000,
-        // 长会话自动压缩：上下文逼近窗口（窗口 - 16k）时把旧消息摘要成一段，保留最近 20k。
-        // pi 默认就开着，这里写死防上游改默认值——写稿/长直播都靠它撑住上下文
-        compaction: { enabled: true, reserveTokens: 16384, keepRecentTokens: 20000 }
-      })
+    const agent = new Agent({
+      initialState: {
+        systemPrompt,
+        model,
+        thinkingLevel: 'off',
+        // 只挂主播工具：core 没有内置工具，给什么就是什么
+        tools: buildAnchorTools({
+          pool: this.pool,
+          knowledge: this.knowledge,
+          memory: this.memory,
+          persona: this.persona,
+          script: this.script,
+          utterances: this.utterances,
+          getLastComment: () => this.lastComment,
+          onSceneChanged: () => this.notifySceneChanged(),
+          getPlanVoice: () => this.planVoiceId,
+          onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
+          onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
+          setPlanVoice: (voiceId) => this.setPlanVoice(voiceId),
+          onPlaybackControl: (action) => this.onPlaybackControl?.(action),
+          getSpeakingPaused: () => this.speakingPaused,
+          getPurpose: () => this.sessionPurpose,
+          onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动场次」'
+        }),
+        // 场次即会话：恢复时把该场次存下的消息重建进内存会话，上下文原样回来
+        messages: restoredMessages
+      },
+      // 凭据/超时随 stream options 注入：httpIdleTimeoutMs → timeoutMs（60s）；重试靠传输层 maxRetries
+      // （应用层 retryAssistantCall 是消息级的，包主链路会丢掉流式——coding-agent 也只把它用在摘要调用上）
+      streamFn: (mdl, context, options) =>
+        streamSimple(mdl as Model<'openai-completions'>, context, {
+          ...options,
+          apiKey,
+          timeoutMs: LLM_TIMEOUT_MS,
+          maxRetries: 2
+        }),
+      transformContext: (messages, signal) =>
+        this.compactIfNeeded(agent, messages, contextWindow, model, apiKey, signal)
     })
 
-    session.subscribe((event) => {
+    agent.subscribe((event) => {
       const assistantEvent = event.type === 'message_update' ? event.assistantMessageEvent : undefined
       if (assistantEvent?.type === 'text_delta') {
         // 生成中预览：累积 text_delta —— 既给提词器，也是对话时间线里"正在说话"的那一段
@@ -791,74 +987,10 @@ export class AgentService {
           this.draft = ''
           this.broadcast(this.status())
         }
-      } else if (event.type === 'agent_settled') {
-        if (this.draft) {
-          this.draft = ''
-          this.broadcast(this.status())
-        }
-        // 兜底：agent_end 没走到（异常/中断）也要把最终回复标出来
-        this.finalizeTurn()
-      } else if (event.type === 'compaction_start') {
-        // 自动压缩（长写稿/长直播的救命机制）：上时间线让导演知道主播在"整理笔记"
-        this.compactionCardId = `compaction-${Date.now()}`
-        this.emitTimeline({
-          turnId: this.turnId,
-          entry: {
-            type: 'tool',
-            id: this.compactionCardId,
-            name: 'context_compact',
-            args: event.reason === 'overflow' ? '上下文撑爆了，压缩后继续' : '上下文接近上限，把旧消息整理成摘要',
-            status: 'running'
-          }
-        })
-      } else if (event.type === 'compaction_end') {
-        const id = this.compactionCardId
-        this.compactionCardId = null
-        if (id) {
-          const result = event.result
-          const succeeded = !!result && !event.aborted
-          const resultText = result
-            ? `压缩前约 ${Math.round(result.tokensBefore / 1000)}k tokens → 摘要 + 最近对话继续（不丢价格/口径等已查证事实）`
-            : (event.errorMessage ?? '压缩中断')
-          if (succeeded) {
-            // 压缩后可见历史全清（只留这张压缩卡）：有多少聊天记录 = 实际有多长上下文，所见即所得
-            const planId = this.sessionPlanId || this.storage.getConfig().live.activePlanId
-            if (planId) this.storage.timelineClear(planId)
-            const card: ChatEntry = {
-              type: 'tool',
-              id,
-              ts: Date.now(),
-              turnId: this.turnId,
-              name: 'context_compact',
-              status: 'ok',
-              result: resultText
-            }
-            if (planId) {
-              try {
-                this.storage.timelineAppend(planId, id, this.turnId, card.ts, JSON.stringify(card))
-              } catch {
-                // 落库失败静默
-              }
-            }
-            this.onDirectorTimeline?.({ type: 'reset', entries: [card] })
-          } else {
-            this.emitTimeline({
-              turnId: this.turnId,
-              entry: {
-                type: 'tool',
-                id,
-                name: 'context_compact',
-                status: 'error',
-                result: resultText,
-                isError: true
-              }
-            })
-          }
-        }
       }
     })
 
-    return session
+    return agent
   }
 }
 
@@ -869,9 +1001,68 @@ function fingerprint(text: string): string {
   return (hash >>> 0).toString(16)
 }
 
+/** 末条 assistant 消息的正文（下播总结用） */
+function lastAssistantText(messages: AgentMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; content?: unknown }
+    if (message.role !== 'assistant' || !Array.isArray(message.content)) continue
+    const text = message.content
+      .map((part) => {
+        const p = part as { type?: string; text?: string }
+        return p.type === 'text' ? (p.text ?? '') : ''
+      })
+      .join('')
+      .trim()
+    if (text) return text
+  }
+  return undefined
+}
+
+/** 单条消息的粗估 tokens：中文按字算（≈1 token/字），其余按 4 字符 ≈ 1 token。
+ *  pi-ai 的 estimateMessageTokens 是 chars/4，对中文小三倍不止，切分保留额度会虚放大。 */
+function estimateMsgTokens(message: AgentMessage): number {
+  const m = message as { content?: unknown }
+  let text = ''
+  if (typeof m.content === 'string') {
+    text = m.content
+  } else if (Array.isArray(m.content)) {
+    for (const part of m.content) {
+      const p = part as { type?: string; text?: string; name?: string; arguments?: unknown }
+      if (p.type === 'text' && p.text) text += p.text
+      else if (p.type === 'toolCall') text += (p.name ?? '') + JSON.stringify(p.arguments ?? '')
+    }
+  }
+  let cjk = 0
+  let other = 0
+  for (const ch of text) {
+    if ((ch.codePointAt(0) ?? 0) > 0x2e7f) cjk += 1
+    else other += 1
+  }
+  return Math.ceil(cjk + other / 4) + 8
+}
+
+/** 把一条消息渲染成摘要模型看得懂的一行（压缩时喂旧对话用） */
+function renderMessageForSummary(message: AgentMessage): string {
+  const m = message as { role?: string; content?: unknown; toolName?: string }
+  const roleLabel =
+    m.role === 'user' ? '导演/观众' : m.role === 'assistant' ? '主播' : m.role === 'toolResult' ? `工具结果(${m.toolName ?? ''})` : '系统'
+  const parts: string[] = []
+  if (typeof m.content === 'string') {
+    parts.push(m.content)
+  } else if (Array.isArray(m.content)) {
+    for (const part of m.content) {
+      const p = part as { type?: string; text?: string; name?: string }
+      if (p.type === 'text' && p.text) parts.push(p.text)
+      else if (p.type === 'toolCall') parts.push(`[调用工具 ${p.name ?? ''}]`)
+    }
+  }
+  const text = parts.join(' ').replace(/\s+/g, ' ').trim()
+  return `${roleLabel}: ${text.slice(0, 300)}`
+}
+
 /**
  * 把工具的入参/结果压成一行短摘要给工具卡片用（渲染层只展示一行，全文放 title）。
- * pi 的工具结果是 `{ content: [{ type: 'text', text }] }`，直接抽文本比 JSON 好读得多。
+ * 工具结果是 `{ content: [{ type: 'text', text }] }`，直接抽文本比 JSON 好读得多。
  */
 function oneLine(value: unknown, max: number): string {
   let raw: string

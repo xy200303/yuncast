@@ -11,7 +11,6 @@ import type {
   AudioPcmPayload,
   ConnectorStatus,
   ChatEntry,
-  DirectorMessage,
   DirectorTimelineEvent,
   DirectorTimelineReset,
   EpisodeSummary,
@@ -169,15 +168,7 @@ const api = {
     /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复） */
     timelineList: (planId: string) =>
       ipcRenderer.invoke(IPC.directorTimelineList, planId) as Promise<ChatEntry[]>,
-    /** 订阅主播请示（ask_director）卡片，返回取消订阅函数 */
-    onEvent: (cb: (message: DirectorMessage) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, message: DirectorMessage) => cb(message)
-      ipcRenderer.on(IPC.directorEvent, listener)
-      return () => {
-        ipcRenderer.removeListener(IPC.directorEvent, listener)
-      }
-    },
-    /** 订阅对话时间线（文本流式 / 工具调用 / reset 整体替换；同一 entry.id 会重复推更新，渲染层按 id upsert） */
+    /** 订阅对话时间线（文本流式 / 工具调用 / 请示卡片 / reset 整体替换；同一 entry.id 会重复推更新，渲染层按 id upsert） */
     onTimeline: (cb: (event: DirectorTimelineEvent | DirectorTimelineReset) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: DirectorTimelineEvent | DirectorTimelineReset) =>
         cb(event)

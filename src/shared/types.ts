@@ -673,7 +673,7 @@ export interface DirectorMessage {
  * - text：assistant 消息的正文。中间文本（还在调工具/还会继续说）final 为空，前端渲染成淡色流式行；
  *   本轮最后一条 assistant 消息带 final=true，渲染成独立气泡。
  * - tool：一次工具执行（toolCallId 就是 id），start 时 running，end 时同 id 更新为结果。
- *   请示 ask_director 不走这里（它有自己的卡片通道）。
+ * - ask：主播请示（ask_director）的高亮卡片——与文本/工具同一条单通道，切场/重启后照常恢复。
  */
 export type DirectorTimelineEntry =
   | { type: 'text'; id: string; text: string; final?: boolean }
@@ -687,6 +687,7 @@ export type DirectorTimelineEntry =
       durationMs?: number
       isError?: boolean
     }
+  | { type: 'ask'; id: string; message: DirectorMessage }
 
 /** 一条时间线事件：turnId = 本轮（一次派给主播的任务）内所有条目的分组键；渲染层按 entry.id upsert */
 export interface DirectorTimelineEvent {

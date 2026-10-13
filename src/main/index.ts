@@ -2,7 +2,6 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { setDefaultResultOrder } from 'node:dns'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
 import { IPC } from '../shared/ipc-channels'
 import {
   type AgentStatus,
@@ -12,7 +11,6 @@ import {
   type AudioLevelPayload,
   type AudioPcmPayload,
   type ConnectorStatus,
-  type DirectorMessage,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
@@ -201,14 +199,7 @@ function broadcastComment(comment: LiveComment): void {
   }
 }
 
-/** 导演对话消息广播（主播请示 ask_director → 对话面板卡片） */
-function broadcastDirector(message: DirectorMessage): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.directorEvent, message)
-  }
-}
-
-/** 对话时间线广播（文本流式 / 工具调用；同一 entry.id 会重复推更新，渲染层按 id upsert；reset = 压缩后整体替换） */
+/** 对话时间线广播（文本流式 / 工具调用 / 请示卡片；同一 entry.id 会重复推更新，渲染层按 id upsert；reset = 压缩后整体替换） */
 function broadcastDirectorTimeline(event: DirectorTimelineEvent | DirectorTimelineReset): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.directorTimeline, event)
@@ -820,34 +811,7 @@ if (!single) {
       const loaded = launch.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
     })
-    // 主播请示（ask_director）：进导演对话面板高亮卡片；不阻塞直播（docs/07 §8.8.6 ④）
-    agent.onDirectorAsk = (ask) => {
-      const message = {
-        id: `dm-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
-        ts: Date.now(),
-        kind: 'ask' as const,
-        text: ask.text,
-        options: ask.options,
-        timeoutSec: ask.timeoutSec,
-        defaultAction: ask.defaultAction
-      }
-      broadcastDirector(message)
-      // 请示卡片也按场次落库（切场/重载后还在；回答是另一条 director 条目）
-      const planId = storage.getConfig().live.activePlanId
-      if (planId) {
-        try {
-          storage.timelineAppend(
-            planId,
-            message.id,
-            '',
-            message.ts,
-            JSON.stringify({ type: 'ask', id: message.id, ts: message.ts, message })
-          )
-        } catch {
-          // 落库失败静默
-        }
-      }
-    }
+    // 主播请示（ask_director）：AgentService 内部直接进对话时间线单通道（高亮卡片，不阻塞直播）
     // 播报控制（pause/resume/skip）：主播工具改播放状态，转给渲染进程的播放循环
     agent.onPlaybackControl = (action) => {
       for (const win of BrowserWindow.getAllWindows()) {

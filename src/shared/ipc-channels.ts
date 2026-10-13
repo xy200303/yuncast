@@ -55,9 +55,7 @@ export const IPC = {
 
   // 导演对话
   directorSend: 'director:send',
-  /** main → renderer：主播请示（ask_director）卡片 */
-  directorEvent: 'director:event',
-  /** main → renderer：对话时间线条目（文本流式 / 工具调用，按 entry.id upsert；也承载 reset 整体替换） */
+  /** main → renderer：对话时间线条目（文本流式 / 工具调用 / 请示卡片，按 entry.id upsert；也承载 reset 整体替换） */
   directorTimeline: 'director:timeline',
   /** renderer → main：拉某场次持久化的对话时间线（切场/刷新/重启后恢复） */
   directorTimelineList: 'director:timeline-list',

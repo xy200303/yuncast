@@ -447,6 +447,8 @@ function registerIpc(
     await agent.stop()
     if (wasRunning) bus.emit('stream.ended', {}, 'human')
   })
+  // 打断当前这一轮生成（对话输入框的停止钮）：会话保留，下条指令照常来
+  ipcMain.handle(IPC.agentAbort, () => agent.stopGeneration())
   ipcMain.handle(IPC.agentRestart, async () => {
     try {
       await agent.stop()

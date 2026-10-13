@@ -633,6 +633,8 @@ export interface AgentStatus {
   purpose?: 'prep' | 'live'
   /** 会话出生后资产改过（人设/模型/剧本/场次结构）：改动要重启会话才生效（docs/07 §8.5） */
   assetsStale?: boolean
+  /** 正在生成（一轮没跑完）：对话输入框的发送钮据此变停止钮 */
+  busy?: boolean
 }
 
 // ---------- 评论（来自连接器，docs/04） ----------

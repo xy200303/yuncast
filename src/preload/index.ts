@@ -145,6 +145,8 @@ const api = {
   agent: {
     start: () => ipcRenderer.invoke(IPC.agentStart) as Promise<{ ok: boolean; error?: string }>,
     stop: () => ipcRenderer.invoke(IPC.agentStop) as Promise<void>,
+    /** 打断当前这一轮生成（会话保留）；对话输入框的停止钮 */
+    abort: () => ipcRenderer.invoke(IPC.agentAbort) as Promise<void>,
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
     /** 编剧模式：派主播给该场次写底稿（跳直播台看过程，随时可插话改口径） */

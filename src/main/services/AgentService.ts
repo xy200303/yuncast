@@ -78,6 +78,8 @@ export class AgentService {
   private modelLabel: string | undefined
   private draft = ''
   private busy = false
+  /** 正在生成（agent_start → agent_end）：广播给对话输入框，发送钮变停止钮 */
+  private generating = false
   /** 会话用途：一个脑管全场——prep 写稿备播（播出通道关闭），live 直播中 */
   private sessionPurpose: 'live' | 'prep' = 'live'
   /** 本会话绑定的场次 id（选场次切换时判断要不要换场重开） */
@@ -168,8 +170,20 @@ export class AgentService {
         : undefined,
       // 会话还活着时比对资产：改过人设/模型/剧本就得重启会话才生效
       assetsStale:
-        this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint
+        this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint,
+      busy: this.generating
     }
+  }
+
+  /** 打断当前这一轮生成（会话保留，下条指令照常来）；没在生成就是空操作 */
+  stopGeneration(): void {
+    this.session?.abort()
+  }
+
+  private setGenerating(value: boolean): void {
+    if (this.generating === value) return
+    this.generating = value
+    this.broadcast(this.status())
   }
 
   /**
@@ -298,6 +312,7 @@ export class AgentService {
     this.sessionPlanId = ''
     this.draft = ''
     this.lastComment = null
+    this.generating = false
     // 停了就不再收尾当前这一轮（abort 后可能还有事件飘过来）
     this.clearTextTimers()
     this.texts.clear()
@@ -674,9 +689,12 @@ export class AgentService {
       await session.prompt(full)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.error('[AgentAnchor] 主播 Agent 调用失败:', message)
-      this.setState('error', `LLM 调用失败：${message.slice(0, 200)}`)
-      // 会话还活着就留着重试（下一条评论/触发器会再试），不要一报错就死透
+      // 导演按了停止（abort）：不是故障，不进 error 态
+      if (!/abort/i.test(message)) {
+        console.error('[AgentAnchor] 主播 Agent 调用失败:', message)
+        this.setState('error', `LLM 调用失败：${message.slice(0, 200)}`)
+        // 会话还活着就留着重试（下一条评论/触发器会再试），不要一报错就死透
+      }
     } finally {
       this.busy = false
     }
@@ -952,6 +970,7 @@ export class AgentService {
         this.broadcast(this.status())
       } else if (event.type === 'agent_start') {
         this.beginTurn()
+        this.setGenerating(true)
       } else if (event.type === 'message_start') {
         // 只认 assistant 消息：同一个会话里还有工具结果/工具变更等合成消息，它们不该占消息 id
         if (event.message.role === 'assistant') this.beginMessage()
@@ -966,6 +985,7 @@ export class AgentService {
       } else if (event.type === 'tool_execution_end') {
         this.endTool(event.toolCallId, event.toolName, event.result, event.isError, event.durationMs)
       } else if (event.type === 'agent_end') {
+        this.setGenerating(false)
         // prompt() 在 LLM 失败时也会正常 resolve——错误要看末条 assistant 消息的 stopReason
         const lastAssistant = [...event.messages].reverse().find((m) => m.role === 'assistant') as
           | { stopReason?: string; errorMessage?: string }

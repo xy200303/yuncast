@@ -1146,21 +1146,26 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             <Button variant="ghost" size="icon-sm" onClick={() => void pickAttachment()} title="添加附件">
               <Paperclip />
             </Button>
-            {agent.state === 'running' && (
-              <span className="ml-1 flex items-center gap-1 text-[10px] text-muted-foreground">
-                <span className="size-1.5 rounded-full bg-green-500" />
-                主播在跑，指令插队直达
-              </span>
+            {agent.busy ? (
+              <Button
+                size="icon-sm"
+                className="ml-auto"
+                onClick={() => void window.api.agent.abort()}
+                title="停止这一轮生成（会话保留，可继续对话）"
+              >
+                <Square className="fill-current" />
+              </Button>
+            ) : (
+              <Button
+                size="icon-sm"
+                className="ml-auto"
+                disabled={!canSend}
+                onClick={() => send(input)}
+                title="发送（Enter）"
+              >
+                <SendHorizontal />
+              </Button>
             )}
-            <Button
-              size="icon-sm"
-              className="ml-auto"
-              disabled={!canSend}
-              onClick={() => send(input)}
-              title="发送（Enter）"
-            >
-              <SendHorizontal />
-            </Button>
           </div>
         </div>
       </div>

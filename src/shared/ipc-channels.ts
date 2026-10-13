@@ -46,6 +46,7 @@ export const IPC = {
   // 主播 Agent
   agentStart: 'agent:start',
   agentStop: 'agent:stop',
+  agentAbort: 'agent:abort',
   agentRestart: 'agent:restart',
   agentStatus: 'agent:status',
   /** 编剧模式：跳到直播台，派主播给该场次写底稿（过程走对话时间线） */

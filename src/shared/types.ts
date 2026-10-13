@@ -340,7 +340,7 @@ function parseBgm(input: unknown): BgmConfig {
   }
 }
 
-/** 持久化到 userData/config.json 的应用配置。 */
+/** 持久化到数据库 app_config 表（单行 JSON）的应用配置。 */
 export interface AppConfig {
   theme: AppTheme
   /** 配色主题（点缀色） */

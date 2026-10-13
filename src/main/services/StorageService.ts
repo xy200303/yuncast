@@ -1,6 +1,6 @@
 import { app, safeStorage } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync } from 'node:fs'
+import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
 import {
@@ -53,9 +53,10 @@ import {
 } from './providers/registry'
 
 /**
- * 持久化层：
- * - 应用配置：userData/config.json（tts.accessToken / tts.apiKey / llm.apiKey 等加密落盘）
- * - 业务数据：userData/agentanchor.db（Node 内置 SQLite，WAL，免原生重编译）
+ * 持久化层（统一 SQLite，userData/agentanchor.db，Node 内置、WAL、免原生重编译）：
+ * - 应用配置：app_config 表单行 JSON（tts.accessToken / tts.apiKey / llm.apiKey 等加密内联）；
+ *   旧版 config.json 启动时一次性迁入并改名留底
+ * - 业务数据：各业务表（话术池/场次/底稿/触发器…）
  * - 供应商接入（model_connections / tts_connections）：密钥字段在 params 里内联加密
  * - 凭据加密用应用自管的 secretBox（AES-256-GCM + userData/secret.key，见 secretBox.ts），
  *   不用系统钥匙串——避免系统密钥轮换后凭据全哑，且行为跨平台一致；
@@ -202,6 +203,7 @@ function rowToItem(row: SpeechRow): SpeechItem {
 const ACTIVE_STATUSES: SpeechStatus[] = ['pending', 'synthesizing', 'ready', 'playing']
 
 export class StorageService {
+  /** 旧版配置文件路径：只用于启动时向数据库迁移，迁完改名留底 */
   private readonly configFile: string
   private config: AppConfig
   private configListeners = new Set<(config: AppConfig) => void>()
@@ -212,11 +214,15 @@ export class StorageService {
     mkdirSync(dir, { recursive: true })
     initSecretBox(dir)
     this.configFile = join(dir, 'config.json')
-    this.config = this.loadConfig()
 
     this.db = new DatabaseSync(join(dir, 'agentanchor.db'))
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA busy_timeout = 5000')
+    // 应用配置也存数据库（单行 JSON，敏感字段照样加密内联）：一份存储、一次初始化、不用等两个文件
+    this.db.exec(
+      'CREATE TABLE IF NOT EXISTS app_config (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)'
+    )
+    this.config = this.loadConfig()
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS speech_items (
         id TEXT PRIMARY KEY,
@@ -1222,28 +1228,47 @@ export class StorageService {
 
   private loadConfig(): AppConfig {
     try {
-      if (!existsSync(this.configFile)) return structuredClone(DEFAULT_CONFIG)
-      const raw = JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
-      // 解密敏感字段；解开的旧 safeStorage 密文标记一下，读完落盘时转 v2
-      let migrated = false
-      for (const key of SECRET_KEYS) {
-        const value = getPath(raw, key) as StoredValue | undefined
-        if (value && typeof value === 'object' && '__enc' in value) {
-          const plain = this.unsealValue(value.__enc)
-          if (!isV2Sealed(value.__enc) && plain) migrated = true
-          setPath(raw, key, plain ?? '')
-        }
+      const row = this.db.prepare('SELECT data FROM app_config WHERE id = 1').get() as
+        | { data?: unknown }
+        | undefined
+      if (row && typeof row.data === 'string') {
+        return this.parseStoredConfig(JSON.parse(row.data) as Record<string, unknown>)
       }
-      const config = parseAppConfig(raw)
-      if (migrated) {
+      // 旧版 config.json 一次性迁入数据库（统一存储前版本）；迁完改名留底，不再使用
+      if (existsSync(this.configFile)) {
+        const raw = JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
+        const config = this.parseStoredConfig(raw)
         this.config = config
         this.saveConfig()
+        renameSync(this.configFile, `${this.configFile}.migrated`)
+        console.log('[AgentAnchor] config.json 已并入数据库，原文件改名 config.json.migrated 留底')
+        return config
       }
-      return config
+      return structuredClone(DEFAULT_CONFIG)
     } catch (error) {
       console.error('[AgentAnchor] 读取配置失败，用默认值:', error)
       return structuredClone(DEFAULT_CONFIG)
     }
+  }
+
+  /** 解密敏感字段 + 校验成 AppConfig（数据库行与旧 config.json 共用一套读写） */
+  private parseStoredConfig(raw: Record<string, unknown>): AppConfig {
+    // 解密敏感字段；解开的旧 safeStorage 密文标记一下，读完落盘时转 v2
+    let migrated = false
+    for (const key of SECRET_KEYS) {
+      const value = getPath(raw, key) as StoredValue | undefined
+      if (value && typeof value === 'object' && '__enc' in value) {
+        const plain = this.unsealValue(value.__enc)
+        if (!isV2Sealed(value.__enc) && plain) migrated = true
+        setPath(raw, key, plain ?? '')
+      }
+    }
+    const config = parseAppConfig(raw)
+    if (migrated) {
+      this.config = config
+      this.saveConfig()
+    }
+    return config
   }
 
   getConfig(): AppConfig {
@@ -1265,7 +1290,6 @@ export class StorageService {
 
   private saveConfig(): void {
     try {
-      mkdirSync(dirname(this.configFile), { recursive: true })
       const clone = JSON.parse(JSON.stringify(this.config)) as Record<string, unknown>
       for (const key of SECRET_KEYS) {
         const value = getPath(clone, key)
@@ -1273,7 +1297,9 @@ export class StorageService {
           setPath(clone, key, { __enc: seal(value) })
         }
       }
-      writeFileSync(this.configFile, JSON.stringify(clone, null, 2), 'utf8')
+      this.db
+        .prepare('INSERT INTO app_config (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data')
+        .run(JSON.stringify(clone))
     } catch (error) {
       console.error('[AgentAnchor] 写入配置失败:', error)
     }

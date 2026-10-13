@@ -1190,20 +1190,33 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
 }
 
 
-/** 上下文仪表：当前会话上下文估算 vs 窗口，涨近上限（自动压缩区）变色提醒 */
+/** 上下文仪表：圆形进度环 + 当前/窗口，涨近上限（自动压缩区）变色提醒 */
 function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; window?: number }) {
   if (!tokens || !contextWindow) return null
-  const ratio = tokens / contextWindow
+  const ratio = Math.min(1, tokens / contextWindow)
   const fmt = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n))
-  const bar = ratio > 0.85 ? 'bg-red-500' : ratio > 0.65 ? 'bg-amber-500' : 'bg-emerald-500'
+  const color = ratio > 0.85 ? 'text-red-500' : ratio > 0.65 ? 'text-amber-500' : 'text-emerald-500'
+  // 环形进度：r=7 的圆，周长 ≈ 43.98，dasharray 按比例填充
+  const r = 7
+  const circumference = 2 * Math.PI * r
   return (
     <div
       className="ml-auto flex items-center gap-1.5 pr-1"
       title={`上下文估算 ${tokens.toLocaleString()} / ${contextWindow.toLocaleString()} tokens（含 system prompt 与工具表）；快涨满时自动压缩旧消息`}
     >
-      <div className="h-1.5 w-14 overflow-hidden rounded-full bg-border">
-        <div className={`h-full ${bar}`} style={{ width: `${Math.min(100, Math.round(ratio * 100))}%` }} />
-      </div>
+      <svg viewBox="0 0 18 18" className={`size-4.5 -rotate-90 ${color}`}>
+        <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2.5" />
+        <circle
+          cx="9"
+          cy="9"
+          r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeDasharray={`${(circumference * ratio).toFixed(2)} ${circumference.toFixed(2)}`}
+        />
+      </svg>
       <span className="text-[10px] tabular-nums text-muted-foreground">
         {fmt(tokens)}/{fmt(contextWindow)}
       </span>

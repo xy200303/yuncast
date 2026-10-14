@@ -150,6 +150,9 @@ const api = {
     /** 打断当前这一轮生成（会话保留）；对话输入框的停止钮 */
     abort: () => ipcRenderer.invoke(IPC.agentAbort) as Promise<void>,
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
+    /** 原子换主播：abort 当前生成 → 场次历史存回 → 新主播套同一份历史重建会话（直播中可切，不断上下文） */
+    handoff: (personaId: string) =>
+      ipcRenderer.invoke(IPC.agentHandoff, personaId) as Promise<{ ok: boolean; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
     /** 编剧模式：派主播给该场次写底稿（跳直播台看过程，随时可插话改口径） */
     draftStart: (planId: string) =>

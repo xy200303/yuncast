@@ -517,6 +517,7 @@ function registerIpc(
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   })
+  ipcMain.handle(IPC.agentHandoff, async (_e, personaId: string) => agent.handoff(personaId))
   ipcMain.handle(IPC.agentStatus, () => agent.status())
   // 统一开播控制里的「暂停」：停播报（主进程播放循环）+ 停主播产出（评论/触发器不派、say 被拒）
   ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => {

@@ -59,12 +59,12 @@ export class PersonaService {
     return this.storage.personaList()
   }
 
-  /** 保存：带 id 更新，不带则新建一张（新建即设为当前主播） */
+  /** 保存：带 id 更新，不带则新建一张（新建即设为当前主播）。id 只认参数：input 里混进来的 id 不生效 */
   save(input: Omit<Persona, 'id' | 'updatedAt'>, id?: string): Persona {
     const isNew = !id
     const persona: Persona = {
-      id: id ?? `anchor-${Date.now().toString(36)}`,
       ...input,
+      id: id ?? `anchor-${Date.now().toString(36)}`,
       updatedAt: Date.now()
     }
     this.storage.personaSave(persona)

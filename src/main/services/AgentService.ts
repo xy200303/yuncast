@@ -14,6 +14,7 @@ import {
   type AgentStatus,
   type ChatEntry,
   type DirectorMessage,
+  type DirectorTimelineEntry,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
@@ -402,6 +403,37 @@ export class AgentService {
     await this.start(this.sessionPurpose)
   }
 
+  /**
+   * 原子换主播（直播/写稿中都能切）：abort 当前生成 → 会话存回场次 → 切当前主播 →
+   * 同一份场次历史套新主播的外壳重建会话。池子/播放不动，换人不断上下文；
+   * 卸任主播的本场复盘照常写（那是她的职业记忆）。无会话时只切当前主播，下次就位生效。
+   */
+  async handoff(personaId: string): Promise<{ ok: boolean; error?: string }> {
+    const target = this.persona.list().find((p) => p.id === personaId)
+    if (!target) return { ok: false, error: '主播卡不存在' }
+    if (this.persona.get().id === personaId) return { ok: true }
+    if (!this.session) {
+      this.persona.setActive(personaId)
+      this.broadcast(this.status())
+      return { ok: true }
+    }
+    const purpose = this.sessionPurpose
+    const planId =
+      this.sessionPlanId || this.script.getActive().plan?.id || this.storage.getConfig().live.activePlanId || ''
+    this.stopGeneration()
+    await this.stop()
+    this.persona.setActive(personaId)
+    if (planId) this.script.setActivePlan(planId)
+    const restored = planId ? this.restoredMessagesFor(planId) : undefined
+    try {
+      await this.start(purpose, restored)
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+    this.emitNote(`—— 主播已换成「${target.name}」：这场的历史她都接得住，接着播 ——`)
+    return { ok: true }
+  }
+
   /** 当前生效的事件接线（TriggerRuntime 也看它：触发器总开关/进场过滤）。会话没跑时按当前场次的模式现解 */
   currentWiring(): LiveModeWiring {
     return this.wiring ?? this.modes.resolve(this.script.getActive().plan?.modeId).wiring
@@ -529,14 +561,21 @@ export class AgentService {
    */
   private emitTimeline(event: DirectorTimelineEvent): void {
     const planId = this.sessionPlanId || this.storage.getConfig().live.activePlanId
+    // 发言人标记：agent 侧条目盖当前主播的戳（换主播后时间线看得出哪段是谁说的）
+    const speakerId = this.state === 'stopped' ? undefined : this.persona.get().id
+    const stamped = (
+      speakerId ? { ...event.entry, personaId: speakerId } : event.entry
+    ) as DirectorTimelineEntry
     if (planId) {
-      const entry = event.entry
+      const entry = stamped
       const ts = Date.now()
+      const pid = 'personaId' in entry ? entry.personaId : undefined
+      const speaker = pid ? { personaId: pid } : {}
       const chat: ChatEntry =
         entry.type === 'text'
-          ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId }
+          ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId, ...speaker }
           : entry.type === 'thinking'
-            ? { type: 'thinking', id: entry.id, ts, turnId: event.turnId, text: entry.text, done: entry.done ?? false }
+            ? { type: 'thinking', id: entry.id, ts, turnId: event.turnId, text: entry.text, done: entry.done ?? false, ...speaker }
             : entry.type === 'ask'
               ? { type: 'ask', id: entry.id, ts, message: entry.message }
               : {
@@ -548,7 +587,8 @@ export class AgentService {
                 args: entry.args,
                 status: entry.status,
                 result: entry.result,
-                durationMs: entry.durationMs
+                durationMs: entry.durationMs,
+                ...speaker
               }
       try {
         this.storage.timelineAppend(planId, entry.id, event.turnId, ts, JSON.stringify(chat))
@@ -556,7 +596,7 @@ export class AgentService {
         // 落库失败静默：时间线只是记录，不能反过来影响主播
       }
     }
-    this.onDirectorTimeline?.(event)
+    this.onDirectorTimeline?.({ turnId: event.turnId, entry: stamped })
   }
 
   /** 选中场次即就位：不等第一句话就建会话（上下文仪表从这一刻就有读数；建会话不调 LLM，零成本） */

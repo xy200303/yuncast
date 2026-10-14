@@ -51,6 +51,7 @@ import type {
   DirectorMessage,
   LiveComment,
   LivePlan,
+  Persona,
   PreflightItem,
   Script,
   SpeechItem,
@@ -266,6 +267,32 @@ function PlanLauncher() {
     void window.api.plan.list().then(setPlans)
   }, [])
 
+  // 在场主播：直播台直接切（直播中 = 原子换主播，场次历史/话术池不动；没在跑 = 只切当前主播）
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [activePersona, setActivePersona] = useState<Persona | null>(null)
+  useEffect(() => {
+    void window.api.persona.list().then(setPersonas)
+    void window.api.persona.get().then(setActivePersona)
+  }, [agent.personaName])
+
+  const switchAnchor = async (id: string): Promise<void> => {
+    const target = personas.find((p) => p.id === id)
+    if (!target) return
+    if (agent.state !== 'stopped') {
+      const result = await window.api.agent.handoff(id)
+      if (result.ok) {
+        setActivePersona(target)
+        toast.success(`已换主播：${target.name}`, { description: '这场的历史和话术池她都接得住，接着播' })
+      } else {
+        toast.error('换主播失败', { description: result.error })
+      }
+    } else {
+      await window.api.persona.setActive(id)
+      setActivePersona(target)
+      toast.success(`当前主播：${target.name}`)
+    }
+  }
+
   /** 直播中的判定：写稿会话（prep）不算开播，仍然显示「启动场次」 */
   const running = (agent.state === 'running' || agent.state === 'starting') && agent.purpose !== 'prep'
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
@@ -378,6 +405,20 @@ function PlanLauncher() {
           {plans.map((plan) => (
             <SelectItem key={plan.id} value={plan.id}>
               {plan.name}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      {/* 在场主播：直播中切换 = 原子换主播（场次历史/话术池不动），由新主播接着播 */}
+      <Select value={activePersona?.id ?? undefined} onValueChange={(v) => void switchAnchor(v)}>
+        <SelectTrigger size="sm" className="w-32" title="在场主播：想换人随时切，这场的历史新主播接得住">
+          <SelectValue placeholder="选主播" />
+        </SelectTrigger>
+        <SelectContent>
+          {personas.map((persona) => (
+            <SelectItem key={persona.id} value={persona.id}>
+              {persona.name}
             </SelectItem>
           ))}
         </SelectContent>
@@ -792,6 +833,16 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   onUnreadRef.current = onUnread
   /** 见过的条目 id：只有首见的那次算未读（流式更新同一 id 不算新消息） */
   const seenRef = useRef(new Set<string>())
+  /** 发言人标记：personaId → 主播名（时间线条目带主播戳，换人后看得出哪段是谁说的） */
+  const [personaNames, setPersonaNames] = useState<Record<string, string>>({})
+  useEffect(() => {
+    if (!('api' in window)) return
+    void window.api.persona.list().then((list) => {
+      const map: Record<string, string> = {}
+      for (const p of list) map[p.id] = p.name
+      setPersonaNames(map)
+    })
+  }, [])
 
   /** 时间线顺序追加/按 id 覆盖（text 覆盖全文、tool 更新状态）；时间戳沿用首次那条，避免排序跳动 */
   const upsert = (entry: ChatEntry): void => {
@@ -848,7 +899,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           ts: Date.now(),
           turnId: event.turnId,
           text: entry.text,
-          final: entry.final === true
+          final: entry.final === true,
+          personaId: entry.personaId
         })
       } else if (entry.type === 'thinking') {
         upsert({
@@ -857,7 +909,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           ts: Date.now(),
           turnId: event.turnId,
           text: entry.text,
-          done: entry.done === true
+          done: entry.done === true,
+          personaId: entry.personaId
         })
       } else if (entry.type === 'ask') {
         // 主播请示卡片：与文本/工具同一条单通道
@@ -872,7 +925,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           args: entry.args,
           status: entry.status,
           result: entry.result,
-          durationMs: entry.durationMs
+          durationMs: entry.durationMs,
+          personaId: entry.personaId
         })
       }
       landed(entry.id)
@@ -1054,6 +1108,11 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                 ? prevEntry.turnId
                 : undefined
             const showTurnBreak = Boolean(turnId) && turnId !== prevTurnId
+            /** 发言人切换：条目的主播戳变了就插一条「✦ 主播名」（换人后一眼看出哪段是谁说的） */
+            const speakerId = 'personaId' in firstEntry ? firstEntry.personaId : undefined
+            const prevSpeakerId =
+              prevEntry && 'personaId' in prevEntry ? prevEntry.personaId : undefined
+            const showSpeaker = Boolean(speakerId) && speakerId !== prevSpeakerId
             const head = (
               <>
                 {dayBreak && (
@@ -1068,6 +1127,12 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                     <span className="h-px flex-1 bg-border/60" />
                     {clock(firstEntry.ts)}
                     <span className="h-px flex-1 bg-border/60" />
+                  </div>
+                )}
+                {showSpeaker && (
+                  <div className="mt-1 mb-0.5 flex items-center gap-1.5 px-1 text-[10px] font-medium text-primary/70">
+                    <Sparkles className="size-3 shrink-0" />
+                    {personaNames[speakerId!] ?? '主播'}
                   </div>
                 )}
               </>

@@ -48,6 +48,7 @@ export const IPC = {
   agentStop: 'agent:stop',
   agentAbort: 'agent:abort',
   agentRestart: 'agent:restart',
+  agentHandoff: 'agent:handoff',
   agentStatus: 'agent:status',
   /** 编剧模式：跳到直播台，派主播给该场次写底稿（过程走对话时间线） */
   agentDraftStart: 'agent:draft-start',

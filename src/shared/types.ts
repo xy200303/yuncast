@@ -634,8 +634,8 @@ export interface DirectorMessage {
  * - ask：主播请示（ask_director）的高亮卡片——与文本/工具同一条单通道，切场/重启后照常恢复。
  */
 export type DirectorTimelineEntry =
-  | { type: 'text'; id: string; text: string; final?: boolean }
-  | { type: 'thinking'; id: string; text: string; done?: boolean }
+  | { type: 'text'; id: string; text: string; final?: boolean; personaId?: string }
+  | { type: 'thinking'; id: string; text: string; done?: boolean; personaId?: string }
   | {
       type: 'tool'
       id: string
@@ -645,6 +645,7 @@ export type DirectorTimelineEntry =
       result?: string
       durationMs?: number
       isError?: boolean
+      personaId?: string
     }
   | { type: 'ask'; id: string; message: DirectorMessage }
 
@@ -660,8 +661,8 @@ export interface DirectorTimelineEvent {
  */
 export type ChatEntry =
   | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
-  | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string }
-  | { type: 'thinking'; id: string; ts: number; turnId: string; text: string; done: boolean }
+  | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string; personaId?: string }
+  | { type: 'thinking'; id: string; ts: number; turnId: string; text: string; done: boolean; personaId?: string }
   | {
       type: 'tool'
       id: string
@@ -672,6 +673,7 @@ export type ChatEntry =
       status: 'running' | 'ok' | 'error'
       result?: string
       durationMs?: number
+      personaId?: string
     }
   | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
 

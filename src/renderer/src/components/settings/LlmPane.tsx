@@ -284,6 +284,8 @@ function ConnectionEditorDialog({
   )
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  /** 「+ 添加模型」就地插入的空行下标，用来给它的模型 ID 输入框自动聚焦 */
+  const [focusIndex, setFocusIndex] = useState<number | null>(null)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
     const def = providers.find((item) => item.id === connection?.providerId) ?? providers[0]
     const initial: Record<string, string | number | boolean> = { ...(connection?.params ?? {}) }
@@ -331,6 +333,12 @@ function ConnectionEditorDialog({
       if (value && !next.some((row) => row.id === value)) next.push({ id: value, window: '' })
     }
     setModels(next)
+  }
+
+  /** 就地加一行空白模型行（id 空 = 手打），新行的 ID 输入框挂载时自动聚焦 */
+  const addModelRow = () => {
+    setFocusIndex(models.length)
+    setModels([...models, { id: '', window: '' }])
   }
 
   const save = async () => {
@@ -440,14 +448,24 @@ function ConnectionEditorDialog({
           <div>
             <div className="mb-1.5 flex items-center justify-between">
               <Label>模型列表（{models.length} 个）</Label>
-              <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
-                <Plus />
-                添加模型
-              </Button>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-xs text-muted-foreground"
+                  onClick={() => setPickerOpen(true)}
+                >
+                  从目录选
+                </Button>
+                <Button variant="outline" size="sm" onClick={addModelRow}>
+                  <Plus />
+                  添加模型
+                </Button>
+              </div>
             </div>
             {models.length === 0 ? (
               <p className="rounded-lg border border-dashed px-3 py-3 text-sm text-muted-foreground">
-                点「添加模型」从目录里挑，本地服务的模型名直接手打
+                点「添加模型」手打一行，或点「从目录选」从可用模型里挑
               </p>
             ) : (
               <div className="flex flex-col gap-2">
@@ -455,6 +473,10 @@ function ConnectionEditorDialog({
                   <div key={index} className="flex items-center gap-2">
                     <Input
                       value={row.id}
+                      autoFocus={index === focusIndex}
+                      onFocus={() => {
+                        if (focusIndex === index) setFocusIndex(null)
+                      }}
                       onChange={(e) => setModelAt(index, e.target.value)}
                       placeholder="模型 id，如 deepseek-chat"
                       className="h-9 flex-1 text-sm"

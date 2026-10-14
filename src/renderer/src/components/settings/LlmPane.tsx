@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -59,60 +59,8 @@ export function LlmSection() {
 
   return (
     <div className="rounded-xl border bg-card px-5 py-4">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <p className="text-base font-semibold">语言模型</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            主播的大脑：一条接入 = 一家服务商 + 一份凭据 + 一组模型
-          </p>
-        </div>
-        <Button className="shrink-0" onClick={() => setEditing({})}>
-          <Plus />
-          新建接入
-        </Button>
-      </div>
-
-      <div className="mt-4 flex flex-col gap-2">
-        {connections.length === 0 ? (
-          <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-            还没有供应商接入，点右上角「新建接入」添加
-          </p>
-        ) : (
-          connections.map((connection) => (
-            <div
-              key={connection.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => setEditing({ connection })}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setEditing({ connection })
-                }
-              }}
-              className="flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors hover:bg-muted/60"
-            >
-              <ProviderIcon providerId={connection.providerId} />
-              <span className="truncate text-sm font-medium">{connection.name}</span>
-              <Badge variant="outline" className="shrink-0 text-xs">
-                {providerLabel(providers, connection.providerId)}
-              </Badge>
-              {!connection.ready && (
-                <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
-                  未配齐
-                </Badge>
-              )}
-              <div className="ml-auto flex shrink-0 items-center gap-1.5 text-muted-foreground">
-                <span className="text-sm">{connection.models.length} 个模型</span>
-                <ChevronRight className="size-4" />
-              </div>
-            </div>
-          ))
-        )}
-      </div>
-
-      {editing && (
-        <ConnectionEditorDialog
+      {editing ? (
+        <ConnectionEditorView
           key={editing.connection?.id ?? 'new'}
           connection={editing.connection}
           providers={providers}
@@ -126,6 +74,60 @@ export function LlmSection() {
             void askDelete(connection)
           }}
         />
+      ) : (
+        <>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-base font-semibold">语言模型</p>
+              <p className="mt-1 text-sm text-muted-foreground">
+                主播的大脑：一条接入 = 一家服务商 + 一份凭据 + 一组模型
+              </p>
+            </div>
+            <Button className="shrink-0" onClick={() => setEditing({})}>
+              <Plus />
+              新建接入
+            </Button>
+          </div>
+
+          <div className="mt-4 flex flex-col gap-2">
+            {connections.length === 0 ? (
+              <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                还没有供应商接入，点右上角「新建接入」添加
+              </p>
+            ) : (
+              connections.map((connection) => (
+                <div
+                  key={connection.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setEditing({ connection })}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setEditing({ connection })
+                    }
+                  }}
+                  className="flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors hover:bg-muted/60"
+                >
+                  <ProviderIcon providerId={connection.providerId} />
+                  <span className="truncate text-sm font-medium">{connection.name}</span>
+                  <Badge variant="outline" className="shrink-0 text-xs">
+                    {providerLabel(providers, connection.providerId)}
+                  </Badge>
+                  {!connection.ready && (
+                    <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
+                      未配齐
+                    </Badge>
+                  )}
+                  <div className="ml-auto flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                    <span className="text-sm">{connection.models.length} 个模型</span>
+                    <ChevronRight className="size-4" />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </>
       )}
 
       {testing && <TestConnectionDialog connection={testing} onClose={() => setTesting(null)} />}
@@ -254,7 +256,7 @@ function TestConnectionDialog({
 }
 
 /** 新建/编辑供应商接入：凭据按 manifest 的 configFields 渲染，模型列表单独编辑 */
-function ConnectionEditorDialog({
+function ConnectionEditorView({
   connection,
   providers,
   onClose,
@@ -385,15 +387,18 @@ function ConnectionEditorDialog({
   }
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[85vh] flex-col overflow-hidden sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>
-            {connection ? `供应商接入 · ${connection.name || '未命名'}` : '新建供应商接入'}
-          </DialogTitle>
-        </DialogHeader>
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" className="-ml-2 shrink-0" onClick={onClose}>
+          <ArrowLeft />
+          返回
+        </Button>
+        <p className="text-base font-semibold">
+          {connection ? `供应商接入 · ${connection.name || '未命名'}` : '新建供应商接入'}
+        </p>
+      </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+      <div className="flex flex-col gap-4">
           <div>
             <Label className="mb-1.5">服务商</Label>
             <Select value={providerId} onValueChange={changeProvider}>
@@ -403,7 +408,8 @@ function ConnectionEditorDialog({
                   <span className="truncate">{def?.label ?? providerId}</span>
                 </span>
               </SelectTrigger>
-              <SelectContent>
+              {/* popper 定位：item-aligned 在嵌套弹窗里会把浮层算到页面底部（看不见也点不着） */}
+              <SelectContent position="popper" sideOffset={6}>
                 {providers.map((item) => (
                   <SelectItem key={item.id} value={item.id}>
                     <span className="flex min-w-0 items-center gap-2">
@@ -522,49 +528,48 @@ function ConnectionEditorDialog({
               </Button>
             </div>
           )}
+      </div>
+
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-3">
+          {links && (
+            <>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                onClick={() => openExternal(links.console)}
+              >
+                {def?.label ?? providerId} 控制台
+              </button>
+              <button
+                type="button"
+                className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                onClick={() => openExternal(links.docs)}
+              >
+                接入文档
+              </button>
+            </>
+          )}
         </div>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={onClose}>
+            取消
+          </Button>
+          <Button disabled={busy} onClick={() => void save()}>
+            {busy ? '保存中…' : '保存'}
+          </Button>
+        </div>
+      </div>
 
-        <DialogFooter className="gap-2 sm:justify-between">
-          <div className="flex items-center gap-3">
-            {links && (
-              <>
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                  onClick={() => openExternal(links.console)}
-                >
-                  {def?.label ?? providerId} 控制台
-                </button>
-                <button
-                  type="button"
-                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
-                  onClick={() => openExternal(links.docs)}
-                >
-                  接入文档
-                </button>
-              </>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={onClose}>
-              取消
-            </Button>
-            <Button disabled={busy} onClick={() => void save()}>
-              {busy ? '保存中…' : '保存'}
-            </Button>
-          </div>
-        </DialogFooter>
-
-        <ModelPickerDialog
-          open={pickerOpen}
-          onOpenChange={setPickerOpen}
-          providerId={providerId}
-          providerLabel={def?.label ?? providerId}
-          picked={models.map((row) => row.id)}
-          onPick={(ids) => addModels(ids)}
-        />
-      </DialogContent>
-    </Dialog>
+      <ModelPickerDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        providerId={providerId}
+        providerLabel={def?.label ?? providerId}
+        picked={models.map((row) => row.id)}
+        onPick={(ids) => addModels(ids)}
+      />
+    </div>
   )
 }
 
@@ -597,7 +602,7 @@ function FieldControl({
         <SelectTrigger className="h-10 w-full text-sm">
           <SelectValue placeholder={field.placeholder} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent position="popper" sideOffset={6}>
           {(field.options ?? []).map((option) => (
             <SelectItem key={option.value} value={option.value}>
               {option.label}

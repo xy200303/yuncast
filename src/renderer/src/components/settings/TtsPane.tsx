@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -45,65 +45,8 @@ export function TtsSection() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold">服务商接入</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            一条接入 = 一个服务商账号，凭据、模型与参数都在接入里配。
-          </p>
-        </div>
-        <Button
-          className="shrink-0"
-          disabled={providers.length === 0}
-          onClick={() => setEditing({ providerId: providers[0].id })}
-        >
-          <Plus />
-          添加接入
-        </Button>
-      </div>
-
-      <div className="flex flex-col gap-2">
-        {connections.length === 0 ? (
-          <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
-            还没有接入。点「添加接入」：选服务商 → 填密钥 → 勾上要用的模型。
-          </p>
-        ) : (
-          connections.map((connection) => {
-            const provider = providers.find((item) => item.id === connection.providerId)
-            const unusable = connection.models.length - connection.usableModels.length
-            return (
-              <button
-                key={connection.id}
-                type="button"
-                className="flex w-full cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 text-left hover:bg-muted/60"
-                onClick={() => setEditing({ providerId: connection.providerId, connection })}
-              >
-                <ProviderIcon providerId={connection.providerId} />
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-                  <span className="truncate text-sm font-medium">{connection.name}</span>
-                  {provider && (
-                    <Badge variant="outline" className="shrink-0 text-xs">
-                      {provider.label}
-                    </Badge>
-                  )}
-                  {unusable > 0 && (
-                    <Badge variant="outline" className="shrink-0 text-xs text-amber-600">
-                      {unusable} 个模型缺配置
-                    </Badge>
-                  )}
-                </div>
-                <span className="shrink-0 text-sm text-muted-foreground">
-                  {connection.models.length} 个模型{connection.realtime ? ' · 实时合成' : ''}
-                </span>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
-              </button>
-            )
-          })
-        )}
-      </div>
-
-      {editing && (
-        <TtsConnectionEditorDialog
+      {editing ? (
+        <TtsConnectionEditor
           key={editing.connection?.id ?? 'new'}
           initialProviderId={editing.providerId}
           connection={editing.connection}
@@ -114,6 +57,65 @@ export function TtsSection() {
             setDeleting(connection)
           }}
         />
+      ) : (
+        <>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold">服务商接入</h2>
+              <p className="mt-1 text-sm text-muted-foreground">
+                一条接入 = 一个服务商账号，凭据、模型与参数都在接入里配。
+              </p>
+            </div>
+            <Button
+              className="shrink-0"
+              disabled={providers.length === 0}
+              onClick={() => setEditing({ providerId: providers[0].id })}
+            >
+              <Plus />
+              添加接入
+            </Button>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {connections.length === 0 ? (
+              <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                还没有接入。点「添加接入」：选服务商 → 填密钥 → 勾上要用的模型。
+              </p>
+            ) : (
+              connections.map((connection) => {
+                const provider = providers.find((item) => item.id === connection.providerId)
+                const unusable = connection.models.length - connection.usableModels.length
+                return (
+                  <button
+                    key={connection.id}
+                    type="button"
+                    className="flex w-full cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 text-left hover:bg-muted/60"
+                    onClick={() => setEditing({ providerId: connection.providerId, connection })}
+                  >
+                    <ProviderIcon providerId={connection.providerId} />
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                      <span className="truncate text-sm font-medium">{connection.name}</span>
+                      {provider && (
+                        <Badge variant="outline" className="shrink-0 text-xs">
+                          {provider.label}
+                        </Badge>
+                      )}
+                      {unusable > 0 && (
+                        <Badge variant="outline" className="shrink-0 text-xs text-amber-600">
+                          {unusable} 个模型缺配置
+                        </Badge>
+                      )}
+                    </div>
+                    <span className="shrink-0 text-sm text-muted-foreground">
+                      {connection.models.length} 个模型{connection.realtime ? ' · 实时合成' : ''}
+                    </span>
+                    <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </>
       )}
 
       {testing && <TtsTestDialog connection={testing} onClose={() => setTesting(null)} />}
@@ -166,7 +168,7 @@ function CredentialField({
         <SelectTrigger className="h-10 w-full text-sm">
           <SelectValue placeholder={field.placeholder} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent position="popper" sideOffset={6}>
           {(field.options ?? []).map((option) => (
             <SelectItem key={option.value} value={option.value}>
               {option.label}
@@ -242,7 +244,7 @@ function TtsParamForm({
               <SelectTrigger className="h-9 w-full text-sm">
                 <SelectValue />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent position="popper" sideOffset={6}>
                 {(spec.options ?? []).map((option) => (
                   <SelectItem key={option.value} value={option.value}>
                     {option.label}
@@ -365,8 +367,8 @@ function TtsTestDialog({
   )
 }
 
-/** 新建/编辑语音合成接入：接入名 + 凭据 + 模型（勾选 + 每个模型的参数）+ 实时合成 */
-function TtsConnectionEditorDialog({
+/** 新建/编辑语音合成接入：接入名 + 凭据 + 模型（勾选 + 每个模型的参数）+ 实时合成。栏内切换视图，不是弹窗 */
+function TtsConnectionEditor({
   initialProviderId,
   connection,
   onClose,
@@ -475,16 +477,21 @@ function TtsConnectionEditorDialog({
   if (!def) return null
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[86vh] flex-col overflow-hidden sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <ProviderIcon providerId={def.icon} />
+    <div className="flex max-w-xl flex-col gap-4">
+      <div className="flex items-center gap-2">
+        <Button variant="ghost" size="sm" className="-ml-2" onClick={onClose}>
+          <ArrowLeft />
+          返回
+        </Button>
+        <h2 className="flex min-w-0 items-center gap-2 text-base font-semibold">
+          <ProviderIcon providerId={def.icon} />
+          <span className="truncate">
             {connection ? `供应商接入 · ${connection.name || '未命名'}` : '新建供应商接入'}
-          </DialogTitle>
-        </DialogHeader>
+          </span>
+        </h2>
+      </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+      <div className="flex flex-col gap-4">
           <div>
             <Label className="mb-1.5 text-sm font-medium">服务商</Label>
             {connection ? (
@@ -506,7 +513,7 @@ function TtsConnectionEditorDialog({
                   <span className="truncate">{def.label}</span>
                 </span>
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent position="popper" sideOffset={6}>
                 {providers.map((item) => (
                   <SelectItem key={item.id} value={item.id}>
                     <span className="flex min-w-0 items-center gap-2">
@@ -643,7 +650,7 @@ function TtsConnectionEditorDialog({
           )}
         </div>
 
-        <DialogFooter className="gap-2 sm:justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-4">
           <div className="flex items-center gap-2">
             {connection && (
               <>
@@ -675,8 +682,7 @@ function TtsConnectionEditorDialog({
               {busy ? '保存中…' : '保存'}
             </Button>
           </div>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+    </div>
   )
 }

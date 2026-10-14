@@ -1169,11 +1169,11 @@ export class StorageService {
     return typeof row?.n === 'number' ? row.n : 0
   }
 
-  /** 按 dedupeKey 找未播条目（去重合并用） */
+  /** 按 dedupeKey 找未播条目（去重合并用）。playing 也算「在池里」：正在播的不能重装，否则一段话在队列里出现两次 */
   speechFindActiveByDedupeKey(dedupeKey: string): SpeechItem | null {
     const row = this.db
       .prepare(
-        `SELECT * FROM speech_items WHERE dedupe_key = ? AND status IN ('pending', 'synthesizing', 'ready') ORDER BY created_at DESC LIMIT 1`
+        `SELECT * FROM speech_items WHERE dedupe_key = ? AND status IN ('pending', 'synthesizing', 'ready', 'playing') ORDER BY created_at DESC LIMIT 1`
       )
       .get(dedupeKey)
     return row ? rowToItem(row as unknown as SpeechRow) : null
@@ -1718,6 +1718,12 @@ export class StorageService {
     this.db.prepare('DELETE FROM utterances WHERE id = ?').run(id)
   }
 
+  /** 按 id 取单条底稿（删除前取音频路径用） */
+  utteranceGet(id: string): Utterance | null {
+    const row = this.db.prepare('SELECT * FROM utterances WHERE id = ?').get(id)
+    return row ? rowToUtterance(row as Record<string, unknown>) : null
+  }
+
   /** 批量删除（重生成某场景/清空场次话术库用） */
   utteranceDeleteWhere(planId: string, sceneId?: string): void {
     if (sceneId === undefined) {
@@ -1744,6 +1750,13 @@ export class StorageService {
     this.db
       .prepare('UPDATE utterances SET status = ?, audio_path = ?, error = ?, synth_voice = ? WHERE id = ?')
       .run(status, audioPath, error ?? null, synthVoice, id)
+  }
+
+  /** 所有底稿引用的音频文件（清空/删除底稿时判断缓存是否成孤儿） */
+  utteranceAllAudioPaths(): string[] {
+    return (this.db
+      .prepare("SELECT DISTINCT audio_path AS path FROM utterances WHERE audio_path IS NOT NULL AND audio_path != ''")
+      .all() as Record<string, unknown>[]).map((row) => str(row.path))
   }
 
   close(): void {

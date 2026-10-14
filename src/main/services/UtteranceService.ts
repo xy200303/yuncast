@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import type { Utterance, UtteranceInput } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
@@ -112,12 +114,39 @@ export class UtteranceService {
   }
 
   remove(id: string): void {
+    const existing = this.storage.utteranceGet(id)
     this.storage.utteranceDelete(id)
+    this.deleteOrphanAudio([existing?.audioPath])
   }
 
-  /** 清空场次话术库（重生成前）；给 sceneId 只清某场景 */
+  /** 清空场次话术库（重生成前）；给 sceneId 只清某场景。连缓存音频一起清（不被别处引用的才删） */
   clear(planId: string, sceneId?: string): void {
+    const doomed = this.storage
+      .utteranceList(planId)
+      .filter((u) => sceneId === undefined || u.sceneId === sceneId)
+      .map((u) => u.audioPath)
     this.storage.utteranceDeleteWhere(planId, sceneId)
+    this.deleteOrphanAudio(doomed)
+  }
+
+  /**
+   * 删孤儿音频：音频文件按内容寻址（同文同参共享一份），只有底稿库和话术池都不再引用时才删。
+   * 路径归一化后比较（库里可能存正斜杠，join 出来是反斜杠）。后台异步，删失败不影响删稿。
+   */
+  private deleteOrphanAudio(paths: (string | null | undefined)[]): void {
+    const candidates = [...new Set(paths.filter((p): p is string => Boolean(p)))]
+    if (candidates.length === 0) return
+    const normalize = (value: string) => resolve(value).toLowerCase()
+    // 剩下的底稿（全场次，内容寻址跨场次共享）+ 池里条目还在引用的文件不能删
+    const referenced = new Set(
+      [...this.storage.utteranceAllAudioPaths(), ...this.storage.speechReferencedAudioPaths()].map(normalize)
+    )
+    for (const path of candidates) {
+      if (referenced.has(normalize(path))) continue
+      void rm(path, { force: true })
+        .then(() => console.log(`[话术库] 底稿删除，孤儿音频一并清掉：${path}`))
+        .catch(() => undefined)
+    }
   }
 
   /**

@@ -25,6 +25,20 @@ process.on('unhandledRejection', (reason) =>
 process.on('exit', (code) => crashNote('exit', `code=${code}`))
 app.on('before-quit', () => crashNote('before-quit', ''))
 app.on('child-process-gone', (_e, details) => crashNote('child-process-gone', JSON.stringify(details)))
+
+// 日志管道断裂（EPIPE）绝不能杀掉进程：桌面应用的 stdout 随时可能没有读者
+// （父进程先走/打包后无控制台/dev 任务被收），console.error 扔 EPIPE 不该炸掉应用——
+// 已实测：连接器的 onerror → console.error → EPIPE → uncaughtException → 整进程死
+for (const method of ['error', 'warn', 'log'] as const) {
+  const original = console[method]
+  console[method] = (...args: unknown[]) => {
+    try {
+      original.apply(console, args)
+    } catch {
+      // 管道断了就算了
+    }
+  }
+}
 import {
   type AgentStatus,
   type AppConfig,
@@ -907,11 +921,18 @@ if (!single) {
       if ((result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
       return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
     }
-    // 滚动补货：池见底时把当前场景的就绪底稿装回去循环轮播，别等主播现场救火
+    // 滚动补货（有闸）：池见底时——首轮没播完的底稿随时补（接着播不是循环）；
+    // 全播过了要重播（循环）只在到底稿段数上限时才允许，没到就等主播续写/合成，允许冷场不硬顶
     bus.subscribe((event) => {
       if (event.type !== 'pool.empty') return
       const status = agent?.status()
       if (status?.state !== 'running' || status.purpose !== 'live') return
+      const planId = storage.getConfig().live.activePlanId
+      if (!planId) return
+      if (!launch.hasFreshUtterances(planId) && !launch.atDraftCap(planId)) {
+        console.log('[AgentAnchor] 池空了但未到段数上限：不循环重播，等主播续写/合成（允许冷场）')
+        return
+      }
       const loaded = launch.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
     })

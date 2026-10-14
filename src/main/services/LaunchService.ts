@@ -5,7 +5,7 @@ import {
   type PreflightItem,
   type Utterance
 } from '../../shared/types'
-import { coveredMinutes } from '../../shared/planDuration'
+import { coveredMinutes, planBroadcastCap } from '../../shared/planDuration'
 import type { AgentService } from './AgentService'
 import type { ConnectorService } from './ConnectorService'
 import type { PersonaService } from './PersonaService'
@@ -278,9 +278,7 @@ export class LaunchService {
     const sceneId = script.scenes[sceneIndex].id
     const library = this.utterances.list(plan.id)
     // closer（收尾段）不进自动轮播：播到一半来句「下回接着聊」就穿帮了——主播要收尾时自己 say 出去
-    const ready = library.filter(
-      (u) => u.status === 'ready' && u.bitType !== 'closer' && (u.sceneId === sceneId || u.sceneId === '')
-    )
+    const ready = this.loadableUtterances(planId, sceneId)
     // 轮播公平 + 叙事顺序：主键「最久没进池」（队尾不饿死，底稿轮得到），
     // 同轮次内按创作序号 seq——首轮全部 lastLoaded=0，等于严格按写作顺序播，铺垫→展开→落点不乱
     const lastLoaded = this.storage.speechLastLoadedByOrigin()
@@ -320,6 +318,36 @@ export class LaunchService {
     const activePlanId = this.storage.getConfig().live.activePlanId
     if (!activePlanId) return 0
     return this.loadSceneUtterances(activePlanId)
+  }
+
+  /** 当前场景可自动轮播的底稿（就绪 + 非 closer + 本场景或通用） */
+  private loadableUtterances(planId: string, sceneId: string): Utterance[] {
+    return this.utterances
+      .list(planId)
+      .filter((u) => u.status === 'ready' && u.bitType !== 'closer' && (u.sceneId === sceneId || u.sceneId === ''))
+  }
+
+  /**
+   * 当前场景还有没进过池的可播底稿（首轮没播完）：补它叫「接着播」，不是循环。
+   * 循环闸门用：全进过池了再装就是重播，只有到段数上限才允许
+   */
+  hasFreshUtterances(planId: string): boolean {
+    const plan = this.storage.planList().find((p) => p.id === planId) ?? null
+    if (!plan) return false
+    const script = this.script.getScript(plan.scriptId)
+    if (!script || script.scenes.length === 0) return false
+    const sceneId = script.scenes[this.sceneIndex(plan, script.scenes.length)].id
+    const lastLoaded = this.storage.speechLastLoadedByOrigin()
+    return this.loadableUtterances(planId, sceneId).some((u) => !lastLoaded.has(u.id))
+  }
+
+  /** 底稿是否到段数上限（到顶才允许循环重播；无限 = 永不循环，等新内容） */
+  atDraftCap(planId: string): boolean {
+    const plan = this.storage.planList().find((p) => p.id === planId) ?? null
+    if (!plan) return false
+    const cap = planBroadcastCap(plan)
+    if (!Number.isFinite(cap)) return false
+    return this.utterances.list(planId).length >= cap
   }
 
   /** 切场景（直播台按钮 / goto_scene 工具）：跳过去并把新场景话术库载入池 */

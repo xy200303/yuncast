@@ -487,11 +487,19 @@ function TtsConnectionEditorDialog({
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
           <div>
             <Label className="mb-1.5 text-sm font-medium">服务商</Label>
-            <Select
-              value={providerId}
-              disabled={Boolean(connection)}
-              onValueChange={(value) => changeProvider(value as TtsProvider)}
-            >
+            {connection ? (
+              <div className="flex h-10 items-center gap-2 rounded-lg border px-3.5">
+                <ProviderIcon providerId={def.icon} size="sm" />
+                <span className="truncate text-sm">{def.label}</span>
+                <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                  接入的服务商创建后不可换
+                </span>
+              </div>
+            ) : (
+              <Select
+                value={providerId}
+                onValueChange={(value) => changeProvider(value as TtsProvider)}
+              >
               <SelectTrigger className="h-10 w-full text-sm">
                 <span className="flex min-w-0 items-center gap-2">
                   <ProviderIcon providerId={def.icon} size="sm" />
@@ -513,7 +521,8 @@ function TtsConnectionEditorDialog({
                   </SelectItem>
                 ))}
               </SelectContent>
-            </Select>
+              </Select>
+            )}
             {def.note && <p className="mt-1.5 truncate text-xs text-muted-foreground">{def.note}</p>}
           </div>
 

@@ -42,6 +42,7 @@ import { cn } from '@/lib/utils'
 import { MiniMarkdown } from '@/components/MiniMarkdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
+import { ProgramGateDialog } from '@/components/ProgramGateDialog'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
@@ -53,6 +54,7 @@ import type {
   Program,
   Persona,
   PreflightItem,
+  ProgramGateResult,
   Script,
   SpeechItem,
   SpeechLane,
@@ -181,7 +183,7 @@ export function LivePage() {
                   />
                 </div>
               </div>
-              {/* 唯一开播入口：选节目 → 启动节目（docs/07 §8.5） */}
+              {/* 开播主入口：选节目 → 启动节目（docs/07 §8.5）；预制节目就绪后节目卡上也能直接播放 */}
               <ProgramLauncher />
             </div>
           </header>
@@ -274,8 +276,9 @@ export function LivePage() {
 }
 
 /**
- * 节目入口：选节目 + 启动/停止节目（唯一开播入口）。
- * 点「启动节目」先跑预检（docs/07 §8.5）：阻断项红、警告项黄，有阻断项不许开。
+ * 节目入口：选节目 + 启动/停止节目（预检 + 预制门禁都在这里过）。
+ * 点「启动节目」先跑预检（docs/07 §8.5）：阻断项红、警告项黄，有阻断项不许开；
+ * 预制节目门禁未过时 launch 返回结构化 gate，弹 ProgramGateDialog 给三选项，不静默跳过（docs/10 §7.8）。
  */
 function ProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
@@ -285,6 +288,8 @@ function ProgramLauncher() {
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
+  /** 预制节目门禁未过的结构化结果（不空就不许静默开播，弹窗给三选项） */
+  const [gate, setGate] = useState<ProgramGateResult | null>(null)
 
   useEffect(() => {
     void window.api.program.list().then(setPrograms)
@@ -307,8 +312,11 @@ function ProgramLauncher() {
 
   const startPresynth = (): void => {
     if (!activeProgramId) return
-    void window.api.utterance.presynth(activeProgramId)
-    toast.success('已开始批量预合成', { description: '合成在后台跑，完成后点「重新预检」看结果' })
+    // 滚动节目走统一音频生产入口（produceAudio 的 rolling 分支 = 后台逐段提前合成）
+    void window.api.program.produceAudio(activeProgramId).then((result) => {
+      if (!result.ok) toast.error('提前合成没能开始', { description: result.error })
+      else toast.success('已开始提前合成', { description: '合成在后台跑，完成后点「重新预检」看结果' })
+    })
   }
 
   const startDraft = (): void => {
@@ -361,10 +369,14 @@ function ProgramLauncher() {
         } else {
           toast.success(`节目已启动：${activeProgram?.name ?? ''}`, {
             description: result.loaded
-              ? `已从底稿库装载 ${result.loaded} 条，接着播`
+              ? `已装载 ${result.loaded} 个播出单元，接着播`
               : '本节目没有就绪底稿，主播先现场生成'
           })
         }
+      } else if (result.gate && activeProgram) {
+        // 预制节目门禁未过：结构化缺口进弹窗，不静默跳过（docs/10 §7.8）
+        setChecks(null)
+        setGate(result.gate)
       } else {
         toast.error('启动失败', { description: result.error })
       }
@@ -485,10 +497,10 @@ function ProgramLauncher() {
             <Button variant="outline" onClick={() => setChecks(null)}>
               先去处理
             </Button>
-            {presynthShort && (
+            {presynthShort && activeProgram?.broadcastMode === 'rolling' && (
               <Button variant="outline" onClick={startPresynth}>
                 <AudioWaveform />
-                预合成全部
+                提前合成全部
               </Button>
             )}
             {draftEmpty && (
@@ -514,6 +526,30 @@ function ProgramLauncher() {
           open={draftAsk}
           onOpenChange={setDraftAsk}
           onConfirm={() => startDraft()}
+        />
+      )}
+      {/* 预制节目门禁未过：继续生成 / 重试失败项 / 仅播放已完成部分，三选项都在这里 */}
+      {activeProgram && gate && (
+        <ProgramGateDialog
+          program={activeProgram}
+          gate={gate}
+          open
+          onOpenChange={(open) => {
+            if (!open) setGate(null)
+          }}
+          onGateChange={setGate}
+          onLaunched={(result) => {
+            resumeBroadcast()
+            if (result.warning) {
+              toast.warning(`节目已启动：${activeProgram.name}（智能层未就位）`, {
+                description: result.warning
+              })
+            } else {
+              toast.success(`节目已启动：${activeProgram.name}`, {
+                description: result.loaded ? `已装载 ${result.loaded} 个播出单元，接着播` : undefined
+              })
+            }
+          }}
         />
       )}
     </div>

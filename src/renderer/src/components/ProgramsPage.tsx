@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
+  AudioWaveform,
   BookOpenText,
   Check,
   Clapperboard,
+  Loader2,
   Pencil,
+  Play,
   Plus,
   Trash2
 } from 'lucide-react'
@@ -23,14 +26,20 @@ import {
   BROADCAST_MODE_LABELS,
   CONTENT_TYPE_LABELS,
   type KnowledgeFile,
+  type LaunchResult,
   type Product,
   type Program,
+  type ProgramAudioProgress,
+  type ProgramGateResult,
   type Script
 } from '../../../shared/types'
 import { ProgramDialog } from './programs/ProgramDialog'
 import { UtteranceDialog } from './programs/UtteranceDialog'
+import { ProgramGateDialog } from './ProgramGateDialog'
+import { AUDIO_UNIT_LABEL } from '../lib/audioUnits'
+import { resumeBroadcast } from '../audio/liveControl'
 
-/** 节目库：一场直播/一期播客/一本有声书都是一个节目（内容 + 播出方式 + 事件规则 + 知识范围）。谁播由当前主播定，开播唯一入口在直播台。 */
+/** 节目库：一场直播/一期播客/一本有声书都是一个节目（内容 + 播出方式 + 事件规则 + 知识范围）。谁播由当前主播定；预制节目音频全部就绪后卡片上可直接播放（门禁不过进弹窗，不静默跳过）。 */
 export function ProgramsPage() {
   const config = useAppStore((s) => s.config)
   const loadConfig = useAppStore((s) => s.loadConfig)
@@ -40,6 +49,11 @@ export function ProgramsPage() {
   const [files, setFiles] = useState<KnowledgeFile[]>([])
   /** 每个节目的底稿统计（卡片上显示） */
   const [utteranceStats, setUtteranceStats] = useState<Record<string, { total: number; ready: number }>>({})
+  /** 预制节目的音频进度（卡片摘要与主操作判定用） */
+  const [audioStats, setAudioStats] = useState<Record<string, ProgramAudioProgress>>({})
+  const [producingId, setProducingId] = useState('')
+  /** 播放预制节目时门禁未过：结构化缺口进弹窗（docs/10 §7.8） */
+  const [gateState, setGateState] = useState<{ program: Program; gate: ProgramGateResult } | null>(null)
   const [editing, setEditing] = useState<{ program?: Program } | null>(null)
   const [deleting, setDeleting] = useState<Program | null>(null)
   const [reviewing, setReviewing] = useState<Program | null>(null)
@@ -58,16 +72,30 @@ export function ProgramsPage() {
     setProducts(pr)
     setFiles(f)
     const stats: Record<string, { total: number; ready: number }> = {}
+    const audio: Record<string, ProgramAudioProgress> = {}
     for (const program of p) {
       const list = await window.api.utterance.list(program.id)
       stats[program.id] = { total: list.length, ready: list.filter((u) => u.status === 'ready').length }
+      if (program.broadcastMode === 'prepared') {
+        audio[program.id] = await window.api.program.audioProgress(program.id)
+      }
     }
     setUtteranceStats(stats)
+    setAudioStats(audio)
   }, [])
 
   useEffect(() => {
     void reload()
   }, [reload])
+
+  // 预制音频资产变化：刷新对应节目的音频摘要（合成进度实时反映到卡片上）
+  useEffect(() => {
+    return window.api.program.onAudioEvent((payload) => {
+      void window.api.program.audioProgress(payload.programId).then((progress) => {
+        setAudioStats((prev) => ({ ...prev, [payload.programId]: progress }))
+      })
+    })
+  }, [])
 
   const setActive = (id: string) => {
     void window.api.program.setActive(id === activeProgramId ? '' : id).then(async () => {
@@ -80,6 +108,58 @@ export function ProgramsPage() {
   }
 
   const scriptName = (id: string | null) => scripts.find((s) => s.id === id)?.title ?? null
+
+  /** 开播成功的统一提示（直播台启动与门禁弹窗里的「仅播放已完成部分」共用口径） */
+  const announceLaunched = (program: Program, result: LaunchResult): void => {
+    resumeBroadcast() // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
+    if (result.warning) {
+      toast.warning(`节目已启动：${program.name}（智能层未就位）`, { description: result.warning })
+    } else {
+      toast.success(`节目已启动：${program.name}`, {
+        description: result.loaded ? `已装载 ${result.loaded} 个播出单元，到「播控台」看播出` : undefined
+      })
+    }
+    useAppStore.getState().setPage('live')
+  }
+
+  /** 预制节目主操作「继续合成」：统一生产入口只重做未完成/失败/过期单元，进度走 onAudioEvent */
+  const produceAudio = async (program: Program): Promise<void> => {
+    if (producingId) return
+    setProducingId(program.id)
+    try {
+      const result = await window.api.program.produceAudio(program.id)
+      if (!result.ok) {
+        toast.error('生成节目音频没能完成', { description: result.error })
+      } else if (result.failed > 0) {
+        toast.warning(`生成完成，还有 ${result.failed} 个失败`, {
+          description: `完成 ${result.done} · 跳过 ${result.skipped} · 失败 ${result.failed}，打开底稿库可逐项重试`
+        })
+      } else {
+        toast.success('节目音频已全部生成', {
+          description: `完成 ${result.done} · 跳过 ${result.skipped}` + (result.notice ? `；${result.notice}` : '')
+        })
+      }
+    } finally {
+      setProducingId('')
+      await reload()
+    }
+  }
+
+  /** 预制节目主操作「播放」：先设为当前节目再启动；门禁未过进弹窗，绝不静默跳过 */
+  const playProgram = async (program: Program): Promise<void> => {
+    if (program.id !== activeProgramId) {
+      await window.api.program.setActive(program.id)
+      await loadConfig()
+    }
+    const result = await window.api.program.launch(program.id)
+    if (result.ok) {
+      announceLaunched(program, result)
+    } else if (result.gate) {
+      setGateState({ program, gate: result.gate })
+    } else {
+      toast.error('启动失败', { description: result.error })
+    }
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -106,6 +186,9 @@ export function ProgramsPage() {
             {programs.map((program) => {
               const active = program.id === activeProgramId
               const stats = utteranceStats[program.id]
+              const audio = audioStats[program.id]
+              const prepared = program.broadcastMode === 'prepared'
+              const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
               return (
                 <Card key={program.id} className={active ? 'border-primary/50' : ''}>
                   <CardHeader className="pb-2">
@@ -127,17 +210,55 @@ export function ProgramsPage() {
                         <Badge variant="outline">未绑剧本</Badge>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <BookOpenText className="size-3.5" />
-                      {stats && stats.total > 0 ? (
-                        <span>
-                          底稿 {stats.total} 段 · 音频就绪 {stats.ready}
-                        </span>
-                      ) : (
-                        <span>底稿为空（点「底稿库」生成）</span>
-                      )}
-                    </div>
+                    {prepared ? (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <AudioWaveform className="size-3.5" />
+                        {audio && audio.total > 0 ? (
+                          <span>
+                            音频 {audio.ready}/{audio.total} {unitLabel}
+                            {audio.failed > 0 && ` · 失败 ${audio.failed}`}
+                            {audio.stale > 0 && ` · 文稿已修改 ${audio.stale}`}
+                            {audio.synthesizing > 0 && ` · 合成中 ${audio.synthesizing}`}
+                          </span>
+                        ) : (
+                          <span>还没有文稿（点「底稿库」生成）</span>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <BookOpenText className="size-3.5" />
+                        {stats && stats.total > 0 ? (
+                          <span>
+                            底稿 {stats.total} 段 · 音频就绪 {stats.ready}
+                          </span>
+                        ) : (
+                          <span>底稿为空（点「底稿库」生成）</span>
+                        )}
+                      </div>
+                    )}
                     <div className="mt-1 flex items-center gap-1">
+                      {prepared && audio && audio.total === 0 && (
+                        <Button size="sm" onClick={() => setReviewing(program)}>
+                          <BookOpenText />
+                          继续写稿
+                        </Button>
+                      )}
+                      {prepared && audio && audio.total > 0 && audio.ready < audio.total && (
+                        <Button
+                          size="sm"
+                          disabled={producingId !== ''}
+                          onClick={() => void produceAudio(program)}
+                        >
+                          {producingId === program.id ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
+                          {producingId === program.id ? '正在生成…' : '继续合成'}
+                        </Button>
+                      )}
+                      {prepared && audio && audio.total > 0 && audio.ready === audio.total && (
+                        <Button size="sm" onClick={() => void playProgram(program)}>
+                          <Play />
+                          播放
+                        </Button>
+                      )}
                       <Button
                         variant={active ? 'secondary' : 'outline'}
                         size="sm"
@@ -184,6 +305,22 @@ export function ProgramsPage() {
             if (!open) setReviewing(null)
           }}
           onChanged={reload}
+        />
+      )}
+      {/* 预制节目门禁未过：继续生成 / 重试失败项 / 仅播放已完成部分（docs/10 §7.8） */}
+      {gateState && (
+        <ProgramGateDialog
+          program={gateState.program}
+          gate={gateState.gate}
+          open
+          onOpenChange={(open) => {
+            if (!open) setGateState(null)
+          }}
+          onGateChange={(gate) => setGateState((prev) => (prev ? { ...prev, gate } : prev))}
+          onLaunched={(result) => {
+            announceLaunched(gateState.program, result)
+            void reload()
+          }}
         />
       )}
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>

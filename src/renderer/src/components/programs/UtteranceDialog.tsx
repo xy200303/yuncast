@@ -25,6 +25,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
+import { ProgramAudioPanel } from './ProgramAudioPanel'
 import { useAppStore } from '../../stores/useAppStore'
 import {
   BIT_TYPES,
@@ -45,7 +46,9 @@ const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'defau
 
 /**
  * 底稿库审阅表（docs/07 §4 ③④）：逐条可编辑/删除、来源留痕（外部来源高亮）、
- * 「生成底稿」走生成 Agent（工具循环）、「预合成」批量 TTS。
+ * 「生成底稿」走生成 Agent（工具循环）。
+ * 合成入口按播出方式分流（docs/10 §7.5）：滚动=「提前合成全部」（走统一生产入口 produceAudio），
+ * 预制=顶部节目音频进度区（ProgramAudioPanel，§7.7），即兴=不显示合成入口。
  */
 export function UtteranceDialog({
   program,
@@ -133,9 +136,14 @@ export function UtteranceDialog({
     if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
   }
 
+  /** 「提前合成全部」（滚动节目）：走统一音频生产入口（rolling = 后台逐段提前合成，进度照旧走 utterance.onEvent） */
   const startPresynth = async () => {
     setPresynthRunning(true)
-    await window.api.utterance.presynth(program.id)
+    const result = await window.api.program.produceAudio(program.id)
+    if (!result.ok) {
+      setPresynthRunning(false)
+      toast.error('提前合成没能开始', { description: result.error })
+    }
   }
 
   const saveEdit = async (u: Utterance) => {
@@ -210,17 +218,25 @@ export function UtteranceDialog({
               <Trash2 />
               {confirmClear ? '再点一次确认清空' : '清空全部'}
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={presynthRunning || stats.total === 0 || stats.ready === stats.total}
-              onClick={() => void startPresynth()}
-            >
-              {presynthRunning ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
-              {presynthRunning ? '合成中…' : '预合成全部'}
-            </Button>
+            {program.broadcastMode === 'rolling' && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={presynthRunning || stats.total === 0 || stats.ready === stats.total}
+                onClick={() => void startPresynth()}
+                title="尽可能把全部文稿提前合成好；不点也行，播出时会边播边合成"
+              >
+                {presynthRunning ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
+                {presynthRunning ? '合成中…' : '提前合成全部'}
+              </Button>
+            )}
           </div>
         </div>
+
+        {/* 预制节目：音频进度区（docs/10 §7.7）。即兴节目没有合成入口（现场实时合成） */}
+        {program.broadcastMode === 'prepared' && (
+          <ProgramAudioPanel program={program} onChanged={onChanged} />
+        )}
 
         <div className="min-h-0 flex-1 overflow-y-auto">
           {items.length === 0 ? (

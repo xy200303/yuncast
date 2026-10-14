@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>播控台 · 通用原型（三张脸切换）</title>
+<style>
+  :root {
+    --bg-base: #141311; --bg-surface: #1c1b18; --bg-elevated: #24221d;
+    --border: #34312a; --text-1: #edeae2; --text-2: #a8a29a; --text-3: #6e6a61;
+    --brand: #c4703f; --brand-soft: rgba(196,112,63,.14);
+    --live: #e23e32; --ok: #6fa287; --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-base); color: var(--text-1);
+         font: 13px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; height: 100vh; overflow: hidden; }
+  .body { display: flex; height: 100vh; }
+  .sidebar { width: 190px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg-surface); padding: 10px 8px; }
+  .nav-item { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--text-2); }
+  .nav-item.active { background: var(--bg-elevated); color: var(--brand); }
+  .nav-label { padding: 12px 10px 4px; font-size: 11px; color: var(--text-3); }
+  .main { flex: 1; display: flex; min-width: 0; }
+
+  /* 顶栏 */
+  .topbar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px;
+            border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .select { height: 34px; min-width: 200px; display: flex; align-items: center; justify-content: space-between;
+            padding: 0 12px; border-radius: 8px; background: var(--bg-elevated); }
+  .btn { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; border-radius: 8px;
+         border: 1px solid var(--border); background: transparent; color: var(--text-1); font-size: 13px; }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .btn.danger { border-color: rgba(224,49,49,.45); color: #ef7d73; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px;
+          border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+  .pill.live { border-color: rgba(226,62,50,.5); color: #f08a80; }
+  .pill.live::before { content:""; width:6px; height:6px; border-radius:50%; background:var(--live); }
+
+  /* 原型切换条 */
+  .facebar { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px;
+             background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 999px; padding: 5px; z-index: 9; }
+  .facebar button { border: 0; background: transparent; color: var(--text-2); padding: 6px 16px; border-radius: 999px; cursor: pointer; font-size: 13px; }
+  .facebar button.on { background: var(--brand); color: #fff; }
+
+  .console { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .center { flex: 1; display: flex; min-height: 0; }
+
+  /* 播出区：当前项大卡片 */
+  .stage { flex: 1; padding: 16px; overflow-y: auto; min-width: 0; }
+  .now-card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .now-tag { font-size: 11px; color: var(--text-3); letter-spacing: 1px; }
+  .now-title { font-size: 17px; font-weight: 600; margin: 4px 0 10px; }
+  .progress { height: 6px; border-radius: 999px; background: var(--bg-elevated); overflow: hidden; margin: 10px 0 6px; }
+  .progress i { display: block; height: 100%; background: var(--brand); border-radius: 999px; }
+  .progress-meta { display: flex; justify-content: space-between; color: var(--text-3); font-size: 12px; }
+  .transport { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+  .wave { display: flex; align-items: flex-end; gap: 2px; height: 34px; margin-top: 12px; }
+  .wave i { width: 3px; background: var(--brand); border-radius: 2px; opacity: .8; }
+
+  /* 内容列表（队列/章节通用） */
+  .list { margin-top: 16px; display: flex; flex-direction: column; gap: 6px; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 9px;
+         background: var(--bg-surface); border: 1px solid var(--border); }
+  .row.playing { border-color: rgba(196,112,63,.55); background: var(--brand-soft); }
+  .row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .m { color: var(--text-3); font-size: 12px; flex-shrink: 0; }
+  .tag { font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); flex-shrink: 0; }
+  .tag.ok { color: var(--ok); border-color: rgba(111,162,135,.4); }
+  .tag.wait { color: var(--warn); border-color: rgba(217,164,65,.4); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot.g { background: var(--ok); } .dot.y { background: var(--warn); } .dot.r { background: var(--live); } .dot.n { background: var(--text-3); }
+
+  /* 侧栏 */
+  .side { width: 340px; flex-shrink: 0; border-left: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-surface); }
+  .tabs { display: flex; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+  .tabs div { flex: 1; text-align: center; padding: 10px 0; color: var(--text-2); }
+  .tabs div.on { color: var(--brand); border-bottom: 2px solid var(--brand); }
+  .chat { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .bubble { max-width: 88%; padding: 8px 11px; border-radius: 11px; background: var(--bg-elevated); font-size: 13px; }
+  .bubble.me { align-self: flex-end; background: var(--brand); color: #fff; }
+  .tool-line { color: var(--text-3); font-size: 12px; padding: 2px 4px; }
+  .inputbar { border-top: 1px solid var(--border); padding: 10px 12px; flex-shrink: 0; }
+  .inputbox { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 10px; padding: 9px 11px; color: var(--text-3); }
+  .inputtools { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px; border-radius: 999px;
+          border: 1px solid var(--border); font-size: 12px; color: var(--text-2); }
+  .chip::before { content:""; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); }
+  .send { margin-left: auto; width: 32px; height: 32px; border-radius: 9px; background: var(--brand); color: #fff;
+          display: flex; align-items: center; justify-content: center; }
+
+  .comment { border-top: 1px solid var(--border); padding: 10px 12px; flex-shrink: 0; max-height: 180px; overflow-y: auto; }
+  .comment .c { padding: 5px 0; border-bottom: 1px dashed var(--border); font-size: 12px; color: var(--text-2); }
+  .comment .c b { color: var(--brand); font-weight: 500; }
+  .sec-title { font-size: 12px; color: var(--text-3); margin: 14px 0 8px; }
+  .face { display: none; }
+  .face.on { display: block; }
+  .kv { display: flex; gap: 14px; margin-top: 10px; color: var(--text-2); font-size: 12px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<div class="body">
+  <aside class="sidebar">
+    <div style="padding:6px 10px 12px;font-weight:600">Agent Anchor</div>
+    <div class="nav-label">内容</div>
+    <div class="nav-item">▶ 播控台</div>
+    <div class="nav-item">▤ 节目库</div>
+    <div class="nav-item">✎ 文稿库</div>
+    <div class="nav-label">资产</div>
+    <div class="nav-item">☺ 主播团</div>
+    <div class="nav-item">▣ 知识库</div>
+    <div class="nav-item">♫ 音色库</div>
+    <div class="nav-label">生产</div>
+    <div class="nav-item">⬒ 导出记录</div>
+    <div class="nav-item">✦ 工具箱</div>
+    <div class="nav-label"></div>
+    <div class="nav-item">⚙ 设置</div>
+  </aside>
+
+  <div class="console">
+    <!-- ============ 顶栏（三脸共用） ============ -->
+    <div class="topbar">
+      <b>播控台</b>
+      <div class="select"><span id="programName">周五晚 · 保温杯带货专场</span><span>▾</span></div>
+      <span class="pill live" id="livePill">在播 · 第 2/9 段</span>
+      <span style="flex:1"></span>
+      <button class="btn">⏸ 暂停</button>
+      <button class="btn">⏭ 跳一段</button>
+      <button class="btn danger">■ 结束播出</button>
+    </div>
+
+    <div class="center">
+      <!-- ============ 脸 1：队列脸（live 分段） ============ -->
+      <section class="stage face on" id="face-queue">
+        <div class="now-card">
+          <div class="now-tag">正在播出 · 常规车道</div>
+          <div class="now-title">各位看官，醒木一拍，开场喽！保温杯今天只讲三件事…</div>
+          <div class="wave"><i style="height:12px"></i><i style="height:26px"></i><i style="height:34px"></i><i style="height:20px"></i><i style="height:30px"></i><i style="height:14px"></i><i style="height:28px"></i><i style="height:22px"></i><i style="height:32px"></i><i style="height:16px"></i><i style="height:26px"></i><i style="height:30px"></i></div>
+          <div class="progress"><i style="width:46%"></i></div>
+          <div class="progress-meta"><span>00:21 / 00:46</span><span>音色 zh_female_xiaohe</span></div>
+          <div class="kv"><span>循环闸门：开</span><span>低水位补货：开</span><span>段间留白 0.8s</span></div>
+        </div>
+        <div class="sec-title">播出队列（话术池）</div>
+        <div class="list">
+          <div class="row playing"><span class="dot g"></span><span class="tag">常规</span><span class="t">醒木一拍开场喽，保温杯只讲三件事…</span><span class="m">播报中</span></div>
+          <div class="row"><span class="dot g"></span><span class="tag">常规</span><span class="t">316 内胆好在哪——半夜水还烫嘴的梗</span><span class="m">就绪</span></div>
+          <div class="row"><span class="dot y"></span><span class="tag">下一条</span><span class="t">回 @柠檬不酸：能刻字吗？能！</span><span class="m">就绪</span></div>
+          <div class="row"><span class="dot n"></span><span class="tag">常规</span><span class="t">一键弹盖不烫嘴，现场演示段</span><span class="m">合成中…</span></div>
+          <div class="row"><span class="dot n"></span><span class="tag">垫底</span><span class="t">唠家常兜底段 · 第 3 变体</span><span class="m">待合成</span></div>
+        </div>
+      </section>
+
+      <!-- ============ 脸 2：长文脸（audiobook / podcast pipeline） ============ -->
+      <section class="stage face" id="face-long">
+        <div class="now-card">
+          <div class="now-tag">正在播出 · 《山海志异》有声书</div>
+          <div class="now-title">第三章 · 雾里行舟</div>
+          <div class="progress"><i style="width:38%"></i></div>
+          <div class="progress-meta"><span>11:24 / 30:12</span><span>书签已存 · 上次听到 10:58</span></div>
+          <div class="transport">
+            <button class="btn">⏮ 上一章</button>
+            <button class="btn">⏪ -15s</button>
+            <button class="btn primary">⏸ 暂停</button>
+            <button class="btn">⏩ +15s</button>
+            <button class="btn">⏭ 下一章</button>
+            <span style="flex:1"></span>
+            <button class="btn">⬇ 导出本书</button>
+          </div>
+        </div>
+        <div class="sec-title">章节（批量合成 5/12）</div>
+        <div class="list">
+          <div class="row"><span class="dot g"></span><span class="tag ok">已完成</span><span class="t">第一章 · 山雨欲来</span><span class="m">28:40</span></div>
+          <div class="row"><span class="dot g"></span><span class="tag ok">已完成</span><span class="t">第二章 · 渡口怪谈</span><span class="m">31:05</span></div>
+          <div class="row playing"><span class="dot g"></span><span class="tag">在播</span><span class="t">第三章 · 雾里行舟</span><span class="m">11:24 / 30:12</span></div>
+          <div class="row"><span class="dot y"></span><span class="tag wait">合成中 82%</span><span class="t">第四章 · 无名客</span><span class="m">—</span></div>
+          <div class="row"><span class="dot y"></span><span class="tag wait">排队中</span><span class="t">第五章 · 夜泊</span><span class="m">—</span></div>
+          <div class="row"><span class="dot n"></span><span class="tag">待合成</span><span class="t">第六章 · 灯影</span><span class="m">—</span></div>
+        </div>
+      </section>
+
+      <!-- ============ 脸 3：即兴脸（交互直播） ============ -->
+      <section class="stage face" id="face-improv">
+        <div class="now-card">
+          <div class="now-tag">正在播出 · 交互模式（无底稿，聊着走）</div>
+          <div class="now-title">"刚才有位朋友问保温杯能不能刻字——能！不仅能刻，还能刻诗…"</div>
+          <div class="progress"><i style="width:70%"></i></div>
+          <div class="progress-meta"><span>流式合成中</span><span>由评论驱动 · 节拍器 5 分钟未触发</span></div>
+          <div class="kv"><span>话题卡弹药：38 条</span><span>冷场自救：开</span><span>队列常驻</span></div>
+        </div>
+        <div class="sec-title">最近说过</div>
+        <div class="list">
+          <div class="row"><span class="dot g"></span><span class="t">回应 @柠檬不酸：能刻字吗？</span><span class="m">00:12 前</span></div>
+          <div class="row"><span class="dot g"></span><span class="t">话题卡：讲个保温杯界的冷知识</span><span class="m">01:40 前</span></div>
+          <div class="row"><span class="dot g"></span><span class="t">欢迎 @老茶客 进场</span><span class="m">03:05 前</span></div>
+        </div>
+      </section>
+
+      <!-- ============ 侧栏（对话 + 条件互动区） ============ -->
+      <aside class="side">
+        <div class="tabs"><div class="on">对话</div><div id="interactTab">互动</div></div>
+        <div class="chat">
+          <div class="tool-line">🔧 say · "能刻字！还能刻诗…" <span style="opacity:.6">· 12ms ✓</span></div>
+          <div class="bubble">价格口径我又核了一遍：59.9 全库一致。还有什么要交代的？</div>
+          <div class="bubble me">把秒杀放到 8 点档</div>
+          <div class="bubble">收到，秒杀口径已改 8 点档，池里提到秒杀的两段我会顺手修订。</div>
+        </div>
+        <div class="comment" id="commentPane">
+          <div style="font-size:12px;color:var(--text-3);margin-bottom:4px">评论流</div>
+          <div class="c"><b>柠檬不酸：</b>能刻字吗？</div>
+          <div class="c"><b>老茶客：</b>上次那个杯子真不烫嘴</div>
+          <div class="c"><b>路过看看：</b>8 点秒杀是真的吗</div>
+        </div>
+        <div class="inputbar">
+          <div class="inputbox">对主播说点什么…（选中场次即可开聊，主播会自己就位）</div>
+          <div class="inputtools">
+            <span style="color:var(--text-3)">📎</span>
+            <span class="chip">● 小陶 ▾</span>
+            <span class="send">➤</span>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<div class="facebar">
+  <button class="on" onclick="show('queue',this)">① 队列脸 · live 分段</button>
+  <button onclick="show('long',this)">② 长文脸 · 有声书/播客</button>
+  <button onclick="show('improv',this)">③ 即兴脸 · 交互直播</button>
+</div>
+<script>
+  const meta = {
+    queue:  { name:'周五晚 · 保温杯带货专场', pill:'在播 · 第 2/9 段', interact:true },
+    long:   { name:'《山海志异》有声书 · 全书 12 章', pill:'在播 · 第 3 章', interact:false },
+    improv: { name:'保温杯夜聊 · 交互直播', pill:'在播 · 评论驱动', interact:true }
+  }
+  function show(k, btn) {
+    document.querySelectorAll('.face').forEach(f => f.classList.remove('on'))
+    document.getElementById('face-' + k).classList.add('on')
+    document.querySelectorAll('.facebar button').forEach(b => b.classList.remove('on'))
+    btn.classList.add('on')
+    document.getElementById('programName').textContent = meta[k].name
+    document.getElementById('livePill').textContent = meta[k].pill
+    document.getElementById('commentPane').style.display = meta[k].interact ? '' : 'none'
+    document.getElementById('interactTab').style.opacity = meta[k].interact ? 1 : .35
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>导出器 + 工具箱 · 原型</title>
+<style>
+  :root {
+    --bg-base: #141311; --bg-surface: #1c1b18; --bg-elevated: #24221d;
+    --border: #34312a; --text-1: #edeae2; --text-2: #a8a29a; --text-3: #6e6a61;
+    --brand: #c4703f; --brand-soft: rgba(196,112,63,.14);
+    --ok: #6fa287; --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-base); color: var(--text-1);
+         font: 13px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; height: 100vh; overflow: hidden; }
+  .body { display: flex; height: 100vh; }
+  .sidebar { width: 190px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg-surface); padding: 10px 8px; }
+  .nav-item { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--text-2); }
+  .nav-item.active { background: var(--bg-elevated); color: var(--brand); }
+  .nav-label { padding: 12px 10px 4px; font-size: 11px; color: var(--text-3); }
+  .main { flex: 1; padding: 20px 24px; overflow-y: auto; }
+  .btn { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; border-radius: 8px;
+         border: 1px solid var(--border); background: transparent; color: var(--text-1); font-size: 13px; }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  h2 { font-size: 16px; margin: 0 0 4px; }
+  .hint { color: var(--text-3); font-size: 12px; margin-bottom: 16px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  .card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; }
+  .card h3 { margin: 0 0 4px; font-size: 14px; }
+  .card .sub { color: var(--text-3); font-size: 12px; margin-bottom: 12px; }
+  .field { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .field label { width: 78px; color: var(--text-2); flex-shrink: 0; font-size: 12px; }
+  .opt { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+  .opt span { padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+  .opt span.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .textbox { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+             color: var(--text-3); font-size: 12px; }
+  .switch { width: 34px; height: 19px; border-radius: 999px; background: var(--brand); position: relative; }
+  .switch::after { content:""; position: absolute; right: 2px; top: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; }
+  .switch.off { background: var(--border); } .switch.off::after { left: 2px; right: auto; }
+
+  /* 导出弹窗 */
+  .mask { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
+  .dialog { width: 560px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; }
+  .dialog h2 { margin-bottom: 2px; }
+  .preview { background: var(--bg-elevated); border: 1px dashed var(--border); border-radius: 9px; padding: 10px 12px;
+             font-family: ui-monospace,Consolas,monospace; font-size: 12px; color: var(--text-2); margin-top: 8px; }
+  .rowline { display: flex; justify-content: space-between; padding: 7px 0; border-bottom: 1px dashed var(--border); font-size: 12px; color: var(--text-2); }
+  .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="body">
+  <aside class="sidebar">
+    <div style="padding:6px 10px 12px;font-weight:600">Agent Anchor</div>
+    <div class="nav-label">内容</div>
+    <div class="nav-item">▶ 播控台</div>
+    <div class="nav-item">▤ 节目库</div>
+    <div class="nav-item">✎ 文稿库</div>
+    <div class="nav-label">资产</div>
+    <div class="nav-item">☺ 主播团</div>
+    <div class="nav-item">▣ 知识库</div>
+    <div class="nav-item">♫ 音色库</div>
+    <div class="nav-label">生产</div>
+    <div class="nav-item">⬒ 导出记录</div>
+    <div class="nav-item active">✦ 工具箱</div>
+    <div class="nav-label"></div>
+    <div class="nav-item">⚙ 设置</div>
+  </aside>
+
+  <div class="main">
+    <h2>工具箱</h2>
+    <div class="hint">一次性生产、按条交付——不建节目，底下复用同一套 TTS 层与导出器。产出可直接上传各平台。</div>
+    <div class="cols">
+      <!-- 配音工作台 -->
+      <div class="card">
+        <h3>🎙 配音工作台</h3>
+        <div class="sub">短视频口播 / 广告旁白 / 课程配音，按条生成按条导出</div>
+        <div class="field"><label>稿件</label><div class="textbox" style="flex:1">粘贴口播稿，或点「让主播写」…</div></div>
+        <div class="field"><label>音色</label><div class="opt"><span class="on">小陶（克隆）</span><span>longanping</span></div></div>
+        <div class="field"><label>语速</label><div class="opt"><span>慢</span><span class="on">标准</span><span>快</span></div></div>
+        <div class="field"><label>批量</label><div class="textbox" style="flex:1">多稿换行分隔，一次全蒸</div></div>
+        <div style="margin-top:10px"><button class="btn primary" style="width:100%;justify-content:center">生成并导出 mp3</button></div>
+      </div>
+      <!-- 文章转语音 -->
+      <div class="card">
+        <h3>📄 文章转语音</h3>
+        <div class="sub">链接或粘贴文本 → 朗读音频（公众号文章、文档速听）</div>
+        <div class="field"><label>输入</label><div class="textbox" style="flex:1">https://… 或粘贴正文</div></div>
+        <div class="field"><label>音色</label><div class="opt"><span class="on">朗读女声明</span><span>小陶</span></div></div>
+        <div class="field"><label>风格</label><div class="opt"><span class="on">原文照读</span><span>播客改写</span></div><small>播客改写 = 双人对话版（火山后端）</small></div>
+        <div style="margin-top:10px"><button class="btn primary" style="width:100%;justify-content:center">转换</button></div>
+      </div>
+      <!-- 提示音素材库 -->
+      <div class="card">
+        <h3>🔔 提示音素材库</h3>
+        <div class="sub">固定短语批量合成：IVR、门店播报、叫号</div>
+        <div class="field"><label>短语表</label><div class="textbox" style="flex:1;min-height:64px">欢迎光临 XX 门店<br>请 A032 号到 3 号窗口<br>…</div></div>
+        <div class="field"><label>音色</label><div class="opt"><span class="on">门店女声明</span><span>自定义</span></div></div>
+        <div class="field"><label>格式</label><div class="opt"><span class="on">mp3</span><span>wav</span></div></div>
+        <div style="margin-top:10px"><button class="btn primary" style="width:100%;justify-content:center">批量合成导出</button></div>
+      </div>
+    </div>
+
+    <h2 style="margin-top:26px">导出记录</h2>
+    <div class="hint">流水线节目（有声书/播客/广播剧）的成品导出历史，文件落在本地目录，可直接上传各平台。</div>
+    <div class="card">
+      <div class="rowline"><span>⬇ 《山海志异》有声书 · 按章 12 个 mp3</span><span style="color:var(--ok)">完成 · 286MB · 已归一 -14 LUFS</span></div>
+      <div class="rowline"><span>⬇ 科技乱炖第 12 期 · 合并整期</span><span style="color:var(--ok)">完成 · 48MB</span></div>
+      <div class="rowline"><span>⬇ 《夜行列车》E1-E2 · 按集</span><span style="color:var(--warn)">合成中 2/8 集…</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 导出对话框（长文脸「导出本书」点开） ============ -->
+<div class="mask" style="display:none" id="exportDlg">
+  <div class="dialog">
+    <h2>导出《山海志异》</h2>
+    <div class="hint">产出文件落到本地目录，可直接上传喜马拉雅/懒人听书等平台。</div>
+    <div class="field"><label>分章方式</label><div class="opt"><span class="on">按章分文件</span><span>合并整本</span></div></div>
+    <div class="field"><label>命名模板</label><div class="textbox" style="flex:1">{书名}-{序号}-{章名}.mp3</div></div>
+    <div class="preview">
+      《山海志异》-001-山雨欲来.mp3<br>《山海志异》-002-渡口怪谈.mp3<br>《山海志异》-003-雾里行舟.mp3 …
+    </div>
+    <div class="field" style="margin-top:10px"><label>响度归一</label><div class="switch"></div><small>-14 LUFS（平台通用）</small></div>
+    <div class="field"><label>元数据</label><div class="switch"></div><small>书名/演播/封面写入 ID3</small></div>
+    <div class="field"><label>格式</label><div class="opt"><span class="on">mp3</span><span>wav 母带</span></div></div>
+    <div class="rowline" style="margin-top:6px"><span>输出目录</span><span>D:\产出\山海志异\ ▾</span></div>
+    <div class="foot">
+      <button class="btn" onclick="document.getElementById('exportDlg').style.display='none'">取消</button>
+      <button class="btn primary">开始导出（12 章）</button>
+    </div>
+  </div>
+</div>
+<script>document.getElementById('exportDlg').style.display='flex'</script>
+</body>
+</html>

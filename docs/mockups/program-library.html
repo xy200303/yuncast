@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>节目库 + 节目编辑 · 原型</title>
+<style>
+  :root {
+    --bg-base: #141311; --bg-surface: #1c1b18; --bg-elevated: #24221d;
+    --border: #34312a; --text-1: #edeae2; --text-2: #a8a29a; --text-3: #6e6a61;
+    --brand: #c4703f; --brand-soft: rgba(196,112,63,.14);
+    --live: #e23e32; --ok: #6fa287; --warn: #d9a441;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg-base); color: var(--text-1);
+         font: 13px/1.6 "Segoe UI","Microsoft YaHei",system-ui,sans-serif; height: 100vh; overflow: hidden; }
+  .body { display: flex; height: 100vh; }
+  .sidebar { width: 190px; flex-shrink: 0; border-right: 1px solid var(--border); background: var(--bg-surface); padding: 10px 8px; }
+  .nav-item { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border-radius: 8px; color: var(--text-2); }
+  .nav-item.active { background: var(--bg-elevated); color: var(--brand); }
+  .nav-label { padding: 12px 10px 4px; font-size: 11px; color: var(--text-3); }
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  header.bar { height: 56px; display: flex; align-items: center; gap: 10px; padding: 0 16px; border-bottom: 1px solid var(--border); }
+  .btn { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 14px; border-radius: 8px;
+         border: 1px solid var(--border); background: transparent; color: var(--text-1); font-size: 13px; }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .content { flex: 1; overflow-y: auto; padding: 16px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--bg-surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px; }
+  .card h3 { margin: 0 0 2px; font-size: 14px; }
+  .card .sub { color: var(--text-3); font-size: 12px; margin-bottom: 10px; }
+  .pill { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px;
+          border: 1px solid var(--border); color: var(--text-2); font-size: 11px; margin-right: 5px; }
+  .pill.f-live { color: #f08a80; border-color: rgba(226,62,50,.4); }
+  .pill.f-pod  { color: #d9a441; border-color: rgba(217,164,65,.4); }
+  .pill.f-book { color: #6fa287; border-color: rgba(111,162,135,.4); }
+  .pill.f-drama{ color: #9a8fd0; border-color: rgba(154,143,208,.4); }
+
+  /* 编辑弹窗 */
+  .mask { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; }
+  .dialog { width: 720px; max-height: 86vh; overflow-y: auto; background: var(--bg-surface); border: 1px solid var(--border);
+            border-radius: 14px; padding: 18px 20px; }
+  .dialog h2 { margin: 0 0 4px; font-size: 16px; }
+  .dialog .hint { color: var(--text-3); font-size: 12px; margin-bottom: 14px; }
+  .formats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 16px; }
+  .fmt { border: 1px solid var(--border); border-radius: 10px; padding: 12px; cursor: pointer; background: var(--bg-elevated); }
+  .fmt.on { border-color: var(--brand); background: var(--brand-soft); }
+  .fmt b { display: block; margin-bottom: 4px; }
+  .fmt span { color: var(--text-3); font-size: 11px; line-height: 1.5; display: block; }
+  .sec { border-top: 1px solid var(--border); padding: 12px 0; }
+  .sec h4 { margin: 0 0 10px; font-size: 13px; color: var(--brand); }
+  .field { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .field label { width: 110px; color: var(--text-2); flex-shrink: 0; }
+  .opt { display: inline-flex; gap: 6px; }
+  .opt span { padding: 3px 11px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); font-size: 12px; }
+  .opt span.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+  .field small { color: var(--text-3); margin-left: auto; font-size: 11px; }
+  .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="body">
+  <aside class="sidebar">
+    <div style="padding:6px 10px 12px;font-weight:600">Agent Anchor</div>
+    <div class="nav-label">内容</div>
+    <div class="nav-item">▶ 播控台</div>
+    <div class="nav-item active">▤ 节目库</div>
+    <div class="nav-item">✎ 文稿库</div>
+    <div class="nav-label">资产</div>
+    <div class="nav-item">☺ 主播团</div>
+    <div class="nav-item">▣ 知识库</div>
+    <div class="nav-item">♫ 音色库</div>
+    <div class="nav-label">生产</div>
+    <div class="nav-item">⬒ 导出记录</div>
+    <div class="nav-item">✦ 工具箱</div>
+    <div class="nav-label"></div>
+    <div class="nav-item">⚙ 设置</div>
+  </aside>
+
+  <div class="main">
+    <header class="bar">
+      <b>节目库</b>
+      <span style="color:var(--text-3);font-size:12px">节目 = 内容形态 + 配置，决定播什么；推流渠道在播出时另选，抖音只是其一</span>
+      <span style="flex:1"></span>
+      <button class="btn primary" onclick="document.getElementById('dlg').style.display='flex'">＋ 新建节目</button>
+    </header>
+    <div class="content">
+      <div class="grid">
+        <div class="card">
+          <span class="pill f-live">直播</span><span class="pill">带货</span>
+          <h3>周五晚 · 保温杯专场</h3>
+          <div class="sub">边播边产 · 逐段合成 · 底稿 16 段就绪</div>
+          <div style="color:var(--text-3);font-size:12px">剧本 3 场 · 交互 batched · 循环开</div>
+        </div>
+        <div class="card">
+          <span class="pill f-live">直播</span><span class="pill">交互</span>
+          <h3>保温杯夜聊 · 纯聊场</h3>
+          <div class="sub">无底稿 · 评论驱动 · 节拍器开</div>
+          <div style="color:var(--text-3);font-size:12px">话题卡 38 条 · 流式合成</div>
+        </div>
+        <div class="card">
+          <span class="pill f-pod">播客</span><span class="pill">双人</span>
+          <h3>科技乱炖 · 第 12 期</h3>
+          <div class="sub">流水线 · 整期合成（火山双人播客）</div>
+          <div style="color:var(--text-3);font-size:12px">文稿已完成 · 合成 100% · 未导出</div>
+        </div>
+        <div class="card">
+          <span class="pill f-book">有声书</span>
+          <h3>《山海志异》</h3>
+          <div class="sub">流水线 · 批量整章 · 12 章</div>
+          <div style="color:var(--text-3);font-size:12px">合成 5/12 · 书签第 3 章 11:24</div>
+        </div>
+        <div class="card">
+          <span class="pill f-drama">广播剧</span>
+          <h3>《夜行列车》第一季</h3>
+          <div class="sub">流水线 · 多角色 + 音效轨 · 8 集</div>
+          <div style="color:var(--text-3);font-size:12px">剧本 2/8 完成 · 角色 5 人</div>
+        </div>
+        <div class="card">
+          <span class="pill f-live">直播</span><span class="pill">陪伴</span>
+          <h3>深夜电台 · 助眠陪伴</h3>
+          <div class="sub">常驻循环 · BGM 主导 · 轻互动</div>
+          <div style="color:var(--text-3);font-size:12px">filler 垫底 12 段 · 全天</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 新建/编辑节目弹窗 ============ -->
+<div class="mask" id="dlg" style="display:none" onclick="if(event.target===this)style.display='none'">
+  <div class="dialog">
+    <h2>新建节目</h2>
+    <div class="hint">先选内容形态（决定 agent 怎么写稿、用什么语气），默认值自动填好，下面每组都能改。</div>
+
+    <div class="formats">
+      <div class="fmt on"><b>▶ 直播</b><span>有观众、实时、可互动。带货/宣讲/夜聊/陪伴</span></div>
+      <div class="fmt"><b>♫ 播客</b><span>成期对谈或单口，整期合成</span></div>
+      <div class="fmt"><b>📖 有声书</b><span>章节旁白，批量合成 + 导出</span></div>
+      <div class="fmt"><b>🎭 广播剧</b><span>多角色剧本 + 音效轨</span></div>
+    </div>
+
+    <div class="sec"><h4>交互</h4>
+      <div class="field"><label>评论接线</label><div class="opt"><span>关</span><span class="on">攒批</span><span>逐条</span></div><small>攒批窗口 20s</small></div>
+      <div class="field"><label>触发器</label><div class="opt"><span class="on">开</span><span>关</span></div><small>欢迎/礼物/价格变动…</small></div>
+      <div class="field"><label>节拍器</label><div class="opt"><span>开</span><span class="on">关</span></div><small>定时带节奏，防冷场（交互直播建议开）</small></div>
+      <div class="field"><label>冷场自救</label><div class="opt"><span class="on">开</span><span>关</span></div></div>
+    </div>
+
+    <div class="sec"><h4>合成</h4>
+      <div class="field"><label>合成策略</label><div class="opt"><span class="on">逐段</span><span>整块</span><span>整篇</span></div><small>整块=一次吞 3~5 段；整篇=整章一期一气合成</small></div>
+      <div class="field"><label>整篇后端</label><div class="opt"><span class="on">本地拼接</span><span>火山双人播客</span></div><small>火山后端仅双人播客，失败自动降级本地</small></div>
+      <div class="field"><label>韵律连贯</label><div class="opt"><span class="on">带上文</span><span>关</span></div><small>逐段模式下把上一段尾句传给 TTS</small></div>
+    </div>
+
+    <div class="sec"><h4>轮播</h4>
+      <div class="field"><label>循环</label><div class="opt"><span class="on">开</span><span>关</span></div><small>播完整轮从头再来</small></div>
+      <div class="field"><label>常驻</label><div class="opt"><span>开</span><span class="on">关</span></div><small>陪伴电台类常开</small></div>
+      <div class="field"><label>段间留白</label><div class="opt"><span>0.4s</span><span class="on">0.8s</span><span>1.2s</span></div></div>
+      <div class="field"><label>BGM 角色</label><div class="opt"><span>关</span><span>章间过场</span><span class="on">背景主导</span></div></div>
+      <div class="field"><label>音效轨</label><div class="opt"><span>开</span><span class="on">关</span></div><small>广播剧打开</small></div>
+    </div>
+
+    <div class="sec"><h4>生产</h4>
+      <div class="field"><label>模式</label><div class="opt"><span class="on">边播边产</span><span>流水线</span></div><small>流水线=全部做完才播/导出（有声书播客）</small></div>
+      <div class="field"><label>导出</label><div class="opt"><span>开</span><span class="on">关</span></div><small>按章 mp3 / 合并整本 / 响度归一</small></div>
+    </div>
+
+    <div class="sec"><h4>写稿</h4>
+      <div class="field"><label>目标时长</label><div class="opt"><span>30 分钟</span><span class="on">60 分钟</span><span>自定义</span></div></div>
+      <div class="field"><label>内容</label><div class="opt"><span>绑剧本 3 场</span><span style="opacity:.5">全书大纲（有声书）</span></div><small>按形态换不同任务书</small></div>
+    </div>
+
+    <div class="foot">
+      <button class="btn" onclick="document.getElementById('dlg').style.display='none'">取消</button>
+      <button class="btn primary">保存节目</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

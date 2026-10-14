@@ -81,7 +81,9 @@ export class SpeechPool {
     private readonly realtime: RealtimeChannelProbe = {
       available: () => false,
       unavailableReason: () => '实时通道未接入'
-    }
+    },
+    /** 当前在场主播的生效音色（index.ts 接 agent.currentVoice）：播放取件的音色匹配用 */
+    private readonly voiceProvider: () => string = () => ''
   ) {
     // 重启后上次留下的未播完条目全部作废——音频可能还在但播放上下文没了
     for (const item of this.storage.speechActive()) {
@@ -229,22 +231,65 @@ export class SpeechPool {
     this.refresh()
   }
 
+  /**
+   * 换主播/换音色后的重嗓音（docs/07 §8.5）：未播条目里音色不匹配的作废音频、
+   * 换新嗓音重合成（文本不动）。通配条目（voiceId=''）和已匹配的不动；
+   * 正在播的收不回（说出去的话泼出去的水），播完的不管。返回重置条数。
+   */
+  reVoice(voice: string): number {
+    const target = voice.trim()
+    if (!target) return 0
+    let n = 0
+    for (const item of this.storage.speechActive()) {
+      if (item.voiceId === '' || item.voiceId === target) continue
+      if (item.status === 'playing' || item.status === 'done') continue
+      this.cancelSynth(item.id)
+      this.storage.speechUpdate(item.id, { status: 'pending', audioPath: undefined, stream: false, voiceId: target })
+      n++
+    }
+    if (n > 0) this.refresh()
+    return n
+  }
+
   // ---------- 播放出口 ----------
 
   /** 看一眼播出顺序上的第一个 ready 条目（不取走）：播放循环用它判断下一条急不急，决定要不要留白 */
   peek(): SpeechItem | null {
     this.sweepExpired()
-    return orderedForPlay(this.storage.speechActive()).find((entry) => entry.status === 'ready') ?? null
+    return (
+      orderedForPlay(this.storage.speechActive()).find(
+        (entry) => entry.status === 'ready' && this.playable(entry)
+      ) ?? null
+    )
   }
 
   /** 取播出顺序上第一个 ready 条目并置 playing；没有就返回 null（调用方等待重试） */
   next(): SpeechItem | null {
     this.sweepExpired()
-    const item = orderedForPlay(this.storage.speechActive()).find((entry) => entry.status === 'ready')
+    const ordered = orderedForPlay(this.storage.speechActive())
+    let item = ordered.find((entry) => entry.status === 'ready' && this.playable(entry))
+    if (!item) {
+      // 有就绪但音色全不匹配（改人设卡音色后重启之类）：自愈重嗓音，别干躺着等死
+      const ready = ordered.filter((entry) => entry.status === 'ready')
+      const voice = this.voiceProvider()
+      if (ready.length > 0 && voice && ready.every((entry) => !this.playable(entry))) {
+        this.reVoice(voice)
+        item = orderedForPlay(this.storage.speechActive()).find(
+          (entry) => entry.status === 'ready' && this.playable(entry)
+        )
+      }
+    }
     if (!item) return null
     this.storage.speechUpdate(item.id, { status: 'playing' })
     this.refresh()
     return this.storage.speechGet(item.id)
+  }
+
+  /** 音色匹配：条目没标音色（通配）或当前无生效音色都照播；标了且不匹配的取不走（等 reVoice 重合成） */
+  private playable(item: SpeechItem): boolean {
+    const voice = this.voiceProvider()
+    if (!item.voiceId || !voice) return true
+    return item.voiceId === voice
   }
 
   /** 播放中断（暂停/急停/退出）：正在播的条目退回 ready，等恢复从头重播 */

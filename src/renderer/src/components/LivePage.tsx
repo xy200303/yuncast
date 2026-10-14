@@ -817,18 +817,16 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   const switchAnchor = async (id: string): Promise<void> => {
     const target = personas.find((p) => p.id === id)
     if (!target) return
-    if (agent.state !== 'stopped') {
-      const result = await window.api.agent.handoff(id)
-      if (result.ok) {
-        setActivePersona(target)
-        toast.success(`已换主播：${target.name}`, { description: '这场的历史和话术池她都接得住，接着播' })
-      } else {
-        toast.error('换主播失败', { description: result.error })
-      }
-    } else {
-      await window.api.persona.setActive(id)
+    const wasStopped = agent.state === 'stopped'
+    // 两条路都走 handoff：直播中原子换人，没在跑切当前主播 + 池里旧音色重合成
+    const result = await window.api.agent.handoff(id)
+    if (result.ok) {
       setActivePersona(target)
-      toast.success(`当前主播：${target.name}`)
+      toast.success(wasStopped ? `当前主播：${target.name}` : `已换主播：${target.name}`, {
+        description: wasStopped ? '池里旧音色的话术会换成新嗓音' : '这场的历史和话术池她都接得住，接着播'
+      })
+    } else {
+      toast.error('换主播失败', { description: result.error })
     }
   }
 

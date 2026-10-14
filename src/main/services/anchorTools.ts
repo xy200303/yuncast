@@ -832,7 +832,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'set_voice',
       label: '换音色',
       description:
-        '把本场音色换成另一个（voiceId 从音色库来；传空字符串回到人设卡音色）。换完之后新说出的每一句都用新音色，已经在池里的旧音频不受影响。',
+        '把本场音色换成另一个（voiceId 从音色库来；传空字符串回到人设卡音色）。换完之后新说出的每一句都用新音色，池里还没播的旧音色音频会自动用新嗓音重合成（正在播和已播完的不受影响）。',
       parameters: Type.Object({
         voiceId: Type.String({ description: '音色 id，留空 = 回到人设卡音色' })
       }),
@@ -840,7 +840,10 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         guardTool(() => {
           const voiceId = String(params.voiceId ?? '').trim()
           setPlanVoice?.(voiceId)
-          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它` : '已清掉场次音色，回到人设卡的音色'
+          const effective = voiceId || persona.get().voiceId
+          const reVoiced = pool.reVoice(effective)
+          const tail = reVoiced > 0 ? `，${reVoiced} 条未播的旧音色话术已加入重合成` : ''
+          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它${tail}` : `已清掉场次音色，回到人设卡的音色${tail}`
         })
     }),
     defineTool({

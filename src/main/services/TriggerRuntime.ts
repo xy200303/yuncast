@@ -398,7 +398,8 @@ export class TriggerRuntime {
           text,
           lane: toolAction?.lane ?? 'normal',
           sourceAgentId: `trigger:${trigger.id}`,
-          sourceKind: 'interact'
+          sourceKind: 'interact',
+          voiceId: this.agent.currentVoice() || undefined
         })
       } catch (error) {
         console.error(`[AgentAnchor] 触发器「${trigger.name}」入池失败:`, error)

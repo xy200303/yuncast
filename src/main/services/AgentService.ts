@@ -190,6 +190,11 @@ export class AgentService {
     return this.state !== 'stopped' && this.planGapMs > 0 ? this.planGapMs : undefined
   }
 
+  /** 当前在场主播的生效音色（PlaybackLoop/触发器每次取）：运行时换过用换的，没换用人设卡的 */
+  currentVoice(): string {
+    return this.planVoiceId || this.persona.get().voiceId
+  }
+
   /**
    * 暂停/恢复主播产出。暂停时：评论不再派给 LLM、触发器不触发、say/insert_next 被拒
    * （说出去的话收不回，所以宁可不生成）；导演指令照常送达，随时可以喊「继续」。
@@ -421,6 +426,8 @@ export class AgentService {
     const target = this.persona.list().find((p) => p.id === personaId)
     if (!target) return { ok: false, error: '主播卡不存在' }
     if (this.persona.get().id === personaId) return { ok: true }
+    // 池里旧音色的未播条目跟着换人重合成（文本不动），新主播开嗓就是她自己的声音
+    const reVoiced = this.pool.reVoice(target.voiceId)
     if (!this.session) {
       this.persona.setActive(personaId)
       this.broadcast(this.status())
@@ -439,7 +446,9 @@ export class AgentService {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
-    this.emitNote(`—— 主播已换成「${target.name}」：这场的历史她都接得住，接着播 ——`)
+    this.emitNote(
+      `—— 主播已换成「${target.name}」：这场的历史她都接得住${reVoiced > 0 ? `，${reVoiced} 条旧音色话术正用新嗓音重合成` : ''}，接着播 ——`
+    )
     return { ok: true }
   }
 

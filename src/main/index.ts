@@ -875,7 +875,7 @@ if (!single) {
     const storage = new StorageService()
     const tts = new TtsService(storage)
     ttsRealtime = new TtsRealtimeService(storage, tts)
-    pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime)
+    pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime, () => agent?.currentVoice() ?? '')
     const prompts = new PromptTemplateService(storage)
     const persona = new PersonaService(storage, prompts)
     const knowledge = new KnowledgeService(storage)
@@ -921,7 +921,8 @@ if (!single) {
       pool,
       () => ttsStream,
       pipeline,
-      () => agent?.currentGapMs() ?? storage.getConfig().live.bitGapMs
+      () => agent?.currentGapMs() ?? storage.getConfig().live.bitGapMs,
+      () => agent?.currentVoice() ?? ''
     )
     playback.start()
 

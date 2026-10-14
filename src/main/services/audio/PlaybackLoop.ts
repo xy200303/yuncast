@@ -30,7 +30,9 @@ export class PlaybackLoop {
     private readonly ttsStream: () => TtsStreamService | null,
     private readonly pipeline: AudioPipeline,
     /** 桥段间留白（毫秒，读 config.live.bitGapMs）：下一条是正常/兜底车道才留，插播不等 */
-    private readonly gapMs: () => number = () => 0
+    private readonly gapMs: () => number = () => 0,
+    /** 当前在场主播的生效音色：池里音色不匹配的条目不播（等重嗓音），通配条目用它兜底 */
+    private readonly currentVoice: () => string = () => ''
   ) {}
 
   get isRunning(): boolean {
@@ -133,7 +135,7 @@ export class PlaybackLoop {
       void service.start(
         `stream-${item.id}`,
         item.speechText || item.text,
-        item.voiceId || undefined,
+        item.voiceId || this.currentVoice() || undefined,
         {
           onChunk: (pcm, sampleRate) => session.push(pcm, sampleRate),
           onEnd: () => session.end(),

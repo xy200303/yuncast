@@ -500,7 +500,7 @@ function PersonaEditorDialog({
           </div>
 
           <p className="text-xs text-muted-foreground">
-            保存后作为 system prompt 注入；当前主播在跑时会自动重启会话生效。
+            保存后作为 system prompt 注入；她在场时顶部会出「立即应用」横幅，点了重启会话生效（想换主播走对话区胶囊，不断上下文）。
           </p>
         </div>
 

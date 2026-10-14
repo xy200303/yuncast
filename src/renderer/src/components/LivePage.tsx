@@ -267,32 +267,6 @@ function PlanLauncher() {
     void window.api.plan.list().then(setPlans)
   }, [])
 
-  // 在场主播：直播台直接切（直播中 = 原子换主播，场次历史/话术池不动；没在跑 = 只切当前主播）
-  const [personas, setPersonas] = useState<Persona[]>([])
-  const [activePersona, setActivePersona] = useState<Persona | null>(null)
-  useEffect(() => {
-    void window.api.persona.list().then(setPersonas)
-    void window.api.persona.get().then(setActivePersona)
-  }, [agent.personaName])
-
-  const switchAnchor = async (id: string): Promise<void> => {
-    const target = personas.find((p) => p.id === id)
-    if (!target) return
-    if (agent.state !== 'stopped') {
-      const result = await window.api.agent.handoff(id)
-      if (result.ok) {
-        setActivePersona(target)
-        toast.success(`已换主播：${target.name}`, { description: '这场的历史和话术池她都接得住，接着播' })
-      } else {
-        toast.error('换主播失败', { description: result.error })
-      }
-    } else {
-      await window.api.persona.setActive(id)
-      setActivePersona(target)
-      toast.success(`当前主播：${target.name}`)
-    }
-  }
-
   /** 直播中的判定：写稿会话（prep）不算开播，仍然显示「启动场次」 */
   const running = (agent.state === 'running' || agent.state === 'starting') && agent.purpose !== 'prep'
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
@@ -405,20 +379,6 @@ function PlanLauncher() {
           {plans.map((plan) => (
             <SelectItem key={plan.id} value={plan.id}>
               {plan.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {/* 在场主播：直播中切换 = 原子换主播（场次历史/话术池不动），由新主播接着播 */}
-      <Select value={activePersona?.id ?? undefined} onValueChange={(v) => void switchAnchor(v)}>
-        <SelectTrigger size="sm" className="w-32" title="在场主播：想换人随时切，这场的历史新主播接得住">
-          <SelectValue placeholder="选主播" />
-        </SelectTrigger>
-        <SelectContent>
-          {personas.map((persona) => (
-            <SelectItem key={persona.id} value={persona.id}>
-              {persona.name}
             </SelectItem>
           ))}
         </SelectContent>
@@ -833,16 +793,38 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   onUnreadRef.current = onUnread
   /** 见过的条目 id：只有首见的那次算未读（流式更新同一 id 不算新消息） */
   const seenRef = useRef(new Set<string>())
-  /** 发言人标记：personaId → 主播名（时间线条目带主播戳，换人后看得出哪段是谁说的） */
+  /** 在场主播（输入区胶囊）：发言人标记 id → 名字 + 切换逻辑。直播中切换 = 原子换主播，不断上下文 */
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [activePersona, setActivePersona] = useState<Persona | null>(null)
   const [personaNames, setPersonaNames] = useState<Record<string, string>>({})
   useEffect(() => {
     if (!('api' in window)) return
     void window.api.persona.list().then((list) => {
+      setPersonas(list)
       const map: Record<string, string> = {}
       for (const p of list) map[p.id] = p.name
       setPersonaNames(map)
     })
-  }, [])
+    void window.api.persona.get().then(setActivePersona)
+  }, [agent.personaName])
+
+  const switchAnchor = async (id: string): Promise<void> => {
+    const target = personas.find((p) => p.id === id)
+    if (!target) return
+    if (agent.state !== 'stopped') {
+      const result = await window.api.agent.handoff(id)
+      if (result.ok) {
+        setActivePersona(target)
+        toast.success(`已换主播：${target.name}`, { description: '这场的历史和话术池她都接得住，接着播' })
+      } else {
+        toast.error('换主播失败', { description: result.error })
+      }
+    } else {
+      await window.api.persona.setActive(id)
+      setActivePersona(target)
+      toast.success(`当前主播：${target.name}`)
+    }
+  }
 
   /** 时间线顺序追加/按 id 覆盖（text 覆盖全文、tool 更新状态）；时间戳沿用首次那条，避免排序跳动 */
   const upsert = (entry: ChatEntry): void => {
@@ -1256,6 +1238,24 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             <Button variant="ghost" size="icon-sm" onClick={() => void pickAttachment()} title="添加附件">
               <Paperclip />
             </Button>
+            {/* 在场主播胶囊：跟谁聊就在手边（agent 相关）；直播中切换 = 原子换主播，不断上下文 */}
+            <Select value={activePersona?.id ?? undefined} onValueChange={(v) => void switchAnchor(v)}>
+              <SelectTrigger
+                size="sm"
+                className="h-7 gap-1.5 rounded-full border-transparent px-2 text-xs hover:bg-muted data-[state=open]:bg-muted"
+                title="在场主播：想换人随时切，这场的历史新主播接得住"
+              >
+                <span className="size-1.5 rounded-full bg-primary/80" />
+                <SelectValue placeholder="选主播" />
+              </SelectTrigger>
+              <SelectContent position="popper" sideOffset={6}>
+                {personas.map((persona) => (
+                  <SelectItem key={persona.id} value={persona.id}>
+                    {persona.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {/* 右移容器：仪表在不在，发送/停止钮都钉在最右；仪表来了就贴着它 */}
             <div className="ml-auto flex items-center gap-1">
               <ContextMeter tokens={agent.contextTokens} window={agent.contextWindow} />

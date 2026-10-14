@@ -50,7 +50,7 @@ import type {
   ChatEntry,
   DirectorMessage,
   LiveComment,
-  LivePlan,
+  Program,
   Persona,
   PreflightItem,
   Script,
@@ -99,12 +99,31 @@ const SOURCE_LABEL: Record<SpeechSourceKind, string> = {
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
   const levels = useAppStore((s) => s.levels)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [leftTab, setLeftTab] = useState<'pool' | 'comments'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
   /** 右栏选项卡：对话是主区（铺满高度），操作切过去才显示 */
   const [rightTab, setRightTab] = useState<'chat' | 'control'>('chat')
   /** 对话未读数（切走时有新条目在选项卡上亮红点） */
   const [chatUnread, setChatUnread] = useState(0)
+  /** 当前节目是否向主播提供直播间动态：关闭时左栏「评论流」区域整体隐藏（docs/10 §11.5） */
+  const [allowLiveEvents, setAllowLiveEvents] = useState(true)
+
+  useEffect(() => {
+    if (!('api' in window)) return
+    if (!activeProgramId) {
+      setAllowLiveEvents(true)
+      return
+    }
+    void window.api.program.list().then((list) => {
+      setAllowLiveEvents(list.find((p) => p.id === activeProgramId)?.allowLiveEvents ?? true)
+    })
+  }, [activeProgramId])
+
+  // 节目关了直播间动态而标签还停在评论流：切回队列
+  useEffect(() => {
+    if (!allowLiveEvents && leftTab === 'comments') setLeftTab('pool')
+  }, [allowLiveEvents, leftTab])
 
   // 评论订阅提到页面层（标签上要显示条数），保持最近 100 条
   useEffect(() => {
@@ -162,8 +181,8 @@ export function LivePage() {
                   />
                 </div>
               </div>
-              {/* 唯一开播入口：选场次 → 启动场次（docs/07 §8.5） */}
-              <PlanLauncher />
+              {/* 唯一开播入口：选节目 → 启动节目（docs/07 §8.5） */}
+              <ProgramLauncher />
             </div>
           </header>
           {/* 资产改过但本场会话还是旧的：都在这里给「立即应用」 */}
@@ -174,9 +193,11 @@ export function LivePage() {
                 <TabsTrigger value="pool" className="px-3 text-xs">
                   话术池队列 · {groups.reduce((n, group) => n + group.items.length, 0)}
                 </TabsTrigger>
-                <TabsTrigger value="comments" className="px-3 text-xs">
-                  评论流 · {comments.length}
-                </TabsTrigger>
+                {allowLiveEvents && (
+                  <TabsTrigger value="comments" className="px-3 text-xs">
+                    评论流 · {comments.length}
+                  </TabsTrigger>
+                )}
               </TabsList>
             </div>
             <TabsContent value="pool" className="min-h-0 overflow-y-auto p-3">
@@ -210,9 +231,11 @@ export function LivePage() {
                 </div>
               )}
             </TabsContent>
-            <TabsContent value="comments" className="min-h-0 overflow-y-auto px-4 pb-2">
-              <CommentList comments={comments} />
-            </TabsContent>
+            {allowLiveEvents && (
+              <TabsContent value="comments" className="min-h-0 overflow-y-auto px-4 pb-2">
+                <CommentList comments={comments} />
+              </TabsContent>
+            )}
           </Tabs>
         </section>
 
@@ -251,25 +274,25 @@ export function LivePage() {
 }
 
 /**
- * 场次入口：选场次 + 启动/停止场次（唯一开播入口）。
- * 点「启动场次」先跑预检（docs/07 §8.5）：阻断项红、警告项黄，有阻断项不许开。
+ * 节目入口：选节目 + 启动/停止节目（唯一开播入口）。
+ * 点「启动节目」先跑预检（docs/07 §8.5）：阻断项红、警告项黄，有阻断项不许开。
  */
-function PlanLauncher() {
+function ProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
-  const activePlanId = useAppStore((s) => s.config.live.activePlanId)
-  const [plans, setPlans] = useState<LivePlan[]>([])
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
+  const [programs, setPrograms] = useState<Program[]>([])
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
 
   useEffect(() => {
-    void window.api.plan.list().then(setPlans)
+    void window.api.program.list().then(setPrograms)
   }, [])
 
   /** 直播中的判定：开播态归引擎（agent.live）——智能层没起来也照播存量，不算没开播 */
   const running = agent.live === true
-  const activePlan = plans.find((p) => p.id === activePlanId) ?? null
+  const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
   const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
@@ -277,69 +300,69 @@ function PlanLauncher() {
   const [draftAsk, setDraftAsk] = useState(false)
 
   const goGenerate = (): void => {
-    if (!activePlanId) return
+    if (!activeProgramId) return
     setChecks(null)
     setDraftAsk(true)
   }
 
   const startPresynth = (): void => {
-    if (!activePlanId) return
-    void window.api.utterance.presynth(activePlanId)
+    if (!activeProgramId) return
+    void window.api.utterance.presynth(activeProgramId)
     toast.success('已开始批量预合成', { description: '合成在后台跑，完成后点「重新预检」看结果' })
   }
 
   const startDraft = (): void => {
-    if (!activePlanId) return
-    void window.api.agent.draftStart(activePlanId).then((result) => {
+    if (!activeProgramId) return
+    void window.api.agent.draftStart(activeProgramId).then((result) => {
       if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
     })
   }
 
-  const switchPlan = async (id: string): Promise<void> => {
-    await window.api.plan.setActive(id)
+  const switchProgram = async (id: string): Promise<void> => {
+    await window.api.program.setActive(id)
     await useAppStore.getState().loadConfig()
-    const plan = plans.find((p) => p.id === id)
-    toast.success(`已切换到场次：${plan?.name ?? ''}`, {
+    const program = programs.find((p) => p.id === id)
+    toast.success(`已切换到节目：${program?.name ?? ''}`, {
       description: running ? '结构性变更下次开播生效' : undefined
     })
   }
 
   const runPreflight = async (): Promise<void> => {
-    if (!activePlanId) return
+    if (!activeProgramId) return
     setChecking(true)
     try {
-      setChecks(await window.api.plan.preflight(activePlanId))
+      setChecks(await window.api.program.preflight(activeProgramId))
     } finally {
       setChecking(false)
     }
   }
 
   const openPreflight = async (): Promise<void> => {
-    if (!activePlanId) {
-      toast.warning('先选一个场次', { description: '场次决定这场用什么人设、剧本与话术' })
+    if (!activeProgramId) {
+      toast.warning('先选一个节目', { description: '节目决定这场用什么人设、剧本与话术' })
       return
     }
     await runPreflight()
   }
 
   const start = async (): Promise<void> => {
-    if (busy || !activePlanId) return
+    if (busy || !activeProgramId) return
     setBusy(true)
     try {
-      const result = await window.api.plan.launch(activePlanId)
+      const result = await window.api.program.launch(activeProgramId)
       if (result.ok) {
         setChecks(null)
         // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
         resumeBroadcast()
         if (result.warning) {
-          toast.warning(`场次已启动：${activePlan?.name ?? ''}（智能层未就位）`, {
+          toast.warning(`节目已启动：${activeProgram?.name ?? ''}（智能层未就位）`, {
             description: result.warning
           })
         } else {
-          toast.success(`场次已启动：${activePlan?.name ?? ''}`, {
+          toast.success(`节目已启动：${activeProgram?.name ?? ''}`, {
             description: result.loaded
-              ? `已从话术库装载 ${result.loaded} 条，接着播`
-              : '本场没有就绪话术，主播先现场生成'
+              ? `已从底稿库装载 ${result.loaded} 条，接着播`
+              : '本节目没有就绪底稿，主播先现场生成'
           })
         }
       } else {
@@ -355,7 +378,7 @@ function PlanLauncher() {
     setBusy(true)
     try {
       await window.api.agent.stop()
-      toast.message('场次已停止', { description: '池里的存货会继续播完' })
+      toast.message('节目已停止', { description: '池里的存货会继续播完' })
     } finally {
       setBusy(false)
     }
@@ -363,28 +386,28 @@ function PlanLauncher() {
 
   return (
     <div className="flex items-center gap-2">
-      {activePlan && !running && (
+      {activeProgram && !running && (
         <span className="hidden text-xs text-muted-foreground lg:inline">
-          {activePlan.theme || '（未设主题）'}
+          {activeProgram.theme || '（未设主题）'}
         </span>
       )}
       <Select
-        value={activePlanId || undefined}
-        onValueChange={(v) => void switchPlan(v)}
+        value={activeProgramId || undefined}
+        onValueChange={(v) => void switchProgram(v)}
         disabled={running}
       >
         <SelectTrigger size="sm" className="w-48">
-          <SelectValue placeholder="选择场次" />
+          <SelectValue placeholder="选择节目" />
         </SelectTrigger>
         <SelectContent>
-          {plans.length === 0 && (
+          {programs.length === 0 && (
             <SelectItem value="__none" disabled>
-              还没有场次（到「场次」页新建）
+              还没有节目（到「节目」页新建）
             </SelectItem>
           )}
-          {plans.map((plan) => (
-            <SelectItem key={plan.id} value={plan.id}>
-              {plan.name}
+          {programs.map((program) => (
+            <SelectItem key={program.id} value={program.id}>
+              {program.name}
             </SelectItem>
           ))}
         </SelectContent>
@@ -410,7 +433,7 @@ function PlanLauncher() {
             title="结束本场（池里的存货会播完）"
           >
             {busy ? <Loader2 className="animate-spin" /> : <Square />}
-            结束场次
+            结束节目
           </Button>
         </>
       ) : (
@@ -418,10 +441,10 @@ function PlanLauncher() {
           size="sm"
           disabled={busy || checking}
           onClick={() => void openPreflight()}
-          title="预检并启动场次"
+          title="预检并启动节目"
         >
           {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
-          启动场次
+          启动节目
         </Button>
       )}
 
@@ -434,7 +457,7 @@ function PlanLauncher() {
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>开播预检{activePlan ? ` · ${activePlan.name}` : ''}</DialogTitle>
+            <DialogTitle>开播预检{activeProgram ? ` · ${activeProgram.name}` : ''}</DialogTitle>
           </DialogHeader>
           <div className="max-h-80 space-y-2 overflow-y-auto">
             {(checks ?? []).map((item, index) => (
@@ -485,9 +508,9 @@ function PlanLauncher() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      {activePlan && (
+      {activeProgram && (
         <DraftMinutesDialog
-          plan={activePlan}
+          program={activeProgram}
           open={draftAsk}
           onOpenChange={setDraftAsk}
           onConfirm={() => startDraft()}
@@ -786,7 +809,7 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
 function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
-  const activePlanId = useAppStore((s) => s.config.live.activePlanId)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [entries, setEntries] = useState<ChatEntry[]>([])
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
@@ -849,14 +872,14 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     if (first && !activeRef.current) onUnreadRef.current()
   }
 
-  // 场次即会话：切场（或首次挂载/刷新）时整段恢复该场次的聊天记录
+  // 节目即会话：切场（或首次挂载/刷新）时整段恢复该节目的聊天记录
   useEffect(() => {
     if (!('api' in window)) return
     setEntries([])
     seenRef.current = new Set()
-    if (!activePlanId) return
+    if (!activeProgramId) return
     let cancelled = false
-    void window.api.director.timelineList(activePlanId).then((stored) => {
+    void window.api.director.timelineList(activeProgramId).then((stored) => {
       if (cancelled) return
       for (const entry of stored) seenRef.current.add(entry.id)
       setEntries(stored)
@@ -864,7 +887,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     return () => {
       cancelled = true
     }
-  }, [activePlanId])
+  }, [activeProgramId])
 
   // 订阅对话时间线（文本流式 + 工具卡片 + 压缩后 reset）与请示卡片
   useEffect(() => {
@@ -1229,7 +1252,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             value={input}
             onChange={(e) => setInput(e.target.value)}
             rows={2}
-            placeholder={agent.state === 'running' ? '对主播说点什么…' : '对主播说点什么…（选中场次即可开聊，主播会自己就位）'}
+            placeholder={agent.state === 'running' ? '对主播说点什么…' : '对主播说点什么…（选中节目即可开聊，主播会自己就位）'}
             className="max-h-32 w-full resize-none bg-transparent text-[13px] leading-5 outline-none placeholder:text-muted-foreground"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1432,27 +1455,27 @@ function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
   )
 }
 
-/** 切场景：列当前场次剧本的场景，点一个就跳过去并把该场景话术库载入池 */
+/** 切场景：列当前节目剧本的场景，点一个就跳过去并把该场景话术库载入池 */
 function SceneDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const activePlanId = useAppStore((s) => s.config.live.activePlanId)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const scene = useAppStore((s) => s.agent.scene)
-  const [plan, setPlan] = useState<LivePlan | null>(null)
+  const [program, setProgram] = useState<Program | null>(null)
   const [scripts, setScripts] = useState<Script[]>([])
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    void window.api.plan.list().then((list) => setPlan(list.find((p) => p.id === activePlanId) ?? null))
+    void window.api.program.list().then((list) => setProgram(list.find((p) => p.id === activeProgramId) ?? null))
     void window.api.script.list().then(setScripts)
-  }, [open, activePlanId])
+  }, [open, activeProgramId])
 
-  const script = scripts.find((s) => s.id === plan?.scriptId) ?? null
+  const script = scripts.find((s) => s.id === program?.scriptId) ?? null
 
   const goto = async (index: number): Promise<void> => {
     if (busy) return
     setBusy(true)
     try {
-      const result = await window.api.plan.gotoScene(activePlanId, index)
+      const result = await window.api.program.gotoScene(activeProgramId, index)
       if (result.ok) {
         onOpenChange(false)
         toast.success(`已切到「${result.title ?? ''}」`, {
@@ -1496,7 +1519,7 @@ function SceneDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (ope
           </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            这场没绑剧本（或者还没选场次）——到场次页选一场，或在剧本里加场景。
+            这场没绑剧本（或者还没选节目）——到节目页选一场，或在剧本里加场景。
           </p>
         )}
       </DialogContent>

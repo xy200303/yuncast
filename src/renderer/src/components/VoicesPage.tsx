@@ -39,7 +39,7 @@ function formatTime(ts: number): string {
 
 /** 音色库：克隆音色的管理、试听与引用关系。
  *  克隆在服务商侧异步训练，本页接收广播更新状态。克隆音色绑定「它克隆时那条接入 + 目标模型」
- *  （不可跨模型），合成时按这个绑定路由。音色的入口统一在人设卡/场次，这里没有「默认音色」。 */
+ *  （不可跨模型），合成时按这个绑定路由。音色的入口统一在人设卡/节目，这里没有「默认音色」。 */
 export function VoicesPage() {
   const voices = useAppStore((s) => s.voices)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
@@ -245,8 +245,8 @@ export function VoicesPage() {
                   主播卡「{item.name}」{item.role ? ` · 角色 ${item.role}` : ' · 音色'}
                 </p>
               ))}
-              {usages[deleting.id].plans.map((item) => (
-                <p key={item.id}>场次「{item.name}」的场次音色</p>
+              {usages[deleting.id].programs.map((item) => (
+                <p key={item.id}>节目「{item.name}」的节目声音</p>
               ))}
               {usages[deleting.id].utteranceCount > 0 && (
                 <p>
@@ -285,17 +285,17 @@ export function VoicesPage() {
   )
 }
 
-/** 「被 2 张主播卡 · 1 个场次 · 12 条话术使用」 */
+/** 「被 2 张主播卡 · 1 个节目 · 12 条话术使用」 */
 function usageSummary(usage: VoiceUsage): string {
   const parts: string[] = []
   if (usage.personas.length) parts.push(`${usage.personas.length} 张主播卡`)
-  if (usage.plans.length) parts.push(`${usage.plans.length} 个场次`)
+  if (usage.programs.length) parts.push(`${usage.programs.length} 个节目`)
   if (usage.utteranceCount) parts.push(`${usage.utteranceCount} 条话术`)
-  return parts.length > 0 ? `被 ${parts.join(' · ')}使用` : '还没被主播卡 / 场次 / 话术使用'
+  return parts.length > 0 ? `被 ${parts.join(' · ')}使用` : '还没被主播卡 / 节目 / 话术使用'
 }
 
 function usageCount(usage: VoiceUsage): number {
-  return usage.personas.length + usage.plans.length + usage.utteranceCount
+  return usage.personas.length + usage.programs.length + usage.utteranceCount
 }
 
 /** 重命名音色（只改显示名） */

@@ -58,9 +58,8 @@ import {
   type PoolSayInput,
   type PoolSnapshot,
   type ProductInput,
+  type ProgramInput,
   type ScriptInput,
-  type LiveModeInput,
-  type LivePlanInput,
   type SpeechItem,
   type SpeechLane,
   type StreamStats,
@@ -78,7 +77,6 @@ import { PromptTemplateService } from './services/PromptTemplateService'
 import { AgentService } from './services/AgentService'
 import { KnowledgeService } from './services/KnowledgeService'
 import { MemoryService } from './services/MemoryService'
-import { ModeService } from './services/ModeService'
 import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
@@ -89,7 +87,7 @@ import { TempUploadService } from './services/TempUpload'
 import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
-import { LaunchService } from './services/LaunchService'
+import { ProgramPlaybackService } from './services/ProgramPlaybackService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
 import { AudioPipeline } from './services/audio/AudioPipeline'
@@ -267,12 +265,12 @@ function broadcastUtterance(utterance: Utterance): void {
 }
 
 /** 批量预合成结束：发一条特殊事件（id='' 表示批次结束，UI 刷新列表） */
-function broadcastUtteranceDone(planId: string): void {
+function broadcastUtteranceDone(programId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
       win.webContents.send(IPC.utteranceEvent, {
         id: '',
-        planId,
+        programId,
         sceneId: '',
         variantIdx: 0,
         seq: 0,
@@ -366,14 +364,13 @@ function registerIpc(
   prompts: PromptTemplateService,
   knowledge: KnowledgeService,
   memory: MemoryService,
-  modes: ModeService,
   bus: EventBus,
   triggers: TriggerRuntime,
   script: ScriptService,
   stream: StreamService,
   connector: ConnectorService,
   utterances: UtteranceService,
-  launch: LaunchService
+  programPlayback: ProgramPlaybackService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -503,7 +500,7 @@ function registerIpc(
     const statusBefore = agent.status()
     const wasRunning = statusBefore.state !== 'stopped'
     await agent.stop()
-    // 结束场次：开播态归引擎——就算 agent 早就没起来，这场也算收了
+    // 结束节目：开播态归引擎——就算 agent 早就没起来，这场也算收了
     if (statusBefore.live) agent.setLiveActive(false)
     if (wasRunning || statusBefore.live) bus.emit('stream.ended', {}, 'human')
   })
@@ -530,8 +527,8 @@ function registerIpc(
   })
 
   // ---------- 导演对话 ----------
-  // chat：无会话时自动按当前选中场次起 prep 会话再投递（选中场次即可开聊，不必先启动场次）
-  // localId：渲染层本地回显条目的 id，main 以同一 id 落库——重载/切场恢复时不重复
+  // chat：无会话时自动按当前选中节目起 prep 会话再投递（选中节目即可开聊，不必先启动节目）
+  // localId：渲染层本地回显条目的 id，main 以同一 id 落库——重载/切节目恢复时不重复
   // attachments：随消息附的文件。图片（png/jpg/jpeg/webp/gif）读成 base64 图像内容进会话（模型需开多模态，
   // 没开则由主播侧提示）；其它类型（pdf/docx…）拼成 [附件] 文本说明随指令投递
   const IMAGE_EXT_MIME: Record<string, string> = {
@@ -577,12 +574,12 @@ function registerIpc(
         lines.push(`[附件] ${name}：${path}`)
       }
       if (lines.length > 0) content = `${content}\n${lines.join('\n')}`.trim()
-      const planId = storage.getConfig().live.activePlanId
-      if (planId && content) {
+      const programId = storage.getConfig().live.activeProgramId
+      if (programId && content) {
         const id = String(localId ?? '').trim() || `dm-${Date.now()}`
         try {
           storage.timelineAppend(
-            planId,
+            programId,
             id,
             '',
             Date.now(),
@@ -600,9 +597,9 @@ function registerIpc(
       }
     }
   )
-  /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复；载荷已是 ChatEntry JSON） */
-  ipcMain.handle(IPC.directorTimelineList, (_e, planId: string) =>
-    storage.timelineList(String(planId ?? '')).map((row) => JSON.parse(row.payload) as unknown)
+  /** 拉某节目的对话时间线（切节目/刷新/重启后整段恢复；载荷已是 ChatEntry JSON） */
+  ipcMain.handle(IPC.directorTimelineList, (_e, programId: string) =>
+    storage.timelineList(String(programId ?? '')).map((row) => JSON.parse(row.payload) as unknown)
   )
 
   // ---------- 主播手册（提示词模板） ----------
@@ -670,7 +667,7 @@ function registerIpc(
       voiceSvc?.preview(String(id ?? '')) ?? { ok: false as const, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceUsage, (_e, id: string) =>
-    voiceSvc?.usage(String(id ?? '')) ?? { personas: [], plans: [], utteranceCount: 0, utteranceSamples: [] }
+    voiceSvc?.usage(String(id ?? '')) ?? { personas: [], programs: [], utteranceCount: 0, utteranceSamples: [] }
   )
   ipcMain.handle(IPC.voiceUploadSample, async (_e, bytes: Uint8Array, ext: string) => {
     if (!voiceSvc) return { ok: false, error: '音色服务未初始化' }
@@ -751,70 +748,60 @@ function registerIpc(
   )
   ipcMain.handle(IPC.scriptDelete, (_e, id: string) => guard(() => script.deleteScript(id)))
 
-  // ---------- 场次 ----------
-  ipcMain.handle(IPC.planList, () => script.listPlans())
-  ipcMain.handle(IPC.planSave, (_e, input: LivePlanInput, id?: string) =>
-    guard(() => script.savePlan(input, id))
+  // ---------- 节目 ----------
+  ipcMain.handle(IPC.programList, () => script.listPrograms())
+  ipcMain.handle(IPC.programSave, (_e, input: ProgramInput, id?: string) =>
+    guard(() => script.saveProgram(input, id))
   )
-  ipcMain.handle(IPC.planDelete, (_e, id: string) =>
+  ipcMain.handle(IPC.programDelete, (_e, id: string) =>
     guard(() => {
-      script.deletePlan(id)
-      // 场次的持久对话（会话 entries + 时间线）跟着场次一起走
-      storage.deletePlanSession(String(id ?? ''))
+      script.deleteProgram(id)
+      // 节目的持久对话（会话 entries + 时间线）跟着节目一起走
+      storage.deleteProgramSession(String(id ?? ''))
     })
   )
-  ipcMain.handle(IPC.planSetActive, (_e, id: string) => {
-    script.setActivePlan(String(id ?? ''))
-    // 选中场次主播即就位（建会话不调 LLM，零成本）：上下文仪表从这一刻就有读数，不用等第一句话
+  ipcMain.handle(IPC.programSetActive, (_e, id: string) => {
+    script.setActiveProgram(String(id ?? ''))
+    // 选中节目主播即就位（建会话不调 LLM，零成本）：上下文仪表从这一刻就有读数，不用等第一句话
     if (id) void agent.warmupPrepSession().catch(() => undefined)
-    return storage.getConfig().live.activePlanId
+    return storage.getConfig().live.activeProgramId
   })
   // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口
-  ipcMain.handle(IPC.planPreflight, (_e, id: string) => launch.preflight(String(id ?? '')))
-  ipcMain.handle(IPC.planLaunch, async (_e, id: string) => {
-    // 「在跑」不等于「已开播」：写稿会话（prep）也在跑，prep→live 必须发开播事件（开场白触发器靠它）
+  ipcMain.handle(IPC.programPreflight, (_e, id: string) => programPlayback.preflight(String(id ?? '')))
+  ipcMain.handle(IPC.programLaunch, async (_e, id: string) => {
+    // 「在跑」不等于「已开播」：写稿会话（prep）也在跑，prep→live 必须发开播事件（开播信号触发器靠它）
     const statusBefore = agent.status()
     const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
-    const result = await launch.launch(String(id ?? ''))
+    const result = await programPlayback.launch(String(id ?? ''))
     if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
     // 0 就绪开播：底稿还在后台合成，开播空隙叫「续写补给」顶上（agent 现场编一段，不冷场）
     if (result.ok && (result.loaded ?? 0) === 0) bus.emit('pool.low', { remaining: 0 }, 'system')
     return result
   })
   /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
-  ipcMain.handle(IPC.planGotoScene, (_e, planId: string, index: number) =>
-    launch.gotoScene(String(planId ?? ''), Math.floor(Number(index) || 0))
+  ipcMain.handle(IPC.programGotoScene, (_e, programId: string, index: number) =>
+    programPlayback.gotoScene(String(programId ?? ''), Math.floor(Number(index) || 0))
   )
 
-  // ---------- 直播模式（模式预设包） ----------
-  ipcMain.handle(IPC.modeList, () => modes.list())
-  ipcMain.handle(IPC.modeSave, (_e, input: LiveModeInput, id?: string) =>
-    guard(() => modes.save(input, id))
-  )
-  ipcMain.handle(IPC.modeDelete, (_e, id: string) => guard(() => modes.remove(String(id ?? ''))))
-  ipcMain.handle(IPC.modeDuplicate, (_e, id: string) =>
-    guard(() => modes.duplicate(String(id ?? '')))
-  )
-
-  // ---------- 话术库（场次底稿） ----------
-  ipcMain.handle(IPC.utteranceList, (_e, planId: string) => utterances.list(String(planId)))
+  // ---------- 话术库（节目底稿） ----------
+  ipcMain.handle(IPC.utteranceList, (_e, programId: string) => utterances.list(String(programId)))
   ipcMain.handle(IPC.utteranceSave, (_e, input: UtteranceInput, id?: string) =>
     guard(() => utterances.save(input, id))
   )
   ipcMain.handle(IPC.utteranceDelete, (_e, id: string) => guard(() => utterances.remove(id)))
-  ipcMain.handle(IPC.utteranceClear, (_e, planId: string, sceneId?: string) =>
-    guard(() => utterances.clear(String(planId), sceneId))
+  ipcMain.handle(IPC.utteranceClear, (_e, programId: string, sceneId?: string) =>
+    guard(() => utterances.clear(String(programId), sceneId))
   )
-  ipcMain.handle(IPC.utterancePresynth, async (_e, planId: string) => {
-    // 批量预合成：异步跑（带场次锁，主播改底稿触发的重合成共用同一条流水线），进度走 utteranceEvent
-    void utterances.kickSynthesis(String(planId))
+  ipcMain.handle(IPC.utterancePresynth, async (_e, programId: string) => {
+    // 批量预合成：异步跑（带节目锁，主播改底稿触发的重合成共用同一条流水线），进度走 utteranceEvent
+    void utterances.kickSynthesis(String(programId))
     return { ok: true }
   })
 
   // ---------- 编剧模式：主播自己写底稿 ----------
-  ipcMain.handle(IPC.agentDraftStart, async (_e, planId: string) => {
+  ipcMain.handle(IPC.agentDraftStart, async (_e, programId: string) => {
     try {
-      await agent.startDrafting(String(planId))
+      await agent.startDrafting(String(programId))
       return { ok: true }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
@@ -880,13 +867,12 @@ if (!single) {
     const persona = new PersonaService(storage, prompts)
     const knowledge = new KnowledgeService(storage)
     const memory = new MemoryService(storage)
-    const modes = new ModeService(storage)
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
-    // 场次底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、场次启动都用它）
+    // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
     const utterances = new UtteranceService(storage, tts, persona)
     utterances.onEvent = (u) => broadcastUtterance(u)
-    utterances.onBatchDone = (planId) => broadcastUtteranceDone(planId)
+    utterances.onBatchDone = (programId) => broadcastUtteranceDone(programId)
     agent = new AgentService(
       storage,
       pool,
@@ -894,7 +880,6 @@ if (!single) {
       prompts,
       knowledge,
       memory,
-      modes,
       script,
       utterances,
       broadcastAgent,
@@ -902,9 +887,8 @@ if (!single) {
       broadcastDirectorTimeline
     )
     triggers = new TriggerRuntime(storage, bus, pool, agent)
-    // 模式接线：触发器总闸/进场过滤跟着当前场次模式走；老粉判定接观众画像
-    triggers.wiringProvider = () => agent!.currentWiring()
-    triggers.fanChecker = (author) => Boolean(memory.lookupViewer(author))
+    // 节目事件接线：触发器白名单/动态事件总闸跟着当前节目走
+    triggers.gateProvider = () => agent!.currentProgramGate()
     streamSvc = new StreamService(storage, broadcastStream)
 
     // 音频管线（唯一音频权威）：解码/排播/混音/音量都在这。
@@ -956,32 +940,32 @@ if (!single) {
       return started
     })
 
-    // 场次底稿库 + 场次启动（docs/07 §8.5）
-    const launch = new LaunchService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
+    // 节目底稿库 + 节目播放（docs/07 §8.5）
+    const programPlayback = new ProgramPlaybackService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
     // 就绪补装：直播中底稿每就绪一段就把当前场景新就绪的装进池（0 就绪开播不空转——边合成边播，不用等整批）
     const broadcastUtteranceOnly = utterances.onEvent
     utterances.onEvent = (u) => {
       broadcastUtteranceOnly?.(u)
       if (u.status !== 'ready' || !u.id) return
-      if (storage.getConfig().live.activePlanId !== u.planId) return
+      if (storage.getConfig().live.activeProgramId !== u.programId) return
       const status = agent?.status()
       if (status?.state !== 'running' || status.purpose !== 'live') return
-      const loaded = launch.loadActiveSceneUtterances()
+      const loaded = programPlayback.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 新就绪底稿补装 ${loaded} 条`)
     }
     // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
     agent.onSceneAdvanced = () => {
-      const loaded = launch.loadActiveSceneUtterances()
+      const loaded = programPlayback.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 新场景装载话术 ${loaded} 条`)
     }
-    // 主播自己开播（start_live 工具）：跟「启动场次」按钮走同一条 LaunchService.launch，预检拦截如实回报
+    // 主播自己开播（start_live 工具）：跟「启动节目」按钮走同一条 ProgramPlaybackService.launch，预检拦截如实回报
     agent.onGoLive = async () => {
-      const planId = storage.getConfig().live.activePlanId
-      if (!planId) return '没有选中场次，开不了播'
-      // prep 会话也算「在跑」但没开播：prep→live 必须发开播事件（开场白触发器靠它）
+      const programId = storage.getConfig().live.activeProgramId
+      if (!programId) return '没有选中节目，开不了播'
+      // prep 会话也算「在跑」但没开播：prep→live 必须发开播事件（开播信号触发器靠它）
       const statusBefore = agent!.status()
       const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
-      const result = await launch.launch(planId)
+      const result = await programPlayback.launch(programId)
       if (!result.ok) return `开播被预检拦下了：${result.error}`
       if (!wasLive) bus!.emit('stream.started', {}, 'agent')
       // 0 就绪开播：后台合成还没出活，开播空隙叫「续写补给」顶上
@@ -994,13 +978,13 @@ if (!single) {
       if (event.type !== 'pool.empty') return
       const status = agent?.status()
       if (status?.state !== 'running' || status.purpose !== 'live') return
-      const planId = storage.getConfig().live.activePlanId
-      if (!planId) return
-      if (!launch.hasFreshUtterances(planId) && !launch.atDraftCap(planId)) {
+      const programId = storage.getConfig().live.activeProgramId
+      if (!programId) return
+      if (!programPlayback.hasFreshUtterances(programId) && !programPlayback.atDraftCap(programId)) {
         console.log('[AgentAnchor] 池空了但未到段数上限：不循环重播，等主播续写/合成（允许冷场）')
         return
       }
-      const loaded = launch.loadActiveSceneUtterances()
+      const loaded = programPlayback.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
     })
     // 主播请示（ask_director）：AgentService 内部直接进对话时间线单通道（高亮卡片，不阻塞直播）
@@ -1026,7 +1010,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, modes, bus, triggers, script, streamSvc, connector, utterances, launch)
+    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, programPlayback)
     createWindow(storage)
 
     app.on('activate', () => {

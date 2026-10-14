@@ -30,7 +30,7 @@ import {
   BIT_TYPES,
   BIT_TYPE_LABEL,
   UTTERANCE_STATUS_LABEL,
-  type LivePlan,
+  type Program,
   type Script,
   type Utterance,
   type UtteranceStatus
@@ -44,17 +44,17 @@ const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'defau
 }
 
 /**
- * 话术库审阅表（docs/07 §4 ③④）：逐条可编辑/删除、来源留痕（外部来源高亮）、
- * 「生成话术库」走生成 Agent（工具循环）、「预合成」批量 TTS。
+ * 底稿库审阅表（docs/07 §4 ③④）：逐条可编辑/删除、来源留痕（外部来源高亮）、
+ * 「生成底稿」走生成 Agent（工具循环）、「预合成」批量 TTS。
  */
 export function UtteranceDialog({
-  plan,
+  program,
   script,
   open,
   onOpenChange,
   onChanged
 }: {
-  plan: LivePlan
+  program: Program
   script: Script | null
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -68,8 +68,8 @@ export function UtteranceDialog({
   const [editDelivery, setEditDelivery] = useState('')
 
   const reload = useCallback(async () => {
-    setItems(await window.api.utterance.list(plan.id))
-  }, [plan.id])
+    setItems(await window.api.utterance.list(program.id))
+  }, [program.id])
 
   useEffect(() => {
     void reload()
@@ -78,7 +78,7 @@ export function UtteranceDialog({
   // 预合成进度订阅（主播写稿入库走直播台时间线，这里只关心音频状态变化）
   useEffect(() => {
     const offUt = window.api.utterance.onEvent((u) => {
-      if (u.planId !== plan.id) return
+      if (u.programId !== program.id) return
       if (u.id === '') {
         setPresynthRunning(false)
         void reload().then(onChanged)
@@ -89,7 +89,7 @@ export function UtteranceDialog({
     return () => {
       offUt()
     }
-  }, [plan.id, reload, onChanged])
+  }, [program.id, reload, onChanged])
 
   const sceneTitle = useMemo(() => {
     const map = new Map<string, string>()
@@ -113,7 +113,7 @@ export function UtteranceDialog({
     failed: items.filter((u) => u.status === 'failed').length
   }
 
-  // 「生成话术库」：先问预生成时长（一次性输入，不是场次属性），再跳直播台派主播写稿
+  // 「生成底稿」：确认后跳播控台派主播写稿（写多少由主播自己判断，docs/10 §10）
   const [draftAsk, setDraftAsk] = useState(false)
   const goDraft = async () => {
     if (items.length > 0) {
@@ -129,19 +129,19 @@ export function UtteranceDialog({
     }
     onOpenChange(false)
     useAppStore.getState().setPage('live')
-    const result = await window.api.agent.draftStart(plan.id)
+    const result = await window.api.agent.draftStart(program.id)
     if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
   }
 
   const startPresynth = async () => {
     setPresynthRunning(true)
-    await window.api.utterance.presynth(plan.id)
+    await window.api.utterance.presynth(program.id)
   }
 
   const saveEdit = async (u: Utterance) => {
     const result = await window.api.utterance.save(
       {
-        planId: u.planId,
+        programId: u.programId,
         sceneId: u.sceneId,
         variantIdx: u.variantIdx,
         text: editText,
@@ -172,9 +172,9 @@ export function UtteranceDialog({
       return
     }
     setConfirmClear(false)
-    const result = await window.api.utterance.clear(plan.id)
+    const result = await window.api.utterance.clear(program.id)
     if (result.ok) {
-      toast.success('已清空全部底稿', { description: '点「生成话术库」让主播重写' })
+      toast.success('已清空全部底稿', { description: '点「生成底稿」让主播重写' })
       await reload()
       await onChanged()
     } else {
@@ -187,7 +187,7 @@ export function UtteranceDialog({
       <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>
-            话术库 · {plan.name}
+            底稿库 · {program.name}
             <span className="ml-2 text-xs font-normal text-muted-foreground">
               {stats.total} 段 · 就绪 {stats.ready}
               {stats.failed > 0 ? ` · 失败 ${stats.failed}` : ''}
@@ -198,7 +198,7 @@ export function UtteranceDialog({
         <div className="flex shrink-0 items-center gap-2">
           <Button size="sm" onClick={() => setDraftAsk(true)}>
             <Sparkles />
-            {items.length > 0 ? '去直播台续写' : '生成话术库'}
+            {items.length > 0 ? '去播控台续写' : '生成底稿'}
           </Button>
           <div className="ml-auto flex items-center gap-2">
             <Button
@@ -227,7 +227,7 @@ export function UtteranceDialog({
             <div className="flex h-40 flex-col items-center justify-center gap-2 text-muted-foreground">
               <BookOpenText className="size-8" strokeWidth={1.25} />
               <p className="text-xs">
-                还没有话术。点「生成话术库」，主播会在直播台写稿——过程看得见，随时可以插话改口径
+                还没有话术。点「生成底稿」，主播会在直播台写稿——过程看得见，随时可以插话改口径
               </p>
             </div>
           ) : (
@@ -356,7 +356,7 @@ export function UtteranceDialog({
           )}
         </div>
         <DraftMinutesDialog
-          plan={plan}
+          program={program}
           open={draftAsk}
           onOpenChange={setDraftAsk}
           onConfirm={() => void goDraft()}

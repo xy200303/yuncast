@@ -5,9 +5,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
 import {
   DEFAULT_CONFIG,
-  DEFAULT_PLAN_GEN_CONFIG,
-  DEFAULT_PLAN_KNOWLEDGE_SCOPE,
-  DEFAULT_PLANNED_MINUTES,
+  DEFAULT_PROGRAM_AUDIO_CONFIG,
+  DEFAULT_PROGRAM_KNOWLEDGE_SCOPE,
   ENTRY_KINDS,
   parseAppConfig,
   type AppConfig,
@@ -18,13 +17,11 @@ import {
   type ModelConnectionSafe,
   type PartialDeep,
   type Persona,
-  type PlanGenConfig,
-  type PlanKnowledgeScope,
+  type Program,
+  type ProgramAudioConfig,
+  type ProgramKnowledgeScope,
   type Product,
   type Script,
-  type LivePlan,
-  type LiveMode,
-  type LiveModeWiring,
   type EntryKind,
   type SpeechItem,
   type SpeechLane,
@@ -55,7 +52,7 @@ import {
  * 持久化层（统一 SQLite，userData/agentanchor.db，Node 内置、WAL、免原生重编译）：
  * - 应用配置：app_config 表单行 JSON（tts.accessToken / tts.apiKey / llm.apiKey 等加密内联）；
  *   旧版 config.json 启动时一次性迁入并改名留底
- * - 业务数据：各业务表（话术池/场次/底稿/触发器…）
+ * - 业务数据：各业务表（话术池/节目/底稿/触发器…）
  * - 供应商接入（model_connections / tts_connections）：密钥字段在 params 里内联加密
  * - 凭据加密用应用自管的 secretBox（AES-256-GCM + userData/secret.key，见 secretBox.ts），
  *   不用系统钥匙串——避免系统密钥轮换后凭据全哑，且行为跨平台一致；
@@ -222,6 +219,9 @@ export class StorageService {
       'CREATE TABLE IF NOT EXISTS app_config (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)'
     )
     this.config = this.loadConfig()
+    // 节目化迁移（破坏性，docs/10 §9.4）：live_plans/modes/plan_sessions/plan_id 列 → programs/program_id。
+    // 必须跑在相关业务表 CREATE 之前：迁移负责把旧结构抬到最终结构，CREATE 只兜全新库
+    this.migratePrograms()
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS speech_items (
         id TEXT PRIMARY KEY,
@@ -285,7 +285,7 @@ export class StorageService {
         created_at INTEGER NOT NULL
       )
     `)
-    // 记忆：老粉画像 + 场次摘要
+    // 记忆：老粉画像 + 节目摘要
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS viewer_profiles (
         name TEXT PRIMARY KEY,
@@ -337,7 +337,7 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    // 剧本 + 场次（M6）
+    // 剧本 + 节目（M6；docs/10 §9 节目化：一场直播/一期播客/一本有声书都是一个节目）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS scripts (
         id TEXT PRIMARY KEY,
@@ -349,11 +349,18 @@ export class StorageService {
       )
     `)
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS live_plans (
+      CREATE TABLE IF NOT EXISTS programs (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         theme TEXT NOT NULL DEFAULT '',
+        content_type TEXT NOT NULL DEFAULT 'solo',
+        broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
+        finish_mode TEXT NOT NULL DEFAULT 'loop',
+        allow_live_events INTEGER NOT NULL DEFAULT 1,
+        enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
+        audio_config TEXT NOT NULL DEFAULT '{"mode":"follow-presenter"}',
         script_id TEXT,
+        knowledge_scope TEXT NOT NULL DEFAULT '{}',
         current_scene_idx INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
@@ -362,41 +369,11 @@ export class StorageService {
     this.ensureColumn('agents', 'roles', "TEXT NOT NULL DEFAULT '[]'")
     // 多张人设卡（主播团）：active=1 的那张是当前主播
     this.ensureColumn('agents', 'active', 'INTEGER NOT NULL DEFAULT 0')
-    // 场次 = 开播单元（docs/07 §8.5）：形式/生成配置/知识库范围/场次音色
-    // 解耦重构：场次不再绑定主播（人格/模型/音色归主播卡），老库的 persona_id 直接删
-    if (
-      this.db
-        .prepare('PRAGMA table_info(live_plans)')
-        .all()
-        .some((row) => (row as Record<string, unknown>).name === 'persona_id')
-    ) {
-      this.db.exec('ALTER TABLE live_plans DROP COLUMN persona_id')
-    }
-    this.ensureColumn('live_plans', 'style_hint', "TEXT NOT NULL DEFAULT ''")
-    this.ensureColumn('live_plans', 'gen_config', "TEXT NOT NULL DEFAULT '{}'")
-    this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
-    this.ensureColumn('live_plans', 'voice_id', "TEXT NOT NULL DEFAULT ''")
-    // 预设直播时长（分钟）：开播向导按它推算底稿规模
-    this.ensureColumn('live_plans', 'planned_minutes', 'INTEGER NOT NULL DEFAULT 60')
-    // 直播模式（modes 表 id；'' = 老数据，运行时回落到默认互动模式）
-    this.ensureColumn('live_plans', 'mode_id', "TEXT NOT NULL DEFAULT ''")
-    // 直播模式预设包（docs/07 §5.6 模式层：事件接线 + 角色定位提示词模块；内置行随代码整行覆盖播种）
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS modes (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        wiring TEXT NOT NULL DEFAULT '{}',
-        prompt_module TEXT NOT NULL DEFAULT '',
-        built_in INTEGER NOT NULL DEFAULT 0,
-        updated_at INTEGER NOT NULL
-      )
-    `)
-    // 场次话术库（docs/07 §3 utterances：底稿库，与运行态 speech_items 分工）
+    // 节目话术库（docs/07 §3 utterances：底稿库，与运行态 speech_items 分工）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS utterances (
         id TEXT PRIMARY KEY,
-        plan_id TEXT NOT NULL,
+        program_id TEXT NOT NULL,
         scene_id TEXT NOT NULL DEFAULT '',
         variant_idx INTEGER NOT NULL DEFAULT 0,
         text TEXT NOT NULL,
@@ -409,7 +386,7 @@ export class StorageService {
         created_at INTEGER NOT NULL
       )
     `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS utterances_plan ON utterances(plan_id, scene_id, status)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS utterances_program ON utterances(program_id, scene_id, status)')
     // 预合成时实际用的音色：装载进池时比对，音色改过就不复用旧音频
     this.ensureColumn('utterances', 'synth_voice', "TEXT NOT NULL DEFAULT ''")
     // 话术取自哪条库底稿（复盘溯源，docs/07 §3）
@@ -473,10 +450,10 @@ export class StorageService {
     // 克隆音色绑定目标模型与克隆时的接入（合成路由按它反推，定死不可跨模型）
     this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
-    // 场次即会话：每个场次一份持久对话（pi 会话 entries + 可见时间线），切场/重启后恢复
+    // 节目即会话：每个节目一份持久对话（pi 会话 entries + 可见时间线），切节目/重启后恢复
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS plan_sessions (
-        plan_id TEXT PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS program_sessions (
+        program_id TEXT PRIMARY KEY,
         purpose TEXT NOT NULL DEFAULT 'prep',
         entries TEXT NOT NULL DEFAULT '[]',
         updated_at INTEGER NOT NULL
@@ -484,73 +461,73 @@ export class StorageService {
     `)
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS director_timeline (
-        plan_id TEXT NOT NULL,
+        program_id TEXT NOT NULL,
         entry_id TEXT NOT NULL,
         turn_id TEXT NOT NULL DEFAULT '',
         ts INTEGER NOT NULL,
         payload TEXT NOT NULL,
-        PRIMARY KEY (plan_id, entry_id)
+        PRIMARY KEY (program_id, entry_id)
       )
     `)
     // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
     this.migrateLegacySecrets()
   }
 
-  // ---------- 场次会话持久化（场次即会话） ----------
+  // ---------- 节目会话持久化（节目即会话） ----------
 
-  /** 保存某场次的 pi 会话 entries（stop/切场/每轮结束时覆盖写） */
-  savePlanSession(planId: string, purpose: string, entriesJson: string): void {
+  /** 保存某节目的 pi 会话 entries（stop/切节目/每轮结束时覆盖写） */
+  saveProgramSession(programId: string, purpose: string, entriesJson: string): void {
     this.db
       .prepare(
-        `INSERT INTO plan_sessions (plan_id, purpose, entries, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(plan_id) DO UPDATE SET purpose = excluded.purpose, entries = excluded.entries, updated_at = excluded.updated_at`
+        `INSERT INTO program_sessions (program_id, purpose, entries, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(program_id) DO UPDATE SET purpose = excluded.purpose, entries = excluded.entries, updated_at = excluded.updated_at`
       )
-      .run(planId, purpose, entriesJson, Date.now())
+      .run(programId, purpose, entriesJson, Date.now())
   }
 
-  loadPlanSession(planId: string): { purpose: string; entries: string } | null {
-    const row = this.db.prepare('SELECT purpose, entries FROM plan_sessions WHERE plan_id = ?').get(planId) as
+  loadProgramSession(programId: string): { purpose: string; entries: string } | null {
+    const row = this.db.prepare('SELECT purpose, entries FROM program_sessions WHERE program_id = ?').get(programId) as
       | { purpose: string; entries: string }
       | undefined
     return row ?? null
   }
 
-  deletePlanSession(planId: string): void {
-    this.db.prepare('DELETE FROM plan_sessions WHERE plan_id = ?').run(planId)
-    this.db.prepare('DELETE FROM director_timeline WHERE plan_id = ?').run(planId)
+  deleteProgramSession(programId: string): void {
+    this.db.prepare('DELETE FROM program_sessions WHERE program_id = ?').run(programId)
+    this.db.prepare('DELETE FROM director_timeline WHERE program_id = ?').run(programId)
   }
 
-  /** 时间线条目落库（按 entry_id upsert：流式快照/工具状态更新都收敛到同一行），每场次修剪到最近 500 条 */
-  timelineAppend(planId: string, entryId: string, turnId: string, ts: number, payload: string): void {
+  /** 时间线条目落库（按 entry_id upsert：流式快照/工具状态更新都收敛到同一行），每节目修剪到最近 500 条 */
+  timelineAppend(programId: string, entryId: string, turnId: string, ts: number, payload: string): void {
     this.db
       .prepare(
-        `INSERT INTO director_timeline (plan_id, entry_id, turn_id, ts, payload) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(plan_id, entry_id) DO UPDATE SET payload = excluded.payload`
+        `INSERT INTO director_timeline (program_id, entry_id, turn_id, ts, payload) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(program_id, entry_id) DO UPDATE SET payload = excluded.payload`
       )
-      .run(planId, entryId, turnId, ts, payload)
+      .run(programId, entryId, turnId, ts, payload)
     this.db
       .prepare(
-        `DELETE FROM director_timeline WHERE plan_id = ? AND entry_id NOT IN (
-           SELECT entry_id FROM director_timeline WHERE plan_id = ? ORDER BY ts DESC LIMIT 500
+        `DELETE FROM director_timeline WHERE program_id = ? AND entry_id NOT IN (
+           SELECT entry_id FROM director_timeline WHERE program_id = ? ORDER BY ts DESC LIMIT 500
          )`
       )
-      .run(planId, planId)
+      .run(programId, programId)
   }
 
-  /** 拉某场次的可见时间线（最近 limit 条，按时间正序） */
-  timelineList(planId: string, limit = 200): { turnId: string; payload: string }[] {
+  /** 拉某节目的可见时间线（最近 limit 条，按时间正序） */
+  timelineList(programId: string, limit = 200): { turnId: string; payload: string }[] {
     const rows = this.db
       .prepare(
         `SELECT turn_id, payload FROM (
-           SELECT turn_id, payload, ts FROM director_timeline WHERE plan_id = ? ORDER BY ts DESC LIMIT ?
+           SELECT turn_id, payload, ts FROM director_timeline WHERE program_id = ? ORDER BY ts DESC LIMIT ?
          ) ORDER BY ts ASC`
       )
-      .all(planId, limit) as { turn_id: string; payload: string }[]
+      .all(programId, limit) as { turn_id: string; payload: string }[]
     return rows.map((r) => ({ turnId: r.turn_id, payload: r.payload }))
   }
 
-  timelineClear(planId: string): void {
-    this.db.prepare('DELETE FROM director_timeline WHERE plan_id = ?').run(planId)
+  timelineClear(programId: string): void {
+    this.db.prepare('DELETE FROM director_timeline WHERE program_id = ?').run(programId)
   }
 
   // ---------- 音色库（M8） ----------
@@ -992,6 +969,100 @@ export class StorageService {
       if (migrated > 0 || unmigratable > 0) {
         console.log(`[凭据] ${table} 旧密文迁移：转 v2 ${migrated} 行；解不开 ${unmigratable} 个字段（读出时按缺失提示重填）`)
       }
+    }
+  }
+
+  /** 数据库结构版本（PRAGMA user_version）：1 = 节目化改造（programs 落成，modes/live_plans/plan_id 全删） */
+  private static readonly DB_VERSION = 1
+
+  /**
+   * 节目化迁移（docs/10 §9.4，破坏性，一次性）：事务内直接得到最终表结构，不留兼容分支。
+   * live_plans → 建新 programs（复制仍有价值的字段，节目新字段给默认值，mode_id/voice_id/
+   * planned_minutes/gen_config/style_hint 随之入土）；plan_sessions → program_sessions；
+   * utterances/director_timeline 的 plan_id 列改名 program_id；modes 表删除。
+   * 迁完用 PRAGMA table_info 校验旧表旧列不存在，不一致直接抛错（启动失败好过脏结构）。
+   */
+  private migratePrograms(): void {
+    const version = Number(
+      (this.db.prepare('PRAGMA user_version').get() as Record<string, unknown>).user_version ?? 0
+    )
+    if (version >= StorageService.DB_VERSION) return
+    const hasTable = (name: string): boolean =>
+      this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+    const columnsOf = (name: string): Set<string> =>
+      new Set(
+        this.db.prepare(`PRAGMA table_info(${name})`).all().map((row) => str((row as Record<string, unknown>).name))
+      )
+    this.db.exec('BEGIN')
+    try {
+      if (hasTable('live_plans')) {
+        // 老库的 knowledge_scope 列是后期补的，补不齐就没法复制（其余列自首版就有）
+        this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
+        this.db.exec(`
+          CREATE TABLE programs (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            theme TEXT NOT NULL DEFAULT '',
+            content_type TEXT NOT NULL DEFAULT 'solo',
+            broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
+            finish_mode TEXT NOT NULL DEFAULT 'loop',
+            allow_live_events INTEGER NOT NULL DEFAULT 1,
+            enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
+            audio_config TEXT NOT NULL DEFAULT '{"mode":"follow-presenter"}',
+            script_id TEXT,
+            knowledge_scope TEXT NOT NULL DEFAULT '{}',
+            current_scene_idx INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+          )
+        `)
+        this.db.exec(`
+          INSERT INTO programs (id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at)
+          SELECT id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at FROM live_plans
+        `)
+        this.db.exec('DROP TABLE live_plans')
+      }
+      if (hasTable('plan_sessions')) {
+        this.db.exec(`
+          CREATE TABLE program_sessions (
+            program_id TEXT PRIMARY KEY,
+            purpose TEXT NOT NULL DEFAULT 'prep',
+            entries TEXT NOT NULL DEFAULT '[]',
+            updated_at INTEGER NOT NULL
+          )
+        `)
+        this.db.exec(
+          'INSERT INTO program_sessions (program_id, purpose, entries, updated_at) SELECT plan_id, purpose, entries, updated_at FROM plan_sessions'
+        )
+        this.db.exec('DROP TABLE plan_sessions')
+      }
+      // 外键列 plan_id → program_id（SQLite ≥ 3.25 的 RENAME COLUMN，索引定义随列自动改）
+      if (hasTable('utterances') && columnsOf('utterances').has('plan_id')) {
+        this.db.exec('ALTER TABLE utterances RENAME COLUMN plan_id TO program_id')
+      }
+      if (hasTable('director_timeline') && columnsOf('director_timeline').has('plan_id')) {
+        this.db.exec('ALTER TABLE director_timeline RENAME COLUMN plan_id TO program_id')
+      }
+      // 直播模式预设包整体退役
+      if (hasTable('modes')) this.db.exec('DROP TABLE modes')
+      // 校验：旧表旧列必须不存在
+      for (const table of ['live_plans', 'plan_sessions', 'modes']) {
+        if (hasTable(table)) throw new Error(`旧表 ${table} 迁移后仍存在`)
+      }
+      if (hasTable('programs')) {
+        const legacy = ['mode_id', 'voice_id', 'planned_minutes', 'gen_config', 'style_hint'].filter((column) =>
+          columnsOf('programs').has(column)
+        )
+        if (legacy.length > 0) throw new Error(`programs 残留旧列：${legacy.join(', ')}`)
+      }
+      for (const table of ['utterances', 'director_timeline']) {
+        if (hasTable(table) && columnsOf(table).has('plan_id')) throw new Error(`${table}.plan_id 迁移后仍存在`)
+      }
+      this.db.exec(`PRAGMA user_version = ${StorageService.DB_VERSION}`)
+      this.db.exec('COMMIT')
+    } catch (error) {
+      this.db.exec('ROLLBACK')
+      throw error
     }
   }
 
@@ -1597,152 +1668,111 @@ export class StorageService {
     this.db.prepare('DELETE FROM scripts WHERE id = ?').run(id)
   }
 
-  // ---------- 场次 ----------
+  // ---------- 节目 ----------
 
-  planList(): LivePlan[] {
+  programList(): Program[] {
     return this.db
-      .prepare('SELECT * FROM live_plans ORDER BY created_at ASC')
+      .prepare('SELECT * FROM programs ORDER BY created_at ASC')
       .all()
       .map((row) => {
         const r = row as Record<string, unknown>
+        const contentType = str(r.content_type)
+        const broadcastMode = str(r.broadcast_mode)
+        const finishMode = str(r.finish_mode)
+        const triggerIds = parseJson<unknown>(r.enabled_trigger_ids, [])
         return {
           id: str(r.id),
           name: str(r.name),
           theme: str(r.theme),
-          styleHint: str(r.style_hint),
-          modeId: str(r.mode_id),
+          contentType:
+            contentType === 'conversation' || contentType === 'reading' || contentType === 'roleplay'
+              ? contentType
+              : 'solo',
+          broadcastMode: broadcastMode === 'improvised' || broadcastMode === 'prepared' ? broadcastMode : 'rolling',
+          finishMode: finishMode === 'stop' ? 'stop' : 'loop',
+          allowLiveEvents: num(r.allow_live_events) !== 0,
+          enabledTriggerIds: Array.isArray(triggerIds) ? triggerIds.map(String).filter(Boolean) : [],
+          audioConfig: { ...DEFAULT_PROGRAM_AUDIO_CONFIG, ...parseJson<Partial<ProgramAudioConfig>>(r.audio_config, {}) },
           scriptId: str(r.script_id) || null,
-          currentSceneIdx: num(r.current_scene_idx) ?? 0,
-          genConfig: { ...DEFAULT_PLAN_GEN_CONFIG, ...parseJson<Partial<PlanGenConfig>>(r.gen_config, {}) },
           knowledgeScope: {
-            ...DEFAULT_PLAN_KNOWLEDGE_SCOPE,
-            ...parseJson<Partial<PlanKnowledgeScope>>(r.knowledge_scope, {})
+            ...DEFAULT_PROGRAM_KNOWLEDGE_SCOPE,
+            ...parseJson<Partial<ProgramKnowledgeScope>>(r.knowledge_scope, {})
           },
-          voiceId: str(r.voice_id),
-          plannedMinutes: num(r.planned_minutes) ?? DEFAULT_PLANNED_MINUTES,
+          currentSceneIdx: num(r.current_scene_idx) ?? 0,
           createdAt: num(r.created_at) ?? 0,
           updatedAt: num(r.updated_at) ?? 0
         }
       })
   }
 
-  planSave(plan: LivePlan): void {
+  programSave(program: Program): void {
     this.db
       .prepare(
-        `INSERT INTO live_plans (id, name, theme, style_hint, mode_id, planned_minutes, script_id,
-                                 current_scene_idx, gen_config, knowledge_scope, voice_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO programs (id, name, theme, content_type, broadcast_mode, finish_mode, allow_live_events,
+                               enabled_trigger_ids, audio_config, script_id, knowledge_scope, current_scene_idx,
+                               created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, theme = excluded.theme,
-           style_hint = excluded.style_hint,
-           mode_id = excluded.mode_id,
-           planned_minutes = excluded.planned_minutes,
-           script_id = excluded.script_id, gen_config = excluded.gen_config,
-           knowledge_scope = excluded.knowledge_scope, voice_id = excluded.voice_id,
+           content_type = excluded.content_type, broadcast_mode = excluded.broadcast_mode,
+           finish_mode = excluded.finish_mode, allow_live_events = excluded.allow_live_events,
+           enabled_trigger_ids = excluded.enabled_trigger_ids, audio_config = excluded.audio_config,
+           script_id = excluded.script_id, knowledge_scope = excluded.knowledge_scope,
            updated_at = excluded.updated_at`
       )
       .run(
-        plan.id,
-        plan.name,
-        plan.theme,
-        plan.styleHint,
-        plan.modeId,
-        plan.plannedMinutes,
-        plan.scriptId ?? null,
-        plan.currentSceneIdx,
-        JSON.stringify(plan.genConfig),
-        JSON.stringify(plan.knowledgeScope),
-        plan.voiceId,
-        plan.createdAt,
-        plan.updatedAt
+        program.id,
+        program.name,
+        program.theme,
+        program.contentType,
+        program.broadcastMode,
+        program.finishMode,
+        program.allowLiveEvents ? 1 : 0,
+        JSON.stringify(program.enabledTriggerIds),
+        JSON.stringify(program.audioConfig),
+        program.scriptId ?? null,
+        JSON.stringify(program.knowledgeScope),
+        program.currentSceneIdx,
+        program.createdAt,
+        program.updatedAt
       )
   }
 
-  planDelete(id: string): void {
-    this.db.prepare('DELETE FROM live_plans WHERE id = ?').run(id)
-    this.db.prepare('DELETE FROM utterances WHERE plan_id = ?').run(id)
+  programDelete(id: string): void {
+    this.db.prepare('DELETE FROM programs WHERE id = ?').run(id)
+    this.db.prepare('DELETE FROM utterances WHERE program_id = ?').run(id)
   }
 
   /** 场景推进进度落库（断播能续） */
-  planSetSceneIdx(id: string, idx: number): void {
-    this.db.prepare('UPDATE live_plans SET current_scene_idx = ? WHERE id = ?').run(idx, id)
-  }
-
-  // ---------- 直播模式（模式预设包） ----------
-
-  modeList(): LiveMode[] {
-    return this.db
-      .prepare('SELECT * FROM modes ORDER BY built_in DESC, updated_at ASC')
-      .all()
-      .map((row) => {
-        const r = row as Record<string, unknown>
-        return {
-          id: str(r.id),
-          name: str(r.name),
-          description: str(r.description),
-          wiring: parseJson<LiveModeWiring>(r.wiring, {
-            comments: 'batched',
-            commentBatchSec: 15,
-            entrances: 'fans',
-            triggers: true
-          }),
-          promptModule: str(r.prompt_module),
-          builtIn: num(r.built_in) === 1,
-          updatedAt: num(r.updated_at) ?? 0
-        }
-      })
-  }
-
-  modeSave(mode: LiveMode): void {
-    this.db
-      .prepare(
-        `INSERT INTO modes (id, name, description, wiring, prompt_module, built_in, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, description = excluded.description,
-           wiring = excluded.wiring, prompt_module = excluded.prompt_module,
-           built_in = excluded.built_in, updated_at = excluded.updated_at`
-      )
-      .run(
-        mode.id,
-        mode.name,
-        mode.description,
-        JSON.stringify(mode.wiring),
-        mode.promptModule,
-        mode.builtIn ? 1 : 0,
-        mode.updatedAt
-      )
-  }
-
-  modeDelete(id: string): void {
-    this.db.prepare('DELETE FROM modes WHERE id = ?').run(id)
+  programSetSceneIdx(id: string, idx: number): void {
+    this.db.prepare('UPDATE programs SET current_scene_idx = ? WHERE id = ?').run(idx, id)
   }
 
   // ---------- 话术库（utterances） ----------
 
-  utteranceList(planId: string): Utterance[] {
+  utteranceList(programId: string): Utterance[] {
     // 列表顺序 = 叙事顺序：场景段在前（按场景内创作序号 seq），全场通用沉底
     return this.db
       .prepare(
-        `SELECT * FROM utterances WHERE plan_id = ?
+        `SELECT * FROM utterances WHERE program_id = ?
          ORDER BY CASE WHEN scene_id = '' THEN 1 ELSE 0 END, scene_id ASC, seq ASC, created_at ASC`
       )
-      .all(planId)
+      .all(programId)
       .map((row) => rowToUtterance(row as Record<string, unknown>))
   }
 
   /** 场景内下一个创作序号（write_bits/手动新增都用它；老数据 seq=0 时从 max(created 序) 续） */
-  utteranceNextSeq(planId: string, sceneId: string): number {
+  utteranceNextSeq(programId: string, sceneId: string): number {
     const row = this.db
-      .prepare('SELECT MAX(seq) AS m FROM utterances WHERE plan_id = ? AND scene_id = ?')
-      .get(planId, sceneId) as Record<string, unknown>
+      .prepare('SELECT MAX(seq) AS m FROM utterances WHERE program_id = ? AND scene_id = ?')
+      .get(programId, sceneId) as Record<string, unknown>
     return (num(row.m) ?? 0) + 1
   }
 
   utteranceSave(u: Utterance): void {
     this.db
       .prepare(
-        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, voice_id, audio_path,
+        `INSERT INTO utterances (id, program_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, voice_id, audio_path,
                                  status, error, source, sources, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
@@ -1755,7 +1785,7 @@ export class StorageService {
       )
       .run(
         u.id,
-        u.planId,
+        u.programId,
         u.sceneId,
         u.variantIdx,
         u.seq,
@@ -1784,12 +1814,12 @@ export class StorageService {
     return row ? rowToUtterance(row as Record<string, unknown>) : null
   }
 
-  /** 批量删除（重生成某场景/清空场次话术库用） */
-  utteranceDeleteWhere(planId: string, sceneId?: string): void {
+  /** 批量删除（重生成某场景/清空节目话术库用） */
+  utteranceDeleteWhere(programId: string, sceneId?: string): void {
     if (sceneId === undefined) {
-      this.db.prepare('DELETE FROM utterances WHERE plan_id = ?').run(planId)
+      this.db.prepare('DELETE FROM utterances WHERE program_id = ?').run(programId)
     } else {
-      this.db.prepare('DELETE FROM utterances WHERE plan_id = ? AND scene_id = ?').run(planId, sceneId)
+      this.db.prepare('DELETE FROM utterances WHERE program_id = ? AND scene_id = ?').run(programId, sceneId)
     }
   }
 
@@ -1827,7 +1857,7 @@ export class StorageService {
 function rowToUtterance(r: Record<string, unknown>): Utterance {
   return {
     id: str(r.id),
-    planId: str(r.plan_id),
+    programId: str(r.program_id),
     sceneId: str(r.scene_id),
     variantIdx: num(r.variant_idx) ?? 0,
     seq: num(r.seq) ?? 0,

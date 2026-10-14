@@ -49,7 +49,7 @@ export function PromptsSection() {
       return
     }
     toast.success(`「${selected.label}」已保存`, {
-      description: '正在运行的会话不受影响，重开会话（切场/重启场次）后生效'
+      description: '正在运行的会话不受影响，重开会话（切节目/重启节目）后生效'
     })
     await load()
   }

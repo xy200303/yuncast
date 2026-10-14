@@ -49,7 +49,7 @@ function formatTime(ts: number): string {
   })
 }
 
-/** 数据页：观众画像 / 场次摘要 / 事件时间线，选项卡组织。 */
+/** 数据页：观众画像 / 节目摘要 / 事件时间线，选项卡组织。 */
 export function StatsPage() {
   const [viewers, setViewers] = useState<ViewerProfile[]>([])
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([])
@@ -70,14 +70,14 @@ export function StatsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <BarChart3 className="size-4 text-primary" />
         <h1 className="text-sm font-medium">数据</h1>
-        <p className="text-xs text-muted-foreground">观众画像 · 场次摘要 · 事件时间线</p>
+        <p className="text-xs text-muted-foreground">观众画像 · 节目摘要 · 事件时间线</p>
       </header>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
         <div className="shrink-0 border-b px-4 pt-2">
           <TabsList variant="line">
             <TabsTrigger value="viewers" className="px-3">观众画像 · {viewers.length}</TabsTrigger>
-            <TabsTrigger value="episodes" className="px-3">场次摘要 · {episodes.length}</TabsTrigger>
+            <TabsTrigger value="episodes" className="px-3">节目摘要 · {episodes.length}</TabsTrigger>
             <TabsTrigger value="events" className="px-3">事件时间线</TabsTrigger>
           </TabsList>
         </div>

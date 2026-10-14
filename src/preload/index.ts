@@ -17,10 +17,6 @@ import type {
   KnowledgeFile,
   LiveComment,
   LiveEvent,
-  LiveMode,
-  LiveModeInput,
-  LivePlan,
-  LivePlanInput,
   LaunchResult,
   ModelConnectionInput,
   ModelConnectionSafe,
@@ -33,6 +29,8 @@ import type {
   PoolSnapshot,
   PoolStatus,
   PreflightItem,
+  Program,
+  ProgramInput,
   Product,
   ProductInput,
   Script,
@@ -150,13 +148,13 @@ const api = {
     /** 打断当前这一轮生成（会话保留）；对话输入框的停止钮 */
     abort: () => ipcRenderer.invoke(IPC.agentAbort) as Promise<void>,
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
-    /** 原子换主播：abort 当前生成 → 场次历史存回 → 新主播套同一份历史重建会话（直播中可切，不断上下文） */
+    /** 原子换主播：abort 当前生成 → 节目历史存回 → 新主播套同一份历史重建会话（直播中可切，不断上下文） */
     handoff: (personaId: string) =>
       ipcRenderer.invoke(IPC.agentHandoff, personaId) as Promise<{ ok: boolean; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
-    /** 编剧模式：派主播给该场次写底稿（跳直播台看过程，随时可插话改口径） */
-    draftStart: (planId: string) =>
-      ipcRenderer.invoke(IPC.agentDraftStart, planId) as Promise<{ ok: boolean; error?: string }>,
+    /** 编剧模式：派主播给该节目写底稿（跳直播台看过程，随时可插话改口径） */
+    draftStart: (programId: string) =>
+      ipcRenderer.invoke(IPC.agentDraftStart, programId) as Promise<{ ok: boolean; error?: string }>,
     /** 暂停/恢复主播产出（统一开播控制里的暂停：停播报 + 停生成） */
     setSpeakingPaused: (paused: boolean) =>
       ipcRenderer.invoke(IPC.playbackSetPaused, paused) as Promise<void>,
@@ -175,9 +173,9 @@ const api = {
      * 其它类型降级成 [附件] 文本说明 */
     send: (text: string, localId?: string, attachments?: { name: string; path: string }[]) =>
       ipcRenderer.invoke(IPC.directorSend, text, localId, attachments) as Promise<{ ok: boolean; error?: string }>,
-    /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复） */
-    timelineList: (planId: string) =>
-      ipcRenderer.invoke(IPC.directorTimelineList, planId) as Promise<ChatEntry[]>,
+    /** 拉某节目的对话时间线（切节目/刷新/重启后整段恢复） */
+    timelineList: (programId: string) =>
+      ipcRenderer.invoke(IPC.directorTimelineList, programId) as Promise<ChatEntry[]>,
     /** 订阅对话时间线（文本流式 / 工具调用 / 请示卡片 / reset 整体替换；同一 entry.id 会重复推更新，渲染层按 id upsert） */
     onTimeline: (cb: (event: DirectorTimelineEvent | DirectorTimelineReset) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, event: DirectorTimelineEvent | DirectorTimelineReset) =>
@@ -335,43 +333,35 @@ const api = {
       ipcRenderer.invoke(IPC.scriptSave, input, id) as Promise<PoolResult<Script>>,
     remove: (id: string) => ipcRenderer.invoke(IPC.scriptDelete, id) as Promise<PoolResult>
   },
-  plan: {
-    list: () => ipcRenderer.invoke(IPC.planList) as Promise<LivePlan[]>,
-    save: (input: LivePlanInput, id?: string) =>
-      ipcRenderer.invoke(IPC.planSave, input, id) as Promise<PoolResult<LivePlan>>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.planDelete, id) as Promise<PoolResult>,
-    /** 设为当前场次，返回生效的 activePlanId */
-    setActive: (id: string) => ipcRenderer.invoke(IPC.planSetActive, id) as Promise<string>,
+  program: {
+    list: () => ipcRenderer.invoke(IPC.programList) as Promise<Program[]>,
+    save: (input: ProgramInput, id?: string) =>
+      ipcRenderer.invoke(IPC.programSave, input, id) as Promise<PoolResult<Program>>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.programDelete, id) as Promise<PoolResult>,
+    /** 设为当前节目，返回生效的 activeProgramId */
+    setActive: (id: string) => ipcRenderer.invoke(IPC.programSetActive, id) as Promise<string>,
     /** 开播前预检：检查项清单（阻断/警告） */
-    preflight: (id: string) => ipcRenderer.invoke(IPC.planPreflight, id) as Promise<PreflightItem[]>,
-    /** 启动场次：加载配置 + 应用人设音色 + 装载话术库 + 启动主播 */
-    launch: (id: string) => ipcRenderer.invoke(IPC.planLaunch, id) as Promise<LaunchResult>,
+    preflight: (id: string) => ipcRenderer.invoke(IPC.programPreflight, id) as Promise<PreflightItem[]>,
+    /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播 */
+    launch: (id: string) => ipcRenderer.invoke(IPC.programLaunch, id) as Promise<LaunchResult>,
     /** 切场景：跳剧本场景 + 装载该场景话术库 */
-    gotoScene: (planId: string, index: number) =>
-      ipcRenderer.invoke(IPC.planGotoScene, planId, index) as Promise<{
+    gotoScene: (programId: string, index: number) =>
+      ipcRenderer.invoke(IPC.programGotoScene, programId, index) as Promise<{
         ok: boolean
         loaded: number
         title?: string
         error?: string
       }>
   },
-  mode: {
-    list: () => ipcRenderer.invoke(IPC.modeList) as Promise<LiveMode[]>,
-    save: (input: LiveModeInput, id?: string) =>
-      ipcRenderer.invoke(IPC.modeSave, input, id) as Promise<PoolResult<LiveMode>>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.modeDelete, id) as Promise<PoolResult>,
-    /** 复制一份（内置模式的定制入口） */
-    duplicate: (id: string) => ipcRenderer.invoke(IPC.modeDuplicate, id) as Promise<PoolResult<LiveMode>>
-  },
   utterance: {
-    list: (planId: string) => ipcRenderer.invoke(IPC.utteranceList, planId) as Promise<Utterance[]>,
+    list: (programId: string) => ipcRenderer.invoke(IPC.utteranceList, programId) as Promise<Utterance[]>,
     save: (input: UtteranceInput, id?: string) =>
       ipcRenderer.invoke(IPC.utteranceSave, input, id) as Promise<PoolResult<Utterance>>,
     remove: (id: string) => ipcRenderer.invoke(IPC.utteranceDelete, id) as Promise<PoolResult>,
-    clear: (planId: string, sceneId?: string) =>
-      ipcRenderer.invoke(IPC.utteranceClear, planId, sceneId) as Promise<PoolResult>,
+    clear: (programId: string, sceneId?: string) =>
+      ipcRenderer.invoke(IPC.utteranceClear, programId, sceneId) as Promise<PoolResult>,
     /** 批量预合成（异步启动，进度走 onEvent；id='' 表示批次结束） */
-    presynth: (planId: string) => ipcRenderer.invoke(IPC.utterancePresynth, planId) as Promise<{ ok: boolean }>,
+    presynth: (programId: string) => ipcRenderer.invoke(IPC.utterancePresynth, programId) as Promise<{ ok: boolean }>,
     onEvent: (cb: (utterance: Utterance) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, utterance: Utterance) => cb(utterance)
       ipcRenderer.on(IPC.utteranceEvent, listener)

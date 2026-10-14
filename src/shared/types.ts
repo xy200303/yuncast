@@ -255,15 +255,15 @@ export const DEFAULT_TRIGGER_CONFIG: TriggerConfig = {
   maxLlmPerMinute: 6
 }
 
-/** 当前场次（config.live 段） */
+/** 当前节目（config.live 段） */
 export interface LiveStateConfig {
-  /** 当前选中的场次 id（空串 = 未选择） */
-  activePlanId: string
+  /** 当前选中的节目 id（空串 = 未选择） */
+  activeProgramId: string
   /** 桥段间留白（毫秒）：正常/兜底车道播完一条后的呼吸停顿；插播/互动车道不等，0 = 不留白 */
   bitGapMs: number
 }
 
-export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activePlanId: '', bitGapMs: 1200 }
+export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activeProgramId: '', bitGapMs: 1200 }
 
 export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUrl: '', streamKey: '' }
 
@@ -359,7 +359,7 @@ export function parseAppConfig(input: unknown): AppConfig {
     tts,
     trigger,
     live: {
-      activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '',
+      activeProgramId: typeof liveRow.activeProgramId === 'string' ? liveRow.activeProgramId : '',
       bitGapMs:
         typeof liveRow.bitGapMs === 'number' && liveRow.bitGapMs >= 0
           ? liveRow.bitGapMs
@@ -498,7 +498,7 @@ export type PoolResult<T = undefined> =
 
 /** 池/合成的常量约束 */
 export const POOL_LIMITS = {
-  /** 池内容量上限（未播完条目）；超出场次的底稿按波次装载（轮播补货），不必一次全装 */
+  /** 池内容量上限（未播完条目）；超出节目的底稿按波次装载（轮播补货），不必一次全装 */
   capacity: 50,
   /** 每来源每分钟限流（主播/触发器/人工的硬限） */
   perSourcePerMinute: 20,
@@ -583,9 +583,9 @@ export interface AgentStatus {
   scene?: { title: string; index: number; total: number }
   /** 会话用途：prep=直播前写稿（播出通道关闭），live=直播中。stopped 时无意义 */
   purpose?: 'prep' | 'live'
-  /** 会话出生后资产改过（人设/模型/剧本/场次结构）：改动要重启会话才生效（docs/07 §8.5） */
+  /** 会话出生后资产改过（人设/模型/剧本/节目配置）：改动要重启会话才生效（docs/07 §8.5） */
   assetsStale?: boolean
-  /** 场次开播态（引擎语义）：launch 置真、结束场次置假，与 agent 会话是否活着无关 */
+  /** 节目开播态（引擎语义）：launch 置真、结束节目置假，与 agent 会话是否活着无关 */
   live?: boolean
   /** 正在生成（一轮没跑完）：对话输入框的发送钮据此变停止钮 */
   busy?: boolean
@@ -659,7 +659,7 @@ export interface DirectorTimelineEvent {
 
 /**
  * 对话面板的一行（渲染层完整条目，含导演自己的指令和请示卡片）。
- * main 侧按场次持久化（director_timeline 表），切场/刷新/重启后整段恢复。
+ * main 侧按节目持久化（director_timeline 表），切节目/刷新/重启后整段恢复。
  */
 export type ChatEntry =
   | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
@@ -742,11 +742,11 @@ export interface VoiceUsagePersona {
 /** 音色的引用关系（`voice:usage`）：删除前先看谁在用，别删掉正在用的那个 */
 export interface VoiceUsage {
   personas: VoiceUsagePersona[]
-  plans: { id: string; name: string }[]
+  programs: { id: string; name: string }[]
   /** 话术库条目数（可能很多，只给计数） */
   utteranceCount: number
   /** 前几条话术示例（让人认出是哪批话术） */
-  utteranceSamples: { id: string; planName: string; text: string }[]
+  utteranceSamples: { id: string; programName: string; text: string }[]
 }
 
 // ---------- 知识库（docs/01 §4） ----------
@@ -925,148 +925,93 @@ export interface Script {
 
 export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
 
-// ---------- 场次（docs/01 §5 场次页；docs/07 §8.5 场次=开播单元） ----------
+// ---------- 节目（Program，原场次升级：一场直播/一期播客/一本有声书都是一个节目） ----------
 
-/** 场次话术库生成配置（docs/07 §4 ①）；段数目标由 plannedMinutes 推算（shared/planDuration） */
-export interface PlanGenConfig {
-  /** 语气指令（注入生成 Agent） */
-  toneHint: string
-  /**
-   * 底稿段数上限（成本闸）：写够就停，开播后池空了循环已有底稿（音频复用零重合成）。
-   * 0 = 按预设时长推算（planMaxBits）
-   */
-  maxBits: number
-}
-
-export const DEFAULT_PLAN_GEN_CONFIG: PlanGenConfig = {
-  toneHint: '',
-  maxBits: 0
-}
-
-/** 场次知识库范围：'*' = 全部，否则是 id 白名单（docs/07 §3 plan_knowledge） */
-export interface PlanKnowledgeScope {
+/** 节目知识库范围：'*' = 全部，否则是 id 白名单 */
+export interface ProgramKnowledgeScope {
   products: '*' | string[]
   files: '*' | string[]
 }
 
-export const DEFAULT_PLAN_KNOWLEDGE_SCOPE: PlanKnowledgeScope = { products: '*', files: '*' }
+export const DEFAULT_PROGRAM_KNOWLEDGE_SCOPE: ProgramKnowledgeScope = { products: '*', files: '*' }
 
-/** 预设直播时长（分钟）的默认值与下限：开播向导按它推算这场要备多少条底稿 */
-export const DEFAULT_PLANNED_MINUTES = 60
-export const MIN_PLANNED_MINUTES = 5
+/** 内容类型（UI 显示用 CONTENT_TYPE_LABELS；只影响 prompt/写稿任务书/界面文案，不限制播放导出） */
+export type ContentType = 'solo' | 'conversation' | 'reading' | 'roleplay'
 
-export interface LivePlan {
+export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
+  solo: '一个人讲',
+  conversation: '多人聊天',
+  reading: '照着稿子读',
+  roleplay: '分角色表演'
+}
+
+/** 播出方式：现场发挥=无底稿实时说 / 边播边准备=滚动合成窗口 / 全部做好再播=预制全量合成 */
+export type BroadcastMode = 'improvised' | 'rolling' | 'prepared'
+
+export const BROADCAST_MODE_LABELS: Record<BroadcastMode, string> = {
+  improvised: '现场发挥',
+  rolling: '边播边准备',
+  prepared: '全部做好再播'
+}
+
+/** 播完以后（即兴播出无此概念） */
+export type FinishMode = 'stop' | 'loop'
+
+export type ProgramAudioMode = 'follow-presenter' | 'custom'
+
+export interface ProgramCastMember {
+  roleId: string
+  roleName: string
+  voiceId: string
+}
+
+/** 节目声音配置：跟随当前主播（默认）或自定义合成模型+角色选角；预制合成开始时冻结成快照 */
+export interface ProgramAudioConfig {
+  mode: ProgramAudioMode
+  ttsConnectionId?: string
+  ttsModelId?: string
+  cast?: ProgramCastMember[]
+}
+
+export const DEFAULT_PROGRAM_AUDIO_CONFIG: ProgramAudioConfig = { mode: 'follow-presenter' }
+
+export interface Program {
   id: string
   name: string
-  /** 本场主题/方向（注入主播 system prompt） */
+  /** 本场主题/节目说明（注入主播 system prompt） */
   theme: string
-  /** 演出形式提示（单口/对口相声/幽默/朗诵…，注入 system prompt；docs/07 §5.6） */
-  styleHint: string
-  /** 直播模式 id（modes 表；'' = 默认互动模式）：事件接线 + 角色定位提示词模块 */
-  modeId: string
-  /** 预设直播时长（分钟）：开播向导按它推算本场底稿规模，预检拿就绪覆盖比对 */
-  plannedMinutes: number
+  contentType: ContentType
+  broadcastMode: BroadcastMode
+  finishMode: FinishMode
+  /** 是否把直播间动态（评论/礼物/进场）提供给主播 Agent */
+  allowLiveEvents: boolean
+  /** 启用的全局触发器 id（触发器定义在全局触发器库，节目只存启用项） */
+  enabledTriggerIds: string[]
+  audioConfig: ProgramAudioConfig
   scriptId: string | null
+  knowledgeScope: ProgramKnowledgeScope
   /** 剧本推进进度（断播续播用），advance_scene 更新 */
   currentSceneIdx: number
-  genConfig: PlanGenConfig
-  knowledgeScope: PlanKnowledgeScope
-  /** @deprecated 音色归主播 agent 定（人设默认音色 + set_voice 运行时），场次不再指定；字段保留兼容老库，读取忽略 */
-  voiceId: string
   createdAt: number
   updatedAt: number
 }
 
-export type LivePlanInput = Omit<LivePlan, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
+export type ProgramInput = Omit<Program, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
 
-/** 场次没选模式（老数据）时回落到它 */
-export const DEFAULT_MODE_ID = 'interactive'
-
-/** 新建场次的表单初值（场次页 PlanDialog 用） */
-export const DEFAULT_LIVE_PLAN_INPUT: LivePlanInput = {
+export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
   name: '',
   theme: '',
-  styleHint: '',
-  modeId: DEFAULT_MODE_ID,
-  plannedMinutes: DEFAULT_PLANNED_MINUTES,
+  contentType: 'solo',
+  broadcastMode: 'rolling',
+  finishMode: 'loop',
+  allowLiveEvents: true,
+  enabledTriggerIds: [],
+  audioConfig: DEFAULT_PROGRAM_AUDIO_CONFIG,
   scriptId: null,
-  genConfig: DEFAULT_PLAN_GEN_CONFIG,
-  knowledgeScope: DEFAULT_PLAN_KNOWLEDGE_SCOPE,
-  voiceId: ''
+  knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
 }
 
-// ---------- 直播模式（数据化预设包：事件接线 + 角色定位提示词模块；基座工具层不含「该怎么播」的意志） ----------
-
-export interface LiveModeWiring {
-  /** 评论怎么进主播脑子：off=不派（纯直播不被打扰）/ batched=攒批一起派 / full=逐条即派 */
-  comments: 'off' | 'batched' | 'full'
-  /** batched 时的攒批窗口（秒） */
-  commentBatchSec: number
-  /** 进场事件：off=不理 / fans=只欢迎老粉 / all=都欢迎 */
-  entrances: 'off' | 'fans' | 'all'
-  /** 自动化触发器总开关：关 = 主播全身心演自己的，不被任何外部事件打扰 */
-  triggers: boolean
-}
-
-export interface LiveMode {
-  id: string
-  name: string
-  /** 一句话说明（场次页模式下拉里展示） */
-  description: string
-  wiring: LiveModeWiring
-  /** 模式提示词模块：拼进主播 system prompt 的「本场直播」段，告诉主播这场该怎么演 */
-  promptModule: string
-  /** 内置模式不可删、不可原地改，复制一份再改 */
-  builtIn: boolean
-  updatedAt: number
-}
-
-export type LiveModeInput = Omit<LiveMode, 'id' | 'builtIn' | 'updatedAt'>
-
-const DEFAULT_COMMENT_BATCH_SEC = 15
-
-/** 内置模式：启动时按 id 整行覆盖播种（用户在库里改不动它们，只能复制）；内容随代码发布升级 */
-export const BUILTIN_MODES: readonly (LiveModeInput & { id: string })[] = [
-  {
-    id: 'interactive',
-    name: '互动直播',
-    description: '边播边和观众互动：评论攒批派给主播，老粉进场会提醒，自动化触发器全开',
-    wiring: { comments: 'batched', commentBatchSec: DEFAULT_COMMENT_BATCH_SEC, entrances: 'fans', triggers: true },
-    promptModule: `- 直播模式：互动直播。边播边和观众互动——评论会攒批派给你，挑值得回的回，其余的别理；
-  老粉进场会提醒你，要表现出记得他；好评论是素材，编进下一个桥段里
-- 互动是调味料，主线节奏别丢：别为了回评论把正在讲的桥段拦腰打断`,
-  },
-  {
-    id: 'pure',
-    name: '纯直播',
-    description: '宣讲/轮播：主播全身心投入自己的表演，评论、进场、触发器全部不接',
-    wiring: { comments: 'off', commentBatchSec: DEFAULT_COMMENT_BATCH_SEC, entrances: 'off', triggers: false },
-    promptModule: `- 直播模式：纯直播（宣讲/轮播）。全身心投入自己的表演，按剧本和底稿推进；
-  观众评论和进场事件不会派给你，自动化触发器也已关闭——没有任何外部打扰，节奏完全自己掌握
-- 池快空了就自己续写（返场不返词），别停；这场播得好不好全看你的内容`,
-  },
-  {
-    id: 'crosstalk',
-    name: '相声/段子场',
-    description: '以包袱和段子为主线：一人分饰多角用角色音色，拿观众评论现挂',
-    wiring: { comments: 'batched', commentBatchSec: 30, entrances: 'off', triggers: true },
-    promptModule: `- 直播模式：相声/段子场。以包袱和段子为主线——铺垫、再铺垫、抖包袱，节奏自己掌；
-  一人分饰多角时用 say 的 role 参数写角色台词（编剧模式，按角色音色播出）
-- 歇后语、顺口溜、贯口、现挂（拿观众刚说的话当场编包袱）都是武器；卖点揉进段子里讲，别干巴巴报参数
-- 评论攒批派给你：能现挂的就现挂，不能的别理`,
-  },
-  {
-    id: 'flash',
-    name: '秒杀/逼单场',
-    description: '短促快节奏：反复捶价格锚点和稀缺感，CTA 密度高但不复读',
-    wiring: { comments: 'batched', commentBatchSec: 10, entrances: 'off', triggers: true },
-    promptModule: `- 直播模式：秒杀/逼单场。短促快节奏，桥段偏短，反复捶价格锚点、稀缺感和截止时间；
-  所有数字必须 check_price 实时核过，库存紧张的说法不许编
-- CTA（催单）密度可以高，但同样的话不许连着说——换角度捶：算账、对比、场景、倒计时轮着来`,
-  }
-]
-
-// ---------- 话术库（docs/07 §3 utterances：场次底稿库，与运行态 speech_items 分工） ----------
+// ---------- 话术库（docs/07 §3 utterances：节目底稿库，与运行态 speech_items 分工） ----------
 
 export type UtteranceStatus = 'pending' | 'synthesizing' | 'ready' | 'failed'
 
@@ -1080,7 +1025,7 @@ export interface UtteranceSource {
 
 export interface Utterance {
   id: string
-  planId: string
+  programId: string
   /** 所属场景 id；'' = 全场通用（暖场/兜底，不许写开场和收尾） */
   sceneId: string
   variantIdx: number
@@ -1101,7 +1046,7 @@ export interface Utterance {
   rate?: number
   /** 音调倍率（1.0 基准，保守 0.9~1.1）：克隆音色大变会不像本人；空 = 接入默认 */
   pitch?: number
-  /** 空 = 用场次/人设卡的音色 */
+  /** 空 = 用节目/人设卡的音色 */
   voiceId: string
   audioPath: string | null
   /** 预合成时实际用的音色：装载进池前比对，音色改过则旧音频作废 */
@@ -1147,7 +1092,7 @@ export const UTTERANCE_STATUS_LABEL: Record<UtteranceStatus, string> = {
   failed: '失败'
 }
 
-// ---------- 场次启动预检与装载（docs/07 §8.5） ----------
+// ---------- 节目启动预检与装载（docs/07 §8.5） ----------
 
 export type PreflightLevel = 'ok' | 'warn' | 'block'
 

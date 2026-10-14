@@ -2,7 +2,6 @@ import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type, type TSchema } from 'typebox'
 import type { EntryKind, LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource } from '../../shared/types'
 import { ENTRY_KINDS, UTTERANCE_STATUS_LABEL } from '../../shared/types'
-import { planBroadcastCap } from '../../shared/planDuration'
 import type { SpeechPool } from './SpeechPool'
 import type { ConnectorService } from './ConnectorService'
 import type { KnowledgeService } from './KnowledgeService'
@@ -25,15 +24,22 @@ function defineTool<TParameters extends TSchema>(def: AgentTool<TParameters>): A
 /** 主播的来源 id（话术池限流按来源算） */
 export const AGENT_SOURCE_ID = 'anchor'
 
-/** 编剧模式：role 名 → 角色音色。音色优先级（docs/07 §8.5）：显式 voice > 场次音色 > 角色音色 > 人设卡音色。都没有返回 undefined（合成路由会因此报错，不兜底） */
+/**
+ * 底稿库段数硬上限（成本闸，第一版不暴露）：写稿规模由 Agent 自己决定，
+ * 这个上限不进节目配置、不在 UI 出现，只防写稿失控把合成账单烧穿。
+ * ProgramPlaybackService 的循环闸门也用同一个上限。
+ */
+export const DRAFT_HARD_CAP = 200
+
+/** 编剧模式：role 名 → 角色音色。音色优先级（docs/07 §8.5）：显式 voice > 本场运行态音色 > 角色音色 > 人设卡音色。都没有返回 undefined（合成路由会因此报错，不兜底） */
 export function resolveVoice(
   persona: Persona,
   role?: string,
   voice?: string,
-  planVoice?: string
+  programVoice?: string
 ): string | undefined {
   if (voice?.trim()) return voice.trim()
-  if (planVoice?.trim()) return planVoice.trim()
+  if (programVoice?.trim()) return programVoice.trim()
   if (role?.trim()) {
     const found = persona.roles.find((r) => r.name === role.trim())
     if (found?.voiceId) return found.voiceId
@@ -47,15 +53,15 @@ export interface AnchorToolDeps {
   memory: MemoryService
   persona: PersonaService
   script: ScriptService
-  /** 场次底稿库（list/edit/add/remove_draft：导演口径调整落到底稿，长期生效） */
+  /** 节目底稿库（list/edit/add/remove_draft：导演口径调整落到底稿，长期生效） */
   utterances: UtteranceService
   /** insert_next 挂 replyTo 用的最近评论 */
   getLastComment: () => LiveComment | null
   /** 场景推进后通知 AgentService 广播状态（提词器刷新） */
   onSceneChanged: () => void
-  /** 当前场次指定音色（运行态，场次加载时写入；热切换 set_voice 也改它） */
-  getPlanVoice?: () => string
-  /** 场景切换后装载新场景话术库（AgentService 转发给 LaunchService） */
+  /** 本场运行态音色（节目加载时写入；热切换 set_voice 也改它） */
+  getProgramVoice?: () => string
+  /** 场景切换后装载新场景话术库（AgentService 转发给 ProgramPlaybackService） */
   onSceneAdvanced?: (sceneIndex: number) => void
   /** 请示导演（ask_director）：进对话面板高亮卡片，不阻塞直播（docs/07 §8.8.6 ④） */
   onDirectorAsk?: (ask: {
@@ -65,16 +71,16 @@ export interface AnchorToolDeps {
     defaultAction?: string
   }) => void
   /** 运行态换音色（set_voice） */
-  setPlanVoice?: (voiceId: string) => void
+  setProgramVoice?: (voiceId: string) => void
   /** 运行态调段间留白（set_gap）：0 = 回系统默认 */
-  setPlanGap?: (gapMs: number) => void
+  setProgramGap?: (gapMs: number) => void
   /** 播报控制（pause/resume/skip）：广播到渲染进程执行 */
   onPlaybackControl?: (action: PlaybackControlAction) => void
   /** 播报是否被暂停：暂停期间 say / insert_next 直接拒（说出去的话收不回） */
   getSpeakingPaused?: () => boolean
   /** 会话用途：prep=写稿备播（say/insert_next 关闭，产出只走 write_drafts），live=直播中 */
   getPurpose?: () => 'prep' | 'live'
-  /** 正式启动当前场次开播（start_live）：返回开播结果或预检拦截原因 */
+  /** 正式启动当前节目开播（start_live）：返回开播结果或预检拦截原因 */
   onGoLive?: () => Promise<string>
   /** 从连接器同步商品入库（sync_products）：KnowledgeService.syncFromConnector 已包好 */
   syncProducts?: () => Promise<{ added: number; updated: number; total: number }>
@@ -92,11 +98,11 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
     utterances,
     getLastComment,
     onSceneChanged,
-    getPlanVoice,
+    getProgramVoice,
     onSceneAdvanced,
     onDirectorAsk,
-    setPlanVoice,
-    setPlanGap,
+    setProgramVoice,
+    setProgramGap,
     onPlaybackControl,
     getSpeakingPaused,
     getPurpose,
@@ -123,41 +129,35 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
 
   // ---------- 底稿工具共用 ----------
   const DRAFT_STATUS = UTTERANCE_STATUS_LABEL
-  const activePlanId = (): string | null => script.getActive().plan?.id ?? null
+  const activeProgramId = (): string | null => script.getActive().program?.id ?? null
   const currentSceneId = (): string => script.currentScene()?.scene.id ?? ''
   const sceneTitleOf = (sceneId: string): string => {
     if (sceneId === '') return '全场通用'
     const bound = script.getActive().script
     return bound?.scenes.find((s) => s.id === sceneId)?.title ?? sceneId
   }
-  const requirePlan = (): string | null => {
-    const planId = activePlanId()
-    return planId ? null : '当前没有场次，没有底稿可管'
+  const requireProgram = (): string | null => {
+    const programId = activeProgramId()
+    return programId ? null : '当前没有节目，没有底稿可管'
   }
   /**
-   * 场次播报成本阀（段数上限）：写满就停，开播后池空了循环已有底稿（音频复用零重合成）。
-   * 0 = 无限不封顶。到顶返回提示文案，没到（或无限）返回 null。
+   * 底稿库段数硬上限（成本闸）：写满就停，开播后池空了循环已有底稿（音频复用零重合成）。
+   * 写稿规模由主播自己决定，这里只兜底防失控。到顶返回提示文案，没到返回 null。
    */
   const draftCapHit = (): string | null => {
-    const planId = activePlanId()
-    if (!planId) return null
-    const plan = script.getActive().plan
-    if (!plan) return null
-    const cap = planBroadcastCap(plan)
-    if (!Number.isFinite(cap)) return null
-    const count = utterances.list(planId).length
-    return count >= cap
-      ? `底稿库已到场次播报上限（${count}/${cap} 段），不能再入库了——这是成本阀：开播后池子空了会循环已有底稿（音频复用，不重新合成）。要加新说法先 remove_draft 腾位置，或让导演调大场次的段数上限（也可以设成无限）`
+    const programId = activeProgramId()
+    if (!programId) return null
+    const count = utterances.list(programId).length
+    return count >= DRAFT_HARD_CAP
+      ? `底稿库已到硬上限（${count}/${DRAFT_HARD_CAP} 段）——这是成本闸：开播后池子空了会循环已有底稿（音频复用，不重新合成）。要加新说法先 remove_draft 腾位置`
       : null
   }
-  /** 结果行里的库存展示：有限阀带进度，无限只报数 */
+  /** 结果行里的库存展示：只报数（上限是内部成本闸，不暴露给主播当目标） */
   const draftStockLine = (): string => {
-    const planId = activePlanId()
-    const plan = script.getActive().plan
-    if (!planId || !plan) return ''
-    const total = utterances.list(planId).length
-    const cap = planBroadcastCap(plan)
-    return Number.isFinite(cap) ? `；全场 ${total}/${cap} 段` : `；全场 ${total} 段（无上限）`
+    const programId = activeProgramId()
+    if (!programId) return ''
+    const total = utterances.list(programId).length
+    return `；全场 ${total} 段`
   }
 
   return [
@@ -181,7 +181,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         guardTool(() => {
           if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_bits 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
-          const voiceId = resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.())
+          const voiceId = resolveVoice(persona.get(), params.role, params.voice, getProgramVoice?.())
           pool.say({
             text: params.text,
             voiceId,
@@ -212,7 +212,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
           pool.insertNext({
             text: params.text,
-            voiceId: resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.()),
+            voiceId: resolveVoice(persona.get(), params.role, params.voice, getProgramVoice?.()),
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'reply' as const,
             replyTo
@@ -286,15 +286,15 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         keyword: Type.Optional(Type.String({ description: '按文本内容过滤，比如旧价格、卖点词' })),
         scope: Type.Optional(
           Type.Union([Type.Literal('scene'), Type.Literal('all')], {
-            description: 'scene=当前场景+全场通用（默认），all=全场次'
+            description: 'scene=当前场景+全场通用（默认），all=全节目'
           })
         )
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const noPlan = requirePlan()
+          const noPlan = requireProgram()
           if (noPlan) return noPlan
-          const all = utterances.list(activePlanId()!)
+          const all = utterances.list(activeProgramId()!)
           const sceneId = currentSceneId()
           let list =
             params.scope === 'all'
@@ -334,14 +334,14 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const noPlan = requirePlan()
+          const noPlan = requireProgram()
           if (noPlan) return noPlan
-          const planId = activePlanId()!
-          const existing = utterances.list(planId).find((u) => u.id === params.id.trim())
+          const programId = activeProgramId()!
+          const existing = utterances.list(programId).find((u) => u.id === params.id.trim())
           if (!existing) return `找不到底稿 ${params.id}（用 list_drafts 拿正确的 id）`
           utterances.save(
             {
-              planId,
+              programId,
               sceneId: existing.sceneId,
               variantIdx: existing.variantIdx,
               text: params.text,
@@ -355,7 +355,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             },
             existing.id
           )
-          void utterances.kickSynthesis(planId)
+          void utterances.kickSynthesis(programId)
           return `已改：「${params.text.slice(0, 40)}${params.text.length > 40 ? '…' : ''}」。旧音频作废，后台重新合成中，好了之后轮播/装载就用新版`
         })
     }),
@@ -374,16 +374,16 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const noPlan = requirePlan()
+          const noPlan = requireProgram()
           if (noPlan) return noPlan
           const capped = draftCapHit()
           if (capped) return capped
-          const planId = activePlanId()!
+          const programId = activeProgramId()!
           const sceneId = params.sceneId?.trim() ?? currentSceneId()
-          const siblings = utterances.list(planId).filter((u) => u.sceneId === sceneId)
+          const siblings = utterances.list(programId).filter((u) => u.sceneId === sceneId)
           const variantIdx = siblings.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
           utterances.save({
-            planId,
+            programId,
             sceneId,
             variantIdx,
             text: params.text,
@@ -395,7 +395,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             source: 'initial',
             sources: []
           })
-          void utterances.kickSynthesis(planId)
+          void utterances.kickSynthesis(programId)
           return `已记进底稿（${sceneTitleOf(sceneId)}），后台合成完成后进入轮播；想现在就说请用 say`
         })
     }),
@@ -408,10 +408,10 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const noPlan = requirePlan()
+          const noPlan = requireProgram()
           if (noPlan) return noPlan
-          const planId = activePlanId()!
-          const existing = utterances.list(planId).find((u) => u.id === params.id.trim())
+          const programId = activeProgramId()!
+          const existing = utterances.list(programId).find((u) => u.id === params.id.trim())
           if (!existing) return `找不到底稿 ${params.id}（用 list_drafts 拿正确的 id）`
           utterances.remove(existing.id)
           return `已删底稿：「${existing.text}」`
@@ -428,13 +428,13 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const noPlan = requirePlan()
+          const noPlan = requireProgram()
           if (noPlan) return noPlan
-          const planId = activePlanId()!
+          const programId = activeProgramId()!
           const sceneId = params.sceneId?.trim()
-          const before = utterances.list(planId).filter((u) => sceneId === undefined || u.sceneId === sceneId).length
+          const before = utterances.list(programId).filter((u) => sceneId === undefined || u.sceneId === sceneId).length
           if (before === 0) return sceneId ? `「${sceneTitleOf(sceneId)}」本来就没有底稿` : '底稿库本来就是空的'
-          utterances.clear(planId, sceneId)
+          utterances.clear(programId, sceneId)
           return sceneId
             ? `已清空「${sceneTitleOf(sceneId)}」的 ${before} 段底稿（已在池里没播的副本不受影响，要撤用 revise_item 或等它播完）`
             : `已清空全场 ${before} 段底稿（已在池里没播的副本不受影响）。段数归零，可以重新写稿了`
@@ -444,7 +444,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'write_bits',
       label: '写桥段',
       description:
-        '编剧模式批量入库：把为某个场景写好的桥段存进底稿库（一次 1~4 段，写稿任务书里有逐场目标段数和 sceneId）。' +
+        '编剧模式批量入库：把为某个场景写好的桥段存进底稿库（一次 1~4 段，写稿任务书里有各场景的 sceneId）。' +
         '桥段 = 一段 30~90 秒的连续讲述（多句、150~350 字），是合成和播放的最小单元——写成一个有起承转合的整体，别拆成单句。' +
         'type 标内容形态：hook 开场钩 / story 故事 / scene 场景化 / math 算账 / compare 对比 / punchline 包袱（歇后语、顺口溜、段子）/ interact 互动 / cta 催单 / transition 转场 / closer 收尾（不进自动轮播，收尾时你自己 say 出去）/ general 通用。' +
         'delivery 写表演指示（一句话：情绪、语速、哪里停顿，比如「压低声音像说悄悄话，报价格前停一拍」）。' +
@@ -474,12 +474,12 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const noPlan = requirePlan()
+          const noPlan = requireProgram()
           if (noPlan) return noPlan
           const capped = draftCapHit()
           if (capped) return capped
           const saved = utterances.saveMany(
-            activePlanId()!,
+            activeProgramId()!,
             params.sceneId.trim(),
             params.items.map((item) => ({
               text: item.text,
@@ -494,7 +494,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           )
           // 不自动合成：写稿阶段量大，审阅后由「预合成全部」统一跑（edit_draft/add_draft 的单条急用才自动合成）
           const sceneCount = utterances
-            .list(activePlanId()!)
+            .list(activeProgramId()!)
             .filter((u) => u.sceneId === params.sceneId.trim()).length
           const monotony = bitTypeMonotony(params.items.map((item) => item.type))
           return (
@@ -745,7 +745,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       label: '跳到指定场景',
       description: '直接跳到剧本里某一场景（序号从 1 数起）：要跳过某场或回到前面某场时用；按顺序推进用 advance_scene。',
       parameters: Type.Object({
-        index: Type.Number({ description: '目标场次序号，从 1 开始' })
+        index: Type.Number({ description: '目标场景序号，从 1 开始' })
       }),
       execute: async (_id, params) =>
         guardTool(() => {
@@ -760,7 +760,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'create_scene',
       label: '加一场（自编剧本）',
       description:
-        '给本场剧本加一场景：场次没绑剧本时自动建一本你自编的剧本并绑上。你自己编排直播结构用——' +
+        '给本场剧本加一场景：节目没绑剧本时自动建一本你自编的剧本并绑上。你自己编排直播结构用——' +
         '先想清楚这场直播分几幕（开场留人/痛点/讲解/互动/催单/收尾），逐场建好，再按场景写稿或播讲。position 省略 = 追加到末尾。',
       parameters: Type.Object({
         title: Type.String({ description: '场景名，比如「痛点共鸣」「催单收尾」' }),
@@ -771,10 +771,10 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const planId = activePlanId()
-          if (!planId) return '当前没有场次，没法编剧本'
+          const programId = activeProgramId()
+          if (!programId) return '当前没有节目，没法编剧本'
           const result = script.appendScene(
-            planId,
+            programId,
             {
               title: params.title,
               goal: params.goal,
@@ -800,9 +800,9 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const planId = activePlanId()
-          if (!planId) return '当前没有场次，没法改剧本'
-          const result = script.updateScene(planId, params.index, {
+          const programId = activeProgramId()
+          if (!programId) return '当前没有节目，没法改剧本'
+          const result = script.updateScene(programId, params.index, {
             title: params.title,
             goal: params.goal,
             keyPoints: params.keyPoints,
@@ -821,9 +821,9 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const planId = activePlanId()
-          if (!planId) return '当前没有场次，没法改剧本'
-          const result = script.removeScene(planId, params.index)
+          const programId = activeProgramId()
+          if (!programId) return '当前没有节目，没法改剧本'
+          const result = script.removeScene(programId, params.index)
           onSceneChanged()
           return sceneListReport('已删一场', result.script)
         })
@@ -839,11 +839,11 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       execute: async (_id, params) =>
         guardTool(() => {
           const voiceId = String(params.voiceId ?? '').trim()
-          setPlanVoice?.(voiceId)
+          setProgramVoice?.(voiceId)
           const effective = voiceId || persona.get().voiceId
           const reVoiced = pool.reVoice(effective)
           const tail = reVoiced > 0 ? `，${reVoiced} 条未播的旧音色话术已加入重合成` : ''
-          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它${tail}` : `已清掉场次音色，回到人设卡的音色${tail}`
+          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它${tail}` : `已清掉本场音色，回到人设卡的音色${tail}`
         })
     }),
     defineTool({
@@ -858,7 +858,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       execute: async (_id, params) =>
         guardTool(() => {
           const ms = Math.max(0, Math.min(10000, Math.floor(Number(params.gapMs) || 0)))
-          setPlanGap?.(ms)
+          setProgramGap?.(ms)
           return ms > 0 ? `段间留白已调成 ${ms}ms，下一条正常内容开始生效` : '已回系统默认留白'
         })
     }),
@@ -900,12 +900,12 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'start_live',
       label: '开始直播',
       description:
-        '正式启动当前场次开播（装载底稿、打开播出通道、开始接评论）。只有导演明确说「开播 / 开始直播」才用；备稿、闲聊、彩排阶段别碰。预检不过会返回缺什么，按提示补齐后再试。',
+        '正式启动当前节目开播（装载底稿、打开播出通道、开始接评论）。只有导演明确说「开播 / 开始直播」才用；备稿、闲聊、彩排阶段别碰。预检不过会返回缺什么，按提示补齐后再试。',
       parameters: Type.Object({}),
       execute: async () => {
         try {
           if (getPurpose?.() === 'live') return ok('已经在直播了，不用重复开播')
-          if (!onGoLive) return ok('开播通道没接上，让导演从界面点「启动场次」')
+          if (!onGoLive) return ok('开播通道没接上，让导演从界面点「启动节目」')
           return ok(await onGoLive())
         } catch (error) {
           return ok(`开播失败：${error instanceof Error ? error.message : String(error)}`)

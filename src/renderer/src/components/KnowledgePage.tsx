@@ -273,7 +273,7 @@ export function KnowledgePage() {
           {scripts.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
               <Clapperboard className="size-8" strokeWidth={1.25} />
-              <p className="text-sm">剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾），场次页绑定后主播按场推进</p>
+              <p className="text-sm">剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾），节目绑定后主播按场推进</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
@@ -327,7 +327,7 @@ export function KnowledgePage() {
             <DialogTitle>删除剧本</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确认删除「{deletingScript?.title}」？绑定了它的场次会自动解绑。
+            确认删除「{deletingScript?.title}」？绑定了它的节目会自动解绑。
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeletingScript(null)}>

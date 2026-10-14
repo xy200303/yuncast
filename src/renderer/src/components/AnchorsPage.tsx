@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Bot, ChevronRight, Loader2, Play, Plus, Search, Square, Zap } from 'lucide-react'
+import { Bot, Loader2, Play, Plus, Square } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AssetStaleBanner } from '@/components/AssetStaleBanner'
@@ -18,13 +15,7 @@ import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { selectLlmReady, useAppStore } from '../stores/useAppStore'
 import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
 import { MANUAL_VOICE_SEP } from '../../../shared/voiceProvider'
-import {
-  TTS_PROVIDER_SHORT,
-  type ModelConnectionSafe,
-  type Persona,
-  type Trigger,
-  type TriggerMode
-} from '../../../shared/types'
+import { type ModelConnectionSafe, type Persona } from '../../../shared/types'
 
 /** 下拉里「接入 + 模型」两级值：与手动音色的复合串共用同一个分隔符（接入/模型 id 里不会有冒号） */
 function brainValue(connectionId: string, model: string): string {
@@ -56,21 +47,9 @@ const AGENT_STATE_LABEL: Record<string, string> = {
   error: '出错'
 }
 
-const MODE_LABEL: Record<TriggerMode, string> = {
-  tool: '模板直连',
-  steer: '引导',
-  task: '任务'
-}
-
-const MODE_BADGE_VARIANT: Record<TriggerMode, 'outline' | 'secondary' | 'default'> = {
-  tool: 'outline',
-  steer: 'secondary',
-  task: 'default'
-}
-
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
-/** 主播团：人设卡 / 触发器两个选项卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由场次带着切换）。 */
+/** 主播团：人设卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由节目带着切换）。触发器归节目管，主播卡不再配。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
   const connections = useAppStore((s) => s.connections)
@@ -80,7 +59,6 @@ export function AnchorsPage() {
   const [personas, setPersonas] = useState<Persona[]>([])
   const [activeId, setActiveId] = useState('')
   const [busy, setBusy] = useState(false)
-  const [tab, setTab] = useState<'persona' | 'triggers'>('persona')
   /** 编辑器：undefined=关闭；{id?}=编辑某张卡；{}=新建 */
   const [editing, setEditing] = useState<{ persona?: Persona } | null>(null)
 
@@ -132,7 +110,7 @@ export function AnchorsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <Bot className="size-4 text-primary" />
         <h1 className="text-sm font-medium">主播团</h1>
-        <p className="text-xs text-muted-foreground">人设卡 · 触发器 · 主播开关</p>
+        <p className="text-xs text-muted-foreground">人设卡 · 主播开关</p>
         <div className="ml-auto flex items-center gap-2">
           <Badge variant={agent.state === 'running' ? 'secondary' : agent.state === 'error' ? 'destructive' : 'outline'}>
             {AGENT_STATE_LABEL[agent.state]}
@@ -157,15 +135,7 @@ export function AnchorsPage() {
         </div>
       </header>
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
-        <div className="shrink-0 border-b px-4 pt-2">
-          <TabsList variant="line">
-            <TabsTrigger value="persona" className="px-3">人设卡</TabsTrigger>
-            <TabsTrigger value="triggers" className="px-3">触发器</TabsTrigger>
-          </TabsList>
-        </div>
-
-        <TabsContent value="persona" className="overflow-auto p-4">
+      <div className="min-h-0 flex-1 overflow-auto p-4">
           {agent.state === 'error' && agent.error && (
             <div className="mb-3 max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {agent.error}
@@ -224,12 +194,7 @@ export function AnchorsPage() {
               )
             })}
           </div>
-        </TabsContent>
-
-        <TabsContent value="triggers" className="overflow-auto p-4">
-          <TriggerSection />
-        </TabsContent>
-      </Tabs>
+      </div>
       {/* 人设卡编辑器 */}
       <PersonaEditorDialog
         key={editing?.persona?.id ?? 'new'}
@@ -302,7 +267,7 @@ function PersonaEditorDialog({
       return
     }
     if (!form.voiceId.trim()) {
-      toast.warning('给这张卡选个音色', { description: '没选音色主播没声音（或让场次覆盖一个）' })
+      toast.warning('给这张卡选个音色', { description: '没选音色主播没声音' })
       return
     }
     setBusy(true)
@@ -558,150 +523,5 @@ function PersonaEditorDialog({
         </Dialog>
       </DialogContent>
     </Dialog>
-  )
-}
-
-
-/** 触发器：事件驱动的自动反应规则（docs/01 §3.5）。开关即存，点卡片展开编辑。 */
-function TriggerSection() {
-  const [triggers, setTriggers] = useState<Trigger[]>([])
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-
-  useEffect(() => {
-    void window.api.trigger.list().then(setTriggers)
-  }, [])
-
-  const toggle = (trigger: Trigger, enabled: boolean) => {
-    void window.api.trigger.toggle(trigger.id, enabled).then(setTriggers)
-  }
-
-  return (
-    <section className="max-w-2xl">
-      <div className="mb-2 flex items-center gap-2">
-        <Zap className="size-4 text-primary" />
-        <h2 className="text-sm font-medium">触发器</h2>
-        <span className="text-xs text-muted-foreground">现场事件发生时的自动反应</span>
-      </div>
-      <div className="flex flex-col gap-2">
-        {triggers.map((trigger) => (
-          <TriggerCard
-            key={trigger.id}
-            trigger={trigger}
-            expanded={expandedId === trigger.id}
-            onExpand={() => setExpandedId(expandedId === trigger.id ? null : trigger.id)}
-            onToggle={(enabled) => toggle(trigger, enabled)}
-            onSaved={setTriggers}
-          />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-function TriggerCard({
-  trigger,
-  expanded,
-  onExpand,
-  onToggle,
-  onSaved
-}: {
-  trigger: Trigger
-  expanded: boolean
-  onExpand: () => void
-  onToggle: (enabled: boolean) => void
-  onSaved: (triggers: Trigger[]) => void
-}) {
-  const [cooldownSec, setCooldownSec] = useState(String((trigger.throttle?.cooldownMs ?? 0) / 1000))
-  const [maxPerSession, setMaxPerSession] = useState(String(trigger.throttle?.maxPerSession ?? ''))
-  const [template, setTemplate] = useState(
-    trigger.target.mode === 'tool'
-      ? (trigger.target.toolAction?.template ?? '')
-      : (trigger.target.promptTemplate ?? '')
-  )
-
-  useEffect(() => {
-    setCooldownSec(String((trigger.throttle?.cooldownMs ?? 0) / 1000))
-    setMaxPerSession(String(trigger.throttle?.maxPerSession ?? ''))
-    setTemplate(
-      trigger.target.mode === 'tool'
-        ? (trigger.target.toolAction?.template ?? '')
-        : (trigger.target.promptTemplate ?? '')
-    )
-  }, [trigger])
-
-  const save = () => {
-    const cooldownMs = Math.max(0, Number(cooldownSec) * 1000 || 0)
-    const budget = Number(maxPerSession) || undefined
-    const next: Trigger = {
-      ...trigger,
-      throttle: {
-        ...trigger.throttle,
-        cooldownMs: cooldownMs || undefined,
-        maxPerSession: budget
-      },
-      target:
-        trigger.target.mode === 'tool'
-          ? { ...trigger.target, toolAction: { ...trigger.target.toolAction, template } }
-          : { ...trigger.target, promptTemplate: template }
-    }
-    void window.api.trigger.save(next).then((list) => {
-      onSaved(list)
-      toast.success(`「${trigger.name}」已保存`)
-    })
-  }
-
-  return (
-    <div className={cn('rounded-lg border bg-card', !trigger.enabled && 'opacity-60')}>
-      <div className="flex items-center gap-2 px-3 py-2">
-        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onExpand}>
-          <ChevronRight className={cn('size-3.5 shrink-0 transition-transform', expanded && 'rotate-90')} />
-          <span className="truncate text-[13px] font-medium">{trigger.name}</span>
-          <Badge variant="outline">{trigger.on.event}</Badge>
-          <Badge variant={MODE_BADGE_VARIANT[trigger.target.mode]}>{MODE_LABEL[trigger.target.mode]}</Badge>
-        </button>
-        <Switch checked={trigger.enabled} onCheckedChange={(v) => onToggle(v)} aria-label={`开关 ${trigger.name}`} />
-      </div>
-      {expanded && (
-        <div className="flex flex-col gap-2 border-t px-3 py-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="mb-1 text-xs">冷却（秒）</Label>
-              <Input
-                type="number"
-                min={0}
-                value={cooldownSec}
-                onChange={(e) => setCooldownSec(e.target.value)}
-                className="h-7 text-xs"
-              />
-            </div>
-            <div>
-              <Label className="mb-1 text-xs">单场预算（次，留空不限）</Label>
-              <Input
-                type="number"
-                min={0}
-                value={maxPerSession}
-                onChange={(e) => setMaxPerSession(e.target.value)}
-                className="h-7 text-xs"
-              />
-            </div>
-          </div>
-          <div>
-            <Label className="mb-1 text-xs">
-              {trigger.target.mode === 'tool' ? '话术模板（直接播出，支持 {{payload.xxx}} 插值）' : '提示模板（发给主播，支持 {{payload.xxx}} / {{aggregated.list}} 插值）'}
-            </Label>
-            <Textarea
-              value={template}
-              onChange={(e) => setTemplate(e.target.value)}
-              className="min-h-16 resize-none text-xs"
-            />
-          </div>
-          <div className="flex justify-end">
-            <Button size="sm" onClick={save}>
-              保存
-            </Button>
-          </div>
-        </div>
-      )}
-    </div>
   )
 }

@@ -5,7 +5,7 @@ import {
   BarChart3,
   BookOpen,
   Bot,
-  CalendarDays,
+  Clapperboard,
   PanelLeft,
   Radio,
   Settings,
@@ -22,13 +22,13 @@ const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties
 
 /**
  * 导航分三个区：
- *   直播    —— 开播相关（直播台、场次；场次是开播单元，紧跟直播台）
- *   资产库  —— 跨场次复用的素材（主播人设、知识库、音色库、演出形式）
+ *   直播    —— 开播相关（直播台、节目；节目是开播单元，紧跟直播台）
+ *   资产库  —— 跨节目复用的素材（主播人设、知识库、音色库）
  *   数据    —— 复盘与统计
  */
 export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon; section: string }[] = [
   { id: 'live', label: '直播台', icon: Radio, section: '直播' },
-  { id: 'sessions', label: '场次', icon: CalendarDays, section: '直播' },
+  { id: 'programs', label: '节目', icon: Clapperboard, section: '直播' },
   { id: 'anchors', label: '主播团', icon: Bot, section: '资产库' },
   { id: 'knowledge', label: '知识库', icon: BookOpen, section: '资产库' },
   { id: 'voices', label: '音色库', icon: AudioLines, section: '资产库' },

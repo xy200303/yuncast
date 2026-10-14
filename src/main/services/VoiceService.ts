@@ -412,9 +412,9 @@ export class VoiceService {
     return { ok: true }
   }
 
-  /** 谁在用这个音色：人设卡（音色 / 角色表）、场次、话术库条目 */
+  /** 谁在用这个音色：人设卡（音色 / 角色表）、节目（演员表）、话术库条目 */
   usage(id: string): VoiceUsage {
-    const empty: VoiceUsage = { personas: [], plans: [], utteranceCount: 0, utteranceSamples: [] }
+    const empty: VoiceUsage = { personas: [], programs: [], utteranceCount: 0, utteranceSamples: [] }
     const voiceType = this.storage.listVoices().find((v) => v.id === id)?.voiceType.trim() ?? ''
     if (!voiceType) return empty
 
@@ -427,20 +427,23 @@ export class VoiceService {
       return refs
     })
 
-    const plans: VoiceUsage['plans'] = []
+    const programs: VoiceUsage['programs'] = []
     let utteranceCount = 0
     const utteranceSamples: VoiceUsage['utteranceSamples'] = []
-    for (const plan of this.storage.planList()) {
-      if (plan.voiceId === voiceType) plans.push({ id: plan.id, name: plan.name })
-      for (const utterance of this.storage.utteranceList(plan.id)) {
+    for (const program of this.storage.programList()) {
+      // 节目的音色引用在音频配置的演员表里（follow-presenter 时空表 = 跟随主播人设卡）
+      if ((program.audioConfig.cast ?? []).some((m) => m.voiceId === voiceType)) {
+        programs.push({ id: program.id, name: program.name })
+      }
+      for (const utterance of this.storage.utteranceList(program.id)) {
         if (utterance.voiceId !== voiceType) continue
         utteranceCount += 1
         if (utteranceSamples.length < 3) {
-          utteranceSamples.push({ id: utterance.id, planName: plan.name, text: utterance.text })
+          utteranceSamples.push({ id: utterance.id, programName: program.name, text: utterance.text })
         }
       }
     }
-    return { personas, plans, utteranceCount, utteranceSamples }
+    return { personas, programs, utteranceCount, utteranceSamples }
   }
 
   /**

@@ -12,7 +12,7 @@ import { LivePage } from './components/LivePage'
 import { AnchorsPage } from './components/AnchorsPage'
 import { KnowledgePage } from './components/KnowledgePage'
 import { VoicesPage } from './components/VoicesPage'
-import { SessionsPage } from './components/SessionsPage'
+import { ProgramsPage } from './components/ProgramsPage'
 import { StatsPage } from './components/StatsPage'
 import { SettingsDialog } from './components/SettingsDialog'
 import { useAppStore, type NavPage } from './stores/useAppStore'
@@ -24,7 +24,7 @@ const PAGES: Record<NavPage, ComponentType> = {
   anchors: AnchorsPage,
   knowledge: KnowledgePage,
   voices: VoicesPage,
-  sessions: SessionsPage,
+  programs: ProgramsPage,
   stats: StatsPage
 }
 
@@ -106,7 +106,7 @@ export default function App() {
     const offAgent = window.api.agent.onStatus((status) => {
       const prev = useAppStore.getState().agent.state
       setAgent(status)
-      // 场次开播会按场次把人设卡切成当前主播，徽章要跟着新的卡走
+      // 节目开播会按节目把人设卡切成当前主播，徽章要跟着新的卡走
       if (status.state !== prev) void refreshPersona()
     })
     void window.api.agent.status().then(setAgent)

@@ -1,4 +1,5 @@
-import { DEFAULT_PERSONA, LEGACY_DEFAULT_PERSONA_FIELDS, type LivePlan, type Persona, type Script } from '../../shared/types'
+import { DEFAULT_PERSONA, LEGACY_DEFAULT_PERSONA_FIELDS, type Persona, type Program, type Script } from '../../shared/types'
+import { buildProgramPromptModule } from '../../shared/programPrompt'
 import type { StorageService } from './StorageService'
 import type { PromptTemplateService } from './PromptTemplateService'
 import { resolveVoice } from './anchorTools'
@@ -91,20 +92,15 @@ export class PersonaService {
 
   /**
    * 本场生效的音色：人设卡默认音色 + 角色/显式覆盖（docs/07 §8.5）。
-   * 音色归主播 agent 定——场次不再指定音色（旧字段忽略），预合成与开播装载共用同一判定。
+   * 音色归主播 agent 定——节目不再指定音色，预合成与开播装载共用同一判定。
    */
-  resolvePlanVoice(_plan: LivePlan | null | undefined, role?: string, voice?: string): string | undefined {
+  resolveProgramVoice(role?: string, voice?: string): string | undefined {
     return resolveVoice(this.get(), role, voice)
   }
 
-  /** 组装主播 Agent 的 system prompt：角色/场次段在代码里拼好，主模板走主播手册（system.anchor）。
-   *  modePromptModule：直播模式预设包的角色定位模块，拼进「本场直播」段（怎么演由模式包说，内容仍 agent 自编） */
-  buildSystemPrompt(
-    persona: Persona,
-    plan?: LivePlan | null,
-    script?: Script | null,
-    modePromptModule = ''
-  ): string {
+  /** 组装主播 Agent 的 system prompt：角色/节目段在代码里拼好，主模板走主播手册（system.anchor）。
+   *  「本场节目」段的演法模块由节目 contentType + broadcastMode 生成（shared/programPrompt，怎么演由节目说，内容仍 agent 自编） */
+  buildSystemPrompt(persona: Persona, program?: Program | null, script?: Script | null): string {
     const voice = persona.voiceId
 
     const rolesSection =
@@ -115,16 +111,17 @@ ${persona.roles.map((r) => `- ${r.name}：${r.style}`).join('\n')}
 别滥用：角色台词是调味料，主线还是你自己（${persona.name}）的节奏。`
         : ''
 
-    const planSection = plan
-      ? `\n# 本场直播
-- 场次：${plan.name}
-- 主题方向：${plan.theme || '（未设定，自由发挥）'}${modePromptModule ? `\n${modePromptModule}` : ''}${
+    const programSection = program
+      ? `\n# 本场节目
+- 节目：${program.name}
+- 主题/节目说明：${program.theme || '（未设定，自由发挥）'}
+${buildProgramPromptModule(program)}${
           script
             ? `
 - 剧本场景序列（用 advance_scene 逐场推进，每场播得差不多就推进）：
 ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 分钟）目标：${s.goal}；要点：${s.keyPoints.replace(/\n/g, '；')}`).join('\n')}
 - 播完最后一场后，是收尾下播还是循环返场由你根据现场气氛判断`
-            : '\n- 本场没有绑定剧本，按主题自由发挥'
+            : '\n- 本节目没有绑定剧本，按主题自由发挥'
         }`
       : ''
 
@@ -137,7 +134,7 @@ ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 
       voice: voice || '默认',
       voiceHint: voice ? '' : '（即不传）',
       rolesSection,
-      planSection
+      programSection
     })
   }
 }

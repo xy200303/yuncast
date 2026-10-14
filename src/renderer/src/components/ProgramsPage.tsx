@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   BookOpenText,
-  CalendarDays,
   Check,
-  Drama,
+  Clapperboard,
   Pencil,
   Plus,
   Trash2
@@ -21,52 +20,47 @@ import {
 } from '@/components/ui/dialog'
 import { useAppStore } from '../stores/useAppStore'
 import {
-  DEFAULT_MODE_ID,
+  BROADCAST_MODE_LABELS,
+  CONTENT_TYPE_LABELS,
   type KnowledgeFile,
-  type LiveMode,
-  type LivePlan,
   type Product,
+  type Program,
   type Script
 } from '../../../shared/types'
-import { PlanDialog } from './sessions/PlanDialog'
-import { ModesDialog } from './sessions/ModesDialog'
-import { UtteranceDialog } from './sessions/UtteranceDialog'
+import { ProgramDialog } from './programs/ProgramDialog'
+import { UtteranceDialog } from './programs/UtteranceDialog'
 
-/** 场次：一场直播的任务配置（形式/模式/剧本/知识库/话术库）。谁播由当前主播定，开播唯一入口在直播台。 */
-export function SessionsPage() {
+/** 节目库：一场直播/一期播客/一本有声书都是一个节目（内容 + 播出方式 + 事件规则 + 知识范围）。谁播由当前主播定，开播唯一入口在直播台。 */
+export function ProgramsPage() {
   const config = useAppStore((s) => s.config)
   const loadConfig = useAppStore((s) => s.loadConfig)
-  const [plans, setPlans] = useState<LivePlan[]>([])
+  const [programs, setPrograms] = useState<Program[]>([])
   const [scripts, setScripts] = useState<Script[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [files, setFiles] = useState<KnowledgeFile[]>([])
-  const [modes, setModes] = useState<LiveMode[]>([])
-  /** 每个场次的话术库统计（卡片上显示） */
+  /** 每个节目的底稿统计（卡片上显示） */
   const [utteranceStats, setUtteranceStats] = useState<Record<string, { total: number; ready: number }>>({})
-  const [editing, setEditing] = useState<{ plan?: LivePlan } | null>(null)
-  const [deleting, setDeleting] = useState<LivePlan | null>(null)
-  const [reviewing, setReviewing] = useState<LivePlan | null>(null)
-  const [modesOpen, setModesOpen] = useState(false)
+  const [editing, setEditing] = useState<{ program?: Program } | null>(null)
+  const [deleting, setDeleting] = useState<Program | null>(null)
+  const [reviewing, setReviewing] = useState<Program | null>(null)
 
-  const activePlanId = config.live.activePlanId
+  const activeProgramId = config.live.activeProgramId
 
   const reload = useCallback(async () => {
-    const [p, s, pr, f, m] = await Promise.all([
-      window.api.plan.list(),
+    const [p, s, pr, f] = await Promise.all([
+      window.api.program.list(),
       window.api.script.list(),
       window.api.knowledge.listProducts(),
-      window.api.knowledge.listFiles(),
-      window.api.mode.list()
+      window.api.knowledge.listFiles()
     ])
-    setPlans(p)
+    setPrograms(p)
     setScripts(s)
     setProducts(pr)
     setFiles(f)
-    setModes(m)
     const stats: Record<string, { total: number; ready: number }> = {}
-    for (const plan of p) {
-      const list = await window.api.utterance.list(plan.id)
-      stats[plan.id] = { total: list.length, ready: list.filter((u) => u.status === 'ready').length }
+    for (const program of p) {
+      const list = await window.api.utterance.list(program.id)
+      stats[program.id] = { total: list.length, ready: list.filter((u) => u.status === 'ready').length }
     }
     setUtteranceStats(stats)
   }, [])
@@ -76,67 +70,59 @@ export function SessionsPage() {
   }, [reload])
 
   const setActive = (id: string) => {
-    void window.api.plan.setActive(id === activePlanId ? '' : id).then(async () => {
+    void window.api.program.setActive(id === activeProgramId ? '' : id).then(async () => {
       await loadConfig() // 主进程写的 config，拉回来同步渲染端缓存
       await reload()
-      toast.success(id === activePlanId ? '已取消当前场次' : '已设为当前场次', {
-        description: id === activePlanId ? undefined : '下次开播按这个场次就位'
+      toast.success(id === activeProgramId ? '已取消当前节目' : '已设为当前节目', {
+        description: id === activeProgramId ? undefined : '下次开播按这个节目就位'
       })
     })
   }
 
   const scriptName = (id: string | null) => scripts.find((s) => s.id === id)?.title ?? null
-  const modeName = (id: string) =>
-    modes.find((m) => m.id === (id || DEFAULT_MODE_ID))?.name ??
-    modes.find((m) => m.id === DEFAULT_MODE_ID)?.name ??
-    null
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <CalendarDays className="size-4 text-primary" />
-        <h1 className="text-sm font-medium">场次</h1>
-        <p className="text-xs text-muted-foreground">一场直播的任务配置：形式 + 模式 + 剧本 + 知识库 + 话术库（谁播由当前主播定）</p>
+        <Clapperboard className="size-4 text-primary" />
+        <h1 className="text-sm font-medium">节目</h1>
+        <p className="text-xs text-muted-foreground">一场直播、一期播客、一本有声书都是一个节目：内容 + 播出方式 + 事件规则 + 知识范围（谁播由当前主播定）</p>
         <div className="ml-auto flex items-center gap-2">
-          <Button size="sm" variant="outline" onClick={() => setModesOpen(true)}>
-            <Drama />
-            模式库
-          </Button>
           <Button size="sm" onClick={() => setEditing({})}>
             <Plus />
-            新建场次
+            新建节目
           </Button>
         </div>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
-        {plans.length === 0 ? (
+        {programs.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-            <CalendarDays className="size-10" strokeWidth={1.25} />
-            <p className="text-sm">还没有场次。建一个场次，把这场要用的人设、剧本、话术库都装进去</p>
+            <Clapperboard className="size-10" strokeWidth={1.25} />
+            <p className="text-sm">还没有节目。建一个节目，把这次要播的内容、剧本、底稿都装进去</p>
           </div>
         ) : (
           <div className="grid max-w-4xl grid-cols-2 gap-3">
-            {plans.map((plan) => {
-              const active = plan.id === activePlanId
-              const stats = utteranceStats[plan.id]
+            {programs.map((program) => {
+              const active = program.id === activeProgramId
+              const stats = utteranceStats[program.id]
               return (
-                <Card key={plan.id} className={active ? 'border-primary/50' : ''}>
+                <Card key={program.id} className={active ? 'border-primary/50' : ''}>
                   <CardHeader className="pb-2">
                     <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="min-w-0 truncate text-sm">{plan.name}</CardTitle>
-                      {active && <Badge>当前场次</Badge>}
+                      <CardTitle className="min-w-0 truncate text-sm">{program.name}</CardTitle>
+                      {active && <Badge>当前节目</Badge>}
                     </div>
                   </CardHeader>
                   <CardContent className="flex flex-col gap-2">
                     <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
-                      {plan.theme || '（没写主题）'}
+                      {program.theme || '（没写主题）'}
                     </p>
                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                      {plan.styleHint && <Badge variant="outline">{plan.styleHint}</Badge>}
-                      {modeName(plan.modeId) && <Badge variant="outline">{modeName(plan.modeId)}</Badge>}
-                      {scriptName(plan.scriptId) ? (
-                        <Badge variant="secondary">{scriptName(plan.scriptId)}</Badge>
+                      <Badge variant="secondary">{CONTENT_TYPE_LABELS[program.contentType]}</Badge>
+                      <Badge variant="outline">{BROADCAST_MODE_LABELS[program.broadcastMode]}</Badge>
+                      {scriptName(program.scriptId) ? (
+                        <Badge variant="secondary">{scriptName(program.scriptId)}</Badge>
                       ) : (
                         <Badge variant="outline">未绑剧本</Badge>
                       )}
@@ -145,29 +131,29 @@ export function SessionsPage() {
                       <BookOpenText className="size-3.5" />
                       {stats && stats.total > 0 ? (
                         <span>
-                          话术库 {stats.total} 段 · 就绪 {stats.ready}
+                          底稿 {stats.total} 段 · 音频就绪 {stats.ready}
                         </span>
                       ) : (
-                        <span>话术库为空（点「话术库」生成）</span>
+                        <span>底稿为空（点「底稿库」生成）</span>
                       )}
                     </div>
                     <div className="mt-1 flex items-center gap-1">
                       <Button
                         variant={active ? 'secondary' : 'outline'}
                         size="sm"
-                        onClick={() => setActive(plan.id)}
+                        onClick={() => setActive(program.id)}
                       >
                         <Check />
                         {active ? '取消当前' : '设为当前'}
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => setReviewing(plan)}>
+                      <Button variant="outline" size="sm" onClick={() => setReviewing(program)}>
                         <BookOpenText />
-                        话术库
+                        底稿库
                       </Button>
-                      <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditing({ plan })}>
+                      <Button variant="ghost" size="icon-sm" title="配置" onClick={() => setEditing({ program })}>
                         <Pencil />
                       </Button>
-                      <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeleting(plan)}>
+                      <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeleting(program)}>
                         <Trash2 />
                       </Button>
                     </div>
@@ -179,21 +165,19 @@ export function SessionsPage() {
         )}
       </div>
 
-      <PlanDialog
-        key={editing?.plan?.id ?? 'new'}
+      <ProgramDialog
+        key={editing?.program?.id ?? 'new'}
         open={editing !== null}
-        plan={editing?.plan}
+        program={editing?.program}
         scripts={scripts}
         products={products}
         files={files}
-        modes={modes}
         onOpenChange={(open) => !open && setEditing(null)}
         onSaved={reload}
       />
-      <ModesDialog open={modesOpen} modes={modes} onOpenChange={setModesOpen} onChanged={reload} />
       {reviewing && (
         <UtteranceDialog
-          plan={reviewing}
+          program={reviewing}
           script={scripts.find((s) => s.id === reviewing.scriptId) ?? null}
           open
           onOpenChange={(open) => {
@@ -205,10 +189,10 @@ export function SessionsPage() {
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>删除场次</DialogTitle>
+            <DialogTitle>删除节目</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确认删除「{deleting?.name}」？本场话术库会一起删掉，绑定的剧本不受影响。
+            确认删除「{deleting?.name}」？它的底稿库会一起删掉，绑定的剧本不受影响。
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
@@ -220,10 +204,10 @@ export function SessionsPage() {
                 const target = deleting
                 setDeleting(null)
                 if (!target) return
-                void window.api.plan.remove(target.id).then(async (result) => {
+                void window.api.program.remove(target.id).then(async (result) => {
                   if (result.ok) {
                     toast.success('已删除')
-                    await loadConfig() // 删的可能是当前场次，拉一次同步
+                    await loadConfig() // 删的可能是当前节目，拉一次同步
                     await reload()
                   } else toast.error('删除失败', { description: result.error })
                 })

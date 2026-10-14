@@ -27,7 +27,7 @@ import {
 } from '../theme/applyAppearance'
 
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'sessions', 'anchors', 'knowledge', 'voices', 'stats'] as const
+export const NAV_PAGES = ['live', 'programs', 'anchors', 'knowledge', 'voices', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 
 /** 服务商清单的纯数据形态：类型从 preload 暴露的 API 反推，渲染层不 import 主进程模块 */

@@ -17,7 +17,7 @@ import { type ParamSpec, type TtsConnectionSafe, type TtsProvider } from '../../
 /**
  * 语音合成（火山引擎 / 阿里云百炼）：
  * 一个条目 = 一个服务商账号，条目里带齐它自己的东西：凭据、模型与每个模型的参数（含语气）、实时合成开关。
- * 没有默认模型 / 默认音色 / 默认接入：音色严格绑定模型，模型属于某条接入，用哪个由人设卡/场次选。
+ * 没有默认模型 / 默认音色 / 默认接入：音色严格绑定模型，模型属于某条接入，用哪个由人设卡/节目选。
  */
 export function TtsSection() {
   const providers = useAppStore((s) => s.ttsProviders)

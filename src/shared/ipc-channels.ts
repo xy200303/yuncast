@@ -50,7 +50,7 @@ export const IPC = {
   agentRestart: 'agent:restart',
   agentHandoff: 'agent:handoff',
   agentStatus: 'agent:status',
-  /** 编剧模式：跳到直播台，派主播给该场次写底稿（过程走对话时间线） */
+  /** 编剧模式：跳到直播台，派主播给该节目写底稿（过程走对话时间线） */
   agentDraftStart: 'agent:draft-start',
   /** main → renderer：Agent 状态 + 生成中预览 */
   agentStatusEvent: 'agent:status-event',
@@ -59,7 +59,7 @@ export const IPC = {
   directorSend: 'director:send',
   /** main → renderer：对话时间线条目（文本流式 / 工具调用 / 请示卡片，按 entry.id upsert；也承载 reset 整体替换） */
   directorTimeline: 'director:timeline',
-  /** renderer → main：拉某场次持久化的对话时间线（切场/刷新/重启后恢复） */
+  /** renderer → main：拉某节目持久化的对话时间线（切节目/刷新/重启后恢复） */
   directorTimelineList: 'director:timeline-list',
   /** 提示词模板（主播手册）：列表 / 保存 / 恢复默认 */
   promptTemplatesList: 'prompt-templates:list',
@@ -104,7 +104,7 @@ export const IPC = {
   voicePreview: 'voice:preview',
   /** 重命名音色 */
   voiceRename: 'voice:rename',
-  /** 谁在用它：人设卡 / 场次 / 话术库条目（删除前提示占用） */
+  /** 谁在用它：人设卡 / 节目 / 话术库条目（删除前提示占用） */
   voiceUsage: 'voice:usage',
   /** main → renderer：音色列表变化（训练状态更新） */
   voiceChanged: 'voice:changed',
@@ -141,25 +141,19 @@ export const IPC = {
   scriptSave: 'script:save',
   scriptDelete: 'script:delete',
 
-  // 场次
-  planList: 'plan:list',
-  planSave: 'plan:save',
-  planDelete: 'plan:delete',
-  planSetActive: 'plan:set-active',
+  // 节目
+  programList: 'program:list',
+  programSave: 'program:save',
+  programDelete: 'program:delete',
+  programSetActive: 'program:set-active',
   /** 开播前预检（docs/07 §8.5）：返回检查项清单，UI 弹确认 */
-  planPreflight: 'plan:preflight',
-  /** 启动场次：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */
-  planLaunch: 'plan:launch',
+  programPreflight: 'program:preflight',
+  /** 启动节目：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */
+  programLaunch: 'program:launch',
   /** 切场景：跳剧本场景 + 装载新场景话术库 */
-  planGotoScene: 'plan:goto-scene',
+  programGotoScene: 'program:goto-scene',
 
-  // 直播模式（模式预设包：内置可复制，自定义可增删改）
-  modeList: 'mode:list',
-  modeSave: 'mode:save',
-  modeDelete: 'mode:delete',
-  modeDuplicate: 'mode:duplicate',
-
-  // 话术库（场次底稿）
+  // 话术库（节目底稿）
   utteranceList: 'utterance:list',
   utteranceSave: 'utterance:save',
   utteranceDelete: 'utterance:delete',

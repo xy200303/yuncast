@@ -233,6 +233,8 @@ export class AgentService {
   /** 打断当前这一轮生成（会话保留，下条指令照常来）；没在生成就是空操作 */
   stopGeneration(): void {
     this.session?.abort()
+    // 中断不会有正常的收尾事件：思考/文本条目就地定稿，别让时间线卡在「思考中…」
+    this.flushText()
   }
 
   private setGenerating(value: boolean): void {
@@ -1170,6 +1172,9 @@ export class AgentService {
       } else if (assistantEvent?.type === 'thinking_delta') {
         // 思考流：模型开了思考强度才有；进时间线的「思考过程」条目（不进提词器、不播报）
         this.appendThinking(assistantEvent.delta)
+      } else if (assistantEvent?.type === 'thinking_end') {
+        // 思考段落写完：收起来（delta 流完后 thinking_end 是定稿信号）
+        this.finalizeThinking()
       } else if (event.type === 'agent_start') {
         this.beginTurn()
         this.setGenerating(true)

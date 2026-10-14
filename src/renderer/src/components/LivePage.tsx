@@ -1249,13 +1249,23 @@ function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; wind
   )
 }
 
-/** 思考过程条目：流式时展开滚动，写完收成一行可展开（不进提词器、不播报，纯导演可见） */
+/** 思考过程条目：默认折叠（用户手动展开）；思考中显示「思考中… Ns」计时，写完收成「思考过程 · Ns」 */
 function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking' }> }) {
-  const [open, setOpen] = useState(!entry.done)
-  // 思考写完了自动收起（像 Kimi 的「思考过程 · Ns」一行）
+  const [open, setOpen] = useState(false)
+  const [now, setNow] = useState(Date.now())
+  /** 写完那一刻冻结秒数（entry.done 翻 true 时记一次） */
+  const [frozenSec, setFrozenSec] = useState<number | null>(null)
   useEffect(() => {
-    if (entry.done) setOpen(false)
+    if (entry.done) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
   }, [entry.done])
+  useEffect(() => {
+    if (entry.done && frozenSec === null) {
+      setFrozenSec(Math.max(0, Math.round((Date.now() - entry.ts) / 1000)))
+    }
+  }, [entry.done, entry.ts, frozenSec])
+  const sec = frozenSec ?? Math.max(0, Math.round((now - entry.ts) / 1000))
   return (
     <div className="max-w-[92%]">
       <button
@@ -1264,7 +1274,7 @@ function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking'
         className="flex items-center gap-1.5 text-xs text-muted-foreground/80 hover:text-muted-foreground"
       >
         <Brain className="size-3.5" />
-        {entry.done ? '思考过程' : '思考中…'}
+        {entry.done ? `思考过程${sec > 0 ? ` · ${sec}s` : ''}` : `思考中… ${sec}s`}
         <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
       </button>
       {open && (

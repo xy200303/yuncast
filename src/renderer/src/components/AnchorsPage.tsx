@@ -333,8 +333,13 @@ function PersonaEditorDialog({
                 <Label>
                   音色<span className="ml-0.5 text-destructive">*</span>
                 </Label>
-                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setVoicePickerOpen(true)}>
-                  选择音色
+                <Button
+                  variant={voicePickerOpen ? 'secondary' : 'outline'}
+                  size="sm"
+                  className="h-6 text-xs"
+                  onClick={() => setVoicePickerOpen((v) => !v)}
+                >
+                  {voicePickerOpen ? '收起音色库' : '选择音色'}
                 </Button>
               </div>
               <Input
@@ -342,6 +347,19 @@ function PersonaEditorDialog({
                 onChange={(e) => patch({ voiceId: e.target.value })}
                 placeholder="音色 id，或 接入::模型::音色"
               />
+              {/* 音色库内嵌展开（不再开嵌套弹窗——级联菜单在弹窗套弹窗里会定位错乱/指针互掐） */}
+              {voicePickerOpen && (
+                <div className="mt-2 rounded-lg border p-2">
+                  <VoiceCascadePicker
+                    voiceId={form.voiceId}
+                    onPick={(voiceType) => {
+                      patch({ voiceId: voiceType })
+                      setVoicePickerOpen(false)
+                      toast.success('已填入音色标识', { description: '保存后生效' })
+                    }}
+                  />
+                </div>
+              )}
               {form.voiceId.trim() ? (
                 <VoiceProviderHint voiceId={form.voiceId} />
               ) : (
@@ -509,16 +527,6 @@ function PersonaEditorDialog({
           </div>
         </DialogFooter>
 
-        <VoicePickerDialog
-          open={voicePickerOpen}
-          onOpenChange={setVoicePickerOpen}
-          onPick={(voiceType) => {
-            patch({ voiceId: voiceType })
-            setVoicePickerOpen(false)
-            toast.success('已填入音色标识', { description: '保存后生效' })
-          }}
-        />
-
         <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
           <DialogContent className="sm:max-w-sm">
             <DialogHeader>
@@ -553,55 +561,6 @@ function PersonaEditorDialog({
   )
 }
 
-/**
- * 选音色：级联式（接入 → 模型 → 分组 → 音色），占位就是一行下拉，不再铺一大片按钮——
- * 系统音色、克隆音色、手动输入都在同一套级联里。
- * 返回的仍是一个音色 id：系统音色 id / 克隆音色的 voiceType / 手动输入的 `接入id::模型id::音色`
- * （音色严格绑定模型，id 本身已经隐含接入与模型）。
- */
-export function VoicePickerDialog({
-  open,
-  onOpenChange,
-  onPick
-}: {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onPick: (voiceType: string) => void
-}) {
-  const [draft, setDraft] = useState('')
-
-  useEffect(() => {
-    if (open) setDraft('')
-  }, [open])
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>选择音色</DialogTitle>
-        </DialogHeader>
-        <VoiceCascadePicker voiceId={draft} onPick={setDraft} />
-        <p className="text-[13px] text-muted-foreground">
-          音色严格绑定模型：选了哪个模型的音色，合成时就按那条接入与模型走。
-        </p>
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button
-            disabled={!draft.trim()}
-            onClick={() => {
-              onPick(draft.trim())
-              onOpenChange(false)
-            }}
-          >
-            用这个音色
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 /** 触发器：事件驱动的自动反应规则（docs/01 §3.5）。开关即存，点卡片展开编辑。 */
 function TriggerSection() {

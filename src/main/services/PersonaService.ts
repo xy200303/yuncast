@@ -60,8 +60,17 @@ export class PersonaService {
     return this.storage.personaList()
   }
 
-  /** 保存：带 id 更新，不带则新建一张（新建即设为当前主播）。id 只认参数：input 里混进来的 id 不生效 */
-  save(input: Omit<Persona, 'id' | 'updatedAt'>, id?: string): Persona {
+  /** 保存：带 id 更新，不带则新建一张（新建即设为当前主播）。id 只认参数：input 里混进来的 id 不生效。
+   *  expectedUpdatedAt：并发保护（docs/10 §10.3.5）——与库里的 updatedAt 不一致说明刚被别处改过，拒绝覆盖 */
+  save(input: Omit<Persona, 'id' | 'updatedAt'>, id?: string, expectedUpdatedAt?: number): Persona {
+    if (id && expectedUpdatedAt !== undefined) {
+      const current = this.storage.personaList().find((p) => p.id === id)
+      if (current && current.updatedAt !== expectedUpdatedAt) {
+        throw new Error(
+          `保存冲突：主播卡「${current.name}」在你读取后刚被改过（当前版本号 ${current.updatedAt}）。先重新读取，再带新的版本号重试，不要强行覆盖`
+        )
+      }
+    }
     const isNew = !id
     const persona: Persona = {
       ...input,

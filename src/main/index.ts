@@ -754,11 +754,8 @@ function registerIpc(
     guard(() => script.saveProgram(input, id))
   )
   ipcMain.handle(IPC.programDelete, (_e, id: string) =>
-    guard(() => {
-      script.deleteProgram(id)
-      // 节目的持久对话（会话 entries + 时间线）跟着节目一起走
-      storage.deleteProgramSession(String(id ?? ''))
-    })
+    // 底稿/音频/持久对话（会话 entries + 时间线）的级联清理由 ScriptService.deleteProgram 统一负责
+    guard(() => script.deleteProgram(String(id ?? '')))
   )
   ipcMain.handle(IPC.programSetActive, (_e, id: string) => {
     script.setActiveProgram(String(id ?? ''))
@@ -890,6 +887,9 @@ if (!single) {
     // 节目事件接线：触发器白名单/动态事件总闸跟着当前节目走
     triggers.gateProvider = () => agent!.currentProgramGate()
     streamSvc = new StreamService(storage, broadcastStream)
+    // 系统控制工具的迟接线服务（音色/触发器/推流都生于 Agent 之后）
+    agent.getTriggers = () => triggers
+    agent.getStream = () => streamSvc
 
     // 音频管线（唯一音频权威）：解码/排播/混音/音量都在这。
     // 同一片 PCM 同时喂推流（混音器）与本机监听（IPC → 渲染层声卡）。
@@ -939,6 +939,7 @@ if (!single) {
       if (started.ok) await request.done
       return started
     })
+    agent.getVoices = () => voiceSvc
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
     const programPlayback = new ProgramPlaybackService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
@@ -988,6 +989,18 @@ if (!single) {
       if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
     })
     // 主播请示（ask_director）：AgentService 内部直接进对话时间线单通道（高亮卡片，不阻塞直播）
+    // 紧急停止总闸（emergency_stop 工具，安全优先直接执行）：掐所有声音 + 停播放循环 + 停会话 + 收开播态
+    agent.onEmergencyStop = async () => {
+      pipeline?.stopAll()
+      playback?.setRunning(false)
+      agent?.setSpeakingPaused(true)
+      const wasLive = agent?.status().live ?? false
+      await agent?.panic()
+      if (wasLive) {
+        agent?.setLiveActive(false)
+        bus?.emit('stream.ended', {}, 'system')
+      }
+    }
     // 播报控制（pause/resume/skip）：主播工具改播放状态，转给渲染进程的播放循环
     agent.onPlaybackControl = (action) => {
       for (const win of BrowserWindow.getAllWindows()) {

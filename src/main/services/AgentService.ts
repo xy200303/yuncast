@@ -32,9 +32,13 @@ import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
 import type { UtteranceService } from './UtteranceService'
 import { buildAnchorTools } from './anchorTools'
+import { buildAnchorSystemTools } from './anchorSystemTools'
 import { prepareLlmModel, resolveModelForPersona } from './llmModel'
 import { clampOversizedMessages, estimateMsgTokens, oneLine, renderMessageForSummary } from './agentText'
 import type { ResolvedModel } from './providers/registry'
+import type { VoiceService } from './VoiceService'
+import type { TriggerRuntime } from './TriggerRuntime'
+import type { StreamService } from './stream/StreamService'
 
 /**
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
@@ -81,8 +85,8 @@ const COMPACT_KEEP_RECENT_TOKENS = 20_000
 const SUMMARY_TRANSCRIPT_MAX_CHARS = 50_000
 /** HTTP 请求超时：DeepSeek 偶尔挂住连接一个字节都不吐，收紧到 60s——超时变 error 态（可重试） */
 const LLM_TIMEOUT_MS = 60_000
-/** 工具表 schema 的粗估开销（tokens）：33 个主播工具不进 messages 但真实占窗口，状态栏进度条要算上 */
-const TOOL_SCHEMA_OVERHEAD_TOKENS = 5000
+/** 工具表 schema 的粗估开销（tokens）：50+ 个主播工具不进 messages 但真实占窗口，状态栏进度条要算上 */
+const TOOL_SCHEMA_OVERHEAD_TOKENS = 8000
 
 /** 一条 assistant 消息在时间线上的文本状态（按 messageId 更新，不重复追加条目） */
 interface TimelineText {
@@ -136,6 +140,12 @@ export class AgentService {
   onPlaybackControl: ((action: PlaybackControlAction) => void) | null = null
   /** 平台连接器（index.ts 在 ConnectorService 建好之后接上：连接器生于 Agent 之后） */
   getConnector: (() => ConnectorService | null) | null = null
+  /** 音色库 / 触发器库 / 推流（系统控制工具用；都生于 Agent 之后，由 index.ts 接上） */
+  getVoices: (() => VoiceService | null) | null = null
+  getTriggers: (() => TriggerRuntime | null) | null = null
+  getStream: (() => StreamService | null) | null = null
+  /** 紧急停止总闸（emergency_stop 工具）：index.ts 接上——掐声音 + 停播放循环 + 停会话 */
+  onEmergencyStop: (() => Promise<void>) | null = null
   /** 当前会话的模型是否开了多模态（出生时的模型级配置；没开图像附件不进会话） */
   private visionCapable = false
 
@@ -689,6 +699,16 @@ export class AgentService {
     this.broadcast(this.status())
   }
 
+  /** 系统旁白上对话时间线（emergency_stop 等系统控制工具执行后通知导演用） */
+  notifyTimeline(text: string): void {
+    this.emitNote(text)
+  }
+
+  /** 会话绑定信息（系统控制工具的删除保护用）：无会话返回 null */
+  sessionInfo(): { programId: string; purpose: 'live' | 'prep' } | null {
+    return this.session ? { programId: this.sessionProgramId, purpose: this.sessionPurpose } : null
+  }
+
   // ---------- 对话时间线（docs/09 §11：照事件流原样渲染，不做二次解释） ----------
 
   /**
@@ -965,7 +985,7 @@ export class AgentService {
 
   /**
    * 压缩阈值：窗口 - reserve。reserve 取 16k 与窗口 40% 的小者——窗口配置偏小时留的比例不变，
-   * 否则「system prompt + 22 个工具的 schema」这个地板就可能比阈值还高，压完立刻又超，每轮白压一遍。
+   * 否则「system prompt + 50+ 个工具的 schema」这个地板就可能比阈值还高，压完立刻又超，每轮白压一遍。
    */
   private compactThreshold(contextWindow: number): number {
     return contextWindow - Math.min(COMPACT_RESERVE_TOKENS, Math.floor(contextWindow * 0.4))
@@ -1203,8 +1223,9 @@ export class AgentService {
         model,
         // 思考强度来自接入的模型级配置（off=不思考）；思考流会进对话时间线的「思考过程」
         thinkingLevel,
-        // 只挂主播工具：core 没有内置工具，给什么就是什么
-        tools: buildAnchorTools({
+        // 主播工具（说话/写稿/播出控制）+ 系统控制工具（节目/剧本/主播/音色/触发器/全局状态，docs/10 §10.2）
+        tools: [
+          ...buildAnchorTools({
           pool: this.pool,
           knowledge: this.knowledge,
           memory: this.memory,
@@ -1232,7 +1253,29 @@ export class AgentService {
               }
             }),
           connector: this.getConnector?.() ?? null
-        }),
+          }),
+          ...buildAnchorSystemTools({
+            storage: this.storage,
+            script: this.script,
+            persona: this.persona,
+            utterances: this.utterances,
+            pool: this.pool,
+            getStatus: () => this.status(),
+            getSessionInfo: () => this.sessionInfo(),
+            getActivePersonaId: () => this.persona.get().id,
+            handoffPersona: (personaId) => this.handoff(personaId),
+            onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
+            notifyTimeline: (text) => this.notifyTimeline(text),
+            warmupProgram: (programId) => {
+              if (programId) void this.warmupPrepSession().catch(() => undefined)
+            },
+            onEmergencyStop: () => this.onEmergencyStop?.() ?? Promise.resolve(),
+            getConnector: () => this.getConnector?.() ?? null,
+            getVoices: () => this.getVoices?.() ?? null,
+            getTriggers: () => this.getTriggers?.() ?? null,
+            getStream: () => this.getStream?.() ?? null
+          })
+        ],
         // 节目即会话：恢复时把该节目存下的消息重建进内存会话，上下文原样回来
         messages: restoredMessages
       },

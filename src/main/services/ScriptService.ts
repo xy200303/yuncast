@@ -63,9 +63,10 @@ export class ScriptService {
     return this.storage.programList()
   }
 
-  saveProgram(input: ProgramInput, id?: string): Program {
+  saveProgram(input: ProgramInput, id?: string, expectedUpdatedAt?: number): Program {
     if (!input.name.trim()) throw new Error('节目名称不能为空')
     const existing = id ? (this.storage.programList().find((p) => p.id === id) ?? null) : null
+    assertFresh(expectedUpdatedAt, existing?.updatedAt, `节目「${existing?.name ?? ''}」`)
     const program: Program = {
       id: id ?? `prog-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       name: input.name.trim(),
@@ -88,7 +89,62 @@ export class ScriptService {
 
   deleteProgram(id: string): void {
     this.storage.programDelete(id)
+    // 节目的持久对话（会话 entries + 对话时间线）跟着节目一起走
+    this.storage.deleteProgramSession(id)
+    this.storage.timelineClear(id)
     if (this.storage.getConfig().live.activeProgramId === id) this.setActiveProgram('')
+  }
+
+  /**
+   * 剧本元信息保存（save_script 工具的后端）：新建（允许空场景，场景后补）或改名/改主题。
+   * 与 saveScript 分工：saveScript 是全场景编辑（UI 表单用，校验至少一场），这里只管名称/主题。
+   */
+  saveScriptMeta(input: { title: string; theme?: string }, id?: string, expectedUpdatedAt?: number): Script {
+    if (!input.title.trim()) throw new Error('剧本名不能为空')
+    const existing = id ? this.getScript(id) : null
+    if (id && !existing) throw new Error('剧本不存在（可能已被删除）：用 list_scripts 拿正确的 id')
+    assertFresh(expectedUpdatedAt, existing?.updatedAt, `剧本「${existing?.title ?? ''}」`)
+    const script: Script = {
+      id: id ?? `sc-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
+      title: input.title.trim(),
+      theme: (input.theme ?? existing?.theme ?? '').trim(),
+      scenes: existing?.scenes ?? [],
+      createdAt: existing?.createdAt ?? Date.now(),
+      updatedAt: Date.now()
+    }
+    this.storage.scriptSave(script)
+    return script
+  }
+
+  /** 场景排序（reorder_scenes 工具的后端）：orderedIds 必须恰好是全部场景 id 的一个排列 */
+  reorderScenes(scriptId: string, orderedIds: string[], expectedUpdatedAt?: number): Script {
+    const script = this.getScript(scriptId)
+    if (!script) throw new Error('剧本不存在：用 list_scripts 拿正确的 id')
+    assertFresh(expectedUpdatedAt, script.updatedAt, `剧本「${script.title}」`)
+    const ids = orderedIds.map((id) => id.trim()).filter(Boolean)
+    if (new Set(ids).size !== ids.length) throw new Error('顺序列表里有重复的场景 id')
+    if (ids.length !== script.scenes.length || !script.scenes.every((s) => ids.includes(s.id))) {
+      throw new Error(`顺序列表必须恰好包含全部 ${script.scenes.length} 个场景的 id（先用 get_script 拿当前场景列表）`)
+    }
+    const scenes = ids.map((id) => script.scenes.find((s) => s.id === id)!)
+    this.storage.scriptSave({ ...script, scenes, updatedAt: Date.now() })
+    return this.getScript(scriptId)!
+  }
+
+  /** 节目触发器绑定（set_program_triggers 工具的后端）：只存启用项，触发器定义在全局库；id 必须先存在于全局库 */
+  setProgramTriggers(programId: string, triggerIds: string[], expectedUpdatedAt?: number): Program {
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    if (!program) throw new Error('节目不存在：用 list_programs 拿正确的 id')
+    assertFresh(expectedUpdatedAt, program.updatedAt, `节目「${program.name}」`)
+    const ids = [...new Set(triggerIds.map((t) => t.trim()).filter(Boolean))]
+    const known = new Set(this.storage.triggerList().map((t) => t.id))
+    const unknown = ids.filter((id) => !known.has(id))
+    if (unknown.length > 0) {
+      throw new Error(`这些触发器 id 不在全局触发器库：${unknown.join('、')}（先用 list_triggers 拿正确的 id）`)
+    }
+    const next: Program = { ...program, enabledTriggerIds: ids, updatedAt: Date.now() }
+    this.storage.programSave(next)
+    return next
   }
 
   /** 设为当前节目（持久化进 config；空串 = 取消选择） */
@@ -229,5 +285,18 @@ export class ScriptService {
     }
     if (program.currentSceneIdx > i) this.storage.programSetSceneIdx(programId, program.currentSceneIdx - 1)
     return { script: this.getScript(script.id)!, total: scenes.length }
+  }
+}
+
+/**
+ * 版本冲突检查（docs/10 §10.3.5 并发保护）：Agent 写入带着它读到时的 updatedAt，
+ * 与库里的不一致说明用户/别处刚改过——拒绝保存并附当前版本号，让调用方重新读取后再改，不静默覆盖。
+ */
+function assertFresh(expectedUpdatedAt: number | undefined, current: number | undefined, what: string): void {
+  if (expectedUpdatedAt === undefined) return
+  if (current !== expectedUpdatedAt) {
+    throw new Error(
+      `保存冲突：${what}在你读取后刚被改过（当前版本号 ${current ?? 0}）。先重新读取，再带新的版本号重试，不要强行覆盖`
+    )
   }
 }

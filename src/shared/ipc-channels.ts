@@ -115,6 +115,8 @@ export const IPC = {
   knowledgeProductList: 'knowledge:product-list',
   knowledgeProductSave: 'knowledge:product-save',
   knowledgeProductDelete: 'knowledge:product-delete',
+  /** 从连接器同步商品（抖音商城绑定商品 → 知识条目，按 externalId 去重更新） */
+  knowledgeProductSync: 'knowledge:product-sync',
   knowledgeFileList: 'knowledge:file-list',
   /** 选文件 → 解析 → 入库，一步完成 */
   knowledgeFileUpload: 'knowledge:file-upload',

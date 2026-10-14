@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ArrowDown, ArrowUp, BookOpen, Clapperboard, FileImage, FileText, Loader2, Pencil, Plus, Trash2, Upload } from 'lucide-react'
+import { ArrowDown, ArrowUp, BookOpen, Clapperboard, FileImage, FileText, Loader2, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -15,7 +15,9 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import type { KnowledgeFile, KnowledgeKind, Product, ProductInput, Script, ScriptInput, ScriptScene } from '../../../shared/types'
+import { ENTRY_KINDS, ENTRY_KIND_LABEL } from '../../../shared/types'
+import type { EntryKind, KnowledgeFile, KnowledgeKind, Product, ProductInput, Script, ScriptInput, ScriptScene } from '../../../shared/types'
+import { useAppStore } from '../stores/useAppStore'
 
 const KIND_LABEL: Record<KnowledgeKind, string> = {
   text: '文本',
@@ -24,9 +26,19 @@ const KIND_LABEL: Record<KnowledgeKind, string> = {
   image: '图片'
 }
 
+type KindFilter = EntryKind | 'all'
+
+/** 类型筛选/选择 chip（与设置页服务商 chips 同款 pill 样式） */
+const chipClass = (active: boolean) =>
+  `rounded-full border px-3.5 py-1.5 text-sm transition-colors ${
+    active
+      ? 'border-primary bg-primary text-primary-foreground'
+      : 'bg-card text-muted-foreground hover:text-foreground'
+  }`
+
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 
-/** 知识库：商品（价格护栏数据源）+ 资料文件（解析入库参与检索） */
+/** 知识库：条目（商品/书籍/话题/自定义，价格护栏只认商品）+ 资料文件（解析入库参与检索） */
 export function KnowledgePage() {
   const [products, setProducts] = useState<Product[]>([])
   const [files, setFiles] = useState<KnowledgeFile[]>([])
@@ -38,6 +50,9 @@ export function KnowledgePage() {
   const [uploading, setUploading] = useState(false)
   const [imageDraft, setImageDraft] = useState<string | null>(null) // 待填描述的图片路径
   const [tab, setTab] = useState<'products' | 'files' | 'scripts'>('products')
+  const [kindFilter, setKindFilter] = useState<KindFilter>('all')
+  const [syncing, setSyncing] = useState(false)
+  const connector = useAppStore((s) => s.connector)
 
   const reload = useCallback(async () => {
     const [p, f, s] = await Promise.all([
@@ -53,6 +68,25 @@ export function KnowledgePage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  const sync = async () => {
+    if (syncing) return
+    setSyncing(true)
+    try {
+      const result = await window.api.knowledge.syncProducts()
+      if (result.ok) {
+        toast.success(`同步完成：新增 ${result.added} · 更新 ${result.updated}`)
+        await reload()
+      } else {
+        toast.error('同步失败', { description: result.error })
+      }
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const visibleProducts =
+    kindFilter === 'all' ? products : products.filter((product) => product.kind === kindFilter)
 
   const upload = async () => {
     const filePath = await window.api.dialog.pickFile('资料文件', [
@@ -88,12 +122,12 @@ export function KnowledgePage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <BookOpen className="size-4 text-primary" />
         <h1 className="text-sm font-medium">知识库</h1>
-        <p className="text-xs text-muted-foreground">商品资料 · 文件资料包 · 剧本（主播答题的弹药库）</p>
+        <p className="text-xs text-muted-foreground">条目资料 · 文件资料包 · 剧本（主播答题的弹药库）</p>
         <div className="ml-auto flex items-center gap-2">
           {tab === 'products' && (
             <Button variant="outline" size="sm" onClick={() => setEditing({})}>
               <Plus />
-              新建商品
+              新建条目
             </Button>
           )}
           {tab === 'files' && (
@@ -114,31 +148,69 @@ export function KnowledgePage() {
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
         <div className="shrink-0 border-b px-4 pt-2">
           <TabsList variant="line">
-            <TabsTrigger value="products" className="px-3">商品 · {products.length}</TabsTrigger>
+            <TabsTrigger value="products" className="px-3">条目 · {products.length}</TabsTrigger>
             <TabsTrigger value="files" className="px-3">资料文件 · {files.length}</TabsTrigger>
             <TabsTrigger value="scripts" className="px-3">剧本 · {scripts.length}</TabsTrigger>
           </TabsList>
         </div>
 
         <TabsContent value="products" className="overflow-auto p-4">
-          {products.length === 0 ? (
+          <div className="mb-3 flex items-center gap-2">
+            <button className={chipClass(kindFilter === 'all')} onClick={() => setKindFilter('all')}>
+              全部
+            </button>
+            {ENTRY_KINDS.map((kind) => (
+              <button key={kind} className={chipClass(kindFilter === kind)} onClick={() => setKindFilter(kind)}>
+                {ENTRY_KIND_LABEL[kind]}
+              </button>
+            ))}
+            <Button
+              variant="outline"
+              size="sm"
+              className="ml-auto"
+              disabled={connector.state !== 'connected' || syncing}
+              title={connector.state !== 'connected' ? '连接器未连接' : undefined}
+              onClick={() => void sync()}
+            >
+              {syncing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              从抖音商城同步
+            </Button>
+          </div>
+          {visibleProducts.length === 0 ? (
             <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
               <BookOpen className="size-8" strokeWidth={1.25} />
-              <p className="text-sm">还没有商品。主播报价只认这里的价格，先建一个</p>
+              <p className="text-sm">
+                {products.length === 0
+                  ? '还没有条目。主播报价只认这里商品的价格，先建一个'
+                  : '这个类型下还没有条目'}
+              </p>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
-              {products.map((product) => (
+              {visibleProducts.map((product) => (
                 <Card key={product.id} className="group/card gap-2 py-3">
                   <CardHeader className="px-4">
                     <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="min-w-0 truncate text-sm">{product.name}</CardTitle>
-                      <span className="shrink-0 text-sm font-semibold text-primary">¥{product.price}</span>
+                      <CardTitle className="min-w-0 truncate text-sm">
+                        {product.name}
+                        {product.kind === 'book' && product.meta.author ? (
+                          <span className="ml-1.5 text-xs font-normal text-muted-foreground">
+                            {product.meta.author}
+                          </span>
+                        ) : null}
+                      </CardTitle>
+                      {product.kind === 'product' ? (
+                        <span className="shrink-0 text-sm font-semibold text-primary">¥{product.price}</span>
+                      ) : (
+                        <Badge variant="outline" className="shrink-0">
+                          {ENTRY_KIND_LABEL[product.kind]}
+                        </Badge>
+                      )}
                     </div>
                   </CardHeader>
                   <CardContent className="px-4">
-                    <p className="line-clamp-3 min-h-9 text-xs text-muted-foreground">
-                      {product.sellingPoints || '（还没写卖点）'}
+                    <p className="line-clamp-3 min-h-9 text-sm text-muted-foreground">
+                      {product.sellingPoints || (product.kind === 'product' ? '（还没写卖点）' : '（还没写要点）')}
                     </p>
                     <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
                       <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditing({ product })}>
@@ -235,7 +307,7 @@ export function KnowledgePage() {
         </TabsContent>
       </Tabs>
 
-      <ProductDialog
+      <EntryDialog
         key={editing?.product?.id ?? 'new'}
         open={editing !== null}
         product={editing?.product}
@@ -283,10 +355,11 @@ export function KnowledgePage() {
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>删除商品</DialogTitle>
+            <DialogTitle>删除条目</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确认删除「{deleting?.name}」？主播将查不到它的价格。
+            确认删除「{deleting?.name}」？
+            {deleting?.kind === 'product' ? '主播将查不到它的价格。' : ''}
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>
@@ -324,8 +397,36 @@ export function KnowledgePage() {
   )
 }
 
-/** 商品新建/编辑弹窗 */
-function ProductDialog({
+/** 条目要点/备注字段的文案（按类型变） */
+const ENTRY_FIELD_LABEL: Record<EntryKind, { points: string; pointsPlaceholder: string; note: string; notePlaceholder: string }> = {
+  product: {
+    points: '卖点',
+    pointsPlaceholder: '一行一个卖点，主播讲产品时参考',
+    note: 'FAQ（常见问题和答案）',
+    notePlaceholder: '问：……\n答：……'
+  },
+  book: {
+    points: '内容要点',
+    pointsPlaceholder: '一行一条：这本书讲了什么、金句、适用话题',
+    note: '备注',
+    notePlaceholder: '主播讲这本书时要注意的口径'
+  },
+  topic: {
+    points: '节目要点',
+    pointsPlaceholder: '一行一条：这期节目的话题主线、嘉宾观点、亮点',
+    note: '备注',
+    notePlaceholder: '主播聊这个话题时要注意的口径'
+  },
+  custom: {
+    points: '要点',
+    pointsPlaceholder: '一行一条要点，主播检索素材时参考',
+    note: '备注',
+    notePlaceholder: '补充说明'
+  }
+}
+
+/** 条目新建/编辑弹窗：先选类型，字段随类型变（商品才有价格；书籍作者存 meta.author） */
+function EntryDialog({
   open,
   product,
   onOpenChange,
@@ -336,22 +437,40 @@ function ProductDialog({
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void>
 }) {
-  const [form, setForm] = useState<ProductInput>({
+  const [kind, setKind] = useState<EntryKind>(product?.kind ?? 'product')
+  const [form, setForm] = useState({
     name: product?.name ?? '',
     price: product?.price ?? 0,
+    author: product?.meta.author ?? '',
     sellingPoints: product?.sellingPoints ?? '',
     faq: product?.faq ?? ''
   })
   const [busy, setBusy] = useState(false)
 
+  const fieldLabel = ENTRY_FIELD_LABEL[kind]
+
   const submit = () => {
     if (!form.name.trim() || busy) return
+    const meta: Record<string, string> = { ...product?.meta }
+    if (kind === 'book') {
+      if (form.author.trim()) meta.author = form.author.trim()
+      else delete meta.author
+    }
+    const input: ProductInput = {
+      name: form.name,
+      price: kind === 'product' ? form.price : 0,
+      sellingPoints: form.sellingPoints,
+      faq: form.faq,
+      kind,
+      externalId: product?.externalId ?? '',
+      meta
+    }
     setBusy(true)
     void window.api.knowledge
-      .saveProduct(form, product?.id)
+      .saveProduct(input, product?.id)
       .then(async (result) => {
         if (result.ok) {
-          toast.success(product ? '商品已更新' : '商品已创建')
+          toast.success(product ? '条目已更新' : '条目已创建')
           onOpenChange(false)
           await onSaved()
         } else {
@@ -365,44 +484,79 @@ function ProductDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{product ? '编辑商品' : '新建商品'}</DialogTitle>
+          <DialogTitle>{product ? '编辑条目' : '新建条目'}</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label className="mb-1">类型</Label>
+            <div className="flex flex-wrap gap-2">
+              {ENTRY_KINDS.map((entryKind) => (
+                <button
+                  key={entryKind}
+                  type="button"
+                  className={chipClass(kind === entryKind)}
+                  onClick={() => setKind(entryKind)}
+                >
+                  {ENTRY_KIND_LABEL[entryKind]}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className={kind === 'product' || kind === 'book' ? 'grid grid-cols-2 gap-3' : ''}>
             <div>
               <Label className="mb-1">名称</Label>
               <Input
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-                placeholder="例如：麦饭石不粘锅"
+                placeholder={
+                  kind === 'product'
+                    ? '例如：麦饭石不粘锅'
+                    : kind === 'book'
+                      ? '例如：活着（余华）'
+                      : kind === 'topic'
+                        ? '例如：聊聊县城咖啡馆'
+                        : '条目名称'
+                }
               />
             </div>
-            <div>
-              <Label className="mb-1">价格（元）</Label>
-              <Input
-                type="number"
-                min={0}
-                step="0.01"
-                value={String(form.price)}
-                onChange={(e) => setForm({ ...form, price: Number(e.target.value) || 0 })}
-              />
-            </div>
+            {kind === 'product' && (
+              <div>
+                <Label className="mb-1">价格（元）</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={String(form.price)}
+                  onChange={(e) => setForm({ ...form, price: Number(e.target.value) || 0 })}
+                />
+              </div>
+            )}
+            {kind === 'book' && (
+              <div>
+                <Label className="mb-1">作者</Label>
+                <Input
+                  value={form.author}
+                  onChange={(e) => setForm({ ...form, author: e.target.value })}
+                  placeholder="例如：余华"
+                />
+              </div>
+            )}
           </div>
           <div>
-            <Label className="mb-1">卖点</Label>
+            <Label className="mb-1">{fieldLabel.points}</Label>
             <Textarea
               value={form.sellingPoints}
               onChange={(e) => setForm({ ...form, sellingPoints: e.target.value })}
-              placeholder="一行一个卖点，主播讲产品时参考"
+              placeholder={fieldLabel.pointsPlaceholder}
               className="min-h-24 resize-none"
             />
           </div>
           <div>
-            <Label className="mb-1">FAQ（常见问题和答案）</Label>
+            <Label className="mb-1">{fieldLabel.note}</Label>
             <Textarea
               value={form.faq}
               onChange={(e) => setForm({ ...form, faq: e.target.value })}
-              placeholder="问：……&#10;答：……"
+              placeholder={fieldLabel.notePlaceholder}
               className="min-h-24 resize-none"
             />
           </div>

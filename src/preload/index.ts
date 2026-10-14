@@ -291,6 +291,11 @@ const api = {
     saveProduct: (input: ProductInput, id?: string) =>
       ipcRenderer.invoke(IPC.knowledgeProductSave, input, id) as Promise<PoolResult<Product>>,
     deleteProduct: (id: string) => ipcRenderer.invoke(IPC.knowledgeProductDelete, id) as Promise<PoolResult>,
+    /** 从抖音商城同步商品（连接器在线时；按 externalId 去重更新） */
+    syncProducts: () =>
+      ipcRenderer.invoke(IPC.knowledgeProductSync) as Promise<
+        { ok: true; added: number; updated: number; total: number } | { ok: false; error: string }
+      >,
     listFiles: () => ipcRenderer.invoke(IPC.knowledgeFileList) as Promise<KnowledgeFile[]>,
     /** 上传并解析资料文件；图片需带一句话描述 */
     uploadFile: (filePath: string, description?: string) =>

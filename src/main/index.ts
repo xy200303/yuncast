@@ -650,6 +650,18 @@ function registerIpc(
     })
   )
   ipcMain.handle(IPC.knowledgeProductDelete, (_e, id: string) => guard(() => knowledge.deleteProduct(id)))
+  // 抖音商城同步：连接器在线时把绑定商品拉成知识条目（发现式找商品工具，按 externalId 去重更新）
+  ipcMain.handle(IPC.knowledgeProductSync, async () => {
+    try {
+      if (connector.status().state !== 'connected') {
+        return { ok: false, error: '连接器未连接（先确认连接器在运行、设置里的端口和 Token 对）' }
+      }
+      const result = await knowledge.syncFromConnector(connector)
+      return { ok: true, ...result }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
   ipcMain.handle(IPC.knowledgeFileList, () => knowledge.listFiles())
   ipcMain.handle(IPC.knowledgeFileUpload, async (_e, filePath: string, description?: string) => {
     try {

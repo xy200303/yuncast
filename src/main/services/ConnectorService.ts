@@ -95,6 +95,13 @@ export class ConnectorService {
     return content?.map((c) => c.text ?? '').join('\n') ?? JSON.stringify(result)
   }
 
+  /** 发现连接器提供的工具（同步商品这类能力探测用）；未连接返回空 */
+  async listTools(): Promise<{ name: string; description?: string }[]> {
+    if (!this.client || this.state !== 'connected') return []
+    const result = await this.client.listTools()
+    return result.tools.map((t) => ({ name: t.name, description: t.description }))
+  }
+
   // ---------- 内部 ----------
 
   private setState(state: ConnectorState, error?: string): void {

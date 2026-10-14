@@ -733,17 +733,46 @@ export interface VoiceUsage {
 
 // ---------- 知识库（docs/01 §4） ----------
 
+/**
+ * 知识条目类型：商品只是其中一种——书籍/读物（有声书）、话题/节目（播客）、自定义都行。
+ * 条目是主播的弹药库：搜素材走它；只有 product 参与价格护栏（check_price）。
+ */
+export const ENTRY_KINDS = ['product', 'book', 'topic', 'custom'] as const
+export type EntryKind = (typeof ENTRY_KINDS)[number]
+
+export const ENTRY_KIND_LABEL: Record<EntryKind, string> = {
+  product: '商品',
+  book: '书籍/读物',
+  topic: '话题/节目',
+  custom: '自定义'
+}
+
 export interface Product {
   id: string
   name: string
-  /** 价格（元）。价格护栏的数据源：主播报价只能出自这里 */
+  /** 条目类型（product/book/topic/custom）；老库默认 product */
+  kind: EntryKind
+  /** 价格（元）。价格护栏的数据源：主播报价只能出自这里（仅 product 有意义） */
   price: number
+  /** 要点：商品=卖点；书籍=内容要点；话题=节目要点 */
   sellingPoints: string
+  /** 问答/备注：商品=FAQ；其它类型=备注 */
   faq: string
+  /** 外部来源 id（抖音商城商品 id 等）：同步时按它去重更新；空 = 本地手工条目 */
+  externalId: string
+  /** 各类型扩展字段（book.author / topic.guests…），JSON 对象 */
+  meta: Record<string, string>
   createdAt: number
 }
 
-export type ProductInput = Omit<Product, 'id' | 'createdAt'>
+export type ProductInput = Omit<Product, 'id' | 'createdAt' | 'kind' | 'externalId' | 'meta'> & {
+  /** 缺省 product；书籍/话题/自定义条目录它 */
+  kind?: EntryKind
+  /** 外部来源 id（抖音同步）；缺省空 */
+  externalId?: string
+  /** 各类型扩展字段；缺省 {} */
+  meta?: Record<string, string>
+}
 
 export const KNOWLEDGE_KINDS = ['text', 'doc', 'pdf', 'image'] as const
 export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number]
@@ -767,6 +796,8 @@ export interface KnowledgeHit {
   snippet: string
   /** 商品命中时带价格 */
   price?: number
+  /** 条目类型（source=product 时）：书籍/话题/自定义也有 */
+  kind?: EntryKind
 }
 
 // ---------- 记忆（docs/01 §3.6 三层） ----------

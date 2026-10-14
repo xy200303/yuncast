@@ -8,6 +8,7 @@ import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   DEFAULT_PLANNED_MINUTES,
+  ENTRY_KINDS,
   parseAppConfig,
   type AppConfig,
   type EpisodeSummary,
@@ -24,6 +25,7 @@ import {
   type LivePlan,
   type LiveMode,
   type LiveModeWiring,
+  type EntryKind,
   type SpeechItem,
   type SpeechLane,
   type SpeechReplyTo,
@@ -258,7 +260,7 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    // 知识库：商品（价格护栏数据源）+ 资料文件
+    // 知识库：条目（商品/书籍/话题/自定义；商品是价格护栏数据源）+ 资料文件
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS products (
         id TEXT PRIMARY KEY,
@@ -269,6 +271,10 @@ export class StorageService {
         created_at INTEGER NOT NULL
       )
     `)
+    // 条目通用化：类型（默认商品）+ 外部来源 id（抖音商城同步去重）+ 类型扩展字段
+    this.ensureColumn('products', 'kind', "TEXT NOT NULL DEFAULT 'product'")
+    this.ensureColumn('products', 'external_id', "TEXT NOT NULL DEFAULT ''")
+    this.ensureColumn('products', 'meta', "TEXT NOT NULL DEFAULT '{}'")
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS knowledge_files (
         id TEXT PRIMARY KEY,
@@ -1309,12 +1315,16 @@ export class StorageService {
       .all()
       .map((row) => {
         const r = row as Record<string, unknown>
+        const kind = str(r.kind)
         return {
           id: str(r.id),
           name: str(r.name),
+          kind: (ENTRY_KINDS as readonly string[]).includes(kind) ? (kind as EntryKind) : 'product',
           price: num(r.price) ?? 0,
           sellingPoints: str(r.selling_points),
           faq: str(r.faq),
+          externalId: str(r.external_id),
+          meta: parseJson<Record<string, string>>(r.meta, {}),
           createdAt: num(r.created_at) ?? 0
         }
       })
@@ -1323,13 +1333,24 @@ export class StorageService {
   productSave(product: Product): void {
     this.db
       .prepare(
-        `INSERT INTO products (id, name, price, selling_points, faq, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO products (id, name, kind, price, selling_points, faq, external_id, meta, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, price = excluded.price,
-           selling_points = excluded.selling_points, faq = excluded.faq`
+           name = excluded.name, kind = excluded.kind, price = excluded.price,
+           selling_points = excluded.selling_points, faq = excluded.faq,
+           external_id = excluded.external_id, meta = excluded.meta`
       )
-      .run(product.id, product.name, product.price, product.sellingPoints, product.faq, product.createdAt)
+      .run(
+        product.id,
+        product.name,
+        product.kind,
+        product.price,
+        product.sellingPoints,
+        product.faq,
+        product.externalId,
+        JSON.stringify(product.meta),
+        product.createdAt
+      )
   }
 
   productDelete(id: string): void {

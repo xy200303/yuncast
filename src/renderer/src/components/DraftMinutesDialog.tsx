@@ -82,7 +82,7 @@ export function DraftMinutesDialog({
             </p>
           </div>
           <div>
-            <Label className="mb-1">语气指令（可选，仅本次生成）</Label>
+            <Label className="mb-1">风格要求（可选，仅本次生成）</Label>
             <Input
               value={toneHint}
               onChange={(e) => setToneHint(e.target.value)}
@@ -91,6 +91,9 @@ export function DraftMinutesDialog({
                 if (e.key === 'Enter') submit()
               }}
             />
+            <p className="mt-1 text-xs text-muted-foreground">
+              说给主播听的大白话：它自己理解后翻译成每段的演法（语气/语速/停顿/形态），不直连任何合成参数
+            </p>
           </div>
         </div>
         <DialogFooter>

@@ -158,9 +158,6 @@ export class SpeechPool {
       rate: input.rate,
       pitch: input.pitch,
       originUtteranceId: input.originUtteranceId,
-      paraId: input.paraId?.trim() || undefined,
-      paraPos: input.paraPos,
-      paraLen: input.paraLen,
       sortOrder: input.sortOrder,
       // 场次装载：库里的预合成音频直接复用，开播零延迟（未预合成才进合成窗口）
       audioPath: input.audioPath?.trim() || undefined,
@@ -175,22 +172,6 @@ export class SpeechPool {
   /** insert_next：评论回复走 next 道，当前播完即播 */
   insertNext(input: Omit<PoolSayInput, 'lane'>): SpeechItem {
     return this.say({ ...input, lane: 'next' })
-  }
-
-  /**
-   * 插播到当前段落末尾：正在播的这条属于某个连贯段落（整段合成切句产物）时，
-   * 等这段整体播完再播新条目——不在一段话中间拦腰砍。
-   * 正在播的条目不属于任何段落时退化成 insert_next（当前这条播完就播）。
-   */
-  insertAfterParagraph(input: Omit<PoolSayInput, 'lane' | 'sortOrder'>): SpeechItem {
-    const active = this.storage.speechActive()
-    const playing = active.find((item) => item.status === 'playing')
-    const paraId = playing?.paraId
-    if (!paraId) return this.say({ ...input, lane: 'next' })
-    const mates = orderedForPlay(active).filter((item) => item.paraId === paraId)
-    const last = mates[mates.length - 1]
-    const anchor = last ? (last.sortOrder ?? last.createdAt) : Date.now()
-    return this.say({ ...input, lane: 'normal', sortOrder: anchor + 0.5 })
   }
 
   // ---------- 池管理 ----------

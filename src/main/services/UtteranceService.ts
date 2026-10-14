@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import type { Utterance, UtteranceInput } from '../../shared/types'
-import { PARAGRAPH_MAX_CHARS, PARAGRAPH_MIN_ITEMS } from '../../shared/paragraph'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
 import type { PersonaService } from './PersonaService'
@@ -109,8 +108,6 @@ export class UtteranceService {
       createdAt: existing?.createdAt ?? Date.now()
     }
     this.storage.utteranceSave(utterance)
-    // 文本变了，旧段落归属一并作废（下次预合成重新分组）
-    if (textChanged) this.storage.utteranceSetPara([utterance.id], '')
     return utterance
   }
 
@@ -125,10 +122,8 @@ export class UtteranceService {
 
   /**
    * 批量预合成（docs/07 §4 ④）：把场次里 pending/failed 的条目合成就绪。
-   * 桥段（bitType 非空）：一条 = 一整段连续讲述 = 一次合成，不拆不分组——
-   * 播放/合成/缓存单元对齐，请求数比单句时代少一个量级，语气由 TTS 按整段上下文处理。
-   * 旧式单句（桥段制之前的底稿）：维持同场景同音色连续条目拼段落整组合成再切句，
-   * 段落对不上句数就整组回退逐条。逐条串行（TTS 限流安全），onProgress 逐条回报。
+   * 一条 = 一整段连续讲述 = 一次合成——播放/合成/缓存单元对齐（桥段制）。
+   * 逐条串行 + 限流间隔 + 退避重试（TTS 频率限制安全），onProgress 逐条回报。
    */
   async synthesizeAll(
     planId: string,
@@ -139,40 +134,8 @@ export class UtteranceService {
     const pending = this.storage
       .utteranceList(planId)
       .filter((u) => u.status === 'pending' || u.status === 'failed')
-    // 合成用的音色与开播装载时的判定口径一致（场次音色优先于人设音色）
+    // 合成用的音色与开播装载时的判定口径一致（人设默认音色，u.voiceId 可单条覆盖）
     const voiceOf = (u: Utterance) => this.persona.resolvePlanVoice(plan, undefined, u.voiceId) ?? ''
-
-    // 桥段自成一组（整段一次合成）；旧式单句按原规则拼段落
-    const groups: Utterance[][] = []
-    let current: Utterance[] = []
-    let currentChars = 0
-    const flush = () => {
-      if (current.length > 0) groups.push(current)
-      current = []
-      currentChars = 0
-    }
-    for (const u of pending) {
-      if (u.bitType) {
-        flush()
-        groups.push([u])
-        continue
-      }
-      const voice = voiceOf(u)
-      const continues =
-        current.length > 0 &&
-        current[0].sceneId === u.sceneId &&
-        voiceOf(current[0]) === voice &&
-        currentChars + u.text.length <= PARAGRAPH_MAX_CHARS
-      if (continues) {
-        current.push(u)
-        currentChars += u.text.length
-      } else {
-        flush()
-        current = [u]
-        currentChars = u.text.length
-      }
-    }
-    flush()
 
     let done = 0
     let failed = 0
@@ -185,35 +148,22 @@ export class UtteranceService {
       if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
       lastRequestAt = Date.now()
     }
-    for (const group of groups) {
+    for (const u of pending) {
       if (signal?.aborted) break
-      if (group.length >= PARAGRAPH_MIN_ITEMS) {
-        const ok = await this.synthesizeParagraphGroup(group, voiceOf(group[0]), onProgress, signal)
-        if (ok) {
-          done += group.length
-          continue
-        }
-        if (signal?.aborted) break
-        // 段落没成：落回逐条（下面这组逐条走完）
-      }
-      for (const u of group) {
-        if (signal?.aborted) break
-        const voice = voiceOf(u)
-        this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
-        onProgress?.({ ...u, status: 'synthesizing' })
-        try {
-          await pace(voice)
-          const audioPath = await this.synthesizeWithRetry(u, voice, synthRetries, signal)
-          this.storage.utteranceSetPara([u.id], '')
-          this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
-          onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
-          done++
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error)
-          this.storage.utteranceSetAudio(u.id, 'failed', null, message.slice(0, 200))
-          onProgress?.({ ...u, status: 'failed', error: message })
-          failed++
-        }
+      const voice = voiceOf(u)
+      this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
+      onProgress?.({ ...u, status: 'synthesizing' })
+      try {
+        await pace(voice)
+        const audioPath = await this.synthesizeWithRetry(u, voice, synthRetries, signal)
+        this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
+        onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
+        done++
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        this.storage.utteranceSetAudio(u.id, 'failed', null, message.slice(0, 200))
+        onProgress?.({ ...u, status: 'failed', error: message })
+        failed++
       }
     }
     return { done, failed }
@@ -253,49 +203,4 @@ export class UtteranceService {
     throw lastError instanceof Error ? lastError : new Error(String(lastError))
   }
 
-  /**
-   * 一组连续条目整段合成：成功后每条拿到自己的切片 wav 和共同的 paraId。
-   * 任一步失败（句数对不上 / 接口报错）返回 false，调用方整组回退逐条合成。
-   */
-  private async synthesizeParagraphGroup(
-    group: Utterance[],
-    voice: string,
-    onProgress?: (u: Utterance) => void,
-    signal?: AbortSignal
-  ): Promise<boolean> {
-    for (const u of group) {
-      this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
-      onProgress?.({ ...u, status: 'synthesizing' })
-    }
-    try {
-      const { paths, paraId } = await this.tts.synthesizeParagraph(
-        group.map((u) => ({ itemId: `utterance-${u.id}`, text: u.text })),
-        voice || undefined,
-        signal
-      )
-      this.storage.utteranceSetPara(
-        group.map((u) => u.id),
-        paraId
-      )
-      group.forEach((u, i) => {
-        this.storage.utteranceSetAudio(u.id, 'ready', paths[i], undefined, voice)
-        onProgress?.({ ...u, status: 'ready', audioPath: paths[i], synthVoice: voice, paraId })
-      })
-      return true
-    } catch (error) {
-      console.warn(
-        `[话术库] 段落合成没成，回退逐条：${error instanceof Error ? error.message : String(error)}`
-      )
-      this.storage.utteranceSetPara(
-        group.map((u) => u.id),
-        ''
-      )
-      for (const u of group) {
-        const restored = u.audioPath ? 'ready' : 'pending'
-        this.storage.utteranceSetAudio(u.id, restored, u.audioPath)
-        onProgress?.({ ...u, status: restored })
-      }
-      return false
-    }
-  }
 }

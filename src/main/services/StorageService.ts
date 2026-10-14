@@ -8,9 +8,7 @@ import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   DEFAULT_PLANNED_MINUTES,
-  LLM_PROVIDER_META,
   parseAppConfig,
-  ttsProviderHasCredentials,
   type AppConfig,
   type EpisodeSummary,
   type KnowledgeFile,
@@ -42,15 +40,12 @@ import {
   type VoiceRecord
 } from '../../shared/types'
 import {
-  connectionFirstModel,
   getLlmProvider,
   isModelConnectionReady,
   isTtsConnectionReady,
   isTtsModelUsable,
   getTtsProvider,
   secretFieldKeys,
-  ttsConnectionFields,
-  ttsModelSpec,
   ttsSecretFieldKeys
 } from './providers/registry'
 
@@ -137,9 +132,6 @@ interface SpeechRow {
   pitch: unknown
   stream: unknown
   origin_utterance_id: unknown
-  para_id: unknown
-  para_pos: unknown
-  para_len: unknown
   error: unknown
   sort_order: unknown
   created_at: unknown
@@ -198,9 +190,6 @@ function rowToItem(row: SpeechRow): SpeechItem {
     pitch: num(row.pitch),
     stream: num(row.stream) === 1,
     originUtteranceId: str(row.origin_utterance_id) || undefined,
-    paraId: str(row.para_id) || undefined,
-    paraPos: num(row.para_pos),
-    paraLen: num(row.para_len),
     error: str(row.error) || undefined,
     sortOrder: num(row.sort_order),
     createdAt: num(row.created_at) ?? 0,
@@ -420,12 +409,6 @@ export class StorageService {
     // 演法硬参数：语速/音调倍率（agent 下沉，空 = 接入默认）
     this.ensureColumn('speech_items', 'rate', 'REAL')
     this.ensureColumn('speech_items', 'pitch', 'REAL')
-    // 连贯段落标记（段落合成切句产物，见 shared/paragraph.ts）
-    this.ensureColumn('speech_items', 'para_id', 'TEXT')
-    this.ensureColumn('speech_items', 'para_pos', 'INTEGER')
-    this.ensureColumn('speech_items', 'para_len', 'INTEGER')
-    // 底稿条目的段落归属（预合成整段切句时写入）
-    this.ensureColumn('utterances', 'para_id', "TEXT NOT NULL DEFAULT ''")
     // 桥段制：内容形态标签（BIT_TYPES；'' = 旧式单句）+ 表演指示（情绪/语速/停顿）
     this.ensureColumn('utterances', 'bit_type', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('utterances', 'delivery', "TEXT NOT NULL DEFAULT ''")
@@ -453,7 +436,6 @@ export class StorageService {
     // 供应商接入（设置 → 语言模型）：一条 = 一个服务商 + 一份凭据 + 一串可用模型
     // 没有默认模型：用哪个模型由人设卡显式指定
     this.createModelConnectionsTable()
-    this.migrateModelConnectionColumns()
     this.ensureModelConnectionWindows()
     // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     this.ensureColumn('agents', 'model_connection_id', 'TEXT')
@@ -473,18 +455,10 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    this.migrateTtsConnections()
     this.ensureColumn('tts_connections', 'realtime', 'INTEGER NOT NULL DEFAULT 0')
-    // 先按旧配置把第一条接入抽出来（老库的实时开关要折进它），再折全局偏好
-    this.migrateLegacyTts()
-    this.migrateTtsGlobalPrefs()
     // 克隆音色绑定目标模型与克隆时的接入（合成路由按它反推，定死不可跨模型）
     this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
-    this.backfillVoiceBindings()
-    this.migrateModelProfiles()
-    this.migrateLegacyLlm()
-    this.migratePersonaBrains()
     // 场次即会话：每个场次一份持久对话（pi 会话 entries + 可见时间线），切场/重启后恢复
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS plan_sessions (
@@ -959,130 +933,6 @@ export class StorageService {
     }
   }
 
-  /**
-   * 旧「模型条目库」归并成供应商接入：一条模型 = 一次接入时密钥要反复填，改成一家一份凭据。
-   * 按 provider_id + params 分组（同一家的同一个密钥共用一条），保留组里第一条的 id 作为新接入 id
-   * ——人设卡里存的旧条目 id 因此直接有效，不必重写。
-   */
-  private migrateModelProfiles(): void {
-    const remap = new Map<string, string>()
-    const table = this.db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'model_profiles'")
-      .get()
-    if (!table) {
-      this.migratePersonaConnectionId(remap)
-      return
-    }
-    const rows = this.db
-      .prepare('SELECT * FROM model_profiles ORDER BY created_at ASC')
-      .all()
-      .map((row) => row as Record<string, unknown>)
-
-    const groups = new Map<string, Record<string, unknown>[]>()
-    for (const row of rows) {
-      const key = `${str(row.provider_id)}\u0000${str(row.params)}`
-      const group = groups.get(key)
-      if (group) group.push(row)
-      else groups.set(key, [row])
-    }
-
-    for (const group of groups.values()) {
-      const head = group[0]
-      const providerId = str(head.provider_id)
-      const def = getLlmProvider(providerId)
-      const models = [
-        ...new Set(group.map((row) => str(row.model).trim()).filter((model) => model.length > 0))
-      ]
-      // 老条目模型名留空 = 用服务商默认模型，换成列表后要显式写出来才不至于变「没模型」
-      if (models.length === 0 && def?.defaultModel) models.push(def.defaultModel)
-      const id = str(head.id)
-      for (const row of group) remap.set(str(row.id), id)
-      this.connectionSave({
-        id,
-        name: def?.label ?? providerId,
-        providerId,
-        params: this.decryptParams(head.params, providerId),
-        models
-      })
-    }
-
-    this.db.exec('DROP TABLE model_profiles')
-    this.migratePersonaConnectionId(remap)
-  }
-
-  /** 人设卡的绑定从旧列搬到新列（归并过的按 remap 指向保留的那条接入） */
-  private migratePersonaConnectionId(remap: Map<string, string>): void {
-    // 旧列只在老库里有；新库不再建它，所以先看列在不在
-    const hasOldColumn = this.db
-      .prepare('PRAGMA table_info(agents)')
-      .all()
-      .some((row) => (row as Record<string, unknown>).name === 'model_profile_id')
-    if (!hasOldColumn) return
-    const rows = this.db
-      .prepare('SELECT id, model_profile_id, model_connection_id FROM agents')
-      .all()
-      .map((row) => row as Record<string, unknown>)
-    for (const row of rows) {
-      if (str(row.model_connection_id)) continue
-      const old = str(row.model_profile_id)
-      if (!old) continue
-      const mapped = remap.get(old) ?? old
-      // 指向的接入已不存在就留空：后面 migratePersonaBrains 会挑一条能用的补上
-      this.db
-        .prepare('UPDATE agents SET model_connection_id = ? WHERE id = ?')
-        .run(this.connectionGet(mapped) ? mapped : null, str(row.id))
-    }
-  }
-
-  /**
-   * 旧配置迁移：接入库为空且旧的 config.llm 填过密钥时，用它建一条接入
-   * （否则老库没有接入可挑，下面的人设卡迁移会无从下手）。
-   * 旧的 config.llm 保留不动，仍是主播卡没选模型时的临时兜底。
-   */
-  private migrateLegacyLlm(): void {
-    const row = this.db.prepare('SELECT COUNT(*) AS n FROM model_connections').get() as { n?: unknown } | undefined
-    if (Number(row?.n ?? 0) > 0) return
-    const { llm } = this.config
-    if (!llm.apiKey) return
-    this.connectionSave({
-      name: LLM_PROVIDER_META[llm.provider].label,
-      providerId: llm.provider,
-      params: { apiKey: llm.apiKey, baseUrl: llm.baseUrl },
-      models: [llm.model]
-    })
-  }
-
-  /**
-   * model_connections 旧列清理：`default_model`（没特别指定时用哪个模型）与
-   * `is_default`（「全站默认接入」时代的残留）都删掉——模型一律由人设卡显式指定。
-   * SQLite 去列要重建表：逐列按名拷贝，params 里的密钥密文原样搬运。
-   */
-  private migrateModelConnectionColumns(): void {
-    const columns = this.db
-      .prepare('PRAGMA table_info(model_connections)')
-      .all()
-      .map((row) => str((row as Record<string, unknown>).name))
-    if (!columns.includes('default_model') && !columns.includes('is_default')) return
-    const rows = this.db.prepare('SELECT * FROM model_connections').all().map((row) => row as Record<string, unknown>)
-    this.db.exec('DROP TABLE model_connections')
-    this.createModelConnectionsTable()
-    const insert = this.db.prepare(
-      `INSERT INTO model_connections (id, name, provider_id, params, models, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    for (const row of rows) {
-      insert.run(
-        str(row.id),
-        str(row.name),
-        str(row.provider_id),
-        String(row.params ?? '{}'),
-        String(row.models ?? '[]'),
-        num(row.created_at) ?? 0,
-        num(row.updated_at) ?? 0
-      )
-    }
-  }
-
   private createModelConnectionsTable(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS model_connections (
@@ -1106,262 +956,6 @@ export class StorageService {
       .map((row) => str((row as Record<string, unknown>).name))
     if (columns.includes('model_windows')) return
     this.db.exec("ALTER TABLE model_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
-  }
-
-  /**
-   * tts_connections 结构迁移，两步都走同一套「读旧行 → DROP → 建新表 → 写回」：
-   * ① 老表（provider_id UNIQUE、params 平铺凭据与模型单值）没有 models 列 → 转换重建：
-   *    百炼旧行 params.model → models=[{id, params}]（languageType 匹配目标模型 ParamSpec 的
-   *    language_type 选项才保留，否则丢弃；baseUrl 非官方默认才留）；火山旧行是 V1 凭据
-   *    （appId/token/cluster），V3 已放弃 → 凭据清空（API Key 待用户补填）、模型预置全部。
-   * ② 已有 models 列但还带 default_model / default_voice / is_default 的表 → 去列重建：
-   *    这三列代表的「默认模型 / 默认音色 / 默认接入」已废（模型与音色一律在使用点指定），
-   *    只按列名拷贝，params 里的密钥密文原样搬运，realtime 保留。
-   * 都做完了就直接返回（幂等：再跑一次不重建、不报错）。
-   */
-  private migrateTtsConnections(): void {
-    const columns = this.db
-      .prepare('PRAGMA table_info(tts_connections)')
-      .all()
-      .map((row) => str((row as Record<string, unknown>).name))
-    if (!columns.includes('models')) {
-      this.rebuildLegacyTtsConnections()
-      return
-    }
-    if (!columns.includes('default_model') && !columns.includes('default_voice') && !columns.includes('is_default')) {
-      return
-    }
-    const rows = this.db
-      .prepare('SELECT * FROM tts_connections ORDER BY created_at ASC')
-      .all()
-      .map((row) => row as Record<string, unknown>)
-    this.db.exec('DROP TABLE tts_connections')
-    this.createTtsConnectionsTable()
-    const insert = this.db.prepare(
-      `INSERT INTO tts_connections (id, provider_id, name, params, models, realtime, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    for (const row of rows) {
-      insert.run(
-        str(row.id),
-        str(row.provider_id),
-        str(row.name),
-        String(row.params ?? '{}'),
-        String(row.models ?? '[]'),
-        Number(row.realtime) === 1 ? 1 : 0,
-        num(row.created_at) ?? 0,
-        num(row.updated_at) ?? 0
-      )
-    }
-  }
-
-  private createTtsConnectionsTable(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS tts_connections (
-        id TEXT PRIMARY KEY,
-        provider_id TEXT NOT NULL,
-        name TEXT NOT NULL DEFAULT '',
-        params TEXT NOT NULL DEFAULT '{}',
-        models TEXT NOT NULL DEFAULT '[]',
-        realtime INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )
-    `)
-  }
-
-  /** ① 老表（无 models 列）的重建与转换 */
-  private rebuildLegacyTtsConnections(): void {
-    const rows = this.db
-      .prepare('SELECT * FROM tts_connections ORDER BY created_at ASC')
-      .all()
-      .map((row) => row as Record<string, unknown>)
-    this.db.exec('DROP TABLE tts_connections')
-    this.createTtsConnectionsTable()
-    for (const row of rows) {
-      const providerId = str(row.provider_id)
-      const legacy = this.decryptTtsParams(row.params, providerId)
-      const def = getTtsProvider(providerId)
-      const credentials: Record<string, string | number | boolean> = {}
-      let models: TtsConnectionModel[]
-      if (providerId === 'bailian') {
-        credentials.apiKey = String(legacy.apiKey ?? '')
-        credentials.workspaceId = String(legacy.workspaceId ?? '')
-        const baseUrl = String(legacy.baseUrl ?? '').trim()
-        if (baseUrl && baseUrl !== 'https://dashscope.aliyuncs.com/api/v1') {
-          credentials.baseUrl = baseUrl
-        }
-        const modelId = String(legacy.model ?? '').trim() || 'qwen3-tts-flash'
-        const modelParams: TtsConnectionModel['params'] = {}
-        const languageType = String(legacy.languageType ?? '').trim()
-        const langSpec = ttsModelSpec(providerId, modelId)?.params.find(
-          (param) => param.key === 'language_type'
-        )
-        if (languageType && langSpec?.options?.some((option) => option.value === languageType)) {
-          modelParams.language_type = languageType
-        }
-        models = [{ id: modelId, params: modelParams }]
-      } else {
-        // 火山（及未知 provider）：V1 凭据放弃，凭据字段置空，模型预置全部
-        for (const field of ttsConnectionFields(providerId)) credentials[field.key] = ''
-        models = (def?.models ?? []).map((spec) => ({ id: spec.id, params: {} }))
-      }
-      this.ttsConnectionSave({
-        id: str(row.id),
-        providerId: providerId as TtsConnection['providerId'],
-        name: def?.label ?? providerId,
-        params: credentials,
-        models
-      })
-    }
-  }
-
-  /**
-   * 老库克隆音色回填绑定（voices.model / connection_id）：
-   * 火山复刻音色统一挂 seed-icl-2.0 + 火山最早那条接入（V1 复刻音色在 V3 的可用性待真机验证，
-   * 但绑定语义不变：它们是 ICL 模型吃的 speaker_id）。百炼老库无克隆产物（当时未实现），不留空。
-   */
-  private backfillVoiceBindings(): void {
-    const rows = this.db
-      .prepare("SELECT id, provider FROM voices WHERE model = ''")
-      .all()
-      .map((row) => row as Record<string, unknown>)
-    if (rows.length === 0) return
-    const volcanoDefault = this.ttsConnectionFirstOf('volcano')
-    for (const row of rows) {
-      if (str(row.provider) !== 'volcano') continue
-      this.db
-        .prepare('UPDATE voices SET model = ?, connection_id = ? WHERE id = ?')
-        .run('seed-icl-2.0', volcanoDefault?.id ?? '', str(row.id))
-    }
-  }
-
-  /**
-   * 旧配置迁移：接入表为空且旧的 config.tts 填过凭据时，把**当前服务商那家**抽成一条接入（新结构）。
-   * 全局偏好 speed/format/sampleRate 折入当时那个模型的 models[].params（仅当目标模型 ParamSpec
-   * 有对应键且值在选项里；speed=1 丢弃）。平铺在 config.tts 里的凭据字段自此不再使用
-   * （保留字段：加密路径与这次迁移还要读它们）。
-   */
-  private migrateLegacyTts(): void {
-    const row = this.db.prepare('SELECT COUNT(*) AS n FROM tts_connections').get() as
-      | { n?: unknown }
-      | undefined
-    if (Number(row?.n ?? 0) > 0) return
-    const { tts } = this.config
-    const providerId = tts.providerId
-    if (!ttsProviderHasCredentials(tts, providerId)) return
-    const def = getTtsProvider(providerId)
-    if (!def) return
-    const legacy = tts as unknown as Record<string, string | number | boolean>
-    const credentials: Record<string, string | number | boolean> = {}
-    for (const field of ttsConnectionFields(providerId)) {
-      credentials[field.key] = legacy[field.key] ?? field.default ?? ''
-    }
-    if (providerId === 'volcano') {
-      // 旧 appId/accessToken/cluster 是 V1 凭据，V3 用不了：API Key 留空待用户补填
-      credentials.apiKey = ''
-    }
-    if (providerId === 'bailian' && credentials.baseUrl === 'https://dashscope.aliyuncs.com/api/v1') {
-      delete credentials.baseUrl
-    }
-
-    let models: TtsConnectionModel[]
-    let targetModelId: string
-    const legacyModel = String(legacy.model ?? '').trim()
-    if (providerId === 'bailian' && legacyModel && def.models.some((spec) => spec.id === legacyModel)) {
-      models = [{ id: legacyModel, params: {} }]
-      targetModelId = legacyModel
-      const languageType = String(legacy.languageType ?? '').trim()
-      const langSpec = ttsModelSpec(providerId, legacyModel)?.params.find(
-        (param) => param.key === 'language_type'
-      )
-      if (languageType && langSpec?.options?.some((option) => option.value === languageType)) {
-        models[0].params.language_type = languageType
-      }
-    } else {
-      models = def.models.map((spec) => ({ id: spec.id, params: {} }))
-      targetModelId = def.models.find((spec) => spec.kind === 'tts')?.id ?? models[0]?.id ?? ''
-    }
-
-    // 旧的全局偏好折进这条接入（默认模型已删，折进 models 里当时最该用的那个模型的参数）
-    const spec = ttsModelSpec(providerId, targetModelId)
-    const target = models.find((model) => model.id === targetModelId)
-    if (spec && target) {
-      if (tts.speed !== 1 && spec.params.some((param) => param.key === 'speech_rate')) {
-        target.params.speech_rate = Math.round((tts.speed - 1) * 100)
-      }
-      const formatSpec = spec.params.find((param) => param.key === 'format')
-      if (formatSpec?.options?.some((option) => option.value === tts.format)) {
-        target.params.format = tts.format
-      }
-      const sampleRate = String(tts.sampleRate)
-      const rateSpec = spec.params.find((param) => param.key === 'sample_rate')
-      if (rateSpec?.options?.some((option) => option.value === sampleRate)) {
-        target.params.sample_rate = sampleRate
-      }
-    }
-
-    this.ttsConnectionSave({
-      providerId,
-      name: def.label,
-      params: credentials,
-      models,
-      realtime: Boolean(tts.realtime)
-    })
-  }
-
-  /**
-   * 一次性：清掉旧 config.tts 的全局偏好，折完不再读。
-   * 实时合成开关是接入级策略（不是兜底），折进第一条接入里保留；
-   * 旧的全局默认音色已经没有落点（默认音色/默认接入都删了），直接清空——
-   * 人设卡没选音色就留着空，让开播预检拦下来，不做任何猜测。
-   */
-  private migrateTtsGlobalPrefs(): void {
-    const { tts } = this.config
-    const legacyVoice = String(tts.voiceId ?? '').trim()
-    const legacyRealtime = Boolean(tts.realtime)
-    if (!legacyVoice && !legacyRealtime) return
-    if (legacyRealtime) {
-      const first = this.ttsConnectionList()[0]
-      if (first && !first.realtime) {
-        this.db.prepare('UPDATE tts_connections SET realtime = 1 WHERE id = ?').run(first.id)
-      }
-    }
-    this.setConfig({ tts: { voiceId: '', realtime: false } })
-  }
-
-  /**
-   * 人设卡的大脑迁移：老库里没选过接入的卡，挑一条能用的接入补上（模型用该接入 models[] 的第一个）。
-   * 开播必须每张卡都有明确的大脑，不能让升级上来的用户一开播就发现没得选。
-   * 语音这边不补默认音色：没选就留着空，交给开播预检。
-   */
-  private migratePersonaBrains(): void {
-    const rows = this.db
-      .prepare('SELECT id, model_connection_id, model FROM agents')
-      .all()
-      .map((row) => row as Record<string, unknown>)
-    if (rows.length === 0) return
-
-    const usable = this.connectionList().find((connection) =>
-      isModelConnectionReady(connection, getLlmProvider(connection.providerId))
-    )
-
-    for (const row of rows) {
-      const currentId = str(row.model_connection_id)
-      if (currentId) {
-        // 已选过接入的卡只补空的模型；接入被删（悬空引用）留给用户重选，不悄悄换一条
-        const current = this.connectionGet(currentId)
-        if (!current || str(row.model)) continue
-        this.db
-          .prepare('UPDATE agents SET model = ? WHERE id = ?')
-          .run(connectionFirstModel(current, getLlmProvider(current.providerId)), str(row.id))
-        continue
-      }
-      if (!usable) continue
-      this.db
-        .prepare('UPDATE agents SET model_connection_id = ?, model = ? WHERE id = ?')
-        .run(usable.id, connectionFirstModel(usable, getLlmProvider(usable.providerId)), str(row.id))
-    }
   }
 
   /** 兼容老库的加列 */
@@ -1460,8 +1054,8 @@ export class StorageService {
         `INSERT INTO speech_items
          (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
           dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, rate, pitch, stream,
-          origin_utterance_id, para_id, para_pos, para_len, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          origin_utterance_id, error, sort_order, created_at, played_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -1484,9 +1078,6 @@ export class StorageService {
         item.pitch ?? null,
         item.stream ? 1 : 0,
         item.originUtteranceId ?? null,
-        item.paraId ?? null,
-        item.paraPos ?? null,
-        item.paraLen ?? null,
         item.error ?? null,
         item.sortOrder ?? null,
         item.createdAt,
@@ -2132,13 +1723,6 @@ export class StorageService {
       .run(status, audioPath, error ?? null, synthVoice, id)
   }
 
-  /** 段落归属（整段合成切句成功的一组）；paraId 为空串表示清除（改文本/逐条回退时） */
-  utteranceSetPara(ids: string[], paraId: string): void {
-    if (ids.length === 0) return
-    const stmt = this.db.prepare('UPDATE utterances SET para_id = ? WHERE id = ?')
-    for (const id of ids) stmt.run(paraId, id)
-  }
-
   close(): void {
     this.db.close()
   }
@@ -2163,7 +1747,6 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     error: str(r.error) || undefined,
     source: str(r.source) === 'adopted' ? 'adopted' : 'initial',
     sources: parseJson<Utterance['sources']>(r.sources, []),
-    paraId: str(r.para_id) || undefined,
     createdAt: num(r.created_at) ?? 0
   }
 }

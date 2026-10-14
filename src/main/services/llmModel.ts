@@ -1,5 +1,5 @@
 import type { Model } from '@earendil-works/pi-ai'
-import { legacyLlmConfigured, type ModelConnection, type Persona } from '../../shared/types'
+import { type ModelConnection, type Persona } from '../../shared/types'
 import {
   connectionFirstModel,
   getLlmProvider,
@@ -29,44 +29,11 @@ export async function listProviderModels(providerId: string): Promise<string[]> 
 }
 
 /**
- * 解析一个人设卡该用哪个模型（开播路径）：这张卡选的接入 + 模型 → 旧的 config.llm 临时兜底。
- * 卡上没选全（或选的接入没配齐、选的模型不在接入列表里）时没有「接入的默认模型」这一档，
- * 只能靠旧配置顶着并带 fallback 说明；旧配置也没有就抛中文错误，
- * 调用方直接把 message 给 UI（预检会把它列成阻断项）。
+ * 解析一个人设卡该用哪个模型（开播与底稿生成共用）：
+ * 卡上选的接入 + 模型，接入要可用、模型要在接入列表里——没选齐就抛中文错误，
+ * 调用方把 message 给 UI（预检会列成阻断项）。没有兜底：用哪个大脑必须明确。
  */
 export function resolveModelForPersona(
-  storage: StorageService,
-  persona: Persona | null | undefined
-): ResolvedModel {
-  const bound = boundConnectionOf(storage, persona)
-  const selected = selectedModelOf(bound, persona)
-  if (selected) return selected
-
-  const legacy = storage.getConfig().llm
-  if (legacyLlmConfigured(legacy)) {
-    // 接入存在但没配齐（缺密钥/没模型）与「压根没选」在提示里要分开说
-    const unusable = bound !== null && !isModelConnectionReady(bound, getLlmProvider(bound.providerId))
-    return {
-      connectionId: null,
-      providerId: legacy.provider,
-      params: { apiKey: legacy.apiKey, baseUrl: legacy.baseUrl },
-      model: legacy.model,
-      fallback: {
-        kind: 'legacy',
-        personaName: persona?.name ?? '',
-        reason: unusable ? 'unusable' : 'missing',
-        connectionName: unusable ? (bound?.name ?? '') : undefined
-      }
-    }
-  }
-  throw new Error(missingBrainHint(persona?.name ?? ''))
-}
-
-/**
- * 必须由人设卡显式指定模型时用（底稿生成这类路径）：没绑卡、没选齐、接入不可用都直接抛。
- * 不走旧 config.llm 的临时兜底——生成出来的底稿不能猜是用哪个大脑写的。
- */
-export function requireModelForPersona(
   storage: StorageService,
   persona: Persona | null | undefined
 ): ResolvedModel {

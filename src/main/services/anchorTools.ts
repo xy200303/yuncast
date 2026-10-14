@@ -1,6 +1,7 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type, type TSchema } from 'typebox'
-import type { LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource, UtteranceStatus } from '../../shared/types'
+import type { LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource } from '../../shared/types'
+import { UTTERANCE_STATUS_LABEL } from '../../shared/types'
 import { planBroadcastCap } from '../../shared/planDuration'
 import type { SpeechPool } from './SpeechPool'
 import type { KnowledgeService } from './KnowledgeService'
@@ -106,12 +107,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
   }
 
   // ---------- 底稿工具共用 ----------
-  const DRAFT_STATUS: Record<UtteranceStatus, string> = {
-    pending: '待合成',
-    synthesizing: '合成中',
-    ready: '就绪',
-    failed: '失败'
-  }
+  const DRAFT_STATUS = UTTERANCE_STATUS_LABEL
   const activePlanId = (): string | null => script.getActive().plan?.id ?? null
   const currentSceneId = (): string => script.currentScene()?.scene.id ?? ''
   const sceneTitleOf = (sceneId: string): string => {
@@ -187,18 +183,11 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'insert_next',
       label: '插播一句',
       description:
-        '插播一句话：当前正在播的内容播完后播这条。只在回复观众评论或紧急情况使用。' +
-        'when 默认 now（当前这条播完就播）；不着急的补充可以传 paragraph_end，' +
-        '等当前这段连贯讲解整体播完再插，别在一段话中间拦腰砍。',
+        '插播一句话：当前正在播的这条（桥段是整段原子单位）播完后播这条。只在回复观众评论或紧急情况使用。',
       parameters: Type.Object({
         text: Type.String({ description: '要插播的话，一句' }),
         voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
-        role: Type.Optional(Type.String({ description: '角色名（编剧模式）' })),
-        when: Type.Optional(
-          Type.Union([Type.Literal('now'), Type.Literal('paragraph_end')], {
-            description: 'now=当前这条播完就播（默认）；paragraph_end=等当前连贯段落播完再插'
-          })
-        )
+        role: Type.Optional(Type.String({ description: '角色名（编剧模式）' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
@@ -206,18 +195,13 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           if (getSpeakingPaused?.()) return '播报已暂停：插播也播不出去，等导演恢复'
           const comment = getLastComment()
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
-          const input = {
+          pool.insertNext({
             text: params.text,
             voiceId: resolveVoice(persona.get(), params.role, params.voice, getPlanVoice?.()),
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'reply' as const,
             replyTo
-          }
-          if (params.when === 'paragraph_end') {
-            pool.insertAfterParagraph(input)
-            return `已插播（等这段讲完）：「${params.text}」`
-          }
-          pool.insertNext(input)
+          })
           return `已插播：「${params.text}」`
         })
     }),
@@ -237,21 +221,13 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
               id: item.id,
               lane: item.lane,
               status: item.status,
-              // 连贯段落位置（如 2/5）：整段合成的一组，语气连贯，插话尽量等段尾
-              ...(item.paraId ? { 段: `${item.paraPos ?? '?'}/${item.paraLen ?? '?'}` } : {}),
               text: item.text
             }))
           return JSON.stringify({
             未播总数: status.active,
             分车道: status.byLane,
             正在播: status.playing
-              ? {
-                  id: status.playing.id,
-                  ...(status.playing.paraId
-                    ? { 段: `${status.playing.paraPos ?? '?'}/${status.playing.paraLen ?? '?'}` }
-                    : {}),
-                  text: status.playing.text
-                }
+              ? { id: status.playing.id, text: status.playing.text }
               : null,
             未播条目: pending
           })

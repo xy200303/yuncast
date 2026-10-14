@@ -3,15 +3,6 @@ import { dirname, join, resolve } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { app } from 'electron'
 import type { StorageService } from './StorageService'
-import { decodeToPcm } from './stream/ffmpeg/mixer'
-import {
-  cutsFromSentenceBounds,
-  cutsFromSilence,
-  pcmToWav,
-  slicePcm,
-  type SentenceBound
-} from './paragraphSplit'
-import { ensureSentenceEnd, splitSentences } from '../../shared/paragraph'
 import {
   findTtsCatalogVoice,
   getTtsProvider,
@@ -426,89 +417,6 @@ export class TtsService {
     }
   }
 
-  /**
-   * 段落合成（底稿连贯性）：同一场景的连续条目拼成一段整送模型——
-   * 模型看到完整上下文，句间停顿和语气是连贯的；拿到整段音频后再按句切回
-   * 每条一片 wav，播放/跳过/插播仍是条目粒度（见 shared/paragraph.ts）。
-   *
-   * 句界定位：火山开字幕/时间戳（精确），百炼用静音检测（对不上句数就抛错）。
-   * 任何一步对不上都抛错，由调用方整段回退逐条合成——绝不硬切错。
-   *
-   * 缓存：段落本体按"拼接全文+路由"内容寻址；切片文件全在就直接复用。
-   */
-  async synthesizeParagraph(
-    items: { itemId: string; text: string }[],
-    voiceId?: string,
-    signal?: AbortSignal
-  ): Promise<{ paths: string[]; paraId: string }> {
-    if (items.length < 2) throw new Error('段落合成至少需要两条')
-    const route = this.route(voiceId)
-    const texts = items.map((item) => ensureSentenceEnd(item.text))
-    const joined = texts.join('')
-    const perItemSentences = texts.map((text) => splitSentences(text).length)
-
-    const format = String(route.params.format ?? 'mp3')
-    const extension =
-      format === 'pcm' ? 'pcm' : format === 'wav' ? 'wav' : format === 'ogg_opus' ? 'ogg' : 'mp3'
-    const paraKey = this.cacheKey(joined, route)
-    const paraId = `para-${paraKey.slice(4)}`
-    const dir = this.audioCacheDir()
-    const paraPath = join(dir, `${paraKey}.${extension}`)
-    const boundsPath = join(dir, `${paraKey}.bounds.json`)
-    const slicePaths = items.map((_, i) => join(dir, `${paraKey}-s${i}.wav`))
-
-    // 切片全在 → 整段复用（段落重合成只在文本/音色/参数变了之后才发生）
-    const sliceStats = await Promise.all(slicePaths.map((path) => stat(path).catch(() => null)))
-    if (sliceStats.every((info) => info && info.size > 44)) {
-      this.cacheHits += 1
-      console.log(`[TTS] 段落缓存命中（${items.length} 条切片复用，省一次整段合成）`)
-      return { paths: slicePaths, paraId }
-    }
-    this.cacheMisses += 1
-
-    // 段落本体：不在就合成（火山顺手收句级字幕；命中缓存时句界从 sidecar 读）
-    let bounds: SentenceBound[] | null = null
-    const cachedPara = await stat(paraPath).catch(() => null)
-    if (cachedPara && cachedPara.size > 0) {
-      if (route.provider === 'volcano') {
-        bounds = await readFile(boundsPath, 'utf8')
-          .then((raw) => JSON.parse(raw) as SentenceBound[])
-          .catch(() => null)
-        if (!Array.isArray(bounds)) {
-          throw new Error('段落的句界信息丢了（缓存被清过），放弃整段合成')
-        }
-      }
-    } else {
-      const tempPath = join(dir, `${items[0].itemId}-para.${extension}`)
-      if (route.provider === 'bailian') {
-        await this.synthesizeBailian(joined, tempPath, route, signal)
-      } else {
-        bounds = await this.synthesizeVolcano(joined, tempPath, route, signal, true)
-      }
-      try {
-        await rename(tempPath, paraPath)
-      } catch {
-        await rm(tempPath, { force: true }).catch(() => undefined)
-      }
-      if (bounds) await writeFile(boundsPath, JSON.stringify(bounds)).catch(() => undefined)
-    }
-
-    // 解码整段 → 按句界切 → 每条一片 wav
-    const pcm = await decodeToPcm(paraPath, { channels: 1, sampleRate: 48000 })
-    const cuts =
-      route.provider === 'volcano'
-        ? cutsFromSentenceBounds(bounds ?? [], perItemSentences)
-        : cutsFromSilence(pcm, perItemSentences)
-    const slices = slicePcm(pcm, cuts, items.length)
-    for (let i = 0; i < slices.length; i++) {
-      await writeFile(slicePaths[i], pcmToWav(slices[i]))
-    }
-    console.log(
-      `[TTS] 段落合成完成：${items.length} 条切自一段 ${(pcm.length / 2 / 48000).toFixed(1)}s（语气连贯）`
-    )
-    return { paths: slicePaths, paraId }
-  }
-
   private async synthesizeWithRoute(
     itemId: string,
     text: string,
@@ -618,17 +526,14 @@ export class TtsService {
   /**
    * 火山 V3 单向流式（HTTP Chunked）：响应是逐行 JSON，code=0 的行带 base64 音频片段，
    * code=20000000 是结束帧。这里整段累积后落盘（预合成场景不需要边收边播）。
-   * timed=true 时开句级时间戳（2.0/ICL2.0 用 enable_subtitle，1.0 用 enable_timestamp），
-   * 顺带收每句的起止秒数返回（段落合成切句用）；非 timed 返回 null。
-   * 文档：C:\tmp\md_1598757.md（https://www.volcengine.com/docs/6561/1598757）
+   * 文档：https://www.volcengine.com/docs/6561/1598757
    */
   private async synthesizeVolcano(
     text: string,
     outPath: string,
     route: TtsRoute,
-    signal?: AbortSignal,
-    timed = false
-  ): Promise<SentenceBound[] | null> {
+    signal?: AbortSignal
+  ): Promise<void> {
     const apiKey = String(route.connection.params.apiKey ?? '')
     if (!apiKey) {
       throw new Error('火山引擎接入缺 API Key：到设置 → 语音合成填新版控制台的 API Key')
@@ -652,9 +557,7 @@ export class TtsService {
         sample_rate: asNumber(p.sample_rate, 24000),
         speech_rate: asNumber(p.speech_rate, 0),
         loudness_rate: asNumber(p.loudness_rate, 0),
-        ...(emotion ? { emotion, emotion_scale: asNumber(p.emotion_scale, 4) } : {}),
-        // 段落切句要句级时间戳：2.0/ICL2.0 用 enable_subtitle，1.0 用 enable_timestamp
-        ...(timed ? (route.modelId.endsWith('2.0') ? { enable_subtitle: true } : { enable_timestamp: true }) : {})
+        ...(emotion ? { emotion, emotion_scale: asNumber(p.emotion_scale, 4) } : {})
       },
       ...(Object.keys(additions).length > 0 ? { additions: JSON.stringify(additions) } : {})
     }
@@ -677,7 +580,6 @@ export class TtsService {
 
     const raw = await res.text()
     const chunks: Buffer[] = []
-    const bounds: SentenceBound[] = []
     let finished = false
     for (const line of raw.split('\n')) {
       const trimmed = line.trim()
@@ -686,19 +588,10 @@ export class TtsService {
         code?: number
         message?: string
         data?: string
-        sentence?: { words?: { startTime?: number; endTime?: number }[] }
       }
       try {
         frame = JSON.parse(trimmed)
       } catch {
-        continue
-      }
-      // 句级字幕帧（timed 模式）：记下这句的起止秒数
-      const words = frame.sentence?.words
-      if (timed && words && words.length > 0) {
-        const start = words[0].startTime
-        const end = words[words.length - 1].endTime
-        if (typeof start === 'number' && typeof end === 'number') bounds.push({ start, end })
         continue
       }
       if (frame.code === 0 && frame.data) {
@@ -719,7 +612,6 @@ export class TtsService {
 
     await mkdir(dirname(outPath), { recursive: true }).catch(() => undefined)
     await writeFile(outPath, Buffer.concat(chunks))
-    return timed ? bounds : null
   }
 
   /**

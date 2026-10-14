@@ -42,6 +42,7 @@ import {
   DEFAULT_PLAN_GEN_CONFIG,
   DEFAULT_PLAN_KNOWLEDGE_SCOPE,
   DEFAULT_PLANNED_MINUTES,
+  UTTERANCE_STATUS_LABEL,
   type KnowledgeFile,
   type LiveMode,
   type LiveModeInput,
@@ -56,10 +57,10 @@ import {
 } from '../../../shared/types'
 
 const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
-  pending: { label: '待合成', variant: 'outline' },
-  synthesizing: { label: '合成中', variant: 'secondary' },
-  ready: { label: '就绪', variant: 'default' },
-  failed: { label: '失败', variant: 'destructive' }
+  pending: { label: UTTERANCE_STATUS_LABEL.pending, variant: 'outline' },
+  synthesizing: { label: UTTERANCE_STATUS_LABEL.synthesizing, variant: 'secondary' },
+  ready: { label: UTTERANCE_STATUS_LABEL.ready, variant: 'default' },
+  failed: { label: UTTERANCE_STATUS_LABEL.failed, variant: 'destructive' }
 }
 
 /** 场次：一场直播的完整配置（人设/形式/剧本/知识库/话术库/声音）。开播的唯一入口在直播台。 */

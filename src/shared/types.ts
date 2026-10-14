@@ -85,65 +85,20 @@ export interface TtsModelSpec {
  * 这份配置只剩迁移与「发音测试时间」在用。
  */
 export interface TtsConfig {
-  /** @deprecated 迁移用：旧配置的「默认服务商」，只在老库抽第一条接入时用 */
-  providerId: TtsProvider
-  /** @deprecated 迁移用（旧配置里「当前服务商」）：默认服务商缺失时取它；新代码一律读 providerId */
-  provider: TtsProvider
-  /** @deprecated 迁移用：已迁入 tts_connections，新代码不再读 */
-  appId: string
-  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，加密落盘（secretBox）） */
-  accessToken: string
-  /** @deprecated 迁移用：已迁入 tts_connections */
-  cluster: string
-  /** @deprecated 迁移用：已迁入 tts_connections（敏感字段，加密落盘（secretBox）） */
-  apiKey: string
-  /** @deprecated 迁移用：已迁入 tts_connections */
-  model: string
-  /** @deprecated 迁移用：已迁入 tts_connections */
-  baseUrl: string
-  /** @deprecated 迁移用：已迁入 tts_connections */
-  languageType: string
-  /** @deprecated 迁移用：已迁入 tts_connections */
-  workspaceId: string
-  /** @deprecated 迁移用：旧的全局默认音色，升级时清空，新代码一律读人设卡/场次的音色 */
-  voiceId: string
-  /** @deprecated 迁移用：已折入接入某个模型的 models[].params（speech_rate），新代码不再读 */
-  speed: number
   /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
   realtime: boolean
-  /** 语气指令（instruction，≤100 字符）：自然语言描述语音表现，如「语速稍快，语气热情」 */
-  instruction: string
   /** 批量预合成队列：两次合成请求的最小间隔（毫秒）。0 = 跟随服务商默认（按官方限流文档配在 manifest 里：火山 50 / 百炼 400） */
   synthIntervalMs: number
   /** 批量预合成队列：瞬时错误的重试次数（指数退避 2s/4s）；鉴权类硬错误不重试 */
   synthRetries: number
-  /** @deprecated 迁移用：已折入接入模型的 models[].params（format），新代码不再读 */
-  format: 'mp3' | 'wav' | 'pcm'
-  /** @deprecated 迁移用：已折入接入模型的 models[].params（sample_rate），新代码不再读 */
-  sampleRate: number
   /** 上次「测试发音」成功的时间戳（预检里提示凭据可能失效，docs/07 §8.5） */
   lastTestAt: number
 }
 
 export const DEFAULT_TTS_CONFIG: TtsConfig = {
-  providerId: 'volcano',
-  provider: 'volcano',
-  appId: '',
-  accessToken: '',
-  cluster: 'volcano_tts',
-  apiKey: '',
-  model: 'qwen3-tts-flash',
-  baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
-  languageType: 'Chinese',
-  workspaceId: '',
-  voiceId: '',
-  speed: 1.0,
   realtime: false,
-  instruction: '',
   synthIntervalMs: 0,
   synthRetries: 2,
-  format: 'mp3',
-  sampleRate: 24000,
   lastTestAt: 0
 }
 
@@ -203,28 +158,10 @@ export function ttsProviderConfigured(
   return connections.some((connection) => connection.providerId === providerId && connection.ready)
 }
 
-/**
- * @deprecated 迁移用：判断旧的 config.tts 平铺凭据里某家填没填过（`migrateLegacyTts` 抽接入时用）。
- * 新代码一律看 `tts_connections` 有没有这条接入。
- */
-export function ttsProviderHasCredentials(tts: TtsConfig, provider: TtsProvider): boolean {
-  return provider === 'bailian' ? Boolean(tts.apiKey) : Boolean(tts.appId && tts.accessToken)
-}
-
 // ---------- LLM 配置（主播 Agent 的大脑） ----------
 
 export const LLM_PROVIDERS = ['deepseek', 'qwen', 'doubao', 'kimi', 'zai'] as const
 export type LlmProvider = (typeof LLM_PROVIDERS)[number]
-
-export interface LlmConfig {
-  provider: LlmProvider
-  /** 模型 id（留空用该服务商默认值） */
-  model: string
-  /** API Key（敏感字段，加密落盘（secretBox），运行时注入 pi，不落 pi 的盘） */
-  apiKey: string
-  /** 自定义 API 地址，留空走服务商默认 */
-  baseUrl: string
-}
 
 export const LLM_PROVIDER_META: Record<LlmProvider, { label: string; defaultModel: string; defaultBaseUrl: string }> = {
   deepseek: { label: 'DeepSeek', defaultModel: 'deepseek-flash', defaultBaseUrl: 'https://api.deepseek.com' },
@@ -232,18 +169,6 @@ export const LLM_PROVIDER_META: Record<LlmProvider, { label: string; defaultMode
   doubao: { label: '豆包（火山方舟）', defaultModel: 'doubao-pro-32k', defaultBaseUrl: 'https://ark.cn-beijing.volces.com/api/v3' },
   kimi: { label: 'Kimi（月之暗面）', defaultModel: 'kimi-k2.6', defaultBaseUrl: 'https://api.moonshot.cn/v1' },
   zai: { label: '智谱（Z.ai）', defaultModel: 'glm-4.7', defaultBaseUrl: 'https://open.bigmodel.cn/api/paas/v4' }
-}
-
-export const DEFAULT_LLM_CONFIG: LlmConfig = {
-  provider: 'deepseek',
-  model: LLM_PROVIDER_META.deepseek.defaultModel,
-  apiKey: '',
-  baseUrl: ''
-}
-
-/** 旧的单体 LLM 配置是否还能用。接入库为空时的兜底（迁移期保留，不删字段）。 */
-export function legacyLlmConfigured(llm: LlmConfig): boolean {
-  return Boolean(llm.apiKey && (llm.model || LLM_PROVIDER_META[llm.provider].defaultModel))
 }
 
 // ---------- 供应商接入（一条 = 一个服务商 + 一份凭据 + 一串可用模型） ----------
@@ -358,7 +283,6 @@ export interface AppConfig {
   /** 配色主题（点缀色） */
   accent: AppAccent
   tts: TtsConfig
-  llm: LlmConfig
   trigger: TriggerConfig
   live: LiveStateConfig
   stream: StreamConfig
@@ -370,7 +294,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   theme: 'system',
   accent: 'clay',
   tts: DEFAULT_TTS_CONFIG,
-  llm: DEFAULT_LLM_CONFIG,
   trigger: DEFAULT_TRIGGER_CONFIG,
   live: DEFAULT_LIVE_CONFIG,
   stream: DEFAULT_STREAM_CONFIG,
@@ -386,25 +309,8 @@ export type PartialDeep<T> = {
 export function parseAppConfig(input: unknown): AppConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const ttsRow = row.tts && typeof row.tts === 'object' ? (row.tts as Record<string, unknown>) : {}
-  const legacyTtsProvider =
-    TTS_PROVIDERS.find((id) => id === ttsRow.provider) ?? DEFAULT_TTS_CONFIG.providerId
   const tts: TtsConfig = {
-    // 默认服务商：新字段优先；老配置只有 provider，升级后它就是默认那家
-    providerId: TTS_PROVIDERS.find((id) => id === ttsRow.providerId) ?? legacyTtsProvider,
-    provider: legacyTtsProvider,
-    appId: typeof ttsRow.appId === 'string' ? ttsRow.appId : '',
-    accessToken: typeof ttsRow.accessToken === 'string' ? ttsRow.accessToken : '',
-    cluster: typeof ttsRow.cluster === 'string' ? ttsRow.cluster : DEFAULT_TTS_CONFIG.cluster,
-    apiKey: typeof ttsRow.apiKey === 'string' ? ttsRow.apiKey : '',
-    model: typeof ttsRow.model === 'string' ? ttsRow.model : DEFAULT_TTS_CONFIG.model,
-    baseUrl: typeof ttsRow.baseUrl === 'string' ? ttsRow.baseUrl : DEFAULT_TTS_CONFIG.baseUrl,
-    languageType:
-      typeof ttsRow.languageType === 'string' ? ttsRow.languageType : DEFAULT_TTS_CONFIG.languageType,
-    voiceId: typeof ttsRow.voiceId === 'string' ? ttsRow.voiceId : '',
-    speed: typeof ttsRow.speed === 'number' && ttsRow.speed > 0 ? ttsRow.speed : 1.0,
     realtime: ttsRow.realtime === true,
-    workspaceId: typeof ttsRow.workspaceId === 'string' ? ttsRow.workspaceId : '',
-    instruction: typeof ttsRow.instruction === 'string' ? ttsRow.instruction : '',
     synthIntervalMs:
       // 迁移：500 是「全局限流」时代的默认，那时天天写进库；现在限流归服务商 manifest，
       // 500 按没配过处理（跟随服务商），否则它就成了用户看不见也改不掉的隐藏覆盖
@@ -415,23 +321,7 @@ export function parseAppConfig(input: unknown): AppConfig {
       typeof ttsRow.synthRetries === 'number' && ttsRow.synthRetries >= 0
         ? Math.floor(ttsRow.synthRetries)
         : DEFAULT_TTS_CONFIG.synthRetries,
-    format:
-      ttsRow.format === 'wav' || ttsRow.format === 'pcm'
-        ? ttsRow.format
-        : 'mp3',
-    sampleRate: typeof ttsRow.sampleRate === 'number' && ttsRow.sampleRate > 0 ? ttsRow.sampleRate : 24000,
     lastTestAt: typeof ttsRow.lastTestAt === 'number' ? ttsRow.lastTestAt : 0
-  }
-  const llmRow = row.llm && typeof row.llm === 'object' ? (row.llm as Record<string, unknown>) : {}
-  const llmProvider = LLM_PROVIDERS.find((id) => id === llmRow.provider) ?? DEFAULT_LLM_CONFIG.provider
-  const llm: LlmConfig = {
-    provider: llmProvider,
-    model:
-      typeof llmRow.model === 'string' && llmRow.model
-        ? llmRow.model
-        : LLM_PROVIDER_META[llmProvider].defaultModel,
-    apiKey: typeof llmRow.apiKey === 'string' ? llmRow.apiKey : '',
-    baseUrl: typeof llmRow.baseUrl === 'string' ? llmRow.baseUrl : ''
   }
   const triggerRow =
     row.trigger && typeof row.trigger === 'object' ? (row.trigger as Record<string, unknown>) : {}
@@ -446,7 +336,6 @@ export function parseAppConfig(input: unknown): AppConfig {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     accent: APP_ACCENTS.find((id) => id === row.accent) ?? DEFAULT_CONFIG.accent,
     tts,
-    llm,
     trigger,
     live: {
       activePlanId: typeof liveRow.activePlanId === 'string' ? liveRow.activePlanId : '',
@@ -532,11 +421,6 @@ export interface SpeechItem {
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
   originUtteranceId?: string
-  /** 连贯段落 id：同一段的条目是一次整段合成后切开的，播出时按顺序连在一起语气才自然 */
-  paraId?: string
-  /** 段内位置（从 1 开始）与段落总条数，供池状态展示与插播调度 */
-  paraPos?: number
-  paraLen?: number
   /** 合成/播放失败原因 */
   error?: string
   /** reorder 手动指定的顺序（优先级高于 createdAt） */
@@ -565,11 +449,7 @@ export interface PoolSayInput {
   replyTo?: SpeechReplyTo
   /** 从话术库取件入池时带来源 id（复盘溯源） */
   originUtteranceId?: string
-  /** 连贯段落标记（见 SpeechItem.paraId），装载话术库时带入 */
-  paraId?: string
-  paraPos?: number
-  paraLen?: number
-  /** 手动指定的播出锚点（插播到段落末尾这类精确位置用；不传按入池时间排） */
+  /** 手动指定的播出锚点（精确插队用；不传按入池时间排） */
   sortOrder?: number
   /** 已预合成的音频文件（话术库预合成产物）：带上即置 ready，不再重复合成 */
   audioPath?: string
@@ -1176,8 +1056,6 @@ export interface Utterance {
   /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
   source: 'initial' | 'adopted'
   sources: UtteranceSource[]
-  /** 连贯段落 id：旧式单句预合成时同段整组一次合成再切句（见 shared/paragraph.ts）；桥段用不到，空 */
-  paraId?: string
   createdAt: number
 }
 
@@ -1205,6 +1083,14 @@ export const BIT_TYPES = [
 export const BIT_TYPE_LABEL: Record<string, string> = Object.fromEntries(
   BIT_TYPES.map((t) => [t.id, t.label])
 )
+
+/** 底稿合成状态的中文名（agent 工具的 list_drafts 与话术库 UI 共用一份，别各写各的） */
+export const UTTERANCE_STATUS_LABEL: Record<UtteranceStatus, string> = {
+  pending: '待合成',
+  synthesizing: '合成中',
+  ready: '就绪',
+  failed: '失败'
+}
 
 // ---------- 场次启动预检与装载（docs/07 §8.5） ----------
 

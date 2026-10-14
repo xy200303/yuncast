@@ -88,21 +88,8 @@ export class LaunchService {
           : (getLlmProvider(resolved.providerId)?.label ?? resolved.providerId)
         items.push({
           level: 'ok',
-          label:
-            resolved.connectionId && persona
-              ? `语言模型：${name} · ${resolved.model}（来自主播卡「${persona.name}」）`
-              : `语言模型：${name} · ${resolved.model}（临时用旧的全局配置）`
+          label: `语言模型：${name} · ${resolved.model}${persona ? `（来自主播卡「${persona.name}」）` : ''}`
         })
-        const fallback = resolved.fallback
-        if (fallback?.kind === 'legacy') {
-          items.push({
-            level: 'warn',
-            label:
-              fallback.reason === 'unusable'
-                ? `主播卡「${fallback.personaName}」选的接入「${fallback.connectionName}」还没配齐，临时用旧的全局配置`
-                : `主播卡「${fallback.personaName}」还没选模型，临时用旧的全局配置`
-          })
-        }
       } catch (error) {
         items.push({
           level: 'block',
@@ -111,9 +98,9 @@ export class LaunchService {
         })
       }
     }
-    // ②a 语音合成：生效音色（场次 > 人设卡）走和运行时完全相同的合成路由。
+    // ②a 语音合成：生效音色（人设卡默认音色）走和运行时完全相同的合成路由。
     // 没有默认音色也没有默认接入：没选音色就是阻断项，不做任何猜测。
-    const effectiveVoice = (plan.voiceId || persona?.voiceId || '').trim()
+    const effectiveVoice = (persona?.voiceId || '').trim()
     let ttsReady = false
     if (!effectiveVoice) {
       items.push({
@@ -300,20 +287,6 @@ export class LaunchService {
     ready.sort(
       (a, b) => (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0) || a.seq - b.seq || a.createdAt - b.createdAt
     )
-    // 段落位置：同 paraId 的条目按库顺序数位置（整段合成切句产物，池里按它展示/调度）
-    const paraGroups = new Map<string, Utterance[]>()
-    for (const u of library) {
-      if (!u.paraId) continue
-      const group = paraGroups.get(u.paraId)
-      if (group) group.push(u)
-      else paraGroups.set(u.paraId, [u])
-    }
-    const paraOf = (u: Utterance) => {
-      if (!u.paraId) return {}
-      const group = paraGroups.get(u.paraId) ?? []
-      const pos = group.findIndex((item) => item.id === u.id) + 1
-      return pos > 0 ? { paraId: u.paraId, paraPos: pos, paraLen: group.length } : {}
-    }
 
     let loaded = 0
     for (const u of ready) {
@@ -331,7 +304,6 @@ export class LaunchService {
           sourceAgentId: LIBRARY_SOURCE_ID,
           dedupeKey: `ut:${u.id}:s${sceneIndex}`,
           originUtteranceId: u.id,
-          ...paraOf(u),
           audioPath: reusable ? (u.audioPath ?? undefined) : undefined
         })
         loaded += 1

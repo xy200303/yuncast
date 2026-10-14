@@ -546,6 +546,11 @@ export class AgentService {
     this.onDirectorTimeline?.(event)
   }
 
+  /** 选中场次即就位：不等第一句话就建会话（上下文仪表从这一刻就有读数；建会话不调 LLM，零成本） */
+  async warmupPrepSession(): Promise<void> {
+    await this.ensurePrepSession()
+  }
+
   /** 主播就位（无会话时）：绑当前选中场次的资产（场次 → 人设 → 音色），恢复该场次存下的对话（没有就新起） */
   private async ensurePrepSession(): Promise<void> {
     if (this.session) return

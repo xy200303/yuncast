@@ -703,6 +703,8 @@ function registerIpc(
   )
   ipcMain.handle(IPC.planSetActive, (_e, id: string) => {
     script.setActivePlan(String(id ?? ''))
+    // 选中场次主播即就位（建会话不调 LLM，零成本）：上下文仪表从这一刻就有读数，不用等第一句话
+    if (id) void agent.warmupPrepSession().catch(() => undefined)
     return storage.getConfig().live.activePlanId
   })
   // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口

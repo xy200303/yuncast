@@ -9,7 +9,6 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { ProviderIcon } from '@/components/ProviderIcon'
-import { cn } from '@/lib/utils'
 import {
   providerLabel,
   useAppStore,
@@ -389,27 +388,29 @@ function ConnectionEditorDialog({
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
           <div>
             <Label className="mb-1.5">服务商</Label>
-            <div className="flex flex-wrap gap-2">
-              {providers.map((item) => {
-                const active = item.id === providerId
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => changeProvider(item.id)}
-                    className={cn(
-                      'flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm transition-colors',
-                      active
-                        ? 'border-primary bg-primary text-primary-foreground'
-                        : 'hover:bg-muted'
-                    )}
-                  >
-                    <ProviderIcon providerId={item.id} size="sm" />
-                    {item.label}
-                  </button>
-                )
-              })}
-            </div>
+            <Select value={providerId} onValueChange={changeProvider}>
+              <SelectTrigger className="h-10 w-full text-sm">
+                <span className="flex min-w-0 items-center gap-2">
+                  <ProviderIcon providerId={providerId} size="sm" />
+                  <span className="truncate">{def?.label ?? providerId}</span>
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                {providers.map((item) => (
+                  <SelectItem key={item.id} value={item.id}>
+                    <span className="flex min-w-0 items-center gap-2">
+                      <ProviderIcon providerId={item.id} size="sm" />
+                      <span className="flex min-w-0 flex-col items-start">
+                        <span className="text-sm">{item.label}</span>
+                        {item.note && (
+                          <span className="text-xs text-muted-foreground">{item.note}</span>
+                        )}
+                      </span>
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {def?.note && <p className="mt-1.5 text-xs text-muted-foreground">{def.note}</p>}
           </div>
 

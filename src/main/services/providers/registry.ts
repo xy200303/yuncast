@@ -3,6 +3,7 @@ import type {
   ModelConnection,
   ThinkingLevelChoice,
   TtsConnection,
+  TtsModelCapabilities,
   TtsModelSpec,
   TtsProvider
 } from '../../../shared/types'
@@ -198,6 +199,26 @@ export function ttsModelSpec(providerId: string, modelId: string): TtsModelSpec 
   return getTtsProvider(providerId)?.models.find((model) => model.id === modelId)
 }
 
+/**
+ * 模型能力（docs/10 §6.1）：manifest 显式声明的优先；没声明的一律按普通单人 TTS 兜底——
+ * standard / 单发音人 / 文本进文件出 / 不支持断点续传与时间戳。
+ * UI 按能力自动变化，预制生产入口按能力选合成路线（§6.4/§7.6）。
+ */
+export function ttsModelCapabilities(spec: TtsModelSpec): TtsModelCapabilities {
+  return (
+    spec.capabilities ?? {
+      kind: 'standard',
+      input: 'text',
+      output: spec.streaming ? 'stream' : 'file',
+      minSpeakers: 1,
+      maxSpeakers: 1,
+      supportsCloneVoice: spec.kind === 'clone' || spec.cloneTarget === true,
+      supportsResume: false,
+      supportsTimestamps: false
+    }
+  )
+}
+
 /** 合并某接入某模型的最终参数：manifest ParamSpec 默认值 ← 接入 models[].params 覆盖 */
 export function ttsModelParams(
   connection: Pick<TtsConnection, 'models'>,
@@ -216,6 +237,8 @@ export function ttsModelParams(
 /**
  * 系统音色目录反查：这个音色 id 被哪些服务商的哪些模型目录收录
  * （可能多个模型含同名音色，如 longanyang 同属 v3-plus / v3-flash；路由据此挑接入与模型）。
+ * 特殊能力模型（podcast/longform）不参与反查：它们的发音人不能当普通单人音色路由——
+ * 选进人设卡会在这里查不到，报错指路到主播团选普通模型的音色。
  */
 export function findTtsCatalogVoice(
   voiceId: string
@@ -225,6 +248,7 @@ export function findTtsCatalogVoice(
   const hits: { providerId: TtsProvider; model: TtsModelSpec }[] = []
   for (const def of TTS_PROVIDER_DEFS) {
     for (const model of def.models) {
+      if (ttsModelCapabilities(model).kind !== 'standard') continue
       if (model.voices.some((group) => group.voices.some((voice) => voice.id === id))) {
         hits.push({ providerId: def.id, model })
       }

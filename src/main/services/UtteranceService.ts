@@ -13,11 +13,13 @@ import type {
   UtteranceInput
 } from '../../shared/types'
 import { stableHash, utteranceFingerprint, sceneFingerprint } from '../../shared/fingerprint'
+import { buildPodcastTurns } from '../../shared/podcast'
+import { findCloneVoice } from '../../shared/voiceProvider'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
-import { getTtsProvider, ttsModelBlocker, ttsModelSpec } from './providers/registry'
+import { getTtsProvider, ttsModelBlocker, ttsModelCapabilities, ttsModelSpec } from './providers/registry'
 import { getFfmpegPath } from './stream/ffmpeg/bin'
 import { listAudioUnits, narrativeOrder, type AudioUnit } from './programUnits'
 
@@ -35,10 +37,12 @@ const CHARS_PER_SECOND = 4.5
  * P4 起这里同时是 capability 驱动的节目音频生产入口：
  * - rolling：行为同原 synthesizeAll（逐段提前合成，非门禁）；
  * - prepared：按内容类型划分合成单元（场景类节目=每章一个单元，solo=每段一个单元），
- *   逐段合成后整章用 ffmpeg 拼接挂 Scene.rendered，段级产物挂 Utterance.rendered；
+ *   合成路线由模型 capability 决定（docs/10 §7.6）：
+ *   standard → 逐段合成后整章用 ffmpeg 拼接挂 Scene.rendered，段级产物挂 Utterance.rendered；
+ *   podcast  → 该单元文稿组装成双人轮次稿，一次合成整章/整期双人音频挂 Scene.rendered；
  *   开始时把节目 audioConfig 冻结成声音快照写进产物（§9.6），切换主播不改写已有音频。
- * longform/podcast 适配器是 P6：manifest 没有这些能力时预制一律走 standard 逐段+拼接，
- * 文案只承诺「分段合成并拼接」，不承诺连续表演效果。
+ * standard 路线文案只承诺「分段合成并拼接」，不承诺连续表演效果（§15.10）；
+ * podcast 路线失败显式报错，绝不无提示降级回 standard（§15.9）。
  */
 export class UtteranceService {
   /** 单条状态变化广播（index.ts 接 broadcastUtterance；预合成与底稿改后重合成共用） */
@@ -334,6 +338,11 @@ export class UtteranceService {
       (sum, unit) => sum + unit.utterances.reduce((s, u) => s + u.text.length, 0),
       0
     )
+    // 能力校验（§6.4）：双人播客模型拒绝三人以上内容，确认卡之前就把错报出来
+    if (frozen.podcast) {
+      const issue = this.podcastContentIssue(units, frozen.podcast)
+      if (issue) return { ok: false, error: issue }
+    }
     return {
       ok: true,
       units: units.length,
@@ -343,7 +352,7 @@ export class UtteranceService {
       estMinutes: Math.round((totalChars / CHARS_PER_SECOND / 60) * 10) / 10,
       modelDesc: frozen.modelDesc,
       voiceDesc: frozen.voiceDesc,
-      notice: this.standardPathNotice(program, units)
+      notice: frozen.podcast ? undefined : this.standardPathNotice(program, units)
     }
   }
 
@@ -369,6 +378,12 @@ export class UtteranceService {
       frozen = this.resolveFrozenSnapshot(program)
     } catch (error) {
       return { ...base, error: error instanceof Error ? error.message : String(error) }
+    }
+    // podcast 路线（§7.6）：单元文稿 → 双人轮次稿 → 一次合成整章/整期音频；失败显式报错不降级（§15.9）
+    if (frozen.podcast) {
+      const issue = this.podcastContentIssue(units, frozen.podcast)
+      if (issue) return { ...base, error: issue }
+      return this.producePreparedPodcast(program, units, frozen.podcast, base)
     }
     const notice = this.standardPathNotice(program, units)
     const { synthRetries } = this.storage.getConfig().tts
@@ -426,6 +441,124 @@ export class UtteranceService {
       this.onRenderedEvent?.(program.id)
     }
     return { ...base, ok: base.failed === 0, notice }
+  }
+
+  /**
+   * podcast 路线的单元生产：把单元内文稿（场景 = 整章段落，段 = 单条）组装成双人轮次稿，
+   * 调统一入口一次合成整期双人音频，产物复制进预制音频目录挂 rendered（含冻结快照与指纹）。
+   * 单单元失败不中断整批；失败原因（审核/配额/中断）原样写进 rendered.error，不做任何降级。
+   */
+  private async producePreparedPodcast(
+    program: Program,
+    units: AudioUnit[],
+    route: PodcastRouteInfo,
+    base: ProduceAudioResult
+  ): Promise<ProduceAudioResult> {
+    const script = this.script.getScript(program.scriptId)
+    const writeUnitRendered = (unit: AudioUnit, rendered: RenderedAudioRef) => {
+      if (unit.kind === 'scene' && script) this.script.setSceneRendered(script.id, unit.id, rendered)
+      else this.storage.utteranceSetRendered(unit.id, rendered)
+      this.onRenderedEvent?.(program.id)
+    }
+
+    for (const unit of units) {
+      const existing = unit.rendered
+      // 外部音频是用户给的成品，永不重合成（stale 了也由用户决定要不要换）
+      if (existing?.external) {
+        base.skipped++
+        continue
+      }
+      // 已就绪且指纹一致、文件还在：跳过重合成
+      if (
+        existing?.status === 'ready' &&
+        existing.sourceFingerprint === unit.fingerprint &&
+        existsSync(existing.audioPath)
+      ) {
+        base.skipped++
+        continue
+      }
+      const turns = buildPodcastTurns(
+        unit.utterances.map((u) => ({ voiceId: u.voiceId, text: u.text })),
+        route.castVoices,
+        route.speakers,
+        route.maxCharsPerTurn
+      )
+      if (!turns || turns.length === 0) {
+        writeUnitRendered(unit, {
+          audioPath: '',
+          status: 'failed',
+          ttsConnectionId: route.connectionId,
+          ttsModelId: route.modelId,
+          voiceOrCastFingerprint: route.castFingerprint,
+          sourceFingerprint: unit.fingerprint,
+          error: '这一章没有可合成的文稿'
+        })
+        base.failed++
+        continue
+      }
+      const pending: RenderedAudioRef = {
+        audioPath: '',
+        status: 'synthesizing',
+        ttsConnectionId: route.connectionId,
+        ttsModelId: route.modelId,
+        voiceOrCastFingerprint: route.castFingerprint,
+        sourceFingerprint: unit.fingerprint
+      }
+      writeUnitRendered(unit, pending)
+      try {
+        const result = await this.tts.synthesizeRequest(
+          `podcast-${unit.id}`,
+          {
+            type: 'podcast',
+            turns,
+            speakers: route.speakers,
+            useHeadMusic: route.useHeadMusic,
+            useTailMusic: route.useTailMusic
+          },
+          { connectionId: route.connectionId, modelId: route.modelId }
+        )
+        // 产物复制进预制音频目录：audio-cache 有 LRU 清扫，节目资产不能放在那里
+        const audioPath = join(this.programAudioDir(), `${unit.kind}-${unit.id}-${unit.fingerprint}.mp3`)
+        await copyFile(result.audioPath, audioPath)
+        writeUnitRendered(unit, { ...pending, status: 'ready', audioPath, durationMs: result.durationMs })
+        base.done++
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        writeUnitRendered(unit, { ...pending, status: 'failed', error: message.slice(0, 200) })
+        base.failed++
+      }
+      this.onRenderedEvent?.(program.id)
+    }
+    return { ...base, ok: base.failed === 0 }
+  }
+
+  /**
+   * 能力校验（§6.4）：双人播客模型 maxSpeakers=2——文稿里出现两个主持人以外的音色就是
+   * 三人以上内容，produce 前明确拒绝（不合成、不降级）。返回 null = 通过。
+   */
+  private podcastContentIssue(units: AudioUnit[], route: PodcastRouteInfo): string | null {
+    const known = new Set([...route.castVoices, ...route.speakers])
+    for (const unit of units) {
+      for (const u of unit.utterances) {
+        const voice = u.voiceId.trim()
+        if (voice && !known.has(voice)) {
+          return (
+            `「${unit.title}」里有第三个音色（${voice}）：Podcast 双人播客模型只支持两个主持人。` +
+            `把这段的音色改成主持人 A/B 之一（或清空按交替分配），或换一个支持多角色的模型`
+          )
+        }
+      }
+    }
+    return null
+  }
+
+  /** 播客发音人解析：cast 里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id） */
+  private resolvePodcastSpeaker(voiceId: string): string {
+    const voice = voiceId.trim()
+    const clone =
+      findCloneVoice(this.storage.listVoices(), voice) ??
+      this.storage.listVoices().find((item) => item.name === voice && item.voiceType)
+    return clone?.voiceType.trim() || voice
   }
 
   /**
@@ -518,10 +651,47 @@ export class UtteranceService {
       if (!spec) throw new Error(`模型 ${modelId} 不在目录里：到节目设置里重选合成模型`)
       const blocker = ttsModelBlocker(connection, getTtsProvider(connection.providerId), modelId)
       if (blocker) throw new Error(`合成模型现在用不了：${blocker}（接入「${connection.name}」）`)
-      // capability 钩子（§7.5，P6 接 longform/podcast 适配器后在此分流）：
-      // manifest 未声明长文/播客能力的模型，预制一律走 standard 逐段（+整章拼接）路线
       const cast = (cfg.cast ?? []).filter((member) => member.voiceId.trim())
       const castFingerprint = stableHash(JSON.stringify(cast))
+      // capability 分流（§7.5/§7.6）：podcast 模型 → 双人轮次整期合成；其余（standard/longform
+      // 未接适配器）→ standard 逐段（+整章拼接）路线
+      const caps = ttsModelCapabilities(spec)
+      if (caps.kind === 'podcast') {
+        if (cast.length !== caps.maxSpeakers) {
+          throw new Error(
+            `「${spec.label}」是双人播客模型，需要恰好 ${caps.maxSpeakers} 个主持人音色：到节目设置里配好主持人 A 和主持人 B`
+          )
+        }
+        const speakers: [string, string] = [
+          this.resolvePodcastSpeaker(cast[0].voiceId),
+          this.resolvePodcastSpeaker(cast[1].voiceId)
+        ]
+        return {
+          podcast: {
+            connectionId: connection.id,
+            modelId: spec.id,
+            speakers,
+            castVoices: [cast[0].voiceId.trim(), cast[1].voiceId.trim()],
+            castFingerprint,
+            maxCharsPerTurn: caps.maxCharsPerTurn ?? 300,
+            useHeadMusic: cfg.useHeadMusic ?? true,
+            useTailMusic: cfg.useTailMusic ?? false
+          },
+          voiceFor: () => {
+            throw new Error('双人播客路线不按段落取音色（整期一次合成）')
+          },
+          snapshotFor: () => ({
+            ttsConnectionId: connection.id,
+            ttsModelId: spec.id,
+            voiceOrCastFingerprint: castFingerprint
+          }),
+          modelDesc: `Podcast 双人合成 · ${spec.label}（${connection.name}）`,
+          voiceDesc:
+            `${cast[0].roleName || '主持人 A'} → ${speakers[0]}、` +
+            `${cast[1].roleName || '主持人 B'} → ${speakers[1]}` +
+            `（${cfg.useHeadMusic ?? true ? '含' : '不含'}开场音乐 / ${cfg.useTailMusic ?? false ? '含' : '不含'}结尾音乐）`
+        }
+      }
       return {
         voiceFor: (u) => {
           const voice = u.voiceId.trim() || cast[0]?.voiceId.trim() || ''
@@ -713,7 +883,23 @@ export class UtteranceService {
 /** 冻结快照（一次预制生产的声音安排）：逐段取音色 + 单元级快照字段 + 确认卡展示文案 */
 type SnapshotFields = Pick<RenderedAudioRef, 'ttsConnectionId' | 'ttsModelId' | 'voiceOrCastFingerprint'>
 
+/** podcast 路线的冻结信息：两个主持人（原始音色输入 + 解析后的 speaker id）与音乐开关 */
+interface PodcastRouteInfo {
+  connectionId: string
+  modelId: string
+  /** 发给模型的两个发音人 id（顺序 = 主持人 A/B） */
+  speakers: [string, string]
+  /** cast 里的原始音色输入（文稿段落 voiceId 匹配用） */
+  castVoices: [string, string]
+  castFingerprint: string
+  maxCharsPerTurn: number
+  useHeadMusic: boolean
+  useTailMusic: boolean
+}
+
 interface FrozenSnapshot {
+  /** 模型是双人播客时有值：producePrepared 走 podcast 路线（整期一次合成） */
+  podcast?: PodcastRouteInfo
   /** 这条文稿用哪个音色（没有就抛中文原因，不带兜底） */
   voiceFor: (u: Utterance) => string
   /** 单元级快照字段：接入/模型/音色或角色表指纹 */

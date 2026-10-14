@@ -12,7 +12,7 @@ import { Switch } from '@/components/ui/switch'
 import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { useAppStore, type ProviderFieldSpec, type TtsProviderManifest } from '../../stores/useAppStore'
-import { type ParamSpec, type TtsConnectionSafe, type TtsProvider } from '../../../../shared/types'
+import { TTS_MODEL_KIND_LABEL, type ParamSpec, type TtsConnectionSafe, type TtsProvider } from '../../../../shared/types'
 
 /**
  * 语音合成（火山引擎 / 阿里云百炼）：
@@ -575,9 +575,14 @@ function TtsConnectionEditor({
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="truncate text-sm font-medium">{spec.label}</span>
-                          {spec.kind === 'clone' && (
+                          {/* 模型种类标签（docs/10 §6.1）：普通 / 长文 / 双人播客；复刻模型保持原标记 */}
+                          {spec.kind === 'clone' ? (
                             <Badge variant="outline" className="text-xs">
                               复刻模型
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-xs">
+                              {TTS_MODEL_KIND_LABEL[spec.capabilities?.kind ?? 'standard']}
                             </Badge>
                           )}
                           {missingWorkspace && (

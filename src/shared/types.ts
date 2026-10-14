@@ -58,6 +58,75 @@ export interface ParamSpec {
   help?: string
 }
 
+// ---------- TTS 模型能力（docs/10 §6.1：特殊能力仍属于 TTS 模型，不新增"后端"概念） ----------
+
+/** 模型种类：普通单人 TTS / 原生长文合成 / 双人播客专用模型 */
+export type TtsModelKind = 'standard' | 'longform' | 'podcast'
+
+export const TTS_MODEL_KIND_LABEL: Record<TtsModelKind, string> = {
+  standard: '普通',
+  longform: '长文',
+  podcast: '双人播客'
+}
+
+/**
+ * 模型能力声明：UI 按它自动变化（隐藏不适用字段），生产入口按它选合成路线（§6.4/§7.6）。
+ * manifest 没声明 capabilities 的模型一律按 standard 默认（registry.ttsModelCapabilities 兜底）。
+ */
+export interface TtsModelCapabilities {
+  kind: TtsModelKind
+  /** 输入形态：单段文本 / 整章长文本 / 双人轮次稿 */
+  input: 'text' | 'longText' | 'dialogueTurns'
+  /** 产物形态：整段文件 / 流式 */
+  output: 'file' | 'stream'
+  minSpeakers: number
+  maxSpeakers: number
+  /** 能吃克隆音色（播客模型的 speaker_additions / ICL 音色） */
+  supportsCloneVoice: boolean
+  /** 断点续传（播客模型的 retry_task_id + last_finished_round_id） */
+  supportsResume: boolean
+  /** 返回逐轮时间戳 */
+  supportsTimestamps: boolean
+  /** 单次合成总文本上限（字符） */
+  maxTextChars?: number
+  /** 单轮文本上限（字符，podcast） */
+  maxCharsPerTurn?: number
+}
+
+// ---------- 统一合成请求（docs/10 §6.5：上层只调统一入口，协议细节归模型适配器） ----------
+
+/** 双人轮次稿的一轮（Agent 生成，角色音色映射后送进 Podcast 模型） */
+export interface PodcastTurn {
+  speaker: string
+  text: string
+}
+
+export type TtsSynthesisRequest =
+  | {
+      type: 'text'
+      text: string
+      voiceId: string
+      instruction?: string
+      rate?: number
+      pitch?: number
+    }
+  | {
+      type: 'podcast'
+      turns: PodcastTurn[]
+      /** 恰好两个发音人（speaker id，顺序 = 主持人 A/B） */
+      speakers: [string, string]
+      useHeadMusic: boolean
+      useTailMusic: boolean
+      /** 语速倍率（1.0 基准）；空 = 接入默认 speech_rate */
+      speechRate?: number
+    }
+
+/** 统一合成入口的返回：产物路径 + 能拿到的时长（播客模型按逐轮时长累加） */
+export interface TtsSynthesisResult {
+  audioPath: string
+  durationMs?: number
+}
+
 /** 服务商下的一个模型（manifest 静态内置，含系统音色目录） */
 export interface TtsModelSpec {
   id: string
@@ -65,6 +134,8 @@ export interface TtsModelSpec {
   note?: string
   /** tts=普通合成；clone=复刻/ICL 模型（只吃克隆音色）；realtime 暂不进选择器 */
   kind: 'tts' | 'clone' | 'realtime'
+  /** 能力声明（docs/10 §6.1）；空 = 普通单人 TTS（standard 默认，见 registry.ttsModelCapabilities） */
+  capabilities?: TtsModelCapabilities
   /** 端点需要业务空间 ID（百炼 maas 系） */
   needsWorkspace?: boolean
   /** 该模型支持 SSE/流式合成 */
@@ -1000,6 +1071,10 @@ export interface ProgramAudioConfig {
   ttsConnectionId?: string
   ttsModelId?: string
   cast?: ProgramCastMember[]
+  /** 开场音乐（仅 podcast 模型有意义；缺省 true = 跟服务商默认） */
+  useHeadMusic?: boolean
+  /** 结尾音乐（仅 podcast 模型有意义；缺省 false = 跟服务商默认） */
+  useTailMusic?: boolean
 }
 
 export const DEFAULT_PROGRAM_AUDIO_CONFIG: ProgramAudioConfig = { mode: 'follow-presenter' }

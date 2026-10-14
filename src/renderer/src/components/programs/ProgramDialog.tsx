@@ -13,6 +13,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
@@ -23,6 +24,7 @@ import {
   CONTENT_TYPE_LABELS,
   DEFAULT_PROGRAM_AUDIO_CONFIG,
   DEFAULT_PROGRAM_INPUT,
+  TTS_MODEL_KIND_LABEL,
   type BroadcastMode,
   type ContentType,
   type KnowledgeFile,
@@ -32,7 +34,8 @@ import {
   type ProgramAudioConfig,
   type ProgramInput,
   type Script,
-  type Trigger
+  type Trigger,
+  type TtsConnectionSafe
 } from '../../../../shared/types'
 
 /** 内容类型的一句话说明（docs/10 §4.1） */
@@ -133,6 +136,25 @@ export function ProgramDialog({
     if (audioConfig.mode === 'custom' && !audioConfig.ttsModelId) {
       toast.warning('自定义节目声音还没选合成模型', { description: '选一个模型，或改回「使用当前主播声音」' })
       return
+    }
+    // 双人播客模型（§6.4）：恰好两位主持人，保存前就拦下
+    if (audioConfig.mode === 'custom' && audioConfig.ttsConnectionId && audioConfig.ttsModelId) {
+      const { ttsConnections, ttsProviders } = useAppStore.getState()
+      const connection = ttsConnections.find((item) => item.id === audioConfig.ttsConnectionId)
+      const spec = ttsProviders
+        .find((item) => item.id === connection?.providerId)
+        ?.models.find((model) => model.id === audioConfig.ttsModelId)
+      if (spec?.capabilities?.kind === 'podcast') {
+        const hosts = (audioConfig.cast ?? []).filter(
+          (member) => (member.roleId === 'host-a' || member.roleId === 'host-b') && member.voiceId.trim()
+        )
+        if (hosts.length !== 2) {
+          toast.warning('双人播客模型需要配好两位主持人音色', {
+            description: '在声音安排里为主持人 A 和主持人 B 各选一个音色'
+          })
+          return
+        }
+      }
     }
     setBusy(true)
     const input: ProgramInput = {
@@ -440,6 +462,7 @@ function AudioSection({
   patchAudio: (part: Partial<ProgramAudioConfig>) => void
 }) {
   const ttsConnections = useAppStore((s) => s.ttsConnections)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
   const [persona, setPersona] = useState<Persona | null>(null)
   const [pickingRole, setPickingRole] = useState<string | null>(null)
   const audio = form.audioConfig
@@ -450,21 +473,95 @@ function AudioSection({
     void window.api.persona.get().then(setPersona)
   }, [audio.mode])
 
+  const specOf = (connection: TtsConnectionSafe | undefined, modelId: string) =>
+    ttsProviders.find((item) => item.id === connection?.providerId)?.models.find((model) => model.id === modelId)
+
   const modelValue = audio.ttsConnectionId && audio.ttsModelId ? `${audio.ttsConnectionId}${MANUAL_VOICE_SEP}${audio.ttsModelId}` : ''
   const modelOptions = ttsConnections.flatMap((connection) =>
-    connection.usableModels.map((model) => ({
-      value: `${connection.id}${MANUAL_VOICE_SEP}${model}`,
-      label: `${connection.name} · ${model}`
-    }))
+    connection.usableModels.map((model) => {
+      const spec = specOf(connection, model)
+      const kind = spec?.capabilities?.kind ?? 'standard'
+      return {
+        value: `${connection.id}${MANUAL_VOICE_SEP}${model}`,
+        label: `${connection.name} · ${spec?.label ?? model}${kind === 'standard' ? '' : `（${TTS_MODEL_KIND_LABEL[kind]}）`}`
+      }
+    })
   )
+  const selectedConnection = ttsConnections.find((item) => item.id === audio.ttsConnectionId)
+  const isPodcast = audio.ttsModelId
+    ? specOf(selectedConnection, audio.ttsModelId)?.capabilities?.kind === 'podcast'
+    : false
 
-  const castVoice = (roleName: string) =>
-    audio.cast?.find((member) => member.roleId === roleName)?.voiceId ?? ''
+  const castVoice = (roleId: string) =>
+    audio.cast?.find((member) => member.roleId === roleId)?.voiceId ?? ''
 
-  const setCastVoice = (roleName: string, voiceId: string) => {
-    const rest = (audio.cast ?? []).filter((member) => member.roleId !== roleName)
-    patchAudio({ cast: voiceId ? [...rest, { roleId: roleName, roleName, voiceId }] : rest })
+  const setCastVoice = (roleId: string, roleName: string, voiceId: string) => {
+    const rest = (audio.cast ?? []).filter((member) => member.roleId !== roleId)
+    patchAudio({ cast: voiceId ? [...rest, { roleId, roleName, voiceId }] : rest })
   }
+
+  /** 换了合成模型：podcast 模型把角色表初始化成两个主持人位（沿用已有音色），普通模型不动 */
+  const changeModel = (value: string) => {
+    const index = value.indexOf(MANUAL_VOICE_SEP)
+    const connectionId = value.slice(0, index)
+    const modelId = value.slice(index + MANUAL_VOICE_SEP.length)
+    const kind = specOf(ttsConnections.find((item) => item.id === connectionId), modelId)?.capabilities?.kind
+    if (kind === 'podcast') {
+      const prev = audio.cast ?? []
+      patchAudio({
+        ttsConnectionId: connectionId,
+        ttsModelId: modelId,
+        cast: [
+          {
+            roleId: 'host-a',
+            roleName: '主持人 A',
+            voiceId: prev.find((member) => member.roleId === 'host-a')?.voiceId ?? prev[0]?.voiceId ?? ''
+          },
+          {
+            roleId: 'host-b',
+            roleName: '主持人 B',
+            voiceId: prev.find((member) => member.roleId === 'host-b')?.voiceId ?? prev[1]?.voiceId ?? ''
+          }
+        ]
+      })
+    } else {
+      patchAudio({ ttsConnectionId: connectionId, ttsModelId: modelId })
+    }
+  }
+
+  /** 一行角色音色映射：名称 + 输入框 + 级联选择器（普通模型的角色与播客的主持人共用） */
+  const castRow = (roleId: string, roleName: string) => (
+    <div key={roleId} className="flex flex-col gap-1">
+      <div className="flex items-center gap-2">
+        <span className="w-20 shrink-0 truncate text-xs">{roleName || '未命名'}</span>
+        <Input
+          value={castVoice(roleId)}
+          onChange={(e) => setCastVoice(roleId, roleName, e.target.value)}
+          placeholder="音色 id，或从音色库选"
+          className="h-7 min-w-0 flex-1 text-xs"
+        />
+        <Button
+          variant={pickingRole === roleId ? 'secondary' : 'outline'}
+          size="sm"
+          className="h-7 shrink-0 text-xs"
+          onClick={() => setPickingRole(pickingRole === roleId ? null : roleId)}
+        >
+          {pickingRole === roleId ? '收起' : '选音色'}
+        </Button>
+      </div>
+      {pickingRole === roleId && (
+        <div className="rounded-lg border p-2">
+          <VoiceCascadePicker
+            voiceId={castVoice(roleId)}
+            onPick={(voiceId) => {
+              setCastVoice(roleId, roleName, voiceId)
+              setPickingRole(null)
+            }}
+          />
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <div className="rounded-lg border p-3">
@@ -494,10 +591,7 @@ function AudioSection({
             ) : (
               <Select
                 value={modelValue || undefined}
-                onValueChange={(v) => {
-                  const index = v.indexOf(MANUAL_VOICE_SEP)
-                  patchAudio({ ttsConnectionId: v.slice(0, index), ttsModelId: v.slice(index + MANUAL_VOICE_SEP.length) })
-                }}
+                onValueChange={changeModel}
               >
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="选择合成模型" />
@@ -512,47 +606,52 @@ function AudioSection({
               </Select>
             )}
           </div>
+          {isPodcast ? (
+            /* 双人播客模型（§6.3）：恰好两个主持人位 + 开场/结尾音乐；单人音色与逐段字段隐藏 */
+            <div>
+              <Label className="mb-1 text-xs text-muted-foreground">主持人音色（恰好两位）</Label>
+              <div className="flex flex-col gap-2">
+                {(
+                  [
+                    { roleId: 'host-a', roleName: '主持人 A' },
+                    { roleId: 'host-b', roleName: '主持人 B' }
+                  ] as const
+                ).map((host) => castRow(host.roleId, host.roleName))}
+              </div>
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                文稿段落标了主持人音色就归对应主持人讲，没标的按 A/B 交替；整期一次合成，不做逐段拼接
+              </p>
+              <div className="mt-2 flex items-center gap-5">
+                <label className="flex items-center gap-1.5 text-xs">
+                  <Switch
+                    checked={audio.useHeadMusic ?? true}
+                    onCheckedChange={(v) => patchAudio({ useHeadMusic: v === true })}
+                    aria-label="开场音乐"
+                  />
+                  开场音乐
+                </label>
+                <label className="flex items-center gap-1.5 text-xs">
+                  <Switch
+                    checked={audio.useTailMusic ?? false}
+                    onCheckedChange={(v) => patchAudio({ useTailMusic: v === true })}
+                    aria-label="结尾音乐"
+                  />
+                  结尾音乐
+                </label>
+              </div>
+            </div>
+          ) : (
           <div>
             <Label className="mb-1 text-xs text-muted-foreground">角色音色</Label>
             {(persona?.roles ?? []).length === 0 ? (
               <p className="text-xs text-muted-foreground">当前主播卡没有角色，整期都用上面模型的默认音色即可</p>
             ) : (
               <div className="flex flex-col gap-2">
-                {persona!.roles.map((role) => (
-                  <div key={role.name} className="flex flex-col gap-1">
-                    <div className="flex items-center gap-2">
-                      <span className="w-20 shrink-0 truncate text-xs">{role.name || '未命名'}</span>
-                      <Input
-                        value={castVoice(role.name)}
-                        onChange={(e) => setCastVoice(role.name, e.target.value)}
-                        placeholder="音色 id，或从音色库选"
-                        className="h-7 min-w-0 flex-1 text-xs"
-                      />
-                      <Button
-                        variant={pickingRole === role.name ? 'secondary' : 'outline'}
-                        size="sm"
-                        className="h-7 shrink-0 text-xs"
-                        onClick={() => setPickingRole(pickingRole === role.name ? null : role.name)}
-                      >
-                        {pickingRole === role.name ? '收起' : '选音色'}
-                      </Button>
-                    </div>
-                    {pickingRole === role.name && (
-                      <div className="rounded-lg border p-2">
-                        <VoiceCascadePicker
-                          voiceId={castVoice(role.name)}
-                          onPick={(voiceId) => {
-                            setCastVoice(role.name, voiceId)
-                            setPickingRole(null)
-                          }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                ))}
+                {persona!.roles.map((role) => castRow(role.name, role.name))}
               </div>
             )}
           </div>
+          )}
         </div>
       )}
     </div>

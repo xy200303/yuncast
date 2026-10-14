@@ -111,6 +111,67 @@ const models: TtsModelSpec[] = [
     cloneTarget: true,
     params: volcanoParams(),
     voices: []
+  },
+  {
+    // PodcastAPI（WebSocket v3，TtsService → providers/tts/podcastVolcano）：
+    // 双人轮次稿一次合成整期双人音频，不是逐段 TTS；Resource-Id 固定 volc.service_type.10050
+    id: 'volc-podcast-v3',
+    label: 'Podcast 双人播客',
+    note: '双人播客整期合成：预制节目选它，文稿按主持人 A/B 一次合成整期音频',
+    kind: 'tts',
+    params: [
+      {
+        key: 'speech_rate',
+        label: '语速（接入默认）',
+        type: 'number',
+        min: -50,
+        max: 100,
+        default: 0,
+        help: '0 为原速；[-50, 100] 对应 0.5x - 2x'
+      },
+      {
+        key: 'format',
+        label: '输出格式',
+        type: 'select',
+        default: 'mp3',
+        options: [
+          { value: 'mp3', label: 'MP3（兼容最好）' },
+          { value: 'ogg_opus', label: 'OGG（Opus）' },
+          { value: 'pcm', label: 'PCM（免解码）' }
+        ]
+      },
+      {
+        key: 'sample_rate',
+        label: '采样率（Hz）',
+        type: 'select',
+        default: '24000',
+        options: ['16000', '24000', '48000'].map((value) => ({ value, label: value }))
+      }
+    ],
+    // 播客专用发音人（官方「可选发音人列表」）；普通 TTS 目录音色与克隆音色也能当主持人
+    voices: [
+      {
+        label: '播客发音人',
+        voices: [
+          { id: 'zh_female_mizaitongxue_v2_saturn_bigtts', name: '咪仔（女声）', desc: '黑猫侦探社系列' },
+          { id: 'zh_male_dayixiansheng_v2_saturn_bigtts', name: '大壹先生（男声）', desc: '黑猫侦探社系列' },
+          { id: 'zh_male_liufei_v2_saturn_bigtts', name: '刘飞（男声）', desc: '刘飞和潇磊系列' },
+          { id: 'zh_male_xiaolei_v2_saturn_bigtts', name: '潇磊（男声）', desc: '刘飞和潇磊系列' }
+        ]
+      }
+    ],
+    capabilities: {
+      kind: 'podcast',
+      input: 'dialogueTurns',
+      output: 'stream',
+      minSpeakers: 2,
+      maxSpeakers: 2,
+      supportsCloneVoice: true,
+      supportsResume: true,
+      supportsTimestamps: true,
+      maxTextChars: 10000,
+      maxCharsPerTurn: 300
+    }
   }
 ]
 

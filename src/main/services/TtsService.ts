@@ -8,14 +8,20 @@ import {
   getTtsProvider,
   isTtsModelUsable,
   ttsModelBlocker,
+  ttsModelCapabilities,
   ttsModelParams,
   ttsModelSpec
 } from './providers/registry'
+import { synthesizeVolcanoPodcast } from './providers/tts/podcastVolcano'
+import { validatePodcastRequest } from '../../shared/podcast'
 import {
   TTS_PROVIDER_SHORT,
+  TTS_MODEL_KIND_LABEL,
   type TtsConnection,
   type TtsModelSpec,
   type TtsProvider,
+  type TtsSynthesisRequest,
+  type TtsSynthesisResult,
   type VoiceRecord
 } from '../../shared/types'
 import {
@@ -38,6 +44,10 @@ import {
  * 系统音色在 manifest 静态目录里反查归属模型，在启用了该模型的接入里取最早建的一条；
  * 目录查不到的（手动输入的）用 `接入id::模型id::音色` 复合串显式指定接入与模型。
  * 路由挑不出来就抛中文原因指路，不做任何兜底。
+ *
+ * 特殊能力模型（docs/10 §6.1）不走音色路由：synthesizeRequest 统一入口按模型 capability
+ * 分发——text 给既有 HTTP/SSE 适配器；podcast（双人轮次稿）给火山 PodcastAPI WebSocket v3
+ * 适配器（providers/tts/podcastVolcano），请求前先按能力上限本地校验（§15.9）。
  */
 
 const VOLCANO_V3_URL = 'https://openspeech.bytedance.com/api/v3/tts/unidirectional'
@@ -379,6 +389,143 @@ export class TtsService {
   }
 
   /**
+   * 统一合成入口（docs/10 §6.5）：显式指定接入 + 模型（节目声音快照冻结的就是这两个 id，
+   * 不从音色反推路由），按模型 capability 分发到适配器：
+   * - text：普通单人合成（既有 HTTP/SSE 通道）；voiceId 是这个接入 + 模型下的音色标识；
+   * - podcast：双人轮次稿 → 火山 PodcastAPI（WebSocket v3）。请求前先本地校验（§15.9：
+   *   发音人恰好 2 个、每轮/总文本不超上限），超限直接中文报错，不等服务端；
+   *   内容审核/配额等失败显式抛出，绝不静默降级到普通 TTS。
+   * 产物走内容寻址缓存（同一份轮次稿 + 同样配置不重复打接口），返回缓存绝对路径。
+   */
+  async synthesizeRequest(
+    itemId: string,
+    request: TtsSynthesisRequest,
+    target: { connectionId: string; modelId: string },
+    signal?: AbortSignal
+  ): Promise<TtsSynthesisResult> {
+    const connection = this.storage.ttsConnectionGet(target.connectionId)
+    if (!connection) throw new Error('合成接入不存在（可能已被删除）：到节目设置里重选合成模型')
+    const def = getTtsProvider(connection.providerId)
+    const spec = ttsModelSpec(connection.providerId, target.modelId)
+    if (!def || !spec) {
+      throw new Error(`模型 ${target.modelId} 不在${def?.label ?? connection.providerId}目录里：到节目设置里重选合成模型`)
+    }
+    const blocker = ttsModelBlocker(connection, def, target.modelId)
+    if (blocker) throw new Error(`合成模型现在用不了：${blocker}（接入「${connection.name}」）`)
+    const caps = ttsModelCapabilities(spec)
+
+    if (request.type === 'podcast') {
+      if (caps.kind !== 'podcast') {
+        throw new Error(`模型「${spec.label}」不是双人播客模型，不接受轮次稿：到节目设置里换 Podcast 模型或普通模型`)
+      }
+      if (connection.providerId !== 'volcano') {
+        throw new Error(`「${spec.label}」的合成通道还没接入（目前只有火山 PodcastAPI 适配器）`)
+      }
+      const invalid = validatePodcastRequest(request, caps)
+      if (invalid) throw new Error(invalid)
+      return this.synthesizePodcast(itemId, request, connection, spec, signal)
+    }
+
+    if (caps.input === 'dialogueTurns') {
+      throw new Error(
+        `「${spec.label}」是${TTS_MODEL_KIND_LABEL[caps.kind]}模型，只接受双人轮次稿：到预制节目里用「生成节目音频」整期合成`
+      )
+    }
+    const voice = request.voiceId.trim()
+    if (!voice) throw new Error('合成请求缺音色：voiceId 不能为空')
+    const route: TtsRoute = {
+      provider: connection.providerId,
+      connection,
+      modelId: spec.id,
+      model: spec,
+      voice,
+      isClone: this.storage.listVoices().some((item) => item.voiceType === voice),
+      params: ttsModelParams(connection, spec, spec.id)
+    }
+    const audioPath = await this.synthesizeWithRoute(
+      itemId,
+      request.text,
+      this.withPerformance(route, { instruction: request.instruction, rate: request.rate, pitch: request.pitch }),
+      signal
+    )
+    return { audioPath }
+  }
+
+  /**
+   * podcast 分支：轮次稿 → 火山 PodcastAPI。语速换算成火山口径（request.speechRate 是 1.0
+   * 基准倍率 → speech_rate 百分点；没传用接入默认），复刻 2.0 音色补 speaker_additions
+   * （官方要求 ICL 音色显式带 model 参数；具体取值按文档示例，需联调校准）。
+   */
+  private async synthesizePodcast(
+    itemId: string,
+    request: Extract<TtsSynthesisRequest, { type: 'podcast' }>,
+    connection: TtsConnection,
+    spec: TtsModelSpec,
+    signal?: AbortSignal
+  ): Promise<TtsSynthesisResult> {
+    const apiKey = String(connection.params.apiKey ?? '')
+    if (!apiKey) throw new Error('火山引擎接入缺 API Key：到设置 → 语音合成填新版控制台的 API Key')
+    const params = ttsModelParams(connection, spec, spec.id)
+    const format = String(params.format ?? 'mp3')
+    const extension = format === 'pcm' ? 'pcm' : format === 'ogg_opus' ? 'ogg' : 'mp3'
+    const speechRate =
+      request.speechRate !== undefined && Number.isFinite(request.speechRate)
+        ? Math.max(-50, Math.min(100, Math.round((request.speechRate - 1) * 100)))
+        : asNumber(params.speech_rate, 0)
+    const speakerAdditions: Record<string, string> = {}
+    for (const speaker of request.speakers) {
+      const clone = this.storage
+        .listVoices()
+        .find((voice) => voice.voiceType === speaker && voice.status === 'ready')
+      if (clone?.model === 'seed-icl-2.0') {
+        speakerAdditions[speaker] = JSON.stringify({ model: 'seed-tts-2.0-standard' })
+      }
+    }
+
+    // 内容寻址缓存：轮次稿 + 接入 + 模型 + 音乐/语速/格式一起进键
+    const cachePath = join(
+      this.audioCacheDir(),
+      `tts-${createHash('sha1')
+        .update(JSON.stringify({ p: 'podcast', c: connection.id, m: spec.id, f: format, r: speechRate, q: request }))
+        .digest('hex')
+        .slice(0, 20)}.${extension}`
+    )
+    const cached = await stat(cachePath).catch(() => null)
+    if (cached && cached.size > 0) {
+      this.cacheHits += 1
+      console.log(`[TTS] 播客缓存命中（省一次整期合成）：${request.turns.length} 轮`)
+      return { audioPath: cachePath }
+    }
+    this.cacheMisses += 1
+
+    const result = await synthesizeVolcanoPodcast({
+      apiKey,
+      request,
+      payload: {
+        format,
+        sampleRate: asNumber(params.sample_rate, 24000),
+        speechRate,
+        speakerAdditions
+      },
+      signal,
+      onLog: (message) => console.log(`[TTS] 播客合成：${message}`)
+    })
+    const tempPath = join(this.audioCacheDir(), `${itemId}.${extension}`)
+    await mkdir(dirname(tempPath), { recursive: true }).catch(() => undefined)
+    await writeFile(tempPath, result.audio)
+    try {
+      await rename(tempPath, cachePath)
+    } catch {
+      await rm(tempPath, { force: true }).catch(() => undefined)
+    }
+    console.log(
+      `[TTS] 播客整期合成完成：${request.turns.length} 轮，${(result.audio.length / 1024).toFixed(0)}KB` +
+        `${result.fromAudioUrl ? '（服务端整期成品）' : '（逐轮拼接）'}`
+    )
+    return { audioPath: cachePath, durationMs: result.durationMs }
+  }
+
+  /**
    * 演法覆盖到路由参数：instruction 覆盖静态语气指令（模型标了 instruction 才发）；
    * rate/pitch 是 agent 侧的 1.0 基准倍率，按服务商口径换算（百炼倍率直发；火山 speech_rate 百分点 / pitch 半音），
    * 模型参数表里没有对应键的不发。
@@ -468,6 +615,13 @@ export class TtsService {
         return {
           ok: false,
           error: `接「${connection.name}」的模型 ${input.model} 现在用不了：${blocker}：到设置 → 语音合成处理`
+        }
+      }
+      const caps = ttsModelCapabilities(spec)
+      if (caps.kind !== 'standard') {
+        return {
+          ok: false,
+          error: `「${spec.label}」是${TTS_MODEL_KIND_LABEL[caps.kind]}模型，不能用单句文本测试：到预制节目里用「生成节目音频」整期合成`
         }
       }
       const voice = input.voice?.trim() || this.testVoice(connection, spec)

@@ -5,10 +5,13 @@ import {
   CONTENT_TYPE_LABELS,
   TTS_PROVIDER_SHORT,
   type AgentStatus,
+  type ProduceAudioResult,
+  type ProducePlanInfo,
   type Program,
   type Script,
   type VoiceRecord
 } from '../../shared/types'
+import { audioProgress, listAudioUnits } from './programUnits'
 import type { StorageService } from './StorageService'
 import type { ScriptService } from './ScriptService'
 import type { PersonaService } from './PersonaService'
@@ -65,6 +68,10 @@ export interface AnchorSystemToolDeps {
   getVoices: () => VoiceService | null
   getTriggers: () => TriggerRuntime | null
   getStream: () => StreamService | null
+  /** 统一音频生产入口（produce_program_audio 工具）：rolling=提前合成全部；prepared=生成节目音频（有外部费用） */
+  produceProgramAudio?: (programId: string) => Promise<ProduceAudioResult>
+  /** 生产前的合成计划摘要（确认卡用：范围/预计时长/模型与声音快照） */
+  describeProducePlan?: (programId: string) => ProducePlanInfo
 }
 
 const CONTENT_TYPES = Object.keys(CONTENT_TYPE_LABELS) as (keyof typeof CONTENT_TYPE_LABELS)[]
@@ -88,7 +95,9 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
     getConnector,
     getVoices,
     getTriggers,
-    getStream
+    getStream,
+    produceProgramAudio,
+    describeProducePlan
   } = deps
 
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
@@ -204,6 +213,8 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           const bound = program.scriptId ? findScript(program.scriptId) : null
           const stats = draftStats(program.id)
           const audio = program.audioConfig
+          // 节目音频进度（预制音频资产，docs/10 §7.7）：单元总数/ready/synthesizing/failed/stale/pending
+          const renderedProgress = audioProgress(program, bound, utterances.list(program.id))
           return JSON.stringify({
             id: program.id,
             名称: program.name,
@@ -231,6 +242,14 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
               文件: program.knowledgeScope.files === '*' ? '全部' : `${program.knowledgeScope.files.length} 个`
             },
             底稿统计: stats,
+            节目音频进度: {
+              单元总数: renderedProgress.total,
+              就绪: renderedProgress.ready,
+              合成中: renderedProgress.synthesizing,
+              待合成: renderedProgress.pending,
+              失败: renderedProgress.failed,
+              已过期: renderedProgress.stale
+            },
             当前节目: program.id === activeProgramId(),
             版本号: program.updatedAt
           })
@@ -844,6 +863,55 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
     }),
 
     // ==================== 破坏性/外部副作用（先确认） ====================
+    defineTool({
+      name: 'produce_program_audio',
+      label: '生成节目音频',
+      description:
+        '生成节目音频（docs/10 §7.5 统一生产入口）。预制节目：按合成计划全量生产（逐章/逐段），' +
+        '会真实调用语音合成服务产生费用——必须先向导演发确认卡（卡里写清范围、预计时长、将用的模型和音色快照），' +
+        '导演确认后带 confirmed=true 重调才执行。滚动节目是「提前合成全部」（边播边合成的节目本来就要蒸，不加确认），可直接调用。' +
+        '已开始合成后把节目 audioConfig 冻结成声音快照写进产物，之后换主播不改写已有音频。',
+      parameters: Type.Object({
+        programId: Type.Optional(Type.String({ description: '节目 id，不传 = 当前节目' })),
+        confirmed: Type.Optional(Type.Boolean({ description: '导演已确认 = true；预制节目不传 = 先发确认卡' }))
+      }),
+      execute: async (_id, params) =>
+        guardToolAsync(async () => {
+          const programId = params.programId?.trim() || activeProgramId()
+          if (!programId) return '没有指定节目，也没有当前节目'
+          const program = findProgram(programId)
+          if (!program) return `节目 ${programId} 不存在（用 list_programs 拿正确的 id）`
+          if (!produceProgramAudio || !describeProducePlan) return '音频生产入口没接上，让导演在界面操作'
+          // 滚动/即兴：提前合成全部不是门禁、也没有额外决策，直接跑（§7.5）
+          if (program.broadcastMode !== 'prepared') {
+            const result = await produceProgramAudio(program.id)
+            return result.ok
+              ? `已开始为「${program.name}」提前合成全部文稿（后台逐段跑，不是播放门禁；进度见底稿状态）`
+              : `发起失败：${result.error}`
+          }
+          // 预制：全量合成有外部费用，先确认（确认卡显示范围/预计时长/模型与音色快照）
+          const plan = describeProducePlan(program.id)
+          if (!plan.ok) return `没法生成：${plan.error}`
+          if (!params.confirmed) {
+            return askConfirm(
+              `生成节目音频「${program.name}」（预制播出）：\n` +
+                `- 范围：${plan.scenes && plan.scenes > 0 ? `${plan.scenes} 章 / ` : ''}${plan.units} 个合成单元（共 ${plan.segments} 段、约 ${plan.totalChars} 字）\n` +
+                `- 预计时长：约 ${plan.estMinutes} 分钟（按字数粗估，不是承诺）\n` +
+                `- 合成模型：${plan.modelDesc}\n` +
+                `- 声音快照：${plan.voiceDesc}\n` +
+                `${plan.notice ? `- 说明：${plan.notice}\n` : ''}` +
+                `注意：会真实调用语音合成服务产生费用；已就绪且文稿没改过的单元会跳过不重蒸`
+            )
+          }
+          const result = await produceProgramAudio(program.id)
+          if (!result.ok && result.error) return `合成没跑起来：${result.error}`
+          return (
+            `节目音频生产完成：成功 ${result.done} / 跳过已就绪 ${result.skipped} / 失败 ${result.failed}（共 ${result.total} 个单元）` +
+            `${result.notice ? `\n说明：${result.notice}` : ''}` +
+            `${result.failed > 0 ? '\n有失败单元：用 get_program 看音频进度，失败原因在节目文稿页逐章标注，修好后再调一次本工具即可续跑' : ''}`
+          )
+        })
+    }),
     defineTool({
       name: 'delete_program',
       label: '删节目',

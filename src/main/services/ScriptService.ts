@@ -16,6 +16,12 @@ import type { StorageService } from './StorageService'
  * 当前节目持久化在 config.live.activeProgramId；场景推进进度落在 programs.current_scene_idx（断播能续）。
  */
 export class ScriptService {
+  /**
+   * 场景内容被 Agent 改动后的回调（appendScene/updateScene/removeScene）：
+   * index.ts 接到 UtteranceService.refreshRenderedStaleness，让改稿入口触发预制音频的 stale 检测
+   */
+  onContentChanged: ((programId: string) => void) | null = null
+
   constructor(private readonly storage: StorageService) {}
 
   // ---------- 剧本 ----------
@@ -193,6 +199,21 @@ export class ScriptService {
     this.storage.programSetSceneIdx(programId, 0)
   }
 
+  // ---------- 预制音频（Scene.rendered，docs/10 §9.6） ----------
+
+  /**
+   * 写/清某场景的整章预制音频引用（存在 scripts.scenes JSON 内）。
+   * 不动 updatedAt：预制产物更新不是用户编辑剧本，不该触发版本冲突误判。
+   */
+  setSceneRendered(scriptId: string, sceneId: string, rendered: ScriptScene['rendered'] | null): void {
+    const script = this.getScript(scriptId)
+    if (!script) return
+    const scenes = script.scenes.map((s) =>
+      s.id === sceneId ? { ...s, rendered: rendered ?? undefined } : s
+    )
+    this.storage.scriptSave({ ...script, scenes })
+  }
+
   // ---------- 主播自编剧本（create_scene/update_scene/remove_scene 工具的后端） ----------
 
   /**
@@ -243,6 +264,7 @@ export class ScriptService {
       estDurationMin: Math.max(1, Math.round(scene.estDurationMin ?? 5))
     })
     this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
+    this.onContentChanged?.(programId)
     return { script: this.getScript(script.id)!, index: insertAt, total: scenes.length }
   }
 
@@ -268,6 +290,7 @@ export class ScriptService {
         : s
     )
     this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
+    this.onContentChanged?.(programId)
     return { script: this.getScript(script.id)!, index: i, total: scenes.length }
   }
 
@@ -284,6 +307,7 @@ export class ScriptService {
       this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
     }
     if (program.currentSceneIdx > i) this.storage.programSetSceneIdx(programId, program.currentSceneIdx - 1)
+    this.onContentChanged?.(programId)
     return { script: this.getScript(script.id)!, total: scenes.length }
   }
 }

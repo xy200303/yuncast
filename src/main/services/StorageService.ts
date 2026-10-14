@@ -21,6 +21,7 @@ import {
   type ProgramAudioConfig,
   type ProgramKnowledgeScope,
   type Product,
+  type RenderedAudioRef,
   type Script,
   type EntryKind,
   type SpeechItem,
@@ -408,6 +409,8 @@ export class StorageService {
     this.ensureColumn('utterances', 'pitch', 'REAL')
     // 场景内创作顺序号：装池按它排（首轮严格按叙事顺序播放）
     this.ensureColumn('utterances', 'seq', 'INTEGER NOT NULL DEFAULT 0')
+    // 预制音频资产（RenderedAudioRef JSON，docs/10 §9.6）：预制节目的正式产物挂在段/章上
+    this.ensureColumn('utterances', 'rendered', 'TEXT')
     // 音色库（M8 声音克隆）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS voices (
@@ -469,6 +472,8 @@ export class StorageService {
         PRIMARY KEY (program_id, entry_id)
       )
     `)
+    // 启动清扫：上次退出遗留的 rendered synthesizing 重置为 failed（docs/10 §15.14）
+    this.sweepInterruptedRendered()
     // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
     this.migrateLegacySecrets()
   }
@@ -972,14 +977,15 @@ export class StorageService {
     }
   }
 
-  /** 数据库结构版本（PRAGMA user_version）：1 = 节目化改造（programs 落成，modes/live_plans/plan_id 全删） */
-  private static readonly DB_VERSION = 1
+  /** 数据库结构版本（PRAGMA user_version）：1 = 节目化改造（programs 落成，modes/live_plans/plan_id 全删）；2 = 预制音频资产（utterances.rendered 列，docs/10 §9.6） */
+  private static readonly DB_VERSION = 2
 
   /**
    * 节目化迁移（docs/10 §9.4，破坏性，一次性）：事务内直接得到最终表结构，不留兼容分支。
-   * live_plans → 建新 programs（复制仍有价值的字段，节目新字段给默认值，mode_id/voice_id/
+   * v1：live_plans → 建新 programs（复制仍有价值的字段，节目新字段给默认值，mode_id/voice_id/
    * planned_minutes/gen_config/style_hint 随之入土）；plan_sessions → program_sessions；
    * utterances/director_timeline 的 plan_id 列改名 program_id；modes 表删除。
+   * v2：utterances 加 rendered 列（预制音频资产 JSON；scripts.scenes[].rendered 是可选字段不用迁）。
    * 迁完用 PRAGMA table_info 校验旧表旧列不存在，不一致直接抛错（启动失败好过脏结构）。
    */
   private migratePrograms(): void {
@@ -995,74 +1001,123 @@ export class StorageService {
       )
     this.db.exec('BEGIN')
     try {
-      if (hasTable('live_plans')) {
-        // 老库的 knowledge_scope 列是后期补的，补不齐就没法复制（其余列自首版就有）
-        this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
-        this.db.exec(`
-          CREATE TABLE programs (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            theme TEXT NOT NULL DEFAULT '',
-            content_type TEXT NOT NULL DEFAULT 'solo',
-            broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
-            finish_mode TEXT NOT NULL DEFAULT 'loop',
-            allow_live_events INTEGER NOT NULL DEFAULT 1,
-            enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
-            audio_config TEXT NOT NULL DEFAULT '{"mode":"follow-presenter"}',
-            script_id TEXT,
-            knowledge_scope TEXT NOT NULL DEFAULT '{}',
-            current_scene_idx INTEGER NOT NULL DEFAULT 0,
-            created_at INTEGER NOT NULL,
-            updated_at INTEGER NOT NULL
+      if (version < 1) {
+        if (hasTable('live_plans')) {
+          // 老库的 knowledge_scope 列是后期补的，补不齐就没法复制（其余列自首版就有）
+          this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
+          this.db.exec(`
+            CREATE TABLE programs (
+              id TEXT PRIMARY KEY,
+              name TEXT NOT NULL,
+              theme TEXT NOT NULL DEFAULT '',
+              content_type TEXT NOT NULL DEFAULT 'solo',
+              broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
+              finish_mode TEXT NOT NULL DEFAULT 'loop',
+              allow_live_events INTEGER NOT NULL DEFAULT 1,
+              enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
+              audio_config TEXT NOT NULL DEFAULT '{"mode":"follow-presenter"}',
+              script_id TEXT,
+              knowledge_scope TEXT NOT NULL DEFAULT '{}',
+              current_scene_idx INTEGER NOT NULL DEFAULT 0,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL
+            )
+          `)
+          this.db.exec(`
+            INSERT INTO programs (id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at)
+            SELECT id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at FROM live_plans
+          `)
+          this.db.exec('DROP TABLE live_plans')
+        }
+        if (hasTable('plan_sessions')) {
+          this.db.exec(`
+            CREATE TABLE program_sessions (
+              program_id TEXT PRIMARY KEY,
+              purpose TEXT NOT NULL DEFAULT 'prep',
+              entries TEXT NOT NULL DEFAULT '[]',
+              updated_at INTEGER NOT NULL
+            )
+          `)
+          this.db.exec(
+            'INSERT INTO program_sessions (program_id, purpose, entries, updated_at) SELECT plan_id, purpose, entries, updated_at FROM plan_sessions'
           )
-        `)
-        this.db.exec(`
-          INSERT INTO programs (id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at)
-          SELECT id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at FROM live_plans
-        `)
-        this.db.exec('DROP TABLE live_plans')
-      }
-      if (hasTable('plan_sessions')) {
-        this.db.exec(`
-          CREATE TABLE program_sessions (
-            program_id TEXT PRIMARY KEY,
-            purpose TEXT NOT NULL DEFAULT 'prep',
-            entries TEXT NOT NULL DEFAULT '[]',
-            updated_at INTEGER NOT NULL
+          this.db.exec('DROP TABLE plan_sessions')
+        }
+        // 外键列 plan_id → program_id（SQLite ≥ 3.25 的 RENAME COLUMN，索引定义随列自动改）
+        if (hasTable('utterances') && columnsOf('utterances').has('plan_id')) {
+          this.db.exec('ALTER TABLE utterances RENAME COLUMN plan_id TO program_id')
+        }
+        if (hasTable('director_timeline') && columnsOf('director_timeline').has('plan_id')) {
+          this.db.exec('ALTER TABLE director_timeline RENAME COLUMN plan_id TO program_id')
+        }
+        // 直播模式预设包整体退役
+        if (hasTable('modes')) this.db.exec('DROP TABLE modes')
+        // 校验：旧表旧列必须不存在
+        for (const table of ['live_plans', 'plan_sessions', 'modes']) {
+          if (hasTable(table)) throw new Error(`旧表 ${table} 迁移后仍存在`)
+        }
+        if (hasTable('programs')) {
+          const legacy = ['mode_id', 'voice_id', 'planned_minutes', 'gen_config', 'style_hint'].filter((column) =>
+            columnsOf('programs').has(column)
           )
-        `)
-        this.db.exec(
-          'INSERT INTO program_sessions (program_id, purpose, entries, updated_at) SELECT plan_id, purpose, entries, updated_at FROM plan_sessions'
-        )
-        this.db.exec('DROP TABLE plan_sessions')
+          if (legacy.length > 0) throw new Error(`programs 残留旧列：${legacy.join(', ')}`)
+        }
+        for (const table of ['utterances', 'director_timeline']) {
+          if (hasTable(table) && columnsOf(table).has('plan_id')) throw new Error(`${table}.plan_id 迁移后仍存在`)
+        }
       }
-      // 外键列 plan_id → program_id（SQLite ≥ 3.25 的 RENAME COLUMN，索引定义随列自动改）
-      if (hasTable('utterances') && columnsOf('utterances').has('plan_id')) {
-        this.db.exec('ALTER TABLE utterances RENAME COLUMN plan_id TO program_id')
-      }
-      if (hasTable('director_timeline') && columnsOf('director_timeline').has('plan_id')) {
-        this.db.exec('ALTER TABLE director_timeline RENAME COLUMN plan_id TO program_id')
-      }
-      // 直播模式预设包整体退役
-      if (hasTable('modes')) this.db.exec('DROP TABLE modes')
-      // 校验：旧表旧列必须不存在
-      for (const table of ['live_plans', 'plan_sessions', 'modes']) {
-        if (hasTable(table)) throw new Error(`旧表 ${table} 迁移后仍存在`)
-      }
-      if (hasTable('programs')) {
-        const legacy = ['mode_id', 'voice_id', 'planned_minutes', 'gen_config', 'style_hint'].filter((column) =>
-          columnsOf('programs').has(column)
-        )
-        if (legacy.length > 0) throw new Error(`programs 残留旧列：${legacy.join(', ')}`)
-      }
-      for (const table of ['utterances', 'director_timeline']) {
-        if (hasTable(table) && columnsOf(table).has('plan_id')) throw new Error(`${table}.plan_id 迁移后仍存在`)
+      if (version < 2 && hasTable('utterances')) {
+        // 预制音频资产列（RenderedAudioRef JSON）；全新库此时表还没建，由后面的 ensureColumn 兜底
+        this.ensureColumn('utterances', 'rendered', 'TEXT')
       }
       this.db.exec(`PRAGMA user_version = ${StorageService.DB_VERSION}`)
       this.db.exec('COMMIT')
     } catch (error) {
       this.db.exec('ROLLBACK')
       throw error
+    }
+  }
+
+  /**
+   * 启动清扫（docs/10 §15.14，每次启动都跑）：上次退出遗留的 rendered.status='synthesizing'
+   * 一律重置为 'failed'（error='应用重启中断'），完成产物保留，用户手动继续合成。
+   * utterances.rendered 列与 scripts.scenes[].rendered 都要扫。
+   */
+  private sweepInterruptedRendered(): void {
+    try {
+      const rows = this.db
+        .prepare(`SELECT id, rendered FROM utterances WHERE rendered LIKE '%"synthesizing"%'`)
+        .all() as { id: unknown; rendered: unknown }[]
+      const update = this.db.prepare('UPDATE utterances SET rendered = ? WHERE id = ?')
+      for (const row of rows) {
+        const rendered = parseJson<RenderedAudioRef | null>(row.rendered, null)
+        if (!rendered || rendered.status !== 'synthesizing') continue
+        update.run(JSON.stringify({ ...rendered, status: 'failed', error: '应用重启中断' }), str(row.id))
+      }
+      if (rows.length > 0) console.log(`[存储] 清扫中断的预制合成：utterances ${rows.length} 条重置为失败`)
+    } catch {
+      // rendered 列还没建（首次启动走到这之前 ensureColumn 已跑，这里只是兜底）
+    }
+    try {
+      const rows = this.db
+        .prepare(`SELECT id, scenes FROM scripts WHERE scenes LIKE '%"synthesizing"%'`)
+        .all() as { id: unknown; scenes: unknown }[]
+      const update = this.db.prepare('UPDATE scripts SET scenes = ? WHERE id = ?')
+      let swept = 0
+      for (const row of rows) {
+        const scenes = parseJson<Script['scenes']>(row.scenes, [])
+        let dirty = false
+        for (const scene of scenes) {
+          if (scene.rendered?.status !== 'synthesizing') continue
+          scene.rendered = { ...scene.rendered, status: 'failed', error: '应用重启中断' }
+          dirty = true
+          swept++
+        }
+        if (dirty) update.run(JSON.stringify(scenes), str(row.id))
+      }
+      if (swept > 0) console.log(`[存储] 清扫中断的预制合成：剧本场景 ${swept} 条重置为失败`)
+    } catch {
+      // 表还没建就跳过
     }
   }
 
@@ -1773,15 +1828,15 @@ export class StorageService {
     this.db
       .prepare(
         `INSERT INTO utterances (id, program_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, voice_id, audio_path,
-                                 status, error, source, sources, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 status, error, source, sources, rendered, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
            text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
            rate = excluded.rate, pitch = excluded.pitch,
            voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
-           sources = excluded.sources`
+           sources = excluded.sources, rendered = excluded.rendered`
       )
       .run(
         u.id,
@@ -1800,8 +1855,16 @@ export class StorageService {
         u.error ?? null,
         u.source,
         JSON.stringify(u.sources),
+        u.rendered ? JSON.stringify(u.rendered) : null,
         u.createdAt
       )
+  }
+
+  /** 只更新预制音频资产（rendered 列）：生产入口/导入外部音频/stale 检测用，不动运行态字段 */
+  utteranceSetRendered(id: string, rendered: RenderedAudioRef | null): void {
+    this.db
+      .prepare('UPDATE utterances SET rendered = ? WHERE id = ?')
+      .run(rendered ? JSON.stringify(rendered) : null, id)
   }
 
   utteranceDelete(id: string): void {
@@ -1873,6 +1936,7 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     error: str(r.error) || undefined,
     source: str(r.source) === 'adopted' ? 'adopted' : 'initial',
     sources: parseJson<Utterance['sources']>(r.sources, []),
+    rendered: parseJson<Utterance['rendered']>(r.rendered, undefined),
     createdAt: num(r.created_at) ?? 0
   }
 }

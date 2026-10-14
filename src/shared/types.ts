@@ -900,6 +900,33 @@ export interface Trigger {
 
 export type TriggerInput = Omit<Trigger, 'id'> & { id?: string }
 
+// ---------- 预制音频资产（docs/10 §9.6 RenderedAudioRef） ----------
+
+/** 预制音频状态；stale = 文稿已改、音频与当前文稿不一致（文件保留，不删） */
+export type RenderedAudioStatus = 'pending' | 'synthesizing' | 'ready' | 'failed' | 'stale'
+
+/**
+ * 预制音频引用：预制节目的正式产物，挂在 Scene（整章/整期）或 Utterance（段）上。
+ * 与 Utterance.audioPath/status 的分工：后者是滚动合成的运行态字段；rendered 是长期资产，
+ * 应用重启不随播出队列清理。开始预制合成时把声音安排冻结成快照写进来，
+ * 之后切换主播/改主播音色不改写已有 rendered。
+ */
+export interface RenderedAudioRef {
+  audioPath: string
+  durationMs?: number
+  status: RenderedAudioStatus
+  /** 合成时冻结的完整声音快照；切换当前主播不改写。外部音频记 'external' */
+  ttsConnectionId: string
+  ttsModelId: string
+  /** 音色或角色表的指纹（冻结快照的一部分） */
+  voiceOrCastFingerprint: string
+  /** 合成时的文稿指纹（shared/fingerprint）；与当前文稿不一致 → stale */
+  sourceFingerprint: string
+  /** true = 用户导入的外部音频（跳过 TTS，不参与重新合成） */
+  external?: boolean
+  error?: string
+}
+
 // ---------- 剧本与场景（docs/01 §4） ----------
 
 export interface ScriptScene {
@@ -911,6 +938,8 @@ export interface ScriptScene {
   keyPoints: string
   /** 预计时长（分钟） */
   estDurationMin: number
+  /** 整章/整期预制音频（预制节目；存在 scripts.scenes JSON 内，docs/10 §9.6） */
+  rendered?: RenderedAudioRef
 }
 
 export interface Script {
@@ -1053,6 +1082,8 @@ export interface Utterance {
   synthVoice?: string
   status: UtteranceStatus
   error?: string
+  /** 预制音频资产（预制节目的正式产物，docs/10 §9.6）；滚动节目的段音频继续用 audioPath/status */
+  rendered?: RenderedAudioRef
   /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
   source: 'initial' | 'adopted'
   sources: UtteranceSource[]
@@ -1115,6 +1146,73 @@ export interface LaunchResult {
   /** 引擎开播成功但智能层没起来（模型挂了等）：照播存量，agent 就位后恢复 */
   warning?: string
   error?: string
+  /** 预制节目正式播放门禁结果（broadcastMode=prepared 时带上；未通过时 ok=false 且不静默跳过） */
+  gate?: ProgramGateResult
+}
+
+// ---------- 预制音频：生产入口与播放门禁（docs/10 §7.5-§7.9） ----------
+
+/** 节目音频进度（节目内进度展示 + get_program 工具的音频统计） */
+export interface ProgramAudioProgress {
+  /** 合成单元总数（reading/conversation/roleplay=章，solo=段） */
+  total: number
+  ready: number
+  synthesizing: number
+  pending: number
+  failed: number
+  stale: number
+}
+
+/** 门禁未通过单元的明细 */
+export interface ProgramGateFailure {
+  unitKind: 'scene' | 'utterance'
+  unitId: string
+  title: string
+  status: RenderedAudioStatus | 'missing'
+  /** 中文原因（限流/文件丢失/文稿已修改…） */
+  reason: string
+}
+
+/**
+ * 预制节目正式播放门禁结果（docs/10 §7.8）：所有单元 ready + 文件存在 + 指纹一致才算通过。
+ * 不通过时调用方拿这个结构给用户三选项：继续生成 / 重试失败 / 仅播放已完成部分。
+ */
+export interface ProgramGateResult extends ProgramAudioProgress {
+  ok: boolean
+  programId: string
+  failures: ProgramGateFailure[]
+}
+
+/** 统一音频生产入口（program:produce-audio / produce_program_audio 工具）的返回 */
+export interface ProduceAudioResult {
+  ok: boolean
+  mode: BroadcastMode
+  total: number
+  done: number
+  failed: number
+  /** 已就绪且指纹一致、跳过重合成的单元数 */
+  skipped: number
+  /** 能力降级提示（如「分段合成并拼接，不等同原生长文模型的连续表演效果」） */
+  notice?: string
+  error?: string
+}
+
+/** 生产前的合成计划摘要（produce_program_audio 的确认卡 / UI 确认弹窗用） */
+export interface ProducePlanInfo {
+  ok: boolean
+  error?: string
+  /** 单元数（章/段） */
+  units?: number
+  /** 章数与总段数 */
+  scenes?: number
+  segments?: number
+  /** 总字数与粗估时长（分钟，按约 4.5 字/秒） */
+  totalChars?: number
+  estMinutes?: number
+  /** 将使用的模型与声音快照描述（冻结进产物） */
+  modelDesc?: string
+  voiceDesc?: string
+  notice?: string
 }
 
 // ---------- 人设卡角色（编剧模式多音色，docs/01 §3.1） ----------

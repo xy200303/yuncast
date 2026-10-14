@@ -1,8 +1,12 @@
+import { existsSync } from 'node:fs'
 import {
   LIBRARY_SOURCE_ID,
   TTS_PROVIDER_SHORT,
   type LaunchResult,
   type PreflightItem,
+  type Program,
+  type ProgramAudioProgress,
+  type ProgramGateResult,
   type Utterance
 } from '../../shared/types'
 import { DRAFT_HARD_CAP } from './anchorTools'
@@ -18,6 +22,7 @@ import type { UtteranceService } from './UtteranceService'
 import { resolveModelForPersona } from './llmModel'
 import { getLlmProvider } from './providers/registry'
 import { findCloneVoice } from '../../shared/voiceProvider'
+import { audioProgress, evaluateGate, listAudioUnits } from './programUnits'
 
 /** 超过这么久没重测发音，预检提醒重测（docs/07 §8.5 语音可用性） */
 const VOICE_TEST_STALE_MS = 24 * 3600_000
@@ -154,9 +159,16 @@ export class ProgramPlaybackService {
       items.push({ level: 'ok', label: `剧本：${script.title}（${script.scenes.length} 场）` })
     }
 
-    // ④ 话术库（当前场景能装载多少）
+    // ④ 话术库（当前场景能装载多少）；即兴播出不要求底稿（docs/10 §7.1），跳过底稿检查
     const library = this.utterances.list(program.id)
     const ready = library.filter((u) => u.status === 'ready')
+    if (program.broadcastMode === 'improvised') {
+      items.push({
+        level: 'ok',
+        label: '即兴播出：无需底稿',
+        detail: '主播根据导演指令和直播间动态现场发挥；没动静时允许自然安静'
+      })
+    } else {
     const sceneId = script?.scenes[this.sceneIndex(program, script.scenes.length)]?.id ?? ''
     const sceneReady = ready.filter((u) => u.sceneId === sceneId || u.sceneId === '')
     if (library.length === 0) {
@@ -209,6 +221,22 @@ export class ProgramPlaybackService {
             : '播完循环复用音频；池子水位低了主播会现场续写'
       })
     }
+    }
+
+    // ⑤b 预制节目：音频门禁摘要进预检（警告级——正式门禁在 launch，缺项不静默跳过）
+    if (program.broadcastMode === 'prepared') {
+      const gate = this.playGate(programId)
+      items.push(
+        gate.ok
+          ? { level: 'ok', code: 'produce-gate', label: `节目音频全部就绪（${gate.ready}/${gate.total} 个单元）` }
+          : {
+              level: 'warn',
+              code: 'produce-gate',
+              label: `节目音频未就绪：已完成 ${gate.ready}/${gate.total} · 失败 ${gate.failed} · 待合成 ${gate.pending} · 合成中 ${gate.synthesizing} · 过期 ${gate.stale}`,
+              detail: '先「生成节目音频」；正式播放前会再检查，缺项不会静默跳过'
+            }
+      )
+    }
 
     // ⑥ 接入与推流（都能降级：不打断开播）
     const connector = this.connector.status()
@@ -235,11 +263,48 @@ export class ProgramPlaybackService {
   }
 
   /**
+   * 预制节目正式播放门禁（docs/10 §7.8，program:play-gate 的后端）：
+   * 所选范围所有单元 rendered.status='ready' + 文件存在 + 指纹一致 + 非 stale 才算通过。
+   * 返回结构化结果（各状态计数 + 失败原因列表），调用方不静默跳过——
+   * 拿它给用户三选项：继续生成 / 重试失败 / 仅播放已完成部分（launch 带 allowPartial）。
+   */
+  playGate(programId: string): ProgramGateResult {
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    if (!program) {
+      return {
+        ok: false,
+        programId,
+        total: 0,
+        ready: 0,
+        synthesizing: 0,
+        pending: 0,
+        failed: 0,
+        stale: 0,
+        failures: [{ unitKind: 'utterance', unitId: '', title: '', status: 'missing', reason: '节目不存在' }]
+      }
+    }
+    return evaluateGate(program, this.script.getScript(program.scriptId), this.utterances.list(programId))
+  }
+
+  /** 节目音频进度（program:audio-progress 的后端；单元总数/ready/synthesizing/failed/stale/pending） */
+  audioProgress(programId: string): ProgramAudioProgress {
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    if (!program) return { total: 0, ready: 0, synthesizing: 0, pending: 0, failed: 0, stale: 0 }
+    return audioProgress(program, this.script.getScript(program.scriptId), this.utterances.list(programId))
+  }
+
+  /**
    * 启动节目：预检有阻断项就拒绝；否则按序应用并装载。主播 = 当前主播，不在节目上。
    * 引擎与 agent 解耦：agent 起不来（模型挂了等）只降级——话术池照常装载播报，
    * 智能补货/互动等 agent 就位后自然接上（pool.low 等事件沿总线等着她）。
+   *
+   * 播出方式分流（docs/10 §7）：
+   * - improvised：不要求底稿，不装载不预合成，播出队列只装主播现场说的；
+   * - rolling：维持现有装池逻辑 + 后台提前合成；
+   * - prepared：先过正式播放门禁（缺项返回结构化 gate，不静默跳过；
+   *   opts.allowPartial = 用户选了「仅播放已完成部分」），按章/段把 rendered 音频装池。
    */
-  async launch(programId: string): Promise<LaunchResult> {
+  async launch(programId: string, opts?: { allowPartial?: boolean }): Promise<LaunchResult> {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return { ok: false, error: '节目不存在' }
     const blocked = this.preflight(programId).filter((item) => item.level === 'block')
@@ -247,11 +312,33 @@ export class ProgramPlaybackService {
       return { ok: false, error: `预检未通过：${blocked.map((item) => item.label).join('；')}` }
     }
 
+    // 预制节目正式播放门禁：未通过且用户没选「仅播放已完成部分」就拒绝，附上结构化结果
+    let gate: ProgramGateResult | undefined
+    if (program.broadcastMode === 'prepared') {
+      gate = this.playGate(programId)
+      if (!gate.ok && !opts?.allowPartial) {
+        return {
+          ok: false,
+          error:
+            `节目音频未就绪：已完成 ${gate.ready}/${gate.total} · 失败 ${gate.failed} · ` +
+            `待合成 ${gate.pending} · 合成中 ${gate.synthesizing} · 过期 ${gate.stale}。` +
+            `可以继续生成、重试失败项，或仅播放已完成部分`,
+          gate
+        }
+      }
+    }
+
     try {
       this.script.setActiveProgram(program.id)
-      const loaded = this.loadSceneUtterances(program.id)
-      // 有没合成的底稿就后台开蒸：0 就绪也允许开播（预检只是警告），边合成边补装，不空转
-      void this.utterances.kickSynthesis(program.id)
+      const loaded =
+        program.broadcastMode === 'prepared'
+          ? this.loadPreparedUnits(program, opts?.allowPartial === true)
+          : program.broadcastMode === 'improvised'
+            ? 0
+            : this.loadSceneUtterances(program.id)
+      // 滚动节目：有没合成的底稿就后台开蒸（0 就绪也允许开播，边合成边补装）；
+      // 预制节目不在开播时自动合成（生产走「生成节目音频」入口），即兴节目没有底稿可蒸
+      if (program.broadcastMode === 'rolling') void this.utterances.kickSynthesis(program.id)
       // 引擎先行：这场算开播了（播放循环只认话术池，不依赖 agent 会话）
       this.agent.setLiveActive(true)
       // 智能层尽力就位：起不来不拖垮播报，带警告回去让导演知道
@@ -264,10 +351,50 @@ export class ProgramPlaybackService {
       } catch (error) {
         warning = `主播智能层没起来（${error instanceof Error ? error.message : String(error)}）：存量的合成音频照播，补货/互动等她就位后恢复`
       }
-      return { ok: true, loaded, warning }
+      return { ok: true, loaded, warning, gate }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  /**
+   * 预制节目装播（docs/10 §7.9）：按 Scene/Utterance 顺序把 rendered.audioPath 生成
+   * speech_items 装池，一章/一期一个队列条目（标题用 Scene.title）。
+   * 播放引擎只关心标题、audioPath、顺序和状态，不理解有声书语义。
+   * allowPartial=true = 「仅播放已完成部分」：只装 ready 且指纹一致、文件在的单元。
+   */
+  private loadPreparedUnits(program: Program, allowPartial: boolean): number {
+    const script = this.script.getScript(program.scriptId)
+    const units = listAudioUnits(program, script, this.utterances.list(program.id))
+    let loaded = 0
+    for (const unit of units) {
+      const rendered = unit.rendered
+      const usable =
+        rendered?.status === 'ready' &&
+        rendered.sourceFingerprint === unit.fingerprint &&
+        existsSync(rendered.audioPath)
+      if (!usable) {
+        // 门禁已过（完整播放）时不该走到这；部分播放就跳过未完成单元
+        if (!allowPartial) console.warn(`[AgentAnchor] 预制单元不可播，跳过：${unit.title}`)
+        continue
+      }
+      try {
+        this.pool.say({
+          text: unit.title,
+          lane: 'normal',
+          sourceKind: 'scene',
+          sourceAgentId: LIBRARY_SOURCE_ID,
+          dedupeKey: `rendered:${unit.kind}:${unit.id}`,
+          audioPath: rendered!.audioPath,
+          originUtteranceId: unit.kind === 'utterance' ? unit.id : undefined
+        })
+        loaded += 1
+      } catch (error) {
+        // 池满/单条不合规都不该炸开播：记一笔继续装下一条
+        console.error(`[AgentAnchor] 预制音频装载失败（${unit.id}）:`, error)
+      }
+    }
+    return loaded
   }
 
   /**

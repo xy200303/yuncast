@@ -1291,7 +1291,10 @@ export class AgentService {
             getConnector: () => this.getConnector?.() ?? null,
             getVoices: () => this.getVoices?.() ?? null,
             getTriggers: () => this.getTriggers?.() ?? null,
-            getStream: () => this.getStream?.() ?? null
+            getStream: () => this.getStream?.() ?? null,
+            // 统一音频生产入口（produce_program_audio 工具，docs/10 §7.5-7.6）
+            produceProgramAudio: (programId) => this.utterances.produceProgramAudio(programId),
+            describeProducePlan: (programId) => this.utterances.describeProducePlan(programId)
           })
         ],
         // 节目即会话：恢复时把该节目存下的消息重建进内存会话，上下文原样回来

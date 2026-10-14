@@ -152,6 +152,16 @@ export const IPC = {
   programLaunch: 'program:launch',
   /** 切场景：跳剧本场景 + 装载新场景话术库 */
   programGotoScene: 'program:goto-scene',
+  /** 统一音频生产入口（docs/10 §7.5）：rolling=提前合成全部（后台）；prepared=生成节目音频（同步跑完返回汇总） */
+  programProduceAudio: 'program:produce-audio',
+  /** 预制节目正式播放门禁（docs/10 §7.8）：结构化结果，未通过不静默跳过 */
+  programPlayGate: 'program:play-gate',
+  /** 节目音频进度（单元总数/ready/synthesizing/failed/stale/pending） */
+  programAudioProgress: 'program:audio-progress',
+  /** 导入外部音频（§7.4）：主进程弹文件选择框，挂到指定 Scene/Utterance 的 rendered */
+  programImportAudio: 'program:import-audio',
+  /** main → renderer：预制音频资产变化（Scene/Utterance 的 rendered 更新，渲染层刷新进度） */
+  programAudioEvent: 'program:audio-event',
 
   // 话术库（节目底稿）
   utteranceList: 'utterance:list',

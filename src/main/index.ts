@@ -765,11 +765,13 @@ function registerIpc(
   })
   // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口
   ipcMain.handle(IPC.programPreflight, (_e, id: string) => programPlayback.preflight(String(id ?? '')))
-  ipcMain.handle(IPC.programLaunch, async (_e, id: string) => {
+  ipcMain.handle(IPC.programLaunch, async (_e, id: string, opts?: { allowPartial?: boolean }) => {
     // 「在跑」不等于「已开播」：写稿会话（prep）也在跑，prep→live 必须发开播事件（开播信号触发器靠它）
     const statusBefore = agent.status()
     const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
-    const result = await programPlayback.launch(String(id ?? ''))
+    const result = await programPlayback.launch(String(id ?? ''), {
+      allowPartial: opts?.allowPartial === true
+    })
     if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
     // 0 就绪开播：底稿还在后台合成，开播空隙叫「续写补给」顶上（agent 现场编一段，不冷场）
     if (result.ok && (result.loaded ?? 0) === 0) bus.emit('pool.low', { remaining: 0 }, 'system')
@@ -778,6 +780,35 @@ function registerIpc(
   /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
   ipcMain.handle(IPC.programGotoScene, (_e, programId: string, index: number) =>
     programPlayback.gotoScene(String(programId ?? ''), Math.floor(Number(index) || 0))
+  )
+  // 统一音频生产入口（docs/10 §7.5）：rolling=后台提前合成全部；prepared=同步跑完返回汇总
+  ipcMain.handle(IPC.programProduceAudio, (_e, programId: string) =>
+    utterances.produceProgramAudio(String(programId ?? ''))
+  )
+  // 预制节目正式播放门禁（docs/10 §7.8）：结构化结果，未通过不静默跳过
+  ipcMain.handle(IPC.programPlayGate, (_e, programId: string) =>
+    programPlayback.playGate(String(programId ?? ''))
+  )
+  ipcMain.handle(IPC.programAudioProgress, (_e, programId: string) =>
+    programPlayback.audioProgress(String(programId ?? ''))
+  )
+  // 导入外部音频（§7.4）：主进程弹文件选择框，拷贝进预制音频目录并挂到指定 Scene/Utterance 的 rendered
+  ipcMain.handle(
+    IPC.programImportAudio,
+    async (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
+      const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+      if (!win) return { ok: false as const, error: '没有可用窗口' }
+      const result = await dialog.showOpenDialog(win, {
+        properties: ['openFile'],
+        filters: [{ name: '音频文件', extensions: ['mp3', 'wav', 'm4a'] }]
+      })
+      if (result.canceled || !result.filePaths[0]) return { ok: false as const, error: '已取消' }
+      return utterances.importExternalAudio(
+        String(programId ?? ''),
+        { kind: target?.kind === 'scene' ? 'scene' : 'utterance', id: String(target?.id ?? '') },
+        result.filePaths[0]
+      )
+    }
   )
 
   // ---------- 话术库（节目底稿） ----------
@@ -867,9 +898,17 @@ if (!single) {
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
     // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
-    const utterances = new UtteranceService(storage, tts, persona)
+    const utterances = new UtteranceService(storage, tts, persona, script)
     utterances.onEvent = (u) => broadcastUtterance(u)
     utterances.onBatchDone = (programId) => broadcastUtteranceDone(programId)
+    // 预制音频资产变化广播（Scene/Utterance 的 rendered 更新，渲染层刷新节目音频进度）
+    utterances.onRenderedEvent = (programId) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.programAudioEvent, { programId })
+      }
+    }
+    // Agent 改场景（append/update/remove_scene）也触发预制音频的 stale 检测
+    script.onContentChanged = (programId) => utterances.refreshRenderedStaleness(programId)
     agent = new AgentService(
       storage,
       pool,

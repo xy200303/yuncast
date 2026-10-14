@@ -29,7 +29,10 @@ import type {
   PoolSnapshot,
   PoolStatus,
   PreflightItem,
+  ProduceAudioResult,
   Program,
+  ProgramAudioProgress,
+  ProgramGateResult,
   ProgramInput,
   Product,
   ProductInput,
@@ -342,8 +345,9 @@ const api = {
     setActive: (id: string) => ipcRenderer.invoke(IPC.programSetActive, id) as Promise<string>,
     /** 开播前预检：检查项清单（阻断/警告） */
     preflight: (id: string) => ipcRenderer.invoke(IPC.programPreflight, id) as Promise<PreflightItem[]>,
-    /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播 */
-    launch: (id: string) => ipcRenderer.invoke(IPC.programLaunch, id) as Promise<LaunchResult>,
+    /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播；opts.allowPartial = 预制节目「仅播放已完成部分」 */
+    launch: (id: string, opts?: { allowPartial?: boolean }) =>
+      ipcRenderer.invoke(IPC.programLaunch, id, opts) as Promise<LaunchResult>,
     /** 切场景：跳剧本场景 + 装载该场景话术库 */
     gotoScene: (programId: string, index: number) =>
       ipcRenderer.invoke(IPC.programGotoScene, programId, index) as Promise<{
@@ -351,7 +355,26 @@ const api = {
         loaded: number
         title?: string
         error?: string
-      }>
+      }>,
+    /** 统一音频生产入口：rolling=提前合成全部（立即返回，后台跑）；prepared=生成节目音频（跑完返回汇总，进度走 onAudioEvent / utterance.onEvent） */
+    produceAudio: (id: string) => ipcRenderer.invoke(IPC.programProduceAudio, id) as Promise<ProduceAudioResult>,
+    /** 预制节目正式播放门禁：所有单元 ready + 文件存在 + 指纹一致才 ok；未通过时 failures 带原因，不静默跳过 */
+    playGate: (id: string) => ipcRenderer.invoke(IPC.programPlayGate, id) as Promise<ProgramGateResult>,
+    /** 节目音频进度（单元总数/ready/synthesizing/pending/failed/stale） */
+    audioProgress: (id: string) => ipcRenderer.invoke(IPC.programAudioProgress, id) as Promise<ProgramAudioProgress>,
+    /** 导入外部音频（预制节目）：主进程弹文件选择框（mp3/wav/m4a），挂到指定 Scene/Utterance；取消返回 ok:false */
+    importAudio: (id: string, target: { kind: 'scene' | 'utterance'; id: string }) =>
+      ipcRenderer.invoke(IPC.programImportAudio, id, target) as Promise<
+        { ok: true; audioPath: string } | { ok: false; error: string }
+      >,
+    /** 订阅预制音频资产变化（rendered 更新），返回取消订阅函数 */
+    onAudioEvent: (cb: (payload: { programId: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { programId: string }) => cb(payload)
+      ipcRenderer.on(IPC.programAudioEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.programAudioEvent, listener)
+      }
+    }
   },
   utterance: {
     list: (programId: string) => ipcRenderer.invoke(IPC.utteranceList, programId) as Promise<Utterance[]>,

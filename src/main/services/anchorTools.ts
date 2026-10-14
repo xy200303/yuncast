@@ -80,6 +80,8 @@ export interface AnchorToolDeps {
   getSpeakingPaused?: () => boolean
   /** 会话用途：prep=写稿备播（say/insert_next 关闭，产出只走 write_drafts），live=直播中 */
   getPurpose?: () => 'prep' | 'live'
+  /** 标记直播间动态批次的处理结果（mark_live_events）：handled=回过 / ignored=不理 */
+  markLiveEvents?: (ids: string[], state: 'handled' | 'ignored') => string
   /** 正式启动当前节目开播（start_live）：返回开播结果或预检拦截原因 */
   onGoLive?: () => Promise<string>
   /** 从连接器同步商品入库（sync_products）：KnowledgeService.syncFromConnector 已包好 */
@@ -106,6 +108,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
     onPlaybackControl,
     getSpeakingPaused,
     getPurpose,
+    markLiveEvents,
     onGoLive,
     syncProducts,
     connector
@@ -895,6 +898,20 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           onPlaybackControl?.('skip')
           return '已跳过当前这条'
         })
+    }),
+    defineTool({
+      name: 'mark_live_events',
+      label: '标记直播间动态',
+      description:
+        '标记直播间动态批次的处理结果：回过的标 handled，不想理的标 ignored。不标也行——5 分钟后自动过期，不会再提醒。事件 id 在每批动态列表每条的 [方括号] 里。',
+      parameters: Type.Object({
+        ids: Type.Array(Type.String(), { description: '动态 id 列表（批次里每条的 [le-xxx]）' }),
+        state: Type.Union([Type.Literal('handled'), Type.Literal('ignored')], {
+          description: 'handled=已回应，ignored=不理'
+        })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => markLiveEvents?.(params.ids, params.state) ?? '收件箱没接上')
     }),
     defineTool({
       name: 'start_live',

@@ -7,7 +7,8 @@ import type { AgentService, ProgramGate } from './AgentService'
 
 /**
  * 触发器运行时（docs/01 §3.5）：事件 → 过滤 → 聚合 → 冷却 → 单场预算 → 全局 LLM 速率帽 → 执行。
- * 三种模式：tool（模板直连话术池，不过 LLM）、steer（给主播插一句）、task（给主播派任务）。
+ * 三种模式：tool（模板直连话术池，确定性操作不过 LLM，保留给安全/纯控制类）、
+ * steer / task（内容类：不直接生成固定对外话术，渲染后的通知文本进直播间动态收件箱，由主播决定回应——docs/10 §5.4）。
  */
 
 /** 模板插值：{{payload.xxx}} / {{aggregated.count}} / {{aggregated.list}} / {{aggregated.latest.xxx}} */
@@ -404,9 +405,10 @@ export class TriggerRuntime {
     }
     const prompt = renderTemplate(promptTemplate ?? '', payload, aggregated).trim()
     if (!prompt) return
-    // agent 没在跑（没开播/智能层不可用）时 inject 会抛：触发器是锦上添花，绝不能让异常穿出去
+    // 内容类触发器（docs/10 §5.4）：不再直接派固定话术任务，统一进直播间动态收件箱，
+    // 攒批/限速/防轰炸由收件箱管；立即回、稍后回还是忽略由主播决定
     try {
-      this.agent.inject(prompt, mode)
+      this.agent.pushTriggerEvent(trigger.name, prompt)
     } catch (error) {
       console.error(`[AgentAnchor] 触发器「${trigger.name}」投递失败:`, error)
       this.bus.emit('trigger.dropped', { triggerId: trigger.id, name: trigger.name, reason: 'agent 不可用' }, 'system')

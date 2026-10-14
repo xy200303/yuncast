@@ -33,6 +33,7 @@ import type { ScriptService } from './ScriptService'
 import type { UtteranceService } from './UtteranceService'
 import { buildAnchorTools } from './anchorTools'
 import { buildAnchorSystemTools } from './anchorSystemTools'
+import { LiveEventInbox, type LiveInboxEvent } from './LiveEventInbox'
 import { prepareLlmModel, resolveModelForPersona } from './llmModel'
 import { clampOversizedMessages, estimateMsgTokens, oneLine, renderMessageForSummary } from './agentText'
 import type { ResolvedModel } from './providers/registry'
@@ -50,9 +51,6 @@ import type { StreamService } from './stream/StreamService'
  * - text_delta 既累积成"AI 正在组织语言"预览（提词器），也推给对话时间线（docs/09 §11）
  * - 对话时间线照事件流原样渲染：文本流式 / 工具卡片 / 请示卡片，不做二次解释（thinking_delta 不渲染）
  */
-
-/** 评论攒批窗口（秒）：弹幕逐条派会把主播节奏切碎，攒一批一起派（docs/10 §5.3 的合并唤醒落地前沿用攒批） */
-const COMMENT_BATCH_SEC = 15
 
 /**
  * 节目事件接线（替代旧直播模式的 wiring）：由节目字段决定，会话启动时冻结。
@@ -129,9 +127,15 @@ export class AgentService {
   private speakingPaused = false
   /** 本场的事件接线（由节目字段决定，会话启动时冻结） */
   private programGate: ProgramGate | null = null
-  /** 评论攒批缓冲：窗口到了打包成一条派给主播 */
-  private commentBuffer: { comment: LiveComment; profileHint: string }[] = []
-  private commentBatchTimer: NodeJS.Timeout | null = null
+  /**
+   * 直播间动态收件箱（docs/10 §5.3）：评论/内容类触发器通知统一进箱，
+   * 去重/过滤/归组/聚合唤醒/限速由它管；flush 出来的批次文本派给主播，回不回由主播定。
+   * flush 只由事件驱动：没有新动态时不唤醒、不产生 LLM 请求。
+   */
+  private readonly inbox = new LiveEventInbox({
+    isAgentBusy: () => this.busy,
+    flush: (batchText, events) => this.deliverInboxBatch(batchText, events)
+  })
   /** 场景推进后的装载钩子（ProgramPlaybackService 接上：把新场景话术库载入池） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
   /** 主播自己开播（start_live 工具）：ProgramPlaybackService 接上，返回给主播看的成败说明 */
@@ -433,10 +437,8 @@ export class AgentService {
     this.programVoiceId = ''
     this.programGapMs = -1
     this.programGate = null
-    // 攒批没发出去的评论随会话一起清掉
-    if (this.commentBatchTimer) clearTimeout(this.commentBatchTimer)
-    this.commentBatchTimer = null
-    this.commentBuffer = []
+    // 攒在收件箱里没送出/没处理的动态随会话一起清掉
+    this.inbox.clear()
     // 停了就不再收尾当前这一轮（abort 后可能还有事件飘过来）
     this.clearTextTimers()
     this.texts.clear()
@@ -493,12 +495,12 @@ export class AgentService {
     return this.programGate ?? gateOfProgram(this.script.getActive().program)
   }
 
-  /** 评论入口（连接器）：主播自己决定回不回、怎么回。老粉画像随评论注入；派不派由节目的事件接线决定。 */
+  /** 评论入口（连接器）：画像照记、派不派由节目的事件接线决定；派的进直播间动态收件箱，回不回由主播定（docs/10 §5.3） */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     // 写稿会话不接评论：没开播，评论不存在也不该打断写稿
     if (this.sessionPurpose !== 'live') return
-    // 暂停期间评论只进事件队列（EventBus 已记下），不派给 LLM（同 docs/07 §8.5 人工接管的处理）
+    // 暂停期间评论只进事件队列（EventBus 已记下），不进收件箱不派给 LLM（同 docs/07 §8.5 人工接管的处理）
     if (this.speakingPaused) return
     // 先查画像（老粉识别），再记一次互动——节目关了直播事件也照记：不打扰主播，但观众资产照攒
     const known = this.memory.lookupViewer(comment.author)
@@ -506,35 +508,50 @@ export class AgentService {
     this.memory.touchViewer(comment.author, isQuestion ? comment.content : undefined)
     // 节目关闭了直播事件：评论根本不派给主播，全身心演自己的
     if (!this.currentProgramGate().allowLiveEvents) return
-    this.lastComment = comment
     const profileHint = known ? `老粉：${this.memory.describeViewer(known)}` : '新观众'
-    // 攒批：窗口内的评论打包成一条派，别让弹幕把主播的节奏切碎
-    this.commentBuffer.push({ comment, profileHint })
-    if (!this.commentBatchTimer) {
-      this.commentBatchTimer = setTimeout(() => this.flushCommentBatch(), COMMENT_BATCH_SEC * 1000)
-    }
+    // 进收件箱：去重/过滤/归组/聚合唤醒由收件箱统一管，攒成一批才唤醒主播
+    this.inbox.push({
+      connectorEventId: comment.id,
+      kind: 'comment',
+      author: comment.author,
+      content: comment.content,
+      profileHint
+    })
   }
 
-  /** 攒批窗口到点：打包派给主播。窗口期间停了播/切了暂停就整批丢掉（同逐条派的暂停语义） */
-  private flushCommentBatch(): void {
-    this.commentBatchTimer = null
-    const batch = this.commentBuffer
-    this.commentBuffer = []
-    if (batch.length === 0) return
+  /**
+   * 内容类触发器通知入口（docs/10 §5.4）：触发后不再直接派固定话术任务，
+   * 统一进直播间动态收件箱（攒批/限速/防轰炸由收件箱管），回不回、怎么回由主播决定。
+   * 安全类/纯控制类触发器不走这里（TriggerRuntime 的 tool 模式直连话术池，保留确定性操作）。
+   */
+  pushTriggerEvent(triggerName: string, text: string): void {
+    if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    // 写稿会话不接触发器（这些是直播节拍，写稿时别来打扰）
+    if (this.sessionPurpose !== 'live') return
+    if (this.speakingPaused) return
+    this.inbox.push({ kind: 'trigger', author: `触发器·${triggerName}`, content: text })
+  }
+
+  /** 收件箱 flush 出口：包上模板派给主播。主播处理完后用 mark_live_events 标记；不标 5 分钟后自然过期 */
+  markLiveEvents(ids: string[], state: 'handled' | 'ignored'): string {
+    return this.inbox.markEvents(ids, state)
+  }
+
+  /** 收件箱批次送达：窗口期间停了播/切了暂停就整批丢掉（事件已 seen，随后 TTL 过期，不补答） */
+  private deliverInboxBatch(batchText: string, events: LiveInboxEvent[]): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     if (this.sessionPurpose !== 'live' || this.speakingPaused) return
-    const comments = batch
-      .map(({ comment, profileHint }) => `- ${comment.author}：「${comment.content}」（${profileHint}）`)
-      .join('\n')
-    void this.ask(this.prompts.render('user.comment_batch', { comments }))
-  }
-
-  /** 触发器入口（docs/01 §3.5）：steer=生成中插一句，task=派一个任务。主播没在跑/已暂停就丢弃。 */
-  inject(text: string, mode: 'steer' | 'task'): void {
-    if (this.speakingPaused) return
-    // 写稿会话不接触发器（开场白/催单这些是直播节拍，写稿时别来打扰）
-    if (this.sessionPurpose !== 'live') return
-    this.deliver(text, mode)
+    // 批次里最后一条评论更新 lastComment：insert_next 挂 replyTo 用
+    const lastCommentEvent = [...events].reverse().find((e) => e.kind === 'comment')
+    if (lastCommentEvent) {
+      this.lastComment = {
+        id: lastCommentEvent.connectorEventId ?? lastCommentEvent.id,
+        author: lastCommentEvent.author,
+        content: lastCommentEvent.content,
+        ts: lastCommentEvent.receivedAt
+      }
+    }
+    void this.ask(this.prompts.render('user.live_batch', { events: batchText }))
   }
 
   /** 实际投递：导演指令绕过暂停检查走这里，其余的入口统一先过暂停闸门 */
@@ -1242,6 +1259,7 @@ export class AgentService {
           onPlaybackControl: (action) => this.onPlaybackControl?.(action),
           getSpeakingPaused: () => this.speakingPaused,
           getPurpose: () => this.sessionPurpose,
+          markLiveEvents: (ids, state) => this.markLiveEvents(ids, state),
           onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动节目」',
           syncProducts: async () =>
             this.knowledge.syncFromConnector({
@@ -1345,6 +1363,8 @@ export class AgentService {
         this.finalizeTurn()
         // 节目即会话：每轮落一次库，崩溃/强杀也丢不了多少
         this.persistSession()
+        // 一轮跑完：收件箱里忙时攒下的动态补排唤醒（闲时不叫主播，攒着等下一批）
+        this.inbox.notifyIdle()
       } else if (event.type === 'message_end') {
         // 这条消息说完了：把节流压着的尾巴推出去（还接着调工具时，它仍是中间文本）
         this.flushText()

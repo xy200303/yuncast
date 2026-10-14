@@ -15,7 +15,7 @@ import {
   type LlmProviderManifest,
   type ProviderFieldSpec
 } from '../../stores/useAppStore'
-import { type ModelConnectionSafe } from '../../../../shared/types'
+import { type ModelConnectionSafe, type ThinkingLevelChoice } from '../../../../shared/types'
 import { LLM_LINKS } from './shared'
 
 /** 跳转外链（主进程 setWindowOpenHandler 会交给系统浏览器打开） */
@@ -277,11 +277,12 @@ function ConnectionEditorView({
   const [name, setName] = useState(
     connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
   )
-  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）。窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
-  const [models, setModels] = useState<{ id: string; window: string }[]>(
+  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）+ 思考强度。窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
+  const [models, setModels] = useState<{ id: string; window: string; thinking: ThinkingLevelChoice }[]>(
     (connection?.models ?? []).map((id) => ({
       id,
-      window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : ''
+      window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : '',
+      thinking: connection?.modelThinkingLevels?.[id] ?? 'off'
     }))
   )
   const [busy, setBusy] = useState(false)
@@ -324,6 +325,10 @@ function ConnectionEditorView({
     setModels(models.map((row, i) => (i === index ? { ...row, window: value } : row)))
   }
 
+  const setThinkingAt = (index: number, value: ThinkingLevelChoice) => {
+    setModels(models.map((row, i) => (i === index ? { ...row, thinking: value } : row)))
+  }
+
   const removeModelAt = (index: number) => {
     setModels(models.filter((_, i) => i !== index))
   }
@@ -332,7 +337,7 @@ function ConnectionEditorView({
     const next = [...models]
     for (const id of ids) {
       const value = id.trim()
-      if (value && !next.some((row) => row.id === value)) next.push({ id: value, window: '' })
+      if (value && !next.some((row) => row.id === value)) next.push({ id: value, window: '', thinking: 'off' })
     }
     setModels(next)
   }
@@ -340,7 +345,7 @@ function ConnectionEditorView({
   /** 就地加一行空白模型行（id 空 = 手打），新行的 ID 输入框挂载时自动聚焦 */
   const addModelRow = () => {
     setFocusIndex(models.length)
-    setModels([...models, { id: '', window: '' }])
+    setModels([...models, { id: '', window: '', thinking: 'off' }])
   }
 
   const save = async () => {
@@ -356,10 +361,13 @@ function ConnectionEditorView({
     }
     // 模型级窗口：只收填了且 ≥4096 的，其余按服务商默认
     const modelContextWindows: Record<string, number> = {}
+    // 模型级思考强度：非 off 才落盘（默认不思考）
+    const modelThinkingLevels: Record<string, ThinkingLevelChoice> = {}
     for (const row of models) {
       const id = row.id.trim()
       const value = Math.floor(Number(row.window))
       if (id && row.window.trim() && value >= 4096) modelContextWindows[id] = value
+      if (id && row.thinking !== 'off') modelThinkingLevels[id] = row.thinking
     }
     setBusy(true)
     try {
@@ -369,7 +377,8 @@ function ConnectionEditorView({
         providerId,
         params,
         models: ids,
-        modelContextWindows
+        modelContextWindows,
+        modelThinkingLevels
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
@@ -495,6 +504,17 @@ function ConnectionEditorView({
                       inputMode="numeric"
                       className="h-9 w-28 shrink-0 text-sm"
                     />
+                    <Select value={row.thinking} onValueChange={(v) => setThinkingAt(index, v as ThinkingLevelChoice)}>
+                      <SelectTrigger className="h-9 w-24 shrink-0 text-sm" title="思考强度：模型支持时（如 DeepSeek reasoner / Kimi K2.6 thinking）思考过程会显示在对话时间线">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent position="popper" sideOffset={6}>
+                        <SelectItem value="off">不思考</SelectItem>
+                        <SelectItem value="low">低</SelectItem>
+                        <SelectItem value="medium">中</SelectItem>
+                        <SelectItem value="high">高</SelectItem>
+                      </SelectContent>
+                    </Select>
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -506,7 +526,7 @@ function ConnectionEditorView({
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  第二列是上下文窗口（tokens），留空按服务商默认；对话接近上限时自动压缩旧消息
+                  第二列是上下文窗口（tokens），留空按服务商默认；第三列是思考强度，思考过程会显示在对话时间线
                 </p>
               </div>
             )}

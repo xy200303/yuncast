@@ -128,6 +128,8 @@ export class AgentService {
   private currentMessageId: string | null = null
   /** 本轮各消息的文本快照（本轮开始时清空） */
   private texts = new Map<string, TimelineText>()
+  /** 思考流快照（thinking_delta 累积，按消息 id upsert 到时间线的「思考过程」条目） */
+  private thinkings = new Map<string, { turnId: string; text: string; sent: string; done: boolean; timer?: NodeJS.Timeout }>()
   /** 最近一次文本广播时间（全局节流，避免一条满屏 delta） */
   private lastTextEmitAt = 0
   /** 本轮最后一条有正文的 assistant 消息 = 最终回复（装得下工具轮次里的中间文本） */
@@ -518,9 +520,11 @@ export class AgentService {
       const chat: ChatEntry =
         entry.type === 'text'
           ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId }
-          : entry.type === 'ask'
-            ? { type: 'ask', id: entry.id, ts, message: entry.message }
-            : {
+          : entry.type === 'thinking'
+            ? { type: 'thinking', id: entry.id, ts, turnId: event.turnId, text: entry.text, done: entry.done ?? false }
+            : entry.type === 'ask'
+              ? { type: 'ask', id: entry.id, ts, message: entry.message }
+              : {
                 type: 'tool',
                 id: entry.id,
                 ts,
@@ -617,6 +621,7 @@ export class AgentService {
   private beginTurn(): void {
     this.clearTextTimers()
     this.texts.clear()
+    this.thinkings.clear()
     this.turnSeq += 1
     this.msgSeq = 0
     this.turnId = `turn-${this.runId}-${this.turnSeq}`
@@ -677,10 +682,64 @@ export class AgentService {
     })
   }
 
+  /** 累积 thinking_delta（按消息 id 归入「思考过程」条目），节流同文本 */
+  private appendThinking(delta: string): void {
+    const id = this.currentMessageId
+    if (!id) return
+    const entryId = `th-${id}`
+    let state = this.thinkings.get(entryId)
+    if (!state) {
+      state = { turnId: this.turnId, text: '', sent: '', done: false }
+      this.thinkings.set(entryId, state)
+    }
+    state.text += delta
+    this.emitThinking(entryId)
+  }
+
+  /** 推一条思考条目（同一 id 反复推，渲染层按 id upsert）；节流 ≥60ms 与文本共用节拍 */
+  private emitThinking(entryId: string, force = false): void {
+    const state = this.thinkings.get(entryId)
+    if (!state) return
+    if (!force && !state.done && state.sent === state.text) return
+    const elapsed = Date.now() - this.lastTextEmitAt
+    if (!force && elapsed < TEXT_THROTTLE_MS) {
+      if (!state.timer) {
+        const timer = setTimeout(() => {
+          state.timer = undefined
+          this.emitThinking(entryId, true)
+        }, TEXT_THROTTLE_MS - elapsed)
+        timer.unref?.()
+        state.timer = timer
+      }
+      return
+    }
+    if (state.timer) {
+      clearTimeout(state.timer)
+      state.timer = undefined
+    }
+    this.lastTextEmitAt = Date.now()
+    state.sent = state.text
+    this.emitTimeline({
+      turnId: state.turnId,
+      entry: { type: 'thinking', id: entryId, text: state.text, ...(state.done ? { done: true } : {}) }
+    })
+  }
+
+  /** 思考收尾：这条消息的思考段落标 done（渲染层收成可折叠的一行） */
+  private finalizeThinking(): void {
+    for (const [entryId, state] of this.thinkings) {
+      if (state.done || !state.text.trim()) continue
+      state.done = true
+      this.emitThinking(entryId, true)
+    }
+  }
+
   /** 一轮结束前把没推完的最后一段文本补上（节流可能还压着一段） */
   private flushText(): void {
     const id = this.currentMessageId
     if (id) this.emitText(id, false, true)
+    // 思考段落跟着文本一起收尾：这条消息的输出阶段切换时，思考就定稿了
+    this.finalizeThinking()
   }
 
   /**
@@ -1039,7 +1098,7 @@ export class AgentService {
   }
 
   private async createSession(resolved: ResolvedModel, restoredMessages?: AgentMessage[]): Promise<Agent> {
-    const { model, apiKey, modelLabel, contextWindow } = await prepareLlmModel(resolved)
+    const { model, apiKey, modelLabel, contextWindow, thinkingLevel } = await prepareLlmModel(resolved)
     this.modelLabel = modelLabel
     // 记下出生时的资产指纹：之后 UI 靠它判断"本场是不是旧版本"
     this.sessionFingerprint = this.assetFingerprint()
@@ -1063,7 +1122,8 @@ export class AgentService {
       initialState: {
         systemPrompt,
         model,
-        thinkingLevel: 'off',
+        // 思考强度来自接入的模型级配置（off=不思考）；思考流会进对话时间线的「思考过程」
+        thinkingLevel,
         // 只挂主播工具：core 没有内置工具，给什么就是什么
         tools: buildAnchorTools({
           pool: this.pool,
@@ -1107,6 +1167,9 @@ export class AgentService {
         this.draft += assistantEvent.delta
         this.appendText(assistantEvent.delta)
         this.broadcast(this.status())
+      } else if (assistantEvent?.type === 'thinking_delta') {
+        // 思考流：模型开了思考强度才有；进时间线的「思考过程」条目（不进提词器、不播报）
+        this.appendThinking(assistantEvent.delta)
       } else if (event.type === 'agent_start') {
         this.beginTurn()
         this.setGenerating(true)

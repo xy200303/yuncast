@@ -173,6 +173,9 @@ export const LLM_PROVIDER_META: Record<LlmProvider, { label: string; defaultMode
 
 // ---------- 供应商接入（一条 = 一个服务商 + 一份凭据 + 一串可用模型） ----------
 
+/** 思考强度（模型级配置）：off=关闭；low/medium/high 映射 pi 的 ThinkingLevel，思考内容流进对话时间线 */
+export type ThinkingLevelChoice = 'off' | 'low' | 'medium' | 'high'
+
 export interface ModelConnection {
   id: string
   /** 显示名，默认取服务商 label，可改 */
@@ -184,6 +187,8 @@ export interface ModelConnection {
   models: string[]
   /** 模型级上下文窗口（tokens）：模型 id → 窗口。缺省按服务商声明/pi 内置目录；自动压缩按「窗口 − 16k」触发 */
   modelContextWindows: Record<string, number>
+  /** 模型级思考强度：模型 id → 档位；缺省 off（不思考）。模型不支持思考时开了也没效果 */
+  modelThinkingLevels: Record<string, ThinkingLevelChoice>
   createdAt: number
   updatedAt: number
 }
@@ -205,6 +210,8 @@ export interface ModelConnectionInput {
   models: string[]
   /** 模型级上下文窗口（可选，只保留 models 里存在的 id） */
   modelContextWindows?: Record<string, number>
+  /** 模型级思考强度（可选，只保留 models 里存在的 id） */
+  modelThinkingLevels?: Record<string, ThinkingLevelChoice>
 }
 
 /**
@@ -614,6 +621,7 @@ export interface DirectorMessage {
  */
 export type DirectorTimelineEntry =
   | { type: 'text'; id: string; text: string; final?: boolean }
+  | { type: 'thinking'; id: string; text: string; done?: boolean }
   | {
       type: 'tool'
       id: string
@@ -639,6 +647,7 @@ export interface DirectorTimelineEvent {
 export type ChatEntry =
   | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
   | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string }
+  | { type: 'thinking'; id: string; ts: number; turnId: string; text: string; done: boolean }
   | {
       type: 'tool'
       id: string

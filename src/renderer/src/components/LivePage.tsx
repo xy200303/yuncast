@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   AudioWaveform,
   Bot,
+  Brain,
   CheckCircle2,
   ChevronRight,
   Clapperboard,
@@ -849,6 +850,15 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           text: entry.text,
           final: entry.final === true
         })
+      } else if (entry.type === 'thinking') {
+        upsert({
+          type: 'thinking',
+          id: entry.id,
+          ts: Date.now(),
+          turnId: event.turnId,
+          text: entry.text,
+          done: entry.done === true
+        })
       } else if (entry.type === 'ask') {
         // 主播请示卡片：与文本/工具同一条单通道
         upsert({ type: 'ask', id: entry.id, ts: entry.message.ts, message: entry.message })
@@ -1034,9 +1044,9 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
               : false
             /** 每轮开头插一条时间分隔线：用时间把一轮对话框起来（不给最终回复贴标签） */
             const turnId =
-              firstEntry.type === 'text' || firstEntry.type === 'tool' ? firstEntry.turnId : undefined
+              firstEntry.type === 'text' || firstEntry.type === 'tool' || firstEntry.type === 'thinking' ? firstEntry.turnId : undefined
             const prevTurnId =
-              prevEntry && (prevEntry.type === 'text' || prevEntry.type === 'tool')
+              prevEntry && (prevEntry.type === 'text' || prevEntry.type === 'tool' || prevEntry.type === 'thinking')
                 ? prevEntry.turnId
                 : undefined
             const showTurnBreak = Boolean(turnId) && turnId !== prevTurnId
@@ -1100,6 +1110,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                 ) : entry.type === 'text' ? (
                   // 最终回复：正常前景色、铺满宽度（时间在轮分隔线上，这里不再重复）
                   <MiniMarkdown text={entry.text} />
+                ) : entry.type === 'thinking' ? (
+                  <ThinkingBlock entry={entry} />
                 ) : entry.type === 'tool' ? (
                   <ToolCard entry={entry} />
                 ) : (
@@ -1233,6 +1245,36 @@ function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; wind
           strokeDasharray={`${(circumference * ratio).toFixed(2)} ${circumference.toFixed(2)}`}
         />
       </svg>
+    </div>
+  )
+}
+
+/** 思考过程条目：流式时展开滚动，写完收成一行可展开（不进提词器、不播报，纯导演可见） */
+function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking' }> }) {
+  const [open, setOpen] = useState(!entry.done)
+  // 思考写完了自动收起（像 Kimi 的「思考过程 · Ns」一行）
+  useEffect(() => {
+    if (entry.done) setOpen(false)
+  }, [entry.done])
+  return (
+    <div className="max-w-[92%]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground/80 hover:text-muted-foreground"
+      >
+        <Brain className="size-3.5" />
+        {entry.done ? '思考过程' : '思考中…'}
+        <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
+      </button>
+      {open && (
+        <p className="mt-1 whitespace-pre-wrap border-l-2 border-border pl-2.5 text-xs leading-5 text-muted-foreground/80 italic">
+          {entry.text}
+          {!entry.done && (
+            <span className="ml-0.5 inline-block h-3 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
+          )}
+        </p>
+      )}
     </div>
   )
 }

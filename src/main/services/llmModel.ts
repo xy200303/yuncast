@@ -1,5 +1,5 @@
 import type { Model } from '@earendil-works/pi-ai'
-import { type ModelConnection, type Persona } from '../../shared/types'
+import { type ModelConnection, type Persona, type ThinkingLevelChoice } from '../../shared/types'
 import {
   connectionFirstModel,
   getLlmProvider,
@@ -78,9 +78,12 @@ function selectedModelOf(
     providerId: bound.providerId,
     params: bound.params,
     model: requested,
-    // 模型级窗口（接入上配的）：自动压缩的标尺，比服务商声明更准
+    // 模型级窗口 + 思考强度（接入上配的）：自动压缩的标尺 / 思考流开关
     ...(bound.modelContextWindows?.[requested]
       ? { contextWindow: bound.modelContextWindows[requested] }
+      : {}),
+    ...(bound.modelThinkingLevels?.[requested]
+      ? { thinkingLevel: bound.modelThinkingLevels[requested] }
       : {})
   }
 }
@@ -93,6 +96,8 @@ export interface PreparedLlm {
   modelLabel: string
   /** 自动压缩的标尺：接入上配的模型级窗口 > 服务商声明 > 128k 兜底 */
   contextWindow: number
+  /** 思考强度（接入的模型级配置）：off = 不思考；开了 pi 会把 reasoning_content 解析成 thinking 事件 */
+  thinkingLevel: ThinkingLevelChoice
 }
 
 /**
@@ -107,6 +112,7 @@ export async function prepareLlmModel(resolved: ResolvedModel): Promise<Prepared
   if (!modelId) throw new Error(`还没选模型：${def.label}（设置 → 语言模型里给它加一个模型）`)
 
   const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow ?? FALLBACK_CONTEXT_WINDOW
+  const thinkingLevel: ThinkingLevelChoice = resolved.thinkingLevel ?? 'off'
   const model: Model<'openai-completions'> = {
     id: modelId,
     name: modelId,
@@ -115,11 +121,12 @@ export async function prepareLlmModel(resolved: ResolvedModel): Promise<Prepared
     baseUrl,
     input: ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    reasoning: false,
+    // reasoning=true 才会解析/回传思考流（reasoning_content）；关了思考就别开
+    reasoning: thinkingLevel !== 'off',
     contextWindow,
     maxTokens: 8192
   }
-  return { model, apiKey, modelLabel: `${def.label} · ${modelId}`, contextWindow }
+  return { model, apiKey, modelLabel: `${def.label} · ${modelId}`, contextWindow, thinkingLevel }
 }
 
 /**

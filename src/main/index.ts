@@ -452,7 +452,8 @@ function registerIpc(
         providerId,
         params: input?.params ?? {},
         models,
-        modelContextWindows: input?.modelContextWindows ?? {}
+        modelContextWindows: input?.modelContextWindows ?? {},
+        modelThinkingLevels: input?.modelThinkingLevels ?? {}
       })
       return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {

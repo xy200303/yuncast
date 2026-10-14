@@ -624,14 +624,22 @@ export class StorageService {
       const window2 = typeof value === 'number' ? Math.floor(value) : 0
       if (models.includes(id2) && window2 >= 4096) modelContextWindows[id2] = window2
     }
+    // 模型级思考强度：只收 models 里存在的 id、档位合法才留
+    const modelThinkingLevels: Record<string, string> = {}
+    for (const [key, value] of Object.entries(input.modelThinkingLevels ?? {})) {
+      const id2 = key.trim()
+      if (models.includes(id2) && ['off', 'low', 'medium', 'high'].includes(String(value))) {
+        modelThinkingLevels[id2] = String(value)
+      }
+    }
 
     this.db
       .prepare(
-        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @createdAt, @updatedAt)
+        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, model_thinking, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, model_windows = @modelWindows, updated_at = @updatedAt`
+           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -640,6 +648,7 @@ export class StorageService {
         params: JSON.stringify(this.encryptParams(params, input.providerId)),
         models: JSON.stringify(models),
         modelWindows: JSON.stringify(modelContextWindows),
+        modelThinking: JSON.stringify(modelThinkingLevels),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
@@ -680,6 +689,15 @@ export class StorageService {
         if (typeof value === 'number' && value > 0) modelContextWindows[key] = Math.floor(value)
       }
     }
+    const rawThinking = parseJson<unknown>(r.model_thinking, {})
+    const modelThinkingLevels: Record<string, ModelConnection['modelThinkingLevels'][string]> = {}
+    if (rawThinking && typeof rawThinking === 'object' && !Array.isArray(rawThinking)) {
+      for (const [key, value] of Object.entries(rawThinking as Record<string, unknown>)) {
+        if (value === 'off' || value === 'low' || value === 'medium' || value === 'high') {
+          modelThinkingLevels[key] = value
+        }
+      }
+    }
     return {
       id: str(r.id),
       name: str(r.name),
@@ -687,6 +705,7 @@ export class StorageService {
       params: this.decryptParams(r.params, providerId),
       models,
       modelContextWindows,
+      modelThinkingLevels,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -948,14 +967,18 @@ export class StorageService {
     `)
   }
 
-  /** 模型级上下文窗口列（model_windows，JSON：模型 id → tokens）：老库补列，幂等 */
+  /** 模型级上下文窗口列（model_windows）与思考强度列（model_thinking）：老库补列，幂等 */
   private ensureModelConnectionWindows(): void {
     const columns = this.db
       .prepare('PRAGMA table_info(model_connections)')
       .all()
       .map((row) => str((row as Record<string, unknown>).name))
-    if (columns.includes('model_windows')) return
-    this.db.exec("ALTER TABLE model_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
+    if (!columns.includes('model_windows')) {
+      this.db.exec("ALTER TABLE model_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
+    }
+    if (!columns.includes('model_thinking')) {
+      this.db.exec("ALTER TABLE model_connections ADD COLUMN model_thinking TEXT NOT NULL DEFAULT '{}'")
+    }
   }
 
   /** 兼容老库的加列 */

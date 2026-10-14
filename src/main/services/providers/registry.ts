@@ -1,5 +1,6 @@
 import type {
   ModelConnection,
+  ThinkingLevelChoice,
   TtsConnection,
   TtsModelSpec,
   TtsProvider
@@ -76,6 +77,8 @@ export interface ResolvedModel {
   model: string
   /** 模型级上下文窗口（tokens）：来自接入的模型配置；空 = 按服务商声明/pi 内置目录 */
   contextWindow?: number
+  /** 模型级思考强度（接入的模型配置）；缺省 off = 不思考 */
+  thinkingLevel?: ThinkingLevelChoice
 }
 
 const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, localOpenAiProvider]

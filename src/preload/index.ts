@@ -33,6 +33,9 @@ import type {
   ProduceAudioResult,
   Program,
   ProgramAudioProgress,
+  ProgramExportOptions,
+  ProgramExportProgress,
+  ProgramExportResult,
   ProgramGateResult,
   ProgramInput,
   Product,
@@ -398,6 +401,23 @@ const api = {
       ipcRenderer.on(IPC.programAudioEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.programAudioEvent, listener)
+      }
+    },
+    /** 选导出输出目录（系统目录选择框），取消返回 null */
+    pickExportDir: () => ipcRenderer.invoke(IPC.programExportPickDir) as Promise<string | null>,
+    /** 节目音频导出：分章/合并、MP3/WAV、响度归一；进度走 onExportEvent；outputDir 传空 = 主进程弹目录选择框 */
+    exportAudio: (options: ProgramExportOptions) =>
+      ipcRenderer.invoke(IPC.programExport, options) as Promise<ProgramExportResult>,
+    /** 取消进行中的导出（杀 ffmpeg、清临时文件，已产出的成品文件保留） */
+    exportCancel: () => ipcRenderer.invoke(IPC.programExportCancel) as Promise<{ ok: boolean }>,
+    /** 用系统文件管理器打开导出输出目录 */
+    openExportDir: (dir: string) => ipcRenderer.invoke(IPC.programExportOpenDir, dir) as Promise<string>,
+    /** 订阅导出进度（当前第几个/共几个/当前章节名/终态），返回取消订阅函数 */
+    onExportEvent: (cb: (progress: ProgramExportProgress) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, progress: ProgramExportProgress) => cb(progress)
+      ipcRenderer.on(IPC.programExportEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.programExportEvent, listener)
       }
     }
   },

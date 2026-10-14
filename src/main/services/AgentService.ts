@@ -40,6 +40,7 @@ import type { ResolvedModel } from './providers/registry'
 import type { VoiceService } from './VoiceService'
 import type { TriggerRuntime } from './TriggerRuntime'
 import type { StreamService } from './stream/StreamService'
+import type { ExportService } from './ExportService'
 
 /**
  * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
@@ -148,6 +149,8 @@ export class AgentService {
   getVoices: (() => VoiceService | null) | null = null
   getTriggers: (() => TriggerRuntime | null) | null = null
   getStream: (() => StreamService | null) | null = null
+  /** 节目音频导出（export_program 工具；ExportService 生于 Agent 之后，由 index.ts 接上） */
+  getExporter: (() => ExportService | null) | null = null
   /** 紧急停止总闸（emergency_stop 工具）：index.ts 接上——掐声音 + 停播放循环 + 停会话 */
   onEmergencyStop: (() => Promise<void>) | null = null
   /** 当前会话的模型是否开了多模态（出生时的模型级配置；没开图像附件不进会话） */
@@ -1292,6 +1295,7 @@ export class AgentService {
             getVoices: () => this.getVoices?.() ?? null,
             getTriggers: () => this.getTriggers?.() ?? null,
             getStream: () => this.getStream?.() ?? null,
+            getExporter: () => this.getExporter?.() ?? null,
             // 统一音频生产入口（produce_program_audio 工具，docs/10 §7.5-7.6）
             produceProgramAudio: (programId) => this.utterances.produceProgramAudio(programId),
             describeProducePlan: (programId) => this.utterances.describeProducePlan(programId)

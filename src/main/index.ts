@@ -59,6 +59,7 @@ import {
   type PoolSayInput,
   type PoolSnapshot,
   type ProductInput,
+  type ProgramExportOptions,
   type ProgramInput,
   type ScriptInput,
   type SpeechItem,
@@ -89,6 +90,7 @@ import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
 import { ProgramPlaybackService } from './services/ProgramPlaybackService'
+import { ExportService } from './services/ExportService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
 import { AudioPipeline } from './services/audio/AudioPipeline'
@@ -378,7 +380,8 @@ function registerIpc(
   stream: StreamService,
   connector: ConnectorService,
   utterances: UtteranceService,
-  programPlayback: ProgramPlaybackService
+  programPlayback: ProgramPlaybackService,
+  exporter: ExportService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: 'Agent Anchor',
@@ -851,6 +854,46 @@ function registerIpc(
     }
   )
 
+  // ---------- 节目音频导出（docs/10 §8.3/§15.17，P6） ----------
+  // 输出目录空 = UI 路径：主进程弹目录选择框；Agent 路径传显式目录或走默认 exports 目录
+  ipcMain.handle(IPC.programExport, async (_e, options: ProgramExportOptions) => {
+    let outputDir = String(options?.outputDir ?? '').trim()
+    if (!outputDir) {
+      const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+      if (!win) return { ok: false as const, error: '没有可用窗口' }
+      const picked = await dialog.showOpenDialog(win, {
+        title: '选择导出目录',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (picked.canceled || !picked.filePaths[0]) {
+        return { ok: false as const, cancelled: true, error: '已取消选择输出目录' }
+      }
+      outputDir = picked.filePaths[0]
+    }
+    return exporter.export({
+      programId: String(options?.programId ?? ''),
+      mode: options?.mode === 'merged' ? 'merged' : 'separate',
+      format: options?.format === 'wav' ? 'wav' : 'mp3',
+      outputDir,
+      fileNameTemplate: typeof options?.fileNameTemplate === 'string' ? options.fileNameTemplate : undefined,
+      loudness: options?.loudness === true,
+      onlyReady: options?.onlyReady === true
+    })
+  })
+  ipcMain.handle(IPC.programExportCancel, () => ({ ok: exporter.cancel() }))
+  ipcMain.handle(IPC.programExportPickDir, async () => {
+    const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+    if (!win) return null
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择导出目录',
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return picked.canceled ? null : (picked.filePaths[0] ?? null)
+  })
+  ipcMain.handle(IPC.programExportOpenDir, (_e, dir: string) =>
+    shell.openPath(String(dir ?? ''))
+  )
+
   // ---------- 话术库（节目底稿） ----------
   ipcMain.handle(IPC.utteranceList, (_e, programId: string) => utterances.list(String(programId)))
   ipcMain.handle(IPC.utteranceSave, (_e, input: UtteranceInput, id?: string) =>
@@ -1023,6 +1066,14 @@ if (!single) {
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
     const programPlayback = new ProgramPlaybackService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
+    // 节目音频导出（docs/10 §8.3，P6）：进度逐单元广播；export_program 工具的确认卡用它出计划摘要
+    const exporter = new ExportService(storage, script)
+    exporter.onProgress = (progress) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.programExportEvent, progress)
+      }
+    }
+    agent.getExporter = () => exporter
     // 就绪补装：直播中底稿每就绪一段就把当前场景新就绪的装进池（0 就绪开播不空转——边合成边播，不用等整批）
     const broadcastUtteranceOnly = utterances.onEvent
     utterances.onEvent = (u) => {
@@ -1103,7 +1154,7 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
-    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, programPlayback)
+    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, programPlayback, exporter)
     createWindow(storage)
 
     app.on('activate', () => {

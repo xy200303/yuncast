@@ -4,6 +4,7 @@ import {
   BookOpenText,
   Check,
   Clapperboard,
+  Download,
   Loader2,
   Pencil,
   Play,
@@ -36,6 +37,7 @@ import {
 import { ProgramDialog } from './programs/ProgramDialog'
 import { UtteranceDialog } from './programs/UtteranceDialog'
 import { ProgramGateDialog } from './ProgramGateDialog'
+import { ExportDialog } from './ExportDialog'
 import { AUDIO_UNIT_LABEL } from '../lib/audioUnits'
 import { resumeBroadcast } from '../audio/liveControl'
 
@@ -57,6 +59,8 @@ export function ProgramsPage() {
   const [editing, setEditing] = useState<{ program?: Program } | null>(null)
   const [deleting, setDeleting] = useState<Program | null>(null)
   const [reviewing, setReviewing] = useState<Program | null>(null)
+  /** 导出弹窗（docs/10 §8.3/§11.6，P6） */
+  const [exporting, setExporting] = useState<Program | null>(null)
 
   const activeProgramId = config.live.activeProgramId
 
@@ -274,6 +278,9 @@ export function ProgramsPage() {
                       <Button variant="ghost" size="icon-sm" title="配置" onClick={() => setEditing({ program })}>
                         <Pencil />
                       </Button>
+                      <Button variant="ghost" size="icon-sm" title="导出节目音频" onClick={() => setExporting(program)}>
+                        <Download />
+                      </Button>
                       <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeleting(program)}>
                         <Trash2 />
                       </Button>
@@ -320,6 +327,16 @@ export function ProgramsPage() {
           onLaunched={(result) => {
             announceLaunched(gateState.program, result)
             void reload()
+          }}
+        />
+      )}
+      {/* 导出弹窗（docs/10 §8.3/§11.6，P6）：缺章明确提示，不静默跳过 */}
+      {exporting && (
+        <ExportDialog
+          program={exporting}
+          open
+          onOpenChange={(open) => {
+            if (!open) setExporting(null)
           }}
         />
       )}

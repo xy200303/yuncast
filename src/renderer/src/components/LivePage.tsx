@@ -44,6 +44,7 @@ import { cn } from '@/lib/utils'
 import { MiniMarkdown } from '@/components/MiniMarkdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
+import { ExportDialog } from '@/components/ExportDialog'
 import { ProgramGateDialog } from '@/components/ProgramGateDialog'
 import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
@@ -309,6 +310,8 @@ function ProgramLauncher() {
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
   /** 预制节目门禁未过的结构化结果（不空就不许静默开播，弹窗给三选项） */
   const [gate, setGate] = useState<ProgramGateResult | null>(null)
+  /** 导出弹窗（docs/10 §8.3/§11.6，P6） */
+  const [exportOpen, setExportOpen] = useState(false)
 
   useEffect(() => {
     void window.api.program.list().then(setPrograms)
@@ -507,16 +510,13 @@ function ProgramLauncher() {
         </Button>
       )}
 
-      {/* 导出：本阶段只留入口，正式导出弹窗（范围/格式/分章）随 P6 提供 */}
+      {/* 导出（docs/10 §8.3/§11.6，P6）：全部章节、分章/合并、MP3/WAV、响度归一 */}
       <Button
         size="sm"
         variant="outline"
-        onClick={() =>
-          toast.message('导出功能将在下一阶段提供', {
-            description: '节目音频导出（MP3/WAV、分章/合并、响度归一）随 P6 导出弹窗一起提供'
-          })
-        }
-        title="导出节目音频（下一阶段提供）"
+        disabled={!activeProgram}
+        onClick={() => setExportOpen(true)}
+        title={activeProgram ? '导出节目音频' : '先选一个节目'}
       >
         <Download />
         导出
@@ -602,6 +602,10 @@ function ProgramLauncher() {
           onOpenChange={setDraftAsk}
           onConfirm={() => startDraft()}
         />
+      )}
+      {/* 导出弹窗（docs/10 §8.3/§11.6，P6） */}
+      {activeProgram && (
+        <ExportDialog program={activeProgram} open={exportOpen} onOpenChange={setExportOpen} />
       )}
       {/* 预制节目门禁未过：继续生成 / 重试失败项 / 仅播放已完成部分，三选项都在这里 */}
       {activeProgram && gate && (

@@ -21,6 +21,7 @@ import type { VoiceService } from './VoiceService'
 import type { TriggerRuntime } from './TriggerRuntime'
 import type { ConnectorService } from './ConnectorService'
 import type { StreamService } from './stream/StreamService'
+import type { ExportService } from './ExportService'
 
 /**
  * 主播 Agent 的系统控制工具（docs/10 §10.1-10.5，P2）。
@@ -68,6 +69,8 @@ export interface AnchorSystemToolDeps {
   getVoices: () => VoiceService | null
   getTriggers: () => TriggerRuntime | null
   getStream: () => StreamService | null
+  /** 节目音频导出（export_program 工具；没接上时让导演走界面导出弹窗） */
+  getExporter?: () => ExportService | null
   /** 统一音频生产入口（produce_program_audio 工具）：rolling=提前合成全部；prepared=生成节目音频（有外部费用） */
   produceProgramAudio?: (programId: string) => Promise<ProduceAudioResult>
   /** 生产前的合成计划摘要（确认卡用：范围/预计时长/模型与声音快照） */
@@ -96,6 +99,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
     getVoices,
     getTriggers,
     getStream,
+    getExporter,
     produceProgramAudio,
     describeProducePlan
   } = deps
@@ -1165,6 +1169,73 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           }
           const result = await stream.start()
           return result.ok ? 'RTMP 推流已启动（直播中）' : `推流启动失败：${result.error}`
+        })
+    }),
+    defineTool({
+      name: 'export_program',
+      label: '导出节目音频',
+      description:
+        '导出预制节目已生成的音频到本机目录（docs/10 §8.3）：数据源是节目单元的预制音频资产，不重新调 TTS，导出和播放用同一批音频。' +
+        '第一版范围 = 全部章节；方式 = 分章文件（separate）或合并为一个文件（merged）；格式 MP3/WAV；可选响度归一（loudnorm）。' +
+        '部分章节缺音频时默认阻断并列出缺哪些，明确带 onlyReady=true 才只导出已完成部分（不静默跳过）。' +
+        '对外副作用（往磁盘写文件），第一次调用不传 confirmed：向导演发确认卡（范围/方式/格式/输出目录/预计文件数）；确认后带 confirmed=true 重调才执行。',
+      parameters: Type.Object({
+        programId: Type.Optional(Type.String({ description: '节目 id，不传 = 当前节目' })),
+        mode: Type.Optional(Type.String({ description: 'separate=分章文件 / merged=合并为一个文件；默认 separate' })),
+        format: Type.Optional(Type.String({ description: 'mp3 / wav；默认 mp3' })),
+        loudness: Type.Optional(Type.Boolean({ description: '响度归一（ffmpeg loudnorm 一遍法）' })),
+        onlyReady: Type.Optional(Type.Boolean({ description: '部分章节缺音频时，只导出已完成部分（默认阻断）' })),
+        outputDir: Type.Optional(Type.String({ description: '输出目录绝对路径；不传 = 应用数据目录下 exports/节目名-时间戳' })),
+        confirmed: Type.Optional(Type.Boolean({ description: '导演已确认 = true；不传 = 先发确认卡' }))
+      }),
+      execute: async (_id, params) =>
+        guardToolAsync(async () => {
+          const exporter = getExporter?.()
+          if (!exporter) return '导出服务还没接上，让导演在界面用导出弹窗（播控台顶栏/节目卡）'
+          const programId = params.programId?.trim() || activeProgramId()
+          if (!programId) return '没有指定节目，也没有当前节目'
+          const program = findProgram(programId)
+          if (!program) return `节目 ${programId} 不存在（用 list_programs 拿正确的 id）`
+          const plan = exporter.describeExportPlan(program.id)
+          if (!plan.ok) return `导不了：${plan.error}`
+          const missing = plan.missing ?? []
+          if (missing.length > 0 && !params.onlyReady) {
+            return (
+              `导不了：还有 ${missing.length} 个单元缺音频——\n` +
+              missing.map((item) => `- ${item.title}（${item.reason}）`).join('\n') +
+              '\n先用 produce_program_audio 补齐合成，或明确带 onlyReady=true 只导出已完成部分'
+            )
+          }
+          const mode = params.mode === 'merged' ? ('merged' as const) : ('separate' as const)
+          const format = params.format === 'wav' ? ('wav' as const) : ('mp3' as const)
+          const readyCount = plan.ready ?? 0
+          const fileCount = mode === 'merged' ? 1 : readyCount
+          if (!params.confirmed) {
+            return askConfirm(
+              `导出节目音频「${program.name}」：\n` +
+                `- 范围：全部 ${plan.total} 章${missing.length > 0 ? `（缺 ${missing.length} 章，仅导出已完成 ${readyCount} 章）` : ''}\n` +
+                `- 方式：${mode === 'merged' ? '合并为一个文件' : '分章文件'} · 格式 ${format.toUpperCase()}${params.loudness ? ' · 响度归一' : ''}\n` +
+                `- 输出目录：${params.outputDir?.trim() || '默认 exports 目录（应用数据目录下，执行后返回实际路径）'}\n` +
+                `- 预计文件数：${fileCount} 个\n` +
+                `注意：往本机磁盘写文件；不改动节目与音频资产，删掉产出文件即可恢复`
+            )
+          }
+          const result = await exporter.export({
+            programId: program.id,
+            mode,
+            format,
+            outputDir: params.outputDir?.trim() ?? '',
+            loudness: params.loudness === true,
+            onlyReady: params.onlyReady === true
+          })
+          if (!result.ok) {
+            return result.cancelled ? `导出已取消：${result.error}` : `导出失败：${result.error}`
+          }
+          return (
+            `导出完成：${result.files?.length ?? 0} 个文件 → ${result.outputDir}\n` +
+            (result.files ?? []).map((file) => `- ${file}`).join('\n') +
+            (result.warning ? `\n警告：${result.warning}` : '')
+          )
         })
     }),
     defineTool({

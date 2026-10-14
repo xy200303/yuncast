@@ -172,6 +172,16 @@ export const IPC = {
   programPlayUnit: 'program:play-unit',
   /** main → renderer：预制音频资产变化（Scene/Utterance 的 rendered 更新，渲染层刷新进度） */
   programAudioEvent: 'program:audio-event',
+  /** 节目音频导出（docs/10 §8.3）：分章/合并、MP3/WAV、响度归一，逐单元进度走 programExportEvent */
+  programExport: 'program:export',
+  /** 取消进行中的导出（杀 ffmpeg、清临时文件，已产出的成品文件保留） */
+  programExportCancel: 'program:export-cancel',
+  /** 选导出输出目录（系统目录选择框） */
+  programExportPickDir: 'program:export-pick-dir',
+  /** 用系统文件管理器打开导出输出目录 */
+  programExportOpenDir: 'program:export-open-dir',
+  /** main → renderer：导出进度（当前第几个/共几个/当前章节名/终态） */
+  programExportEvent: 'program:export-event',
 
   // 话术库（节目底稿）
   utteranceList: 'utterance:list',

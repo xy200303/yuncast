@@ -1290,6 +1290,62 @@ export interface ProducePlanInfo {
   notice?: string
 }
 
+// ---------- 节目音频导出（docs/10 §8.3/§11.6/§15.17，P6） ----------
+
+/** 导出方式：分章文件 / 合并为一个文件（第一版不做「当前段/当前章」单选，做全部） */
+export type ProgramExportMode = 'separate' | 'merged'
+export type ProgramExportFormat = 'mp3' | 'wav'
+
+export interface ProgramExportOptions {
+  programId: string
+  mode: ProgramExportMode
+  format: ProgramExportFormat
+  /** 输出目录；空字符串 = 主进程弹目录选择框（UI 路径），Agent 路径给默认 exports 目录 */
+  outputDir: string
+  /** 文件名模板（分章用）：含 {节目名} {序号} {章节名} 变量，默认 {节目名}-{序号}-{章节名} */
+  fileNameTemplate?: string
+  /** 响度归一（ffmpeg loudnorm 一遍法） */
+  loudness: boolean
+  /** true = 仅导出已完成部分（部分章节缺音频时的显式选择，不静默跳过） */
+  onlyReady: boolean
+}
+
+/** 导出进度事件（IPC 广播：当前第几个/共几个/当前章节名） */
+export interface ProgramExportProgress {
+  programId: string
+  status: 'running' | 'done' | 'cancelled' | 'error'
+  /** 当前第几个（1 起）与总数 */
+  current: number
+  total: number
+  /** 当前处理的章节名 */
+  title: string
+  error?: string
+}
+
+export interface ProgramExportResult {
+  ok: boolean
+  /** 用户取消（已产出的成品文件保留，files 里列出） */
+  cancelled?: boolean
+  outputDir?: string
+  /** 产出文件（完整路径） */
+  files?: string[]
+  /** 非失败警告：导出期间有音频被更新，结果可能不一致 */
+  warning?: string
+  error?: string
+}
+
+/** 导出前的计划摘要（export_program 确认卡 / UI 弹窗缺章提示用） */
+export interface ProgramExportPlan {
+  ok: boolean
+  error?: string
+  total?: number
+  ready?: number
+  /** 缺音频单元的标题列表（pending/synthesizing/failed/stale/文件丢失都算缺） */
+  missing?: { title: string; reason: string }[]
+  /** 可导出源文件总字节数（磁盘空间预估用：×1.5 对比可用空间） */
+  totalBytes?: number
+}
+
 // ---------- 人设卡角色（编剧模式多音色，docs/01 §3.1） ----------
 
 export interface PersonaRole {

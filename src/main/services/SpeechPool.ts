@@ -300,6 +300,20 @@ export class SpeechPool {
     this.refresh()
   }
 
+  /**
+   * 按 dedupeKey 把某条未播条目提到播出顺序的最前（预制节目按章跳播用）。
+   * 返回 false = 池里没有这条（调用方负责重新装载后再提）。
+   */
+  jumpTo(dedupeKey: string): boolean {
+    const item = this.storage.speechFindActiveByDedupeKey(dedupeKey)
+    if (!item || item.status === 'playing') return false
+    const active = this.storage.speechActive()
+    const minAnchor = Math.min(...active.map((entry) => entry.sortOrder ?? entry.createdAt))
+    this.storage.speechUpdate(item.id, { sortOrder: minAnchor - 1 })
+    this.refresh()
+    return true
+  }
+
   /** 播报完成回报 */
   markDone(id: string): void {
     const item = this.storage.speechGet(id)

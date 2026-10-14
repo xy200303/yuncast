@@ -4,7 +4,8 @@ import type {
   AudioCommandResult,
   AudioEndPayload,
   AudioLevelPayload,
-  AudioPcmPayload
+  AudioPcmPayload,
+  AudioProgressPayload
 } from '../../../shared/types'
 import { getFfmpegPath } from '../stream/ffmpeg/bin'
 import { decodeToPcm } from '../stream/ffmpeg/mixer'
@@ -35,6 +36,8 @@ const LEAD_MS = 150
 const MAX_QUEUE_BYTES = SAMPLE_RATE * BYTES_PER_SAMPLE * 2
 /** 每 3 片（150ms）推一次电平 */
 const LEVEL_EVERY_FRAMES = 3
+/** 每 5 片（250ms）推一次主槽播放进度（预制节目进度条用） */
+const PROGRESS_EVERY_FRAMES = 5
 const DUCK_DEPTH_DB = 14
 const DEFAULT_DUCK_RATIO = 10 ** (-DUCK_DEPTH_DB / 20)
 /** BGM 增益平滑系数（每片逼近目标，避免 ducking 切换咔哒） */
@@ -79,15 +82,21 @@ export interface AudioPipelineSinks {
   sendPcm(payload: AudioPcmPayload): void
   sendLevel(payload: AudioLevelPayload): void
   sendEnd(payload: AudioEndPayload): void
+  /** 主槽播放进度（预制节目长音频进度条用） */
+  sendProgress(payload: AudioProgressPayload): void
 }
 
 interface Session {
   itemId: string
   slot: AudioSlot
+  /** 文件播放的源路径（章内 seek 重启解码用；流式会话为 null） */
+  filePath: string | null
   /** 待播 PCM（mono 48k s16le），按片取用 */
   queue: Buffer[]
   headOffset: number
   queued: number
+  /** 已排播字节数的进度基准（seek 时重置为跳转位置对应字节，之后随排播累加） */
+  progressBytes: number
   /** 生产者已结束（文件读完 / 流式合成收尾）：队列放完就收尾 */
   ended: boolean
   error: string | null
@@ -200,6 +209,7 @@ export class AudioPipeline {
 
   private seq = 0
   private framesSinceLevel = 0
+  private framesSinceProgress = 0
   /** 累加器与各槽的临时缓冲（复用，避免每片都分配） */
   private mixScratch = Buffer.alloc(CHUNK_BYTES)
   private slotScratch: Record<AudioSlot, Buffer> = {
@@ -215,19 +225,34 @@ export class AudioPipeline {
   /** 播一个音频文件（ffmpeg 流式解码，不整段读进内存） */
   playFile(itemId: string, filePath: string, opts: { slot?: AudioSlot } = {}): PlayRequest {
     const session = this.createSession(itemId, opts.slot ?? 'main')
-    const proc = spawn(
-      getFfmpegPath(),
-      ['-hide_banner', '-loglevel', 'error', '-i', filePath, '-f', 's16le', '-ar', '48000', '-ac', '1', '-'],
-      { stdio: ['ignore', 'pipe', 'pipe'] }
-    )
+    session.filePath = filePath
+    this.spawnDecoder(session, filePath)
+    this.startPump()
+    return this.requestOf(session)
+  }
+
+  /**
+   * 起一路 ffmpeg 解码（流式 stdout → 会话队列）。
+   * offsetSec > 0 = 章内 seek：input seeking（-ss 在 -i 前），速度快、精度对听感足够。
+   * close 回调带进程身份校验：seek 替换掉旧解码进程后，旧进程的 close 不能误伤新会话状态。
+   */
+  private spawnDecoder(session: Session, filePath: string, offsetSec = 0): void {
+    const args = ['-hide_banner', '-loglevel', 'error']
+    if (offsetSec > 0) args.push('-ss', offsetSec.toFixed(3))
+    args.push('-i', filePath, '-f', 's16le', '-ar', '48000', '-ac', '1', '-')
+    const proc = spawn(getFfmpegPath(), args, { stdio: ['ignore', 'pipe', 'pipe'] })
     session.decoder = proc
     let stderr = ''
     proc.stdout?.on('data', (chunk: Buffer) => this.enqueue(session, chunk))
     proc.stderr?.on('data', (chunk: Buffer) => {
       stderr = (stderr + chunk.toString()).slice(-2000)
     })
-    proc.on('error', (error) => this.failSession(session, `音频解码失败：${error.message}`))
+    proc.on('error', (error) => {
+      if (session.decoder !== proc) return
+      this.failSession(session, `音频解码失败：${error.message}`)
+    })
     proc.on('close', (code) => {
+      if (session.decoder !== proc) return
       session.decoder = null
       if (session.stopped) return
       if (code === 0) this.endSession(session)
@@ -236,8 +261,42 @@ export class AudioPipeline {
         this.failSession(session, `音频解码失败：${reason}（${filePath}）`)
       }
     })
+  }
+
+  /**
+   * 章内 seek（预制节目长音频）：只支持主槽的文件播放会话。
+   * 实现 = 掐掉旧解码进程、清空已解码缓冲、以 -ss 从目标位置重启解码；
+   * 播放循环与条目状态无感知（它等的是 session.done，进度基准由 progressBytes 重新起算）。
+   */
+  seekMain(offsetMs: number): AudioCommandResult {
+    const session = this.slots['main']
+    if (!session || !session.filePath) return { ok: false, error: '当前没有可拖动的文件播放' }
+    const ms = Math.max(0, Number(offsetMs) || 0)
+    if (session.decoder) {
+      const decoder = session.decoder
+      session.decoder = null
+      decoder.stdout?.removeAllListeners('data')
+      decoder.kill()
+    }
+    session.queue = []
+    session.headOffset = 0
+    session.queued = 0
+    session.paused = false
+    // 可能是在整章已解码完（ended=true）后才拖的：不重置的话，新解码进程启动前
+    // 队列一空就会被当成「播完」提前收尾
+    session.ended = false
+    session.error = null
+    session.progressBytes = Math.floor((ms * SAMPLE_RATE * BYTES_PER_SAMPLE) / 1000)
+    this.spawnDecoder(session, session.filePath, ms / 1000)
     this.startPump()
-    return this.requestOf(session)
+    this.sinks.sendProgress({ itemId: session.itemId, positionMs: ms, active: true })
+    return { ok: true }
+  }
+
+  /** 停指定槽（aux 试听停止用；不动另一个槽的播报） */
+  stopSlot(slot: AudioSlot): void {
+    const session = this.slots[slot]
+    if (session) this.settleSession(session, { ok: false, stopped: true })
   }
 
   /** 接一路流式 PCM（动态内容的实时合成），与文件播放共用同一条排播/混音链 */
@@ -333,9 +392,11 @@ export class AudioPipeline {
     const session: Session = {
       itemId,
       slot,
+      filePath: null,
       queue: [],
       headOffset: 0,
       queued: 0,
+      progressBytes: 0,
       ended: false,
       error: null,
       stopped: false,
@@ -421,6 +482,10 @@ export class AudioPipeline {
     }
     // 渲染层据此收尾排播（stopped 就是立刻掐断，不把已排的队列放完）
     this.sinks.sendEnd({ itemId: session.itemId, stopped: result.stopped })
+    // 主槽收尾：进度归零（下一条的第一帧进度会再把它顶起来）
+    if (session.slot === 'main') {
+      this.sinks.sendProgress({ itemId: session.itemId, positionMs: 0, active: false })
+    }
     session.resolveDone(result)
   }
 
@@ -475,6 +540,7 @@ export class AudioPipeline {
       this.bgmGain = 0
       // 收工：电平归零，UI 上的电平条不会停在最后一个峰值
       this.framesSinceLevel = 0
+      this.framesSinceProgress = 0
       this.sinks.sendLevel({ tts: 0, master: 0 })
       // 刚好在收工这一瞬来了新会话：重启循环，别让它等一个不会来的泵
       if (this.isActive()) this.startPump()
@@ -505,6 +571,20 @@ export class AudioPipeline {
       })
     }
 
+    // 主槽播放进度（预制节目进度条）：按已排播字节折算毫秒，静音期间时间照走
+    this.framesSinceProgress += 1
+    if (this.framesSinceProgress >= PROGRESS_EVERY_FRAMES) {
+      this.framesSinceProgress = 0
+      const main = this.slots['main']
+      if (main && !main.stopped) {
+        this.sinks.sendProgress({
+          itemId: main.itemId,
+          positionMs: (main.progressBytes / (SAMPLE_RATE * BYTES_PER_SAMPLE)) * 1000,
+          active: true
+        })
+      }
+    }
+
     // 队列放完的会话收尾（audioEnd 在最后一片 PCM 之后发，渲染层据此收排播）
     for (const session of frame.finished) {
       if (session.error) this.settleSession(session, { ok: false, error: session.error })
@@ -527,6 +607,7 @@ export class AudioPipeline {
       if (n > 0) {
         hasTts = true
         session.emitted += n
+        session.progressBytes += n
         if (!session.startedSettled) {
           // 第一片真的推出去 = 开始出声，试听/接入测试据此判成功
           session.startedSettled = true

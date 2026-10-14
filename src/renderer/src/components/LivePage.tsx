@@ -7,9 +7,9 @@ import {
   CheckCircle2,
   ChevronRight,
   Clapperboard,
+  Download,
   Loader2,
   Megaphone,
-  MessageSquareText,
   OctagonAlert,
   Paperclip,
   Pause,
@@ -18,9 +18,11 @@ import {
   RadioTower,
   RefreshCw,
   SendHorizontal,
+  SkipForward,
   SlidersHorizontal,
   Sparkles,
   Square,
+  VolumeX,
   Wrench,
   X,
   XCircle
@@ -47,6 +49,9 @@ import { useAppStore } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import { AssetStaleBanner } from './AssetStaleBanner'
+import { CommentList } from './live/CommentList'
+import { ImprovisedPanel } from './live/ImprovisedPanel'
+import { PreparedPanel } from './live/PreparedPanel'
 import type {
   ChatEntry,
   DirectorMessage,
@@ -108,19 +113,24 @@ export function LivePage() {
   const [rightTab, setRightTab] = useState<'chat' | 'control'>('chat')
   /** 对话未读数（切走时有新条目在选项卡上亮红点） */
   const [chatUnread, setChatUnread] = useState(0)
-  /** 当前节目是否向主播提供直播间动态：关闭时左栏「评论流」区域整体隐藏（docs/10 §11.5） */
-  const [allowLiveEvents, setAllowLiveEvents] = useState(true)
+  /** 当前节目（播控台中间区按它的 broadcastMode 自动适配布局，docs/10 §11.5；不提供手动切换） */
+  const [activeProgram, setActiveProgram] = useState<Program | null>(null)
 
   useEffect(() => {
     if (!('api' in window)) return
     if (!activeProgramId) {
-      setAllowLiveEvents(true)
+      setActiveProgram(null)
       return
     }
     void window.api.program.list().then((list) => {
-      setAllowLiveEvents(list.find((p) => p.id === activeProgramId)?.allowLiveEvents ?? true)
+      setActiveProgram(list.find((p) => p.id === activeProgramId) ?? null)
     })
   }, [activeProgramId])
+
+  /** 当前节目是否向主播提供直播间动态：关闭时评论流区域整体隐藏（docs/10 §11.5） */
+  const allowLiveEvents = activeProgram?.allowLiveEvents ?? true
+  /** 中间区布局由播出方式决定：现场发挥 / 边播边准备（默认，含未选节目）/ 全部做好再播 */
+  const broadcastMode = activeProgram?.broadcastMode ?? 'rolling'
 
   // 节目关了直播间动态而标签还停在评论流：切回队列
   useEffect(() => {
@@ -189,6 +199,13 @@ export function LivePage() {
           </header>
           {/* 资产改过但本场会话还是旧的：都在这里给「立即应用」 */}
           <AssetStaleBanner />
+          {/* 中间区按 broadcastMode 自动适配（docs/10 §11.5）：prepared=章节+长音频播放器；
+              improvised=正在说/最近说过/直播间动态；rolling（含未选节目）=话术池队列+评论流 */}
+          {broadcastMode === 'prepared' && activeProgram ? (
+            <PreparedPanel program={activeProgram} />
+          ) : broadcastMode === 'improvised' ? (
+            <ImprovisedPanel comments={comments} allowLiveEvents={allowLiveEvents} />
+          ) : (
           <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
             <div className="shrink-0 border-b px-4 pt-2">
               <TabsList variant="line">
@@ -239,6 +256,7 @@ export function LivePage() {
               </TabsContent>
             )}
           </Tabs>
+          )}
         </section>
 
         {/* 右侧面板：对话（主区，铺满整栏）/ 操作。forceMount 保持挂载——切走不丢消息状态和订阅。
@@ -284,6 +302,7 @@ function ProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
+  const persona = useAppStore((s) => s.persona)
   const [programs, setPrograms] = useState<Program[]>([])
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
@@ -403,12 +422,28 @@ function ProgramLauncher() {
           {activeProgram.theme || '（未设主题）'}
         </span>
       )}
+      {/* 通用顶部（docs/10 §11.5）：当前主播 + 节目状态（圆点 + 文字双标） */}
+      <Badge variant="outline" className="shrink-0 gap-1.5 text-xs" title="当前主播 · 节目状态">
+        <span
+          className={cn(
+            'size-1.5 rounded-full',
+            running ? (loopRunning ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-muted-foreground/50'
+          )}
+        />
+        <Bot className="size-3" />
+        {agent.personaName ?? persona?.name ?? '未选主播'}
+        {activeProgram && (
+          <span className="text-muted-foreground">
+            · {running ? (loopRunning ? '播报中' : '已暂停') : '未开播'}
+          </span>
+        )}
+      </Badge>
       <Select
         value={activeProgramId || undefined}
         onValueChange={(v) => void switchProgram(v)}
         disabled={running}
       >
-        <SelectTrigger size="sm" className="w-48">
+        <SelectTrigger size="sm" className="w-40">
           <SelectValue placeholder="选择节目" />
         </SelectTrigger>
         <SelectContent>
@@ -440,6 +475,18 @@ function ProgramLauncher() {
           <Button
             size="sm"
             variant="outline"
+            onClick={() => {
+              audioEngine.stopCurrent()
+              toast.message('已跳过当前这条', { description: '接着播队列里的下一条' })
+            }}
+            title="跳过当前这条，播下一条"
+          >
+            <SkipForward />
+            跳过
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
             disabled={busy}
             onClick={() => void stop()}
             title="结束本场（池里的存货会播完）"
@@ -459,6 +506,34 @@ function ProgramLauncher() {
           启动节目
         </Button>
       )}
+
+      {/* 导出：本阶段只留入口，正式导出弹窗（范围/格式/分章）随 P6 提供 */}
+      <Button
+        size="sm"
+        variant="outline"
+        onClick={() =>
+          toast.message('导出功能将在下一阶段提供', {
+            description: '节目音频导出（MP3/WAV、分章/合并、响度归一）随 P6 导出弹窗一起提供'
+          })
+        }
+        title="导出节目音频（下一阶段提供）"
+      >
+        <Download />
+        导出
+      </Button>
+      {/* 紧急停止声音：立刻掐掉所有 AI 声音（主槽播报与试听都停；主播和话术池不动） */}
+      <Button
+        size="sm"
+        variant="destructive"
+        onClick={() => {
+          audioEngine.stopCurrent()
+          toast.message('已紧急停止声音', { description: '主播和话术池没动，要彻底急停用右侧操作面板的「紧急停止」' })
+        }}
+        title="紧急停止声音：立刻掐掉所有 AI 声音（主播和话术池不动）"
+      >
+        <VolumeX />
+        <span className="hidden xl:inline">急停声音</span>
+      </Button>
 
       {/* 开播预检（docs/07 §8.5）：阻断项拦住开播，警告项自己判断 */}
       <Dialog
@@ -552,38 +627,6 @@ function ProgramLauncher() {
           }}
         />
       )}
-    </div>
-  )
-}
-
-/** 评论列表（ LivePage 持有数据与订阅，这里只渲染） */
-function CommentList({ comments }: { comments: LiveComment[] }) {
-  const listRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    const el = listRef.current
-    if (el) el.scrollTop = el.scrollHeight
-  }, [comments])
-
-  if (comments.length === 0) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-        <MessageSquareText className="size-8" strokeWidth={1.25} />
-        <p className="text-sm">还没有评论，开连接器的演示模式试试</p>
-      </div>
-    )
-  }
-  return (
-    <div ref={listRef} className="flex flex-col gap-1 pt-2">
-      {comments.map((comment) => (
-        <div key={comment.id} className="flex items-baseline gap-2 text-[13px]">
-          <span className="shrink-0 text-xs text-muted-foreground">
-            {new Date(comment.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-          </span>
-          <span className="shrink-0 font-medium text-primary">{comment.author}</span>
-          <span className="min-w-0">{comment.content}</span>
-        </div>
-      ))}
     </div>
   )
 }

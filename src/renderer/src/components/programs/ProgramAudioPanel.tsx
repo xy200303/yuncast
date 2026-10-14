@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -51,7 +51,6 @@ export function ProgramAudioPanel({
   const [producing, setProducing] = useState(false)
   const [previewingId, setPreviewingId] = useState('')
   const [importOpen, setImportOpen] = useState(false)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
 
   const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
 
@@ -77,12 +76,18 @@ export function ProgramAudioPanel({
     })
   }, [program.id, load])
 
-  // 卸载时停掉试听
+  // 卸载时停掉试听（试听出声在主进程 aux 槽，这里走了就喊停）
   useEffect(() => {
     return () => {
-      audioRef.current?.pause()
-      audioRef.current = null
+      void window.api.audio.stopAux()
     }
+  }, [])
+
+  // 试听自然播完：主进程 audio:end 带 preview- 前缀的会话 id，按钮收回到「试听」
+  useEffect(() => {
+    return window.api.audio.onEnd((payload) => {
+      if (payload.itemId?.startsWith('preview-')) setPreviewingId('')
+    })
   }, [])
 
   /** 门禁 failures 按单元 id 索引：行显示以它为准（能覆盖「就绪但文件被移走」这种渲染层查不到的情况） */
@@ -119,30 +124,28 @@ export function ProgramAudioPanel({
   }
 
   const stopPreview = () => {
-    audioRef.current?.pause()
-    audioRef.current = null
+    void window.api.audio.stopAux()
     setPreviewingId('')
   }
 
+  /**
+   * 试听走主进程 aux 槽（audio.playFile）：ffmpeg 在主进程解码出声，
+   * dev server（http 源拦 file://）和打包版表现一致；同槽互斥，点下一条自动顶掉上一条。
+   * 试听与播报互不打扰（aux 不打断主槽）。
+   */
   const togglePreview = (unit: ProgramAudioUnit) => {
     if (previewingId === unit.id) {
       stopPreview()
       return
     }
-    stopPreview()
     if (!unit.audioPath) return
-    // 渲染层直接放本地文件（打包版 file:// 页面可读）；dev server（http 源）读不了本地文件，走 error 提示
-    const audio = new Audio(`file:///${encodeURI(unit.audioPath.replace(/\\/g, '/'))}`)
-    audio.onended = () => stopPreview()
-    audio.onerror = () => {
-      stopPreview()
-      toast.error('试听失败', {
-        description: '音频文件打不开（可能已被移动或清理；开发模式下页面读不了本地文件，打包后正常）'
-      })
-    }
-    audioRef.current = audio
+    void window.api.audio.playFile(unit.audioPath).then((result) => {
+      if (!result.ok) {
+        setPreviewingId('')
+        toast.error('试听失败', { description: result.error ?? '音频文件打不开（可能已被移动或清理）' })
+      }
+    })
     setPreviewingId(unit.id)
-    void audio.play().catch(() => undefined)
   }
 
   const importExternal = async (unit: ProgramAudioUnit) => {

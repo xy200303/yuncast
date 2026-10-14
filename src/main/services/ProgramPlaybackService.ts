@@ -451,6 +451,53 @@ export class ProgramPlaybackService {
     return this.loadSceneUtterances(activeProgramId)
   }
 
+  /**
+   * 预制节目按章跳播（docs/10 §11.5：上一章/下一章/章节点播，章级跳转 = 跳播对应 speech_item）。
+   * 池里有这一章的未播条目就提到队首；已播完被清出池的按 launch 同口径重新装载再提队首。
+   * 只负责把目标章排到下一个播；打断当前条目由调用方做（already=true 时目标正在播，别打断）。
+   */
+  playUnit(
+    programId: string,
+    target: { kind: 'scene' | 'utterance'; id: string }
+  ): { ok: boolean; title?: string; already?: boolean; error?: string } {
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    if (!program) return { ok: false, error: '节目不存在' }
+    if (program.broadcastMode !== 'prepared') return { ok: false, error: '只有预制节目支持按章跳播' }
+    const script = this.script.getScript(program.scriptId)
+    const unit = listAudioUnits(program, script, this.utterances.list(program.id)).find(
+      (entry) => entry.kind === target.kind && entry.id === target.id
+    )
+    if (!unit) return { ok: false, error: '这个章节不存在' }
+    const rendered = unit.rendered
+    const usable =
+      rendered?.status === 'ready' &&
+      rendered.sourceFingerprint === unit.fingerprint &&
+      existsSync(rendered.audioPath)
+    if (!usable) return { ok: false, error: `「${unit.title}」的音频还没就绪，先完成合成` }
+    const dedupeKey = `rendered:${unit.kind}:${unit.id}`
+    if (this.pool.getStatus().playing?.dedupeKey === dedupeKey) {
+      return { ok: true, title: unit.title, already: true }
+    }
+    try {
+      if (!this.pool.jumpTo(dedupeKey)) {
+        // 这一章已播完被清出池：按装播同口径重新入池（dedupeKey 不命中未播条目就是新条目）
+        this.pool.say({
+          text: unit.title,
+          lane: 'normal',
+          sourceKind: 'scene',
+          sourceAgentId: LIBRARY_SOURCE_ID,
+          dedupeKey,
+          audioPath: rendered!.audioPath,
+          originUtteranceId: unit.kind === 'utterance' ? unit.id : undefined
+        })
+        this.pool.jumpTo(dedupeKey)
+      }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    }
+    return { ok: true, title: unit.title }
+  }
+
   /** 当前场景可自动轮播的底稿（就绪 + 非 closer + 本场景或通用） */
   private loadableUtterances(programId: string, sceneId: string): Utterance[] {
     return this.utterances

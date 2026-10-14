@@ -47,6 +47,7 @@ import {
   type AudioEndPayload,
   type AudioLevelPayload,
   type AudioPcmPayload,
+  type AudioProgressPayload,
   type ConnectorStatus,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
@@ -327,6 +328,13 @@ function broadcastLevel(payload: AudioLevelPayload): void {
 function broadcastAudioEnd(payload: AudioEndPayload): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.audioEnd, payload)
+  }
+}
+
+/** 主槽播放进度广播（预制节目长音频进度条用） */
+function broadcastProgress(payload: AudioProgressPayload): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.audioProgressEvent, payload)
   }
 }
 
@@ -649,6 +657,26 @@ function registerIpc(
     pipeline?.stopAll()
     return { ok: true }
   })
+  // 试听（aux 槽）：主进程播指定音频文件到监听通道——渲染层不再碰 file://（dev 的 http 源读不了本地文件）。
+  // 真的开始出声才回 ok；同槽互斥，新试听自动顶掉旧的。
+  ipcMain.handle(IPC.audioPlayFile, async (_e, filePath: string) => {
+    if (!pipeline) return { ok: false, error: '音频管线未初始化' }
+    const path = String(filePath ?? '')
+    if (!path) return { ok: false, error: '没有音频文件路径' }
+    const request = pipeline.playFile(`preview-${Date.now()}`, path, { slot: 'aux' })
+    const started = await request.started
+    if (!started.ok) return { ok: false, error: started.error ?? '音频没能放出来' }
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.audioStopAux, () => {
+    pipeline?.stopSlot('aux')
+    return { ok: true }
+  })
+  // 章内 seek（预制节目长音频）：主槽 ffmpeg 以 -ss 重启解码
+  ipcMain.handle(IPC.audioSeekMain, (_e, offsetMs: number) => {
+    if (!pipeline) return { ok: false, error: '音频管线未初始化' }
+    return pipeline.seekMain(Number(offsetMs))
+  })
 
   // ---------- 音色库（M8 声音克隆） ----------
   ipcMain.handle(IPC.voiceList, () => voiceSvc?.list() ?? [])
@@ -791,6 +819,18 @@ function registerIpc(
   )
   ipcMain.handle(IPC.programAudioProgress, (_e, programId: string) =>
     programPlayback.audioProgress(String(programId ?? ''))
+  )
+  // 预制节目按章跳播（上一章/下一章/章节点播）：装池提到队首，再打断当前条目让播放循环立即取它
+  ipcMain.handle(
+    IPC.programPlayUnit,
+    (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
+      const result = programPlayback.playUnit(String(programId ?? ''), {
+        kind: target?.kind === 'scene' ? 'scene' : 'utterance',
+        id: String(target?.id ?? '')
+      })
+      if (result.ok && !result.already) pipeline?.stopAll()
+      return result
+    }
   )
   // 导入外部音频（§7.4）：主进程弹文件选择框，拷贝进预制音频目录并挂到指定 Scene/Utterance 的 rendered
   ipcMain.handle(
@@ -937,7 +977,8 @@ if (!single) {
       setStreamBgm: (action, filePath, volume) => streamSvc?.setBgm(action, filePath, volume) ?? Promise.resolve(),
       sendPcm: broadcastPcm,
       sendLevel: broadcastLevel,
-      sendEnd: broadcastAudioEnd
+      sendEnd: broadcastAudioEnd,
+      sendProgress: broadcastProgress
     })
     // 播放循环搬到了主进程：渲染层不再参与播放调度。留白优先听 agent 的（set_gap），没调走系统默认
     playback = new PlaybackLoop(

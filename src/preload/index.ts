@@ -9,6 +9,7 @@ import type {
   AudioEndPayload,
   AudioLevelPayload,
   AudioPcmPayload,
+  AudioProgressPayload,
   ConnectorStatus,
   ChatEntry,
   DirectorTimelineEvent,
@@ -226,6 +227,22 @@ const api = {
       ipcRenderer.invoke(IPC.audioSetBgm, action, filePath, volume) as Promise<AudioCommandResult>,
     /** 停掉当前 AI 播报（跳过这条 / 紧急停止）：主进程掐断解码与排播，BGM 与推流不断 */
     stopAll: () => ipcRenderer.invoke(IPC.audioStopAll) as Promise<AudioCommandResult>,
+    /** 试听：主进程把指定音频文件播到监听通道（aux 槽，不打断主槽播报；dev 下渲染层读不了 file://，统一走这里） */
+    playFile: (filePath: string) =>
+      ipcRenderer.invoke(IPC.audioPlayFile, filePath) as Promise<AudioCommandResult>,
+    /** 停止试听（停 aux 槽，不动主槽播报） */
+    stopAux: () => ipcRenderer.invoke(IPC.audioStopAux) as Promise<AudioCommandResult>,
+    /** 章内 seek（预制节目长音频）：主槽从指定毫秒位置继续播 */
+    seekMain: (offsetMs: number) =>
+      ipcRenderer.invoke(IPC.audioSeekMain, offsetMs) as Promise<AudioCommandResult>,
+    /** 订阅主槽播放进度（预制节目进度条用），返回取消订阅函数 */
+    onProgress: (cb: (payload: AudioProgressPayload) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: AudioProgressPayload) => cb(payload)
+      ipcRenderer.on(IPC.audioProgressEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.audioProgressEvent, listener)
+      }
+    },
     /** 订阅 PCM 片（本机监听唯一数据流），返回取消订阅函数 */
     onPcm: (cb: (payload: AudioPcmPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AudioPcmPayload) => cb(payload)
@@ -362,6 +379,14 @@ const api = {
     playGate: (id: string) => ipcRenderer.invoke(IPC.programPlayGate, id) as Promise<ProgramGateResult>,
     /** 节目音频进度（单元总数/ready/synthesizing/pending/failed/stale） */
     audioProgress: (id: string) => ipcRenderer.invoke(IPC.programAudioProgress, id) as Promise<ProgramAudioProgress>,
+    /** 预制节目按章跳播：装池提到队首并打断当前条目立即播；already=true 表示这章正在播 */
+    playUnit: (id: string, target: { kind: 'scene' | 'utterance'; id: string }) =>
+      ipcRenderer.invoke(IPC.programPlayUnit, id, target) as Promise<{
+        ok: boolean
+        title?: string
+        already?: boolean
+        error?: string
+      }>,
     /** 导入外部音频（预制节目）：主进程弹文件选择框（mp3/wav/m4a），挂到指定 Scene/Utterance；取消返回 ok:false */
     importAudio: (id: string, target: { kind: 'scene' | 'utterance'; id: string }) =>
       ipcRenderer.invoke(IPC.programImportAudio, id, target) as Promise<

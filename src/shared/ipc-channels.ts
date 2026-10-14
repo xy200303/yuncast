@@ -92,6 +92,14 @@ export const IPC = {
   audioSetBgm: 'audio:set-bgm',
   /** 渲染层 → 主进程：停掉当前 AI 播报（跳过这条 / 紧急停止；BGM 与推流不断） */
   audioStopAll: 'audio:stop-all',
+  /** 渲染层 → 主进程：aux 槽播放指定音频文件（试听用；dev 下渲染层读不了 file://，统一走主进程出声） */
+  audioPlayFile: 'audio:play-file',
+  /** 渲染层 → 主进程：停掉 aux 槽（停止试听；不动主槽播报） */
+  audioStopAux: 'audio:stop-aux',
+  /** 渲染层 → 主进程：主槽章内 seek（预制节目长音频；ffmpeg 以 -ss 重启解码） */
+  audioSeekMain: 'audio:seek-main',
+  /** 主进程 → 渲染层：主槽播放进度（预制节目进度条用） */
+  audioProgressEvent: 'audio:progress',
 
   // 音色库（M8 声音克隆）
   voiceList: 'voice:list',
@@ -160,6 +168,8 @@ export const IPC = {
   programAudioProgress: 'program:audio-progress',
   /** 导入外部音频（§7.4）：主进程弹文件选择框，挂到指定 Scene/Utterance 的 rendered */
   programImportAudio: 'program:import-audio',
+  /** 预制节目按章跳播（docs/10 §11.5 上一章/下一章/章节点播）：装池提到队首并打断当前条目 */
+  programPlayUnit: 'program:play-unit',
   /** main → renderer：预制音频资产变化（Scene/Utterance 的 rendered 更新，渲染层刷新进度） */
   programAudioEvent: 'program:audio-event',
 

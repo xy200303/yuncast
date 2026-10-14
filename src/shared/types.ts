@@ -1269,6 +1269,16 @@ export interface AudioEndPayload {
   stopped?: boolean
 }
 
+/** 主槽播放进度（主进程按片节流推来，预制节目长音频的进度条用） */
+export interface AudioProgressPayload {
+  /** 正在播的话术条目 id（与话术池快照的 playing 条目对应） */
+  itemId: string
+  /** 已播位置（毫秒，按已排播 PCM 字节折算；章内 seek 后从新位置继续走） */
+  positionMs: number
+  /** false = 这段已收尾（播完/被打断），渲染层进度归零 */
+  active: boolean
+}
+
 export type AudioBgmAction = 'start' | 'stop' | 'volume'
 
 export interface AudioCommandResult {

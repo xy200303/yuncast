@@ -1,4 +1,5 @@
 import type {
+  ModelAdvancedParams,
   ModelConnection,
   ThinkingLevelChoice,
   TtsConnection,
@@ -79,6 +80,8 @@ export interface ResolvedModel {
   contextWindow?: number
   /** 模型级思考强度（接入的模型配置）；缺省 off = 不思考 */
   thinkingLevel?: ThinkingLevelChoice
+  /** 模型级高级参数（接入的模型配置）：多模态/温度/最大输出 */
+  advanced?: ModelAdvancedParams
 }
 
 const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, localOpenAiProvider]

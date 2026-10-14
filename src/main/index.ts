@@ -3,6 +3,7 @@ import { setDefaultResultOrder } from 'node:dns'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
 import { appendFileSync, mkdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
 import { POOL_LIMITS } from '../shared/types'
 
@@ -467,7 +468,8 @@ function registerIpc(
         params: input?.params ?? {},
         models,
         modelContextWindows: input?.modelContextWindows ?? {},
-        modelThinkingLevels: input?.modelThinkingLevels ?? {}
+        modelThinkingLevels: input?.modelThinkingLevels ?? {},
+        modelParams: input?.modelParams ?? {}
       })
       return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {
@@ -526,30 +528,74 @@ function registerIpc(
   // ---------- 导演对话 ----------
   // chat：无会话时自动按当前选中场次起 prep 会话再投递（选中场次即可开聊，不必先启动场次）
   // localId：渲染层本地回显条目的 id，main 以同一 id 落库——重载/切场恢复时不重复
-  ipcMain.handle(IPC.directorSend, async (_e, text: string, localId?: string) => {
-    const content = String(text ?? '').slice(0, 500)
-    const planId = storage.getConfig().live.activePlanId
-    if (planId && content) {
-      const id = String(localId ?? '').trim() || `dm-${Date.now()}`
+  // attachments：随消息附的文件。图片（png/jpg/jpeg/webp/gif）读成 base64 图像内容进会话（模型需开多模态，
+  // 没开则由主播侧提示）；其它类型（pdf/docx…）拼成 [附件] 文本说明随指令投递
+  const IMAGE_EXT_MIME: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    gif: 'image/gif'
+  }
+  ipcMain.handle(
+    IPC.directorSend,
+    async (_e, text: string, localId?: string, attachments?: { name: string; path: string }[]) => {
+      let content = String(text ?? '').slice(0, 500)
+      let images: { type: 'image'; data: string; mimeType: string }[] | undefined
+      const files = Array.isArray(attachments) ? attachments : []
+      const IMAGE_MAX_BYTES = 4 * 1024 * 1024
+      const lines: string[] = []
+      for (const file of files.slice(0, 8)) {
+        const name = String(file?.name ?? '')
+        const path = String(file?.path ?? '')
+        if (!path) continue
+        const ext = name.split('.').pop()?.toLowerCase() ?? ''
+        const mime = IMAGE_EXT_MIME[ext]
+        if (mime) {
+          try {
+            const buf = await readFile(path)
+            if (buf.byteLength > IMAGE_MAX_BYTES) {
+              lines.push(`[附件] ${name}：图片超过 4MB，发不进去（压缩后再发）`)
+              continue
+            }
+            images = images ?? []
+            if (images.length >= 4) {
+              lines.push(`[附件] ${name}：一次最多 4 张图，这张没发`)
+              continue
+            }
+            images.push({ type: 'image', data: buf.toString('base64'), mimeType: mime })
+            continue
+          } catch {
+            lines.push(`[附件] ${name}：图片读不出来（文件还在吗？）`)
+            continue
+          }
+        }
+        lines.push(`[附件] ${name}：${path}`)
+      }
+      if (lines.length > 0) content = `${content}\n${lines.join('\n')}`.trim()
+      const planId = storage.getConfig().live.activePlanId
+      if (planId && content) {
+        const id = String(localId ?? '').trim() || `dm-${Date.now()}`
+        try {
+          storage.timelineAppend(
+            planId,
+            id,
+            '',
+            Date.now(),
+            JSON.stringify({ type: 'director', id, ts: Date.now(), text: content })
+          )
+        } catch {
+          // 落库失败不影响发送
+        }
+      }
       try {
-        storage.timelineAppend(
-          planId,
-          id,
-          '',
-          Date.now(),
-          JSON.stringify({ type: 'director', id, ts: Date.now(), text: content })
-        )
-      } catch {
-        // 落库失败不影响发送
+        await agent.chat(content, images)
+        return { ok: true }
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) }
       }
     }
-    try {
-      await agent.chat(content)
-      return { ok: true }
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
-    }
-  })
+  )
   /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复；载荷已是 ChatEntry JSON） */
   ipcMain.handle(IPC.directorTimelineList, (_e, planId: string) =>
     storage.timelineList(String(planId ?? '')).map((row) => JSON.parse(row.payload) as unknown)
@@ -894,6 +940,8 @@ if (!single) {
     connector.start()
     // 端口改了重连
     storage.onConfigChange(() => connector?.restart())
+    // agent 的连接器工具（list/call_connector_tool、商品同步）从这里取
+    agent.getConnector = () => connector
 
     // 音色库（M8 声音克隆）：训练状态变化推给渲染进程；试听由主进程合成完直接出声（aux 槽）
     voiceSvc = new VoiceService(storage, tts, broadcastVoices, async (itemId, filePath) => {

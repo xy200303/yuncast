@@ -167,9 +167,11 @@ const api = {
     }
   },
   director: {
-    /** 导演指令 → 主播（最高优先级，steer 插队）；localId = 本地回显条目 id，落库恢复不重复 */
-    send: (text: string, localId?: string) =>
-      ipcRenderer.invoke(IPC.directorSend, text, localId) as Promise<{ ok: boolean; error?: string }>,
+    /** 导演指令 → 主播（最高优先级，steer 插队）；localId = 本地回显条目 id，落库恢复不重复。
+     * attachments = 随消息附的文件：图片（png/jpg/jpeg/webp/gif）由 main 读成图像内容进会话（模型需开多模态），
+     * 其它类型降级成 [附件] 文本说明 */
+    send: (text: string, localId?: string, attachments?: { name: string; path: string }[]) =>
+      ipcRenderer.invoke(IPC.directorSend, text, localId, attachments) as Promise<{ ok: boolean; error?: string }>,
     /** 拉某场次的对话时间线（切场/刷新/重启后整段恢复） */
     timelineList: (planId: string) =>
       ipcRenderer.invoke(IPC.directorTimelineList, planId) as Promise<ChatEntry[]>,

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, ChevronRight, Eye, EyeOff, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -15,7 +15,7 @@ import {
   type LlmProviderManifest,
   type ProviderFieldSpec
 } from '../../stores/useAppStore'
-import { type ModelConnectionSafe, type ThinkingLevelChoice } from '../../../../shared/types'
+import { type ModelAdvancedParams, type ModelConnectionSafe, type ThinkingLevelChoice } from '../../../../shared/types'
 import { LLM_LINKS } from './shared'
 
 /** 跳转外链（主进程 setWindowOpenHandler 会交给系统浏览器打开） */
@@ -277,13 +277,32 @@ function ConnectionEditorView({
   const [name, setName] = useState(
     connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
   )
-  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）+ 思考强度。窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
-  const [models, setModels] = useState<{ id: string; window: string; thinking: ThinkingLevelChoice }[]>(
-    (connection?.models ?? []).map((id) => ({
-      id,
-      window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : '',
-      thinking: connection?.modelThinkingLevels?.[id] ?? 'off'
-    }))
+  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）+ 思考强度 + 高级参数（多模态/温度/回复上限）。
+   * 窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
+  const [models, setModels] = useState<
+    {
+      id: string
+      window: string
+      thinking: ThinkingLevelChoice
+      vision: boolean
+      temperature: string
+      maxTokens: string
+      /** 高级参数展开条（纯 UI 态，不落盘） */
+      advancedOpen: boolean
+    }[]
+  >(
+    (connection?.models ?? []).map((id) => {
+      const adv = connection?.modelParams?.[id]
+      return {
+        id,
+        window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : '',
+        thinking: connection?.modelThinkingLevels?.[id] ?? 'off',
+        vision: adv?.vision === true,
+        temperature: adv?.temperature != null ? String(adv.temperature) : '',
+        maxTokens: adv?.maxTokens != null ? String(adv.maxTokens) : '',
+        advancedOpen: false
+      }
+    })
   )
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
@@ -329,6 +348,14 @@ function ConnectionEditorView({
     setModels(models.map((row, i) => (i === index ? { ...row, thinking: value } : row)))
   }
 
+  /** 高级参数（多模态/温度/回复上限）就地改 */
+  const patchAdvancedAt = (
+    index: number,
+    part: Partial<{ vision: boolean; temperature: string; maxTokens: string; advancedOpen: boolean }>
+  ) => {
+    setModels(models.map((row, i) => (i === index ? { ...row, ...part } : row)))
+  }
+
   const removeModelAt = (index: number) => {
     setModels(models.filter((_, i) => i !== index))
   }
@@ -337,7 +364,9 @@ function ConnectionEditorView({
     const next = [...models]
     for (const id of ids) {
       const value = id.trim()
-      if (value && !next.some((row) => row.id === value)) next.push({ id: value, window: '', thinking: 'off' })
+      if (value && !next.some((row) => row.id === value)) {
+        next.push({ id: value, window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', advancedOpen: false })
+      }
     }
     setModels(next)
   }
@@ -345,7 +374,7 @@ function ConnectionEditorView({
   /** 就地加一行空白模型行（id 空 = 手打），新行的 ID 输入框挂载时自动聚焦 */
   const addModelRow = () => {
     setFocusIndex(models.length)
-    setModels([...models, { id: '', window: '', thinking: 'off' }])
+    setModels([...models, { id: '', window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', advancedOpen: false }])
   }
 
   const save = async () => {
@@ -363,11 +392,22 @@ function ConnectionEditorView({
     const modelContextWindows: Record<string, number> = {}
     // 模型级思考强度：非 off 才落盘（默认不思考）
     const modelThinkingLevels: Record<string, ThinkingLevelChoice> = {}
+    // 模型级高级参数：vision 只收开关、温度 0~2、回复上限 ≥1024，空的不落盘（主进程还会再滤一遍）
+    const modelParams: Record<string, ModelAdvancedParams> = {}
     for (const row of models) {
       const id = row.id.trim()
       const value = Math.floor(Number(row.window))
       if (id && row.window.trim() && value >= 4096) modelContextWindows[id] = value
       if (id && row.thinking !== 'off') modelThinkingLevels[id] = row.thinking
+      const adv: ModelAdvancedParams = {}
+      if (row.vision) adv.vision = true
+      const temperature = Number(row.temperature)
+      if (row.temperature.trim() && Number.isFinite(temperature) && temperature >= 0 && temperature <= 2) {
+        adv.temperature = temperature
+      }
+      const maxTokens = Math.floor(Number(row.maxTokens))
+      if (row.maxTokens.trim() && Number.isFinite(maxTokens) && maxTokens >= 1024) adv.maxTokens = maxTokens
+      if (id && Object.keys(adv).length > 0) modelParams[id] = adv
     }
     setBusy(true)
     try {
@@ -378,7 +418,8 @@ function ConnectionEditorView({
         params,
         models: ids,
         modelContextWindows,
-        modelThinkingLevels
+        modelThinkingLevels,
+        modelParams
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
@@ -485,48 +526,111 @@ function ConnectionEditorView({
             ) : (
               <div className="flex flex-col gap-2">
                 {models.map((row, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <Input
-                      value={row.id}
-                      autoFocus={index === focusIndex}
-                      onFocus={() => {
-                        if (focusIndex === index) setFocusIndex(null)
-                      }}
-                      onChange={(e) => setModelAt(index, e.target.value)}
-                      placeholder="模型 id，如 deepseek-chat"
-                      className="h-9 flex-1 text-sm"
-                    />
-                    <Input
-                      value={row.window}
-                      onChange={(e) => setWindowAt(index, e.target.value.replace(/[^\d]/g, ''))}
-                      placeholder="窗口自动"
-                      title="上下文窗口（tokens）：留空按服务商默认（DeepSeek/Kimi/千问/豆包/智谱均按 128k）。对话快涨满窗口时自动压缩旧消息（预留 16k 给回复）——不同型号窗口不一样，填准了压缩更平滑"
-                      inputMode="numeric"
-                      className="h-9 w-28 shrink-0 text-sm"
-                    />
-                    <Select value={row.thinking} onValueChange={(v) => setThinkingAt(index, v as ThinkingLevelChoice)}>
-                      <SelectTrigger className="h-9 w-24 shrink-0 text-sm" title="思考强度：模型支持时（如 DeepSeek reasoner / Kimi K2.6 thinking）思考过程会显示在对话时间线">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent position="popper" sideOffset={6}>
-                        <SelectItem value="off">不思考</SelectItem>
-                        <SelectItem value="low">低</SelectItem>
-                        <SelectItem value="medium">中</SelectItem>
-                        <SelectItem value="high">高</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title="删除这一行"
-                      onClick={() => removeModelAt(index)}
-                    >
-                      <Trash2 />
-                    </Button>
+                  <div key={index} className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={row.id}
+                        autoFocus={index === focusIndex}
+                        onFocus={() => {
+                          if (focusIndex === index) setFocusIndex(null)
+                        }}
+                        onChange={(e) => setModelAt(index, e.target.value)}
+                        placeholder="模型 id，如 deepseek-chat"
+                        className="h-9 flex-1 text-sm"
+                      />
+                      <Input
+                        value={row.window}
+                        onChange={(e) => setWindowAt(index, e.target.value.replace(/[^\d]/g, ''))}
+                        placeholder="窗口自动"
+                        title="上下文窗口（tokens）：留空按服务商默认（DeepSeek/Kimi/千问/豆包/智谱均按 128k）。对话快涨满窗口时自动压缩旧消息（预留 16k 给回复）——不同型号窗口不一样，填准了压缩更平滑"
+                        inputMode="numeric"
+                        className="h-9 w-28 shrink-0 text-sm"
+                      />
+                      <Select value={row.thinking} onValueChange={(v) => setThinkingAt(index, v as ThinkingLevelChoice)}>
+                        <SelectTrigger className="h-9 w-24 shrink-0 text-sm" title="思考强度：模型支持时（如 DeepSeek reasoner / Kimi K2.6 thinking）思考过程会显示在对话时间线">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent position="popper" sideOffset={6}>
+                          <SelectItem value="off">不思考</SelectItem>
+                          <SelectItem value="low">低</SelectItem>
+                          <SelectItem value="medium">中</SelectItem>
+                          <SelectItem value="high">高</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title="高级参数：多模态 / 温度 / 回复上限"
+                        className={row.advancedOpen ? 'text-primary' : 'text-muted-foreground'}
+                        onClick={() => patchAdvancedAt(index, { advancedOpen: !row.advancedOpen })}
+                      >
+                        <SlidersHorizontal />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        title="删除这一行"
+                        onClick={() => removeModelAt(index)}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                    <Dialog open={row.advancedOpen} onOpenChange={(v) => patchAdvancedAt(index, { advancedOpen: v })}>
+                      <DialogContent className="gap-4 sm:max-w-md">
+                        <DialogHeader>
+                          <DialogTitle>高级参数 · {row.id.trim() || '未命名模型'}</DialogTitle>
+                        </DialogHeader>
+                        <div className="flex flex-col gap-4">
+                          <label className="flex items-start justify-between gap-3 text-sm">
+                            <span>
+                              多模态（识图）
+                              <span className="block text-xs text-muted-foreground">
+                                开了之后导演发图片主播才能看到（模型本身要支持图像输入）
+                              </span>
+                            </span>
+                            <Switch
+                              checked={row.vision}
+                              onCheckedChange={(v) => patchAdvancedAt(index, { vision: v })}
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1.5 text-sm">
+                            温度
+                            <span className="text-xs text-muted-foreground">
+                              采样温度 0~2，留空按服务商默认。小更稳（话术/报价），大更飘（脑洞/段子）
+                            </span>
+                            <Input
+                              value={row.temperature}
+                              onChange={(e) => patchAdvancedAt(index, { temperature: e.target.value.replace(/[^\d.]/g, '') })}
+                              placeholder="默认"
+                              inputMode="decimal"
+                              className="h-9 w-full text-sm"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1.5 text-sm">
+                            回复上限
+                            <span className="text-xs text-muted-foreground">
+                              单次回复上限（tokens），留空按 8192。回复被截断、话术写不完时调大
+                            </span>
+                            <Input
+                              value={row.maxTokens}
+                              onChange={(e) => patchAdvancedAt(index, { maxTokens: e.target.value.replace(/[^\d]/g, '') })}
+                              placeholder="8192"
+                              inputMode="numeric"
+                              className="h-9 w-full text-sm"
+                            />
+                          </label>
+                        </div>
+                        <DialogFooter>
+                          <DialogClose asChild>
+                            <Button size="sm">完成</Button>
+                          </DialogClose>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  第二列是上下文窗口（tokens），留空按服务商默认；第三列是思考强度，思考过程会显示在对话时间线
+                  第二列是上下文窗口（tokens），留空按服务商默认；第三列是思考强度，思考过程会显示在对话时间线；每行末尾的扳手是多模态/温度/回复上限
                 </p>
               </div>
             )}

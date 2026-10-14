@@ -981,10 +981,14 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     })
     landed(id)
     if (text && runQuickCommand(text)) return
+    // 图片走第三参（main 读成图像内容进会话，模型需开多模态）；其它类型拼 [附件] 文本随指令发
+    const IMAGE_EXT = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif'])
+    const images = files.filter((f) => IMAGE_EXT.has((f.name.split('.').pop() ?? '').toLowerCase()))
+    const others = files.filter((f) => !IMAGE_EXT.has((f.name.split('.').pop() ?? '').toLowerCase()))
     const payload =
-      files.length > 0 ? `${text}\n${files.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
+      others.length > 0 ? `${text}\n${others.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
     // 本地回显的 id 一起发给 main：落库用同一 id，切场/重载恢复时不重复
-    void window.api.director.send(payload, id).then((result) => {
+    void window.api.director.send(payload, id, images.length > 0 ? images : undefined).then((result) => {
       if (!result.ok) toast.error('指令没送达', { description: result.error })
     })
   }

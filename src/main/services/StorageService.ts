@@ -638,14 +638,27 @@ export class StorageService {
         modelThinkingLevels[id2] = String(value)
       }
     }
+    // 模型级高级参数：只收 models 里存在的 id；空对象（啥也没配）不落盘
+    const modelParams: Record<string, Record<string, unknown>> = {}
+    for (const [key, value] of Object.entries(input.modelParams ?? {})) {
+      const id2 = key.trim()
+      if (!models.includes(id2) || !value || typeof value !== 'object') continue
+      const clean: Record<string, unknown> = {}
+      if (value.vision === true) clean.vision = true
+      const temperature = Number(value.temperature)
+      if (Number.isFinite(temperature) && temperature >= 0 && temperature <= 2) clean.temperature = temperature
+      const maxTokens = Math.floor(Number(value.maxTokens))
+      if (Number.isFinite(maxTokens) && maxTokens >= 1024) clean.maxTokens = maxTokens
+      if (Object.keys(clean).length > 0) modelParams[id2] = clean
+    }
 
     this.db
       .prepare(
-        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, model_thinking, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @createdAt, @updatedAt)
+        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, model_thinking, model_params, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @modelParams, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, updated_at = @updatedAt`
+           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, model_params = @modelParams, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -655,6 +668,7 @@ export class StorageService {
         models: JSON.stringify(models),
         modelWindows: JSON.stringify(modelContextWindows),
         modelThinking: JSON.stringify(modelThinkingLevels),
+        modelParams: JSON.stringify(modelParams),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
@@ -704,6 +718,20 @@ export class StorageService {
         }
       }
     }
+    const rawParams = parseJson<unknown>(r.model_params, {})
+    const modelParams: ModelConnection['modelParams'] = {}
+    if (rawParams && typeof rawParams === 'object' && !Array.isArray(rawParams)) {
+      for (const [key, value] of Object.entries(rawParams as Record<string, unknown>)) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const v = value as Record<string, unknown>
+          modelParams[key] = {
+            vision: v.vision === true ? true : undefined,
+            temperature: typeof v.temperature === 'number' ? v.temperature : undefined,
+            maxTokens: typeof v.maxTokens === 'number' ? v.maxTokens : undefined
+          }
+        }
+      }
+    }
     return {
       id: str(r.id),
       name: str(r.name),
@@ -712,6 +740,7 @@ export class StorageService {
       models,
       modelContextWindows,
       modelThinkingLevels,
+      modelParams,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -984,6 +1013,10 @@ export class StorageService {
     }
     if (!columns.includes('model_thinking')) {
       this.db.exec("ALTER TABLE model_connections ADD COLUMN model_thinking TEXT NOT NULL DEFAULT '{}'")
+    }
+    // 模型级高级参数列（model_params，JSON：模型 id → { vision/temperature/maxTokens }）
+    if (!columns.includes('model_params')) {
+      this.db.exec("ALTER TABLE model_connections ADD COLUMN model_params TEXT NOT NULL DEFAULT '{}'")
     }
   }
 

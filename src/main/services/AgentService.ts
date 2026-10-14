@@ -3,6 +3,7 @@ import { Agent, type AgentMessage } from '@earendil-works/pi-agent-core'
 import {
   normalizeContext,
   retryAssistantCall,
+  type ImageContent,
   type Message,
   type Model,
   type UserMessage
@@ -24,6 +25,7 @@ import {
 import { planTargetBits } from '../../shared/planDuration'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
+import type { ConnectorService } from './ConnectorService'
 import type { PersonaService } from './PersonaService'
 import type { PromptTemplateService } from './PromptTemplateService'
 import type { KnowledgeService } from './KnowledgeService'
@@ -61,8 +63,8 @@ const COMPACT_KEEP_RECENT_TOKENS = 20_000
 const SUMMARY_TRANSCRIPT_MAX_CHARS = 50_000
 /** HTTP 请求超时：DeepSeek 偶尔挂住连接一个字节都不吐，收紧到 60s——超时变 error 态（可重试） */
 const LLM_TIMEOUT_MS = 60_000
-/** 工具表 schema 的粗估开销（tokens）：26 个主播工具不进 messages 但真实占窗口，状态栏进度条要算上 */
-const TOOL_SCHEMA_OVERHEAD_TOKENS = 4000
+/** 工具表 schema 的粗估开销（tokens）：33 个主播工具不进 messages 但真实占窗口，状态栏进度条要算上 */
+const TOOL_SCHEMA_OVERHEAD_TOKENS = 5000
 
 /** 一条 assistant 消息在时间线上的文本状态（按 messageId 更新，不重复追加条目） */
 interface TimelineText {
@@ -112,6 +114,10 @@ export class AgentService {
   onGoLive: (() => Promise<string>) | null = null
   /** 播报控制（pause/resume/skip）→ 广播到渲染进程执行 */
   onPlaybackControl: ((action: PlaybackControlAction) => void) | null = null
+  /** 平台连接器（index.ts 在 ConnectorService 建好之后接上：连接器生于 Agent 之后） */
+  getConnector: (() => ConnectorService | null) | null = null
+  /** 当前会话的模型是否开了多模态（出生时的模型级配置；没开图像附件不进会话） */
+  private visionCapable = false
 
   /** 本轮序号（agent_start 自增，一次派活 = 一轮，形如 turn-m3k9x2-3） */
   private turnSeq = 0
@@ -460,7 +466,7 @@ export class AgentService {
   }
 
   /** 实际投递：导演指令绕过暂停检查走这里，其余的入口统一先过暂停闸门 */
-  private deliver(text: string, mode: 'steer' | 'task'): void {
+  private deliver(text: string, mode: 'steer' | 'task', images?: ImageContent[]): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     if (mode === 'steer' && this.busy) {
       try {
@@ -470,18 +476,25 @@ export class AgentService {
       }
       return
     }
-    void this.ask(text)
+    void this.ask(text, images)
   }
 
   /**
    * 导演指令入口（docs/07 §8.8）：最高优先级，生成中就 steer 插队，空闲直接派。
    * 暂停期间照常送达（不然喊不出「继续」）；执行过程与结果由对话时间线照事件流原样呈现。
+   * images：导演随消息附的图（模型没开多模态时丢弃图片、文本照送并附说明）
    */
-  directorSay(text: string): void {
+  directorSay(text: string, images?: ImageContent[]): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
       throw new Error('主播没在跑：先在直播台启动场次')
     }
-    this.deliver(this.prompts.render('user.director_wrap', { text }), 'steer')
+    let payload = this.prompts.render('user.director_wrap', { text })
+    let pics = images?.length ? images : undefined
+    if (pics && !this.visionCapable) {
+      payload += '\n[导演附了图片，但当前模型没开多模态，看不到——需要到接入的模型行「高级」里打开]'
+      pics = undefined
+    }
+    this.deliver(payload, 'steer', pics)
   }
 
   /**
@@ -489,7 +502,7 @@ export class AgentService {
    * 把主播就位（prep：上下文齐备、播出通道关着），再投递指令。
    * 已有会话（写稿中/直播中）直接投递，不动它。
    */
-  async chat(text: string): Promise<void> {
+  async chat(text: string, images?: ImageContent[]): Promise<void> {
     // 选中场次换了（且不在直播中）：旧会话存回它自己场次名下，切回目标场次原来的对话——
     // 场次即会话，各场次的记录互不串味，切回来还能接着聊
     const activePlanId = this.storage.getConfig().live.activePlanId
@@ -499,7 +512,7 @@ export class AgentService {
       this.emitNote(`—— 已切到「${plan?.name ?? '新场次'}」，主播带着这场原来的记录就位 ——`)
     }
     await this.ensurePrepSession()
-    this.directorSay(text)
+    this.directorSay(text, images)
   }
 
   /** 时间线系统提示（换场重开等）：以一段文本条目上屏，不走 LLM */
@@ -832,18 +845,19 @@ export class AgentService {
   }
 
   /** 给主播派一句话：生成中走 steer 插队，空闲走 prompt；失败记状态不崩溃 */
-  private async ask(text: string): Promise<void> {
+  private async ask(text: string, images?: ImageContent[]): Promise<void> {
     const session = this.session
     if (!session) return
     const full = this.scenePrefix() + text
     try {
       if (this.busy) {
+        // steer 只接受文本：有图时等这轮生成完再派（图中说明已让主播知道）
         session.steer({ role: 'user', content: full, timestamp: Date.now() } as AgentMessage)
         return
       }
       this.busy = true
       this.exchanges += 1
-      await session.prompt(full)
+      await session.prompt(full, images?.length ? images : undefined)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       // 导演按了停止（abort）：不是故障，不进 error 态
@@ -1105,8 +1119,10 @@ export class AgentService {
   }
 
   private async createSession(resolved: ResolvedModel, restoredMessages?: AgentMessage[]): Promise<Agent> {
-    const { model, apiKey, modelLabel, contextWindow, thinkingLevel } = await prepareLlmModel(resolved)
+    const { model, apiKey, modelLabel, contextWindow, thinkingLevel, temperature, vision } =
+      await prepareLlmModel(resolved)
     this.modelLabel = modelLabel
+    this.visionCapable = vision
     // 记下出生时的资产指纹：之后 UI 靠它判断"本场是不是旧版本"
     this.sessionFingerprint = this.assetFingerprint()
 
@@ -1149,7 +1165,17 @@ export class AgentService {
           onPlaybackControl: (action) => this.onPlaybackControl?.(action),
           getSpeakingPaused: () => this.speakingPaused,
           getPurpose: () => this.sessionPurpose,
-          onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动场次」'
+          onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动场次」',
+          syncProducts: async () =>
+            this.knowledge.syncFromConnector({
+              listTools: () => this.getConnector?.()?.listTools() ?? Promise.resolve([]),
+              callTool: (name, args) => {
+                const c = this.getConnector?.()
+                if (!c) return Promise.reject(new Error('连接器没接线'))
+                return c.callTool(name, args)
+              }
+            }),
+          connector: this.getConnector?.() ?? null
         }),
         // 场次即会话：恢复时把该场次存下的消息重建进内存会话，上下文原样回来
         messages: restoredMessages
@@ -1161,7 +1187,9 @@ export class AgentService {
           ...options,
           apiKey,
           timeoutMs: LLM_TIMEOUT_MS,
-          maxRetries: 2
+          maxRetries: 2,
+          // 温度（接入的模型级高级参数）：undefined = 服务商默认，不硬塞
+          ...(temperature !== undefined ? { temperature } : {})
         }),
       transformContext: (messages, signal) =>
         this.compactIfNeeded(agent, messages, contextWindow, model, apiKey, signal)

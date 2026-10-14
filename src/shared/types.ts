@@ -176,6 +176,16 @@ export const LLM_PROVIDER_META: Record<LlmProvider, { label: string; defaultMode
 /** 思考强度（模型级配置）：off=关闭；low/medium/high 映射 pi 的 ThinkingLevel，思考内容流进对话时间线 */
 export type ThinkingLevelChoice = 'off' | 'low' | 'medium' | 'high'
 
+/** 模型级高级参数（接入编辑器模型行的「高级」）：都是可选覆盖，缺省走官方/内置默认 */
+export interface ModelAdvancedParams {
+  /** 多模态：模型能吃图像（导演对话的图片附件才会真的进会话；不开则按路径文本处理） */
+  vision?: boolean
+  /** 温度（0~2）：越低越稳，越高越发散 */
+  temperature?: number
+  /** 最大输出 tokens：长稿/长思考可以调大 */
+  maxTokens?: number
+}
+
 export interface ModelConnection {
   id: string
   /** 显示名，默认取服务商 label，可改 */
@@ -189,6 +199,8 @@ export interface ModelConnection {
   modelContextWindows: Record<string, number>
   /** 模型级思考强度：模型 id → 档位；缺省 off（不思考）。模型不支持思考时开了也没效果 */
   modelThinkingLevels: Record<string, ThinkingLevelChoice>
+  /** 模型级高级参数：模型 id → { vision/温度/maxTokens }；缺省走官方/内置默认 */
+  modelParams: Record<string, ModelAdvancedParams>
   createdAt: number
   updatedAt: number
 }
@@ -212,6 +224,8 @@ export interface ModelConnectionInput {
   modelContextWindows?: Record<string, number>
   /** 模型级思考强度（可选，只保留 models 里存在的 id） */
   modelThinkingLevels?: Record<string, ThinkingLevelChoice>
+  /** 模型级高级参数（可选，只保留 models 里存在的 id；空对象键不落盘） */
+  modelParams?: Record<string, ModelAdvancedParams>
 }
 
 /**

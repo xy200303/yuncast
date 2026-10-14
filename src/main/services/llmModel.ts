@@ -84,7 +84,8 @@ function selectedModelOf(
       : {}),
     ...(bound.modelThinkingLevels?.[requested]
       ? { thinkingLevel: bound.modelThinkingLevels[requested] }
-      : {})
+      : {}),
+    ...(bound.modelParams?.[requested] ? { advanced: bound.modelParams[requested] } : {})
   }
 }
 
@@ -98,6 +99,10 @@ export interface PreparedLlm {
   contextWindow: number
   /** 思考强度（接入的模型级配置）：off = 不思考；开了 pi 会把 reasoning_content 解析成 thinking 事件 */
   thinkingLevel: ThinkingLevelChoice
+  /** 温度（接入的模型级高级参数）：undefined = 服务商默认 */
+  temperature?: number
+  /** 多模态（接入的模型级高级参数）：开了图像附件才进会话 */
+  vision: boolean
 }
 
 /**
@@ -113,20 +118,30 @@ export async function prepareLlmModel(resolved: ResolvedModel): Promise<Prepared
 
   const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow ?? FALLBACK_CONTEXT_WINDOW
   const thinkingLevel: ThinkingLevelChoice = resolved.thinkingLevel ?? 'off'
+  const advanced = resolved.advanced ?? {}
   const model: Model<'openai-completions'> = {
     id: modelId,
     name: modelId,
     api: 'openai-completions',
     provider: resolved.providerId,
     baseUrl,
-    input: ['text'],
+    // 多模态是模型级配置（接入编辑器模型行「高级」里开）：开了图像附件才进会话
+    input: advanced.vision ? ['text', 'image'] : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     // reasoning=true 才会解析/回传思考流（reasoning_content）；关了思考就别开
     reasoning: thinkingLevel !== 'off',
     contextWindow,
-    maxTokens: 8192
+    maxTokens: advanced.maxTokens ?? 8192
   }
-  return { model, apiKey, modelLabel: `${def.label} · ${modelId}`, contextWindow, thinkingLevel }
+  return {
+    model,
+    apiKey,
+    modelLabel: `${def.label} · ${modelId}`,
+    contextWindow,
+    thinkingLevel,
+    temperature: advanced.temperature,
+    vision: advanced.vision === true
+  }
 }
 
 /**

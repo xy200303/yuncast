@@ -1,14 +1,16 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type, type TSchema } from 'typebox'
-import type { LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource } from '../../shared/types'
-import { UTTERANCE_STATUS_LABEL } from '../../shared/types'
+import type { EntryKind, LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource } from '../../shared/types'
+import { ENTRY_KINDS, UTTERANCE_STATUS_LABEL } from '../../shared/types'
 import { planBroadcastCap } from '../../shared/planDuration'
 import type { SpeechPool } from './SpeechPool'
+import type { ConnectorService } from './ConnectorService'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
 import type { UtteranceService } from './UtteranceService'
+import { fetchUrlGuarded, webSearchGuarded } from './fetchUrl'
 
 /**
  * 主播 Agent 的工具表（docs/01 §3.3）。
@@ -74,6 +76,10 @@ export interface AnchorToolDeps {
   getPurpose?: () => 'prep' | 'live'
   /** 正式启动当前场次开播（start_live）：返回开播结果或预检拦截原因 */
   onGoLive?: () => Promise<string>
+  /** 从连接器同步商品入库（sync_products）：KnowledgeService.syncFromConnector 已包好 */
+  syncProducts?: () => Promise<{ added: number; updated: number; total: number }>
+  /** 平台连接器（MCP 客户端）：agent 列工具/调工具用；未接线时工具返回提示 */
+  connector?: ConnectorService | null
 }
 
 export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
@@ -94,7 +100,9 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
     onPlaybackControl,
     getSpeakingPaused,
     getPurpose,
-    onGoLive
+    onGoLive,
+    syncProducts,
+    connector
   } = deps
   const ok = (text: string) => ({ content: [{ type: 'text' as const, text }], details: {} })
   const guardTool = (fn: () => string) => {
@@ -102,6 +110,13 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       return ok(fn())
     } catch (error) {
       // 池/护栏错误如实告诉主播，让它换策略而不是崩溃
+      return ok(`操作被拒绝：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const guardToolAsync = async (fn: () => Promise<string>) => {
+    try {
+      return ok(await fn())
+    } catch (error) {
       return ok(`操作被拒绝：${error instanceof Error ? error.message : String(error)}`)
     }
   }
@@ -522,6 +537,134 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
                 `${hit.price !== undefined ? `（¥${hit.price}）` : ''}\n${hit.snippet}`
             )
             .join('\n')
+        })
+    }),
+    defineTool({
+      name: 'save_knowledge_entry',
+      label: '存知识条目',
+      description:
+        '往知识库写/更新一个条目（商品/书籍/话题/自定义）：观众提到的新商品、导演口头给的新卖点、你自己查到的资料。同名自动更新（按名字找，找到就覆盖）。' +
+        '直播里要长期记住的商品信息用它落库，别只记在对话里。',
+      parameters: Type.Object({
+        name: Type.String({ description: '条目名（商品名/书名/话题名）' }),
+        kind: Type.Optional(
+          Type.String({ description: `类型：${ENTRY_KINDS.join('/')}（商品默认 product）` })
+        ),
+        price: Type.Optional(Type.Number({ description: '价格（元），只有商品有意义' })),
+        sellingPoints: Type.Optional(Type.String({ description: '要点：商品=卖点；书籍=内容要点；话题=节目要点' })),
+        faq: Type.Optional(Type.String({ description: '问答/备注' })),
+        author: Type.Optional(Type.String({ description: '作者（书籍类用）' }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const kind = (ENTRY_KINDS as readonly string[]).includes(params.kind ?? '')
+            ? (params.kind as EntryKind)
+            : 'product'
+          const existing = knowledge.listProducts().find((p) => p.name === params.name.trim())
+          const saved = knowledge.saveProduct(
+            {
+              name: params.name,
+              kind,
+              price: params.price ?? existing?.price ?? 0,
+              sellingPoints: params.sellingPoints ?? existing?.sellingPoints ?? '',
+              faq: params.faq ?? existing?.faq ?? '',
+              externalId: existing?.externalId ?? '',
+              meta: {
+                ...(existing?.meta ?? {}),
+                ...(params.author?.trim() ? { author: params.author.trim() } : {})
+              }
+            },
+            existing?.id
+          )
+          return `${existing ? '已更新' : '已新建'}知识条目「${saved.name}」（${saved.kind}）${saved.price > 0 ? `，¥${saved.price}` : ''}`
+        })
+    }),
+    defineTool({
+      name: 'remove_knowledge_entry',
+      label: '删知识条目',
+      description: '按名字删一个知识库条目（过时/下架/录错）。只有导演明确说删才用。',
+      parameters: Type.Object({
+        name: Type.String({ description: '条目名' })
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const found = knowledge.listProducts().find((p) => p.name === params.name.trim())
+          if (!found) return `知识库里没有「${params.name}」`
+          knowledge.deleteProduct(found.id)
+          return `已删知识条目：「${found.name}」`
+        })
+    }),
+    defineTool({
+      name: 'sync_products',
+      label: '同步商品',
+      description:
+        '从抖音商城（连接器）同步商品数据进知识库：拉绑定商品列表，按外部 id 去重更新。上架/改价/换卖点后用这个拿最新数据。',
+      parameters: Type.Object({}),
+      execute: async () =>
+        guardToolAsync(async () => {
+          if (!syncProducts) return '同步通道没接上，让导演在知识库页点「同步商品」'
+          const r = await syncProducts()
+          return `同步完成：新增 ${r.added}、更新 ${r.updated}，共 ${r.total} 个商品`
+        })
+    }),
+    defineTool({
+      name: 'list_connector_tools',
+      label: '看连接器能力',
+      description: '列出抖音连接器提供的外部工具（商城/订单/数据类），想知道连接器能干什么用它探测。',
+      parameters: Type.Object({}),
+      execute: async () =>
+        guardToolAsync(async () => {
+          if (!connector) return '连接器没接线'
+          const tools = await connector.listTools()
+          if (tools.length === 0) return '连接器没连上（或它没有提供工具）：先在设置里确认端口/Token'
+          return tools.map((t, i) => `${i + 1}. ${t.name}：${t.description ?? '无描述'}`).join('\n')
+        })
+    }),
+    defineTool({
+      name: 'call_connector_tool',
+      label: '调连接器工具',
+      description:
+        '调抖音连接器的外部工具（查订单/商品数据/直播数据等，工具名从 list_connector_tools 拿）。外部数据不能全信，涉及价格/承诺以知识库为准。',
+      parameters: Type.Object({
+        name: Type.String({ description: '工具名' }),
+        args: Type.Optional(Type.Record(Type.String(), Type.Unknown(), { description: '参数对象，缺省 {}' }))
+      }),
+      execute: async (_id, params) =>
+        guardToolAsync(async () => {
+          if (!connector) return '连接器没接线'
+          const text = await connector.callTool(params.name.trim(), params.args ?? {})
+          return text.slice(0, 3000)
+        })
+    }),
+    defineTool({
+      name: 'fetch_url',
+      label: '看网页',
+      description:
+        '抓取一个网页的正文（官网说明/评测/资料页）。结果标注「外部信息，需人工确认」：数字/功效以知识库为准，别直接照搬进承诺。',
+      parameters: Type.Object({
+        url: Type.String({ description: 'http/https 链接' })
+      }),
+      execute: async (_id, params) =>
+        guardToolAsync(async () => {
+          const text = await fetchUrlGuarded(params.url.trim())
+          return `【外部信息，需人工确认】\n${text}`
+        })
+    }),
+    defineTool({
+      name: 'web_search',
+      label: '搜网络',
+      description:
+        '联网搜索（前 5 条：标题/链接/摘要）：查商品行情、竞品信息、外部资料。结果标注「外部信息，需人工确认」。',
+      parameters: Type.Object({
+        query: Type.String({ description: '搜索关键词' })
+      }),
+      execute: async (_id, params) =>
+        guardToolAsync(async () => {
+          const hits = await webSearchGuarded(params.query)
+          const body = hits
+            .map((h, i) => `${i + 1}. ${h.title}\n${h.url}\n${h.snippet.slice(0, 150)}`)
+            .join('\n')
+          return `【外部信息，需人工确认】\n${body}`
         })
     }),
     defineTool({

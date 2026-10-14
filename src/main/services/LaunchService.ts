@@ -60,19 +60,22 @@ export class LaunchService {
       persona.roles.length > 0 ? `（角色：${persona.roles.map((r) => r.name).join(' / ')}）` : ''
     items.push({ level: 'ok', label: `主播：${persona.name}${personaRoles}` })
 
-    // ② 大脑的凭据（模型解析和开播时用的完全是同一处逻辑）
+    // ② 大脑的凭据（模型解析和开播时用的完全是同一处逻辑）。
+    // 引擎与 agent 解耦：模型不配只影响智能层（补货/互动），存量的合成音频照播——降级为警告
     const brain = persona?.modelConnectionId
       ? this.storage.connectionGet(persona.modelConnectionId)
       : null
     if (persona && persona.modelConnectionId && !brain) {
       items.push({
-        level: 'block',
-        label: `主播卡「${persona.name}」选的接入已被删除：到主播团里重选一个接入和模型`
+        level: 'warn',
+        label: `主播卡「${persona.name}」选的接入已被删除：播照常，没有智能补货/互动`,
+        detail: '到主播团里重选一个接入和模型'
       })
     } else if (persona && !(persona.modelConnectionId && persona.model.trim())) {
       items.push({
-        level: 'block',
-        label: `主播卡「${persona.name}」还没选模型：到主播团里选一个`
+        level: 'warn',
+        label: `主播卡「${persona.name}」还没选模型：播照常，没有智能补货/互动`,
+        detail: '到主播团里选一个'
       })
     } else {
       try {
@@ -86,23 +89,23 @@ export class LaunchService {
         })
       } catch (error) {
         items.push({
-          level: 'block',
-          label: '没有可用的语言模型',
+          level: 'warn',
+          label: '没有可用的语言模型：播照常，没有智能补货/互动',
           detail: error instanceof Error ? error.message : String(error)
         })
       }
     }
     // ②a 语音合成：生效音色（人设卡默认音色）走和运行时完全相同的合成路由。
-    // 没有默认音色也没有默认接入：没选音色就是阻断项，不做任何猜测。
+    // 没音色 = 新内容合不成，存量音频照播——降级为警告
     const effectiveVoice = (persona?.voiceId || '').trim()
     let ttsReady = false
     if (!effectiveVoice) {
       items.push({
-        level: 'block',
-        label: '还没给主播选音色',
+        level: 'warn',
+        label: '还没给主播选音色：存量照播，新内容没法合成',
         detail: persona
-          ? `到主播团给「${persona.name}」选一个音色（场次里也能覆盖），不然主播没声音`
-          : '到主播团选一张人设卡并给它选一个音色，不然主播没声音'
+          ? `到主播团给「${persona.name}」选一个音色，新话术才有声音`
+          : '到主播团选一张人设卡并给它选一个音色'
       })
     } else {
       try {
@@ -117,8 +120,8 @@ export class LaunchService {
         })
       } catch (error) {
         items.push({
-          level: 'block',
-          label: '语音合成不可用',
+          level: 'warn',
+          label: '语音合成不可用：存量照播，新内容没法合成',
           detail: error instanceof Error ? error.message : String(error)
         })
       }
@@ -228,7 +231,11 @@ export class LaunchService {
     return items
   }
 
-  /** 启动场次：预检有阻断项就拒绝；否则按序应用并装载。主播 = 当前主播，不在场次上 */
+  /**
+   * 启动场次：预检有阻断项就拒绝；否则按序应用并装载。主播 = 当前主播，不在场次上。
+   * 引擎与 agent 解耦：agent 起不来（模型挂了等）只降级——话术池照常装载播报，
+   * 智能补货/互动等 agent 就位后自然接上（pool.low 等事件沿总线等着她）。
+   */
   async launch(planId: string): Promise<LaunchResult> {
     const plan = this.storage.planList().find((p) => p.id === planId) ?? null
     if (!plan) return { ok: false, error: '场次不存在' }
@@ -242,11 +249,19 @@ export class LaunchService {
       const loaded = this.loadSceneUtterances(plan.id)
       // 有没合成的底稿就后台开蒸：0 就绪也允许开播（预检只是警告），边合成边补装，不空转
       void this.utterances.kickSynthesis(plan.id)
-      // 开播必须是干净的直播会话：写稿会话（prep）还挂着就先停掉，不带写稿上下文上场
-      const status = this.agent.status()
-      if (status.state !== 'stopped' && status.purpose === 'prep') await this.agent.stop()
-      await this.agent.start('live')
-      return { ok: true, loaded }
+      // 引擎先行：这场算开播了（播放循环只认话术池，不依赖 agent 会话）
+      this.agent.setLiveActive(true)
+      // 智能层尽力就位：起不来不拖垮播报，带警告回去让导演知道
+      let warning: string | undefined
+      try {
+        // 开播必须是干净的直播会话：写稿会话（prep）还挂着就先停掉，不带写稿上下文上场
+        const status = this.agent.status()
+        if (status.state !== 'stopped' && status.purpose === 'prep') await this.agent.stop()
+        await this.agent.start('live')
+      } catch (error) {
+        warning = `主播智能层没起来（${error instanceof Error ? error.message : String(error)}）：存量的合成音频照播，补货/互动等她就位后恢复`
+      }
+      return { ok: true, loaded, warning }
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }

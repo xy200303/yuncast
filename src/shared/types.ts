@@ -585,6 +585,8 @@ export interface AgentStatus {
   purpose?: 'prep' | 'live'
   /** 会话出生后资产改过（人设/模型/剧本/场次结构）：改动要重启会话才生效（docs/07 §8.5） */
   assetsStale?: boolean
+  /** 场次开播态（引擎语义）：launch 置真、结束场次置假，与 agent 会话是否活着无关 */
+  live?: boolean
   /** 正在生成（一轮没跑完）：对话输入框的发送钮据此变停止钮 */
   busy?: boolean
   /** 当前上下文估算（tokens，含 system prompt 与工具表开销）；无会话时无 */
@@ -1165,6 +1167,8 @@ export interface LaunchResult {
   ok: boolean
   /** 装载进话术池的条目数 */
   loaded?: number
+  /** 引擎开播成功但智能层没起来（模型挂了等）：照播存量，agent 就位后恢复 */
+  warning?: string
   error?: string
 }
 

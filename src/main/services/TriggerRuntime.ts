@@ -407,6 +407,12 @@ export class TriggerRuntime {
     }
     const prompt = renderTemplate(promptTemplate ?? '', payload, aggregated).trim()
     if (!prompt) return
-    this.agent.inject(prompt, mode)
+    // agent 没在跑（没开播/智能层不可用）时 inject 会抛：触发器是锦上添花，绝不能让异常穿出去
+    try {
+      this.agent.inject(prompt, mode)
+    } catch (error) {
+      console.error(`[AgentAnchor] 触发器「${trigger.name}」投递失败:`, error)
+      this.bus.emit('trigger.dropped', { triggerId: trigger.id, name: trigger.name, reason: 'agent 不可用' }, 'system')
+    }
   }
 }

@@ -500,9 +500,12 @@ function registerIpc(
     }
   })
   ipcMain.handle(IPC.agentStop, async () => {
-    const wasRunning = agent.status().state !== 'stopped'
+    const statusBefore = agent.status()
+    const wasRunning = statusBefore.state !== 'stopped'
     await agent.stop()
-    if (wasRunning) bus.emit('stream.ended', {}, 'human')
+    // 结束场次：开播态归引擎——就算 agent 早就没起来，这场也算收了
+    if (statusBefore.live) agent.setLiveActive(false)
+    if (wasRunning || statusBefore.live) bus.emit('stream.ended', {}, 'human')
   })
   // 打断当前这一轮生成（对话输入框的停止钮）：会话保留，下条指令照常来
   ipcMain.handle(IPC.agentAbort, () => agent.stopGeneration())

@@ -90,6 +90,8 @@ export class AgentService {
   private generating = false
   /** 会话用途：一个脑管全场——prep 写稿备播（播出通道关闭），live 直播中 */
   private sessionPurpose: 'live' | 'prep' = 'live'
+  /** 场次开播态（引擎语义，与 agent 会话解耦）：launch 置真、结束场次置假 */
+  private liveActive = false
   /** 本会话绑定的场次 id（选场次切换时判断要不要换场重开） */
   private sessionPlanId = ''
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
@@ -196,6 +198,12 @@ export class AgentService {
     this.speakingPaused = paused
   }
 
+  /** 开播态开关（LaunchService/结束场次用）：「这场在播」归引擎管，不归 agent 会话死活 */
+  setLiveActive(active: boolean): void {
+    this.liveActive = active
+    this.broadcast(this.status())
+  }
+
   /** 开播时冻结的资产指纹：会话出生时读了一次人设/模型/剧本，之后不再读（docs/07 §8.5） */
   private sessionFingerprint: string | null = null
 
@@ -216,7 +224,8 @@ export class AgentService {
         this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint,
       busy: this.generating,
       contextTokens: this.state === 'stopped' ? undefined : this.currentContextTokens(),
-      contextWindow: this.state === 'stopped' ? undefined : this.contextWindow || undefined
+      contextWindow: this.state === 'stopped' ? undefined : this.contextWindow || undefined,
+      live: this.liveActive
     }
   }
 

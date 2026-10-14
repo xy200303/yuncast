@@ -267,8 +267,8 @@ function PlanLauncher() {
     void window.api.plan.list().then(setPlans)
   }, [])
 
-  /** 直播中的判定：写稿会话（prep）不算开播，仍然显示「启动场次」 */
-  const running = (agent.state === 'running' || agent.state === 'starting') && agent.purpose !== 'prep'
+  /** 直播中的判定：开播态归引擎（agent.live）——智能层没起来也照播存量，不算没开播 */
+  const running = agent.live === true
   const activePlan = plans.find((p) => p.id === activePlanId) ?? null
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
@@ -331,11 +331,17 @@ function PlanLauncher() {
         setChecks(null)
         // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
         resumeBroadcast()
-        toast.success(`场次已启动：${activePlan?.name ?? ''}`, {
-          description: result.loaded
-            ? `已从话术库装载 ${result.loaded} 条，接着播`
-            : '本场没有就绪话术，主播先现场生成'
-        })
+        if (result.warning) {
+          toast.warning(`场次已启动：${activePlan?.name ?? ''}（智能层未就位）`, {
+            description: result.warning
+          })
+        } else {
+          toast.success(`场次已启动：${activePlan?.name ?? ''}`, {
+            description: result.loaded
+              ? `已从话术库装载 ${result.loaded} 条，接着播`
+              : '本场没有就绪话术，主播先现场生成'
+          })
+        }
       } else {
         toast.error('启动失败', { description: result.error })
       }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Pencil, Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -7,10 +7,22 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Switch } from '@/components/ui/switch'
 import { ProviderIcon } from '@/components/ProviderIcon'
-import { providerLabel, useAppStore, type LlmProviderManifest } from '../../stores/useAppStore'
+import { cn } from '@/lib/utils'
+import {
+  providerLabel,
+  useAppStore,
+  type LlmProviderManifest,
+  type ProviderFieldSpec
+} from '../../stores/useAppStore'
 import { type ModelConnectionSafe } from '../../../../shared/types'
-import { DocLinks, LLM_LINKS, ProviderField } from './shared'
+import { LLM_LINKS } from './shared'
+
+/** 跳转外链（主进程 setWindowOpenHandler 会交给系统浏览器打开） */
+function openExternal(url: string): void {
+  window.open(url, '_blank', 'noopener,noreferrer')
+}
 
 /**
  * 语言模型：供应商接入库（设置 = 库，用哪条由主播卡决定）。
@@ -28,8 +40,6 @@ export function LlmSection() {
   /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
   const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
-
-  const test = (connection: ModelConnectionSafe) => setTesting(connection)
 
   const askDelete = async (connection: ModelConnectionSafe) => {
     const personas = await window.api.persona.list()
@@ -49,16 +59,15 @@ export function LlmSection() {
   }
 
   return (
-    <div className="rounded-lg border bg-card px-4 py-4">
-      <div className="flex items-center justify-between">
+    <div className="rounded-xl border bg-card px-5 py-4">
+      <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-[13px] font-medium">语言模型（LLM）</p>
-          <p className="text-[13px] text-muted-foreground">
-            主播 Agent 的大脑。一条 = 一个服务商的接入，密钥只填一次；模型列表里放这家能用的模型，
-            用哪个由人设卡自己选（这里没有「默认模型」）
+          <p className="text-base font-semibold">语言模型</p>
+          <p className="mt-1 text-sm text-muted-foreground">
+            主播的大脑：一条接入 = 一家服务商 + 一份凭据 + 一组模型
           </p>
         </div>
-        <Button size="sm" onClick={() => setEditing({})}>
+        <Button className="shrink-0" onClick={() => setEditing({})}>
           <Plus />
           新建接入
         </Button>
@@ -66,63 +75,42 @@ export function LlmSection() {
 
       <div className="mt-4 flex flex-col gap-2">
         {connections.length === 0 ? (
-          <p className="rounded-lg border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
-            还没有供应商接入。新建一条（选服务商、填一次 API Key、把这家能用的模型加进列表），主播才有大脑。
+          <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+            还没有供应商接入，点右上角「新建接入」添加
           </p>
         ) : (
           connections.map((connection) => (
             <div
               key={connection.id}
-              className="flex items-center gap-3 rounded-lg border bg-background px-3 py-2"
+              role="button"
+              tabIndex={0}
+              onClick={() => setEditing({ connection })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setEditing({ connection })
+                }
+              }}
+              className="flex cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 transition-colors hover:bg-muted/60"
             >
               <ProviderIcon providerId={connection.providerId} />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
-                  <span className="truncate text-[13px] font-medium">{connection.name}</span>
-                  {!connection.ready && (
-                    <Badge variant="outline" className="shrink-0 text-muted-foreground">
-                      未配齐
-                    </Badge>
-                  )}
-                </div>
-                <p className="truncate text-xs text-muted-foreground">
-                  {providerLabel(providers, connection.providerId)} · {connection.models.length} 个模型
-                </p>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 text-xs"
-                  onClick={() => test(connection)}
-                >
-                  测试
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  title="编辑"
-                  onClick={() => setEditing({ connection })}
-                >
-                  <Pencil />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  title="删除"
-                  onClick={() => void askDelete(connection)}
-                >
-                  <Trash2 />
-                </Button>
+              <span className="truncate text-sm font-medium">{connection.name}</span>
+              <Badge variant="outline" className="shrink-0 text-xs">
+                {providerLabel(providers, connection.providerId)}
+              </Badge>
+              {!connection.ready && (
+                <Badge variant="outline" className="shrink-0 text-xs text-muted-foreground">
+                  未配齐
+                </Badge>
+              )}
+              <div className="ml-auto flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                <span className="text-sm">{connection.models.length} 个模型</span>
+                <ChevronRight className="size-4" />
               </div>
             </div>
           ))
         )}
       </div>
-
-      <p className="mt-3 text-xs text-muted-foreground">
-        密钥落盘加密、运行时注入 pi（不落 pi 的盘），界面拿不到密钥本身；主播卡各自指定用哪家的哪个模型。
-      </p>
 
       {editing && (
         <ConnectionEditorDialog
@@ -130,6 +118,14 @@ export function LlmSection() {
           connection={editing.connection}
           providers={providers}
           onClose={() => setEditing(null)}
+          onTest={(connection) => {
+            setEditing(null)
+            setTesting(connection)
+          }}
+          onDelete={(connection) => {
+            setEditing(null)
+            void askDelete(connection)
+          }}
         />
       )}
 
@@ -210,17 +206,17 @@ function TestConnectionDialog({
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">
-          对一个模型发一次最小请求（max_tokens=1），验的是「地址 + 密钥 + 模型名」这一整套。
+          对每个模型发一次最小请求（max_tokens=1），验「地址 + 密钥 + 模型名」一整套
         </p>
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-2">
           {connection.models.map((model) => {
             const result = results[model] ?? { state: 'idle' as const }
             return (
               <div
                 key={model}
-                className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2"
+                className="flex items-center gap-2 rounded-lg border px-3 py-2"
               >
-                <span className="min-w-0 flex-1 truncate font-mono text-[12px]">{model}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-sm">{model}</span>
                 {result.state === 'ok' && (
                   <span className="shrink-0 text-xs text-emerald-600">
                     连通{result.detail ? ` · ${result.detail}` : ''}
@@ -234,7 +230,7 @@ function TestConnectionDialog({
                 <Button
                   variant="outline"
                   size="sm"
-                  className="h-6 shrink-0 px-2 text-xs"
+                  className="shrink-0"
                   disabled={result.state === 'running' || batchRunning}
                   onClick={() => void runOne(model)}
                 >
@@ -244,6 +240,9 @@ function TestConnectionDialog({
             )
           })}
         </div>
+        <p className="text-xs text-muted-foreground">
+          {providerLabel(providers, connection.providerId)} 的模型逐个测，同一家不同型号可用性可能不一致
+        </p>
         <DialogFooter className="gap-2 sm:justify-between">
           <Button variant="outline" disabled={batchRunning} onClick={() => void runAll()}>
             {batchRunning ? '测试中…' : '全部测试'}
@@ -259,11 +258,15 @@ function TestConnectionDialog({
 function ConnectionEditorDialog({
   connection,
   providers,
-  onClose
+  onClose,
+  onTest,
+  onDelete
 }: {
   connection?: ModelConnectionSafe
   providers: LlmProviderManifest[]
   onClose: () => void
+  onTest: (connection: ModelConnectionSafe) => void
+  onDelete: (connection: ModelConnectionSafe) => void
 }) {
   const setConnections = useAppStore((s) => s.setConnections)
   const refreshPersona = useAppStore((s) => s.refreshPersona)
@@ -383,79 +386,77 @@ function ConnectionEditorDialog({
           </DialogTitle>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="mb-1">接入名</Label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={def ? `如：${def.label} 主号` : '如：DeepSeek 主号'}
-              />
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+          <div>
+            <Label className="mb-1.5">服务商</Label>
+            <div className="flex flex-wrap gap-2">
+              {providers.map((item) => {
+                const active = item.id === providerId
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => changeProvider(item.id)}
+                    className={cn(
+                      'flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-sm transition-colors',
+                      active
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'hover:bg-muted'
+                    )}
+                  >
+                    <ProviderIcon providerId={item.id} size="sm" />
+                    {item.label}
+                  </button>
+                )
+              })}
             </div>
-            <div>
-              <Label className="mb-1">服务商</Label>
-              <Select value={providerId} onValueChange={changeProvider}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {providers.map((item) => (
-                    <SelectItem key={item.id} value={item.id}>
-                      <span className="flex items-center gap-2">
-                        <ProviderIcon providerId={item.id} size="sm" />
-                        {item.label}
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          {def && <p className="-mt-1 text-xs text-muted-foreground">{def.note}</p>}
-
-          <div className="flex flex-col gap-3">
-            {(def?.configFields ?? []).map((field) => (
-              <div key={field.key}>
-                <Label className="mb-1">{field.label}</Label>
-                <ProviderField
-                  field={field}
-                  value={params[field.key] ?? ''}
-                  secretSaved={Boolean(connection?.hasSecret && field.secret)}
-                  onChange={(value) => patch({ key: field.key, value })}
-                />
-                {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
-              </div>
-            ))}
+            {def?.note && <p className="mt-1.5 text-xs text-muted-foreground">{def.note}</p>}
           </div>
 
           <div>
-            <div className="mb-1 flex items-center justify-between">
-              <Label>模型列表（这家能用的模型；用哪个由人设卡自己选）</Label>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 text-xs"
-                onClick={() => setPickerOpen(true)}
-              >
-                <Plus className="size-3" />
+            <Label className="mb-1.5">接入名</Label>
+            <Input
+              className="h-10 text-sm"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={def ? `如：${def.label} 主号` : '如：DeepSeek 主号'}
+            />
+          </div>
+
+          {(def?.configFields ?? []).map((field) => (
+            <div key={field.key}>
+              <Label className="mb-1.5">{field.label}</Label>
+              <FieldControl
+                field={field}
+                value={params[field.key] ?? ''}
+                secretSaved={Boolean(connection?.hasSecret && field.secret)}
+                onChange={(value) => patch({ key: field.key, value })}
+              />
+              {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+            </div>
+          ))}
+
+          <div>
+            <div className="mb-1.5 flex items-center justify-between">
+              <Label>模型列表（{models.length} 个）</Label>
+              <Button variant="outline" size="sm" onClick={() => setPickerOpen(true)}>
+                <Plus />
                 添加模型
               </Button>
             </div>
             {models.length === 0 ? (
-              <p className="rounded-lg border border-dashed px-3 py-3 text-xs text-muted-foreground">
-                还没有模型。点「添加模型」从可用模型里挑，或直接手打模型 id（本地服务的模型名必须手打）。
+              <p className="rounded-lg border border-dashed px-3 py-3 text-sm text-muted-foreground">
+                点「添加模型」从目录里挑，本地服务的模型名直接手打
               </p>
             ) : (
-              <div className="flex flex-col gap-1.5">
+              <div className="flex flex-col gap-2">
                 {models.map((row, index) => (
-                  <div key={index} className="flex items-center gap-1.5">
+                  <div key={index} className="flex items-center gap-2">
                     <Input
                       value={row.id}
                       onChange={(e) => setModelAt(index, e.target.value)}
                       placeholder="模型 id，如 deepseek-chat"
-                      className="h-7 text-xs"
+                      className="h-9 flex-1 text-sm"
                     />
                     <Input
                       value={row.window}
@@ -463,7 +464,7 @@ function ConnectionEditorDialog({
                       placeholder="窗口自动"
                       title="上下文窗口（tokens）：留空按服务商默认（DeepSeek/Kimi/千问/豆包/智谱均按 128k）。对话快涨满窗口时自动压缩旧消息（预留 16k 给回复）——不同型号窗口不一样，填准了压缩更平滑"
                       inputMode="numeric"
-                      className="h-7 w-24 shrink-0 text-xs"
+                      className="h-9 w-28 shrink-0 text-sm"
                     />
                     <Button
                       variant="ghost"
@@ -476,29 +477,59 @@ function ConnectionEditorDialog({
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  第二列是上下文窗口（tokens），留空按服务商默认；对话涨到「窗口 − 16k」时自动压缩旧消息
+                  第二列是上下文窗口（tokens），留空按服务商默认；对话接近上限时自动压缩旧消息
                 </p>
               </div>
             )}
           </div>
 
-          {links && (
-            <DocLinks
-              items={[
-                { label: `去 ${def?.label ?? providerId} 控制台拿 API Key`, url: links.console },
-                { label: '查看接入文档', url: links.docs }
-              ]}
-            />
+          {connection && (
+            <div className="flex items-center gap-2">
+              <Button variant="outline" size="sm" onClick={() => onTest(connection)}>
+                测试连接
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive"
+                onClick={() => onDelete(connection)}
+              >
+                <Trash2 />
+                删除接入
+              </Button>
+            </div>
           )}
         </div>
 
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            取消
-          </Button>
-          <Button disabled={busy} onClick={() => void save()}>
-            {busy ? '保存中…' : '保存'}
-          </Button>
+        <DialogFooter className="gap-2 sm:justify-between">
+          <div className="flex items-center gap-3">
+            {links && (
+              <>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                  onClick={() => openExternal(links.console)}
+                >
+                  {def?.label ?? providerId} 控制台
+                </button>
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                  onClick={() => openExternal(links.docs)}
+                >
+                  接入文档
+                </button>
+              </>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="ghost" onClick={onClose}>
+              取消
+            </Button>
+            <Button disabled={busy} onClick={() => void save()}>
+              {busy ? '保存中…' : '保存'}
+            </Button>
+          </div>
         </DialogFooter>
 
         <ModelPickerDialog
@@ -511,6 +542,88 @@ function ConnectionEditorDialog({
         />
       </DialogContent>
     </Dialog>
+  )
+}
+
+/** manifest 驱动的单个配置字段：password 带显示/隐藏切换，secret 已存时留空表示不修改 */
+function FieldControl({
+  field,
+  value,
+  secretSaved,
+  onChange
+}: {
+  field: ProviderFieldSpec
+  value: string | number | boolean
+  secretSaved: boolean
+  onChange: (value: string | number | boolean) => void
+}) {
+  const [show, setShow] = useState(false)
+
+  if (field.type === 'switch') {
+    return (
+      <Switch
+        checked={Boolean(value)}
+        onCheckedChange={onChange}
+        aria-label={field.label}
+      />
+    )
+  }
+  if (field.type === 'select') {
+    return (
+      <Select value={String(value ?? '')} onValueChange={onChange}>
+        <SelectTrigger className="h-10 w-full text-sm">
+          <SelectValue placeholder={field.placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {(field.options ?? []).map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (field.type === 'number') {
+    return (
+      <Input
+        type="number"
+        className="h-10 text-sm"
+        value={String(value ?? '')}
+        placeholder={field.placeholder}
+        onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+      />
+    )
+  }
+  if (field.type === 'password') {
+    return (
+      <div className="relative">
+        <Input
+          type={show ? 'text' : 'password'}
+          className="h-10 pr-10 text-sm"
+          value={String(value ?? '')}
+          placeholder={secretSaved ? '已保存，留空表示不修改' : field.placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          aria-label={show ? '隐藏密钥' : '显示密钥'}
+          onClick={() => setShow((prev) => !prev)}
+          className="absolute top-1/2 right-3 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+        </button>
+      </div>
+    )
+  }
+  return (
+    <Input
+      type="text"
+      className="h-10 text-sm"
+      value={String(value ?? '')}
+      placeholder={field.placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
   )
 }
 
@@ -559,32 +672,33 @@ function ModelPickerDialog({
         </DialogHeader>
 
         <Input
+          className="h-10 text-sm"
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
           placeholder="搜索模型 id，或直接手打一个（本地服务只能手打）"
         />
 
-        <div className="flex min-h-32 flex-1 flex-col gap-1 overflow-y-auto">
+        <div className="flex min-h-32 flex-1 flex-col gap-1.5 overflow-y-auto">
           {typed && !available.includes(typed) && (
             <button
               type="button"
-              className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-left text-[13px] hover:bg-accent"
+              className="flex items-center justify-between gap-2 rounded-lg border border-dashed px-3 py-2 text-left text-sm hover:bg-muted/60"
               onClick={() => {
                 onPick([typed])
                 setKeyword('')
               }}
             >
               <span className="min-w-0 truncate">手打添加「{typed}」</span>
-              <Plus className="size-3.5 shrink-0" />
+              <Plus className="size-4 shrink-0" />
             </button>
           )}
           {loading ? (
-            <p className="px-1 py-4 text-center text-xs text-muted-foreground">读取可用模型…</p>
+            <p className="px-1 py-6 text-center text-sm text-muted-foreground">读取可用模型…</p>
           ) : filtered.length === 0 ? (
-            <p className="px-1 py-4 text-center text-xs text-muted-foreground">
+            <p className="px-1 py-6 text-center text-sm text-muted-foreground">
               {available.length === 0
-                ? '这家服务商没有可列出的模型目录，直接在左边输入框里手打模型 id。'
-                : '没有匹配的模型。'}
+                ? '这家服务商没有可列出的模型目录，直接在上面手打模型 id'
+                : '没有匹配的模型'}
             </p>
           ) : (
             filtered.map((id) => {
@@ -594,14 +708,14 @@ function ModelPickerDialog({
                   key={id}
                   type="button"
                   disabled={added}
-                  className="flex items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2 text-left text-[13px] hover:bg-accent disabled:opacity-50"
+                  className="flex items-center justify-between gap-2 rounded-lg border px-3 py-2 text-left text-sm hover:bg-muted/60 disabled:opacity-50"
                   onClick={() => onPick([id])}
                 >
                   <span className="min-w-0 truncate">{id}</span>
                   {added ? (
                     <span className="shrink-0 text-xs text-muted-foreground">已添加</span>
                   ) : (
-                    <Plus className="size-3.5 shrink-0" />
+                    <Plus className="size-4 shrink-0" />
                   )}
                 </button>
               )

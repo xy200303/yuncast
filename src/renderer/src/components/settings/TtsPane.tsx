@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,19 +9,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { flattenModelCatalog } from '@/lib/voice'
+import { cn } from '@/lib/utils'
 import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { useAppStore, type ProviderFieldSpec, type TtsProviderManifest } from '../../stores/useAppStore'
 import { type ParamSpec, type TtsConnectionSafe, type TtsProvider } from '../../../../shared/types'
-import { DocLinks, ProviderField } from './shared'
-
-/** 接入里的凭据字段（manifest 的 configFields 全部是凭据） */
-function credentialFields(def: TtsProviderManifest): ProviderFieldSpec[] {
-  return def.configFields
-}
-
-/** 模型 id → 目录里的显示名 */
 
 /**
  * 语音合成（火山引擎 / 阿里云百炼）：
@@ -33,8 +25,6 @@ export function TtsSection() {
   const connections = useAppStore((s) => s.ttsConnections)
   const setConnections = useAppStore((s) => s.setTtsConnections)
   const voices = useAppStore((s) => s.voices)
-  /** 「添加接入」第一步：选服务商 */
-  const [adding, setAdding] = useState(false)
   /** 正在编辑/新建的接入（新建时 connection 为空，只是带着服务商进来） */
   const [editing, setEditing] = useState<{ providerId: TtsProvider; connection?: TtsConnectionSafe } | null>(
     null
@@ -55,101 +45,75 @@ export function TtsSection() {
   const boundVoices = deleting ? voices.filter((voice) => voice.connectionId === deleting.id).length : 0
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="rounded-lg border bg-card px-5 py-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[14px] font-medium">服务商接入</p>
-            <p className="mt-0.5 text-[13px] text-muted-foreground">
-              一条接入 = 一个服务商账号；模型和参数都在这条接入里配（音色由人设卡/场次选，这里不设默认）。
-            </p>
-          </div>
-          <Button size="sm" className="shrink-0" onClick={() => setAdding(true)}>
-            <Plus />
-            添加接入
-          </Button>
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">服务商接入</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            一条接入 = 一个服务商账号，凭据、模型与参数都在接入里配。
+          </p>
         </div>
-
-        <div className="mt-4 flex flex-col gap-2.5">
-          {connections.length === 0 ? (
-            <p className="rounded-lg border border-dashed px-3 py-6 text-center text-[13px] text-muted-foreground">
-              还没有接入。添加一条：选服务商 → 填一次密钥 → 勾上要用的模型。
-            </p>
-          ) : (
-            connections.map((connection) => {
-              const provider = providers.find((item) => item.id === connection.providerId)
-              const unused = connection.models.length - connection.usableModels.length
-              return (
-                <div
-                  key={connection.id}
-                  className="flex items-start gap-3 rounded-lg border bg-background px-3.5 py-3"
-                >
-                  <ProviderIcon providerId={connection.providerId} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="truncate text-[14px] font-medium">{connection.name}</span>
-                      {unused > 0 && (
-                        <Badge variant="outline" className="text-amber-600">
-                          {unused} 个模型缺配置
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="mt-1 text-[13px] text-muted-foreground">
-                      {connection.models.length} 个模型 · 实时合成 {connection.realtime ? '开' : '关'}
-                      {connection.usableModels.length > 0
-                        ? ` · 可用 ${connection.usableModels.length} 个`
-                        : ' · 现在没有能用的模型'}
-                    </p>
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={connection.usableModels.length === 0}
-                      onClick={() => setTesting(connection)}
-                    >
-                      测试
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setEditing({ providerId: connection.providerId, connection })}
-                    >
-                      配置
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      title="删除接入"
-                      onClick={() => setDeleting(connection)}
-                    >
-                      <Trash2 />
-                    </Button>
-                  </div>
-                </div>
-              )
-            })
-          )}
-        </div>
+        <Button
+          className="shrink-0"
+          disabled={providers.length === 0}
+          onClick={() => setEditing({ providerId: providers[0].id })}
+        >
+          <Plus />
+          添加接入
+        </Button>
       </div>
 
-      {adding && (
-        <TtsProviderPickerDialog
-          providers={providers}
-          onClose={() => setAdding(false)}
-          onPick={(providerId) => {
-            setAdding(false)
-            setEditing({ providerId })
-          }}
-        />
-      )}
+      <div className="flex flex-col gap-2">
+        {connections.length === 0 ? (
+          <p className="rounded-xl border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+            还没有接入。点「添加接入」：选服务商 → 填密钥 → 勾上要用的模型。
+          </p>
+        ) : (
+          connections.map((connection) => {
+            const provider = providers.find((item) => item.id === connection.providerId)
+            const unusable = connection.models.length - connection.usableModels.length
+            return (
+              <button
+                key={connection.id}
+                type="button"
+                className="flex w-full cursor-pointer items-center gap-3 rounded-xl border px-4 py-3.5 text-left hover:bg-muted/60"
+                onClick={() => setEditing({ providerId: connection.providerId, connection })}
+              >
+                <ProviderIcon providerId={connection.providerId} />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-medium">{connection.name}</span>
+                  {provider && (
+                    <Badge variant="outline" className="shrink-0 text-xs">
+                      {provider.label}
+                    </Badge>
+                  )}
+                  {unusable > 0 && (
+                    <Badge variant="outline" className="shrink-0 text-xs text-amber-600">
+                      {unusable} 个模型缺配置
+                    </Badge>
+                  )}
+                </div>
+                <span className="shrink-0 text-sm text-muted-foreground">
+                  {connection.models.length} 个模型{connection.realtime ? ' · 实时合成' : ''}
+                </span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+              </button>
+            )
+          })
+        )}
+      </div>
 
       {editing && (
         <TtsConnectionEditorDialog
-          key={editing.connection?.id ?? `new-${editing.providerId}`}
-          providerId={editing.providerId}
+          key={editing.connection?.id ?? 'new'}
+          initialProviderId={editing.providerId}
           connection={editing.connection}
           onClose={() => setEditing(null)}
+          onTest={(connection) => setTesting(connection)}
+          onDelete={(connection) => {
+            setEditing(null)
+            setDeleting(connection)
+          }}
         />
       )}
 
@@ -180,52 +144,79 @@ export function TtsSection() {
   )
 }
 
-/** 「添加接入」第一步：选服务商（一家可以有多条接入，所以每次都从服务商开始） */
-function TtsProviderPickerDialog({
-  providers,
-  onPick,
-  onClose
+/** manifest 驱动的单个凭据字段：password 带眼睛切换，密钥已存时留空 = 不修改 */
+function CredentialField({
+  field,
+  value,
+  secretSaved,
+  onChange
 }: {
-  providers: TtsProviderManifest[]
-  onPick: (providerId: TtsProvider) => void
-  onClose: () => void
+  field: ProviderFieldSpec
+  value: string | number | boolean
+  secretSaved: boolean
+  onChange: (value: string | number | boolean) => void
 }) {
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>添加语音合成接入</DialogTitle>
-        </DialogHeader>
-        <p className="text-xs text-muted-foreground">
-          选服务商 → 填一次密钥 → 勾上这家要用的模型。同一家可以加多条接入（不同账号 / 不同参数）。
-        </p>
-        <div className="flex flex-col gap-2">
-          {providers.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="flex items-start gap-3 rounded-lg border bg-card px-3 py-2 text-left hover:bg-accent"
-              onClick={() => onPick(item.id)}
-            >
-              <ProviderIcon providerId={item.icon} />
-              <div className="min-w-0 flex-1">
-                <p className="text-[13px] font-medium">{item.label}</p>
-                <p className="text-xs text-muted-foreground">{item.note}</p>
-                <p className="mt-0.5 text-[13px] text-muted-foreground">
-                  {item.models.filter((model) => model.kind !== 'realtime').length} 个模型可用 ·{' '}
-                  {item.capabilities.clone ? '支持声音复刻' : '不支持复刻'}
-                </p>
-              </div>
-            </button>
+  const [show, setShow] = useState(false)
+
+  if (field.type === 'switch') {
+    return <Switch checked={Boolean(value)} onCheckedChange={onChange} aria-label={field.label} />
+  }
+  if (field.type === 'select') {
+    return (
+      <Select value={String(value ?? '')} onValueChange={onChange}>
+        <SelectTrigger className="h-10 w-full text-sm">
+          <SelectValue placeholder={field.placeholder} />
+        </SelectTrigger>
+        <SelectContent>
+          {(field.options ?? []).map((option) => (
+            <SelectItem key={option.value} value={option.value}>
+              {option.label}
+            </SelectItem>
           ))}
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            取消
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </SelectContent>
+      </Select>
+    )
+  }
+  if (field.type === 'number') {
+    return (
+      <Input
+        className="h-10 text-sm"
+        type="number"
+        value={String(value ?? '')}
+        placeholder={field.placeholder}
+        onChange={(e) => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+      />
+    )
+  }
+  if (field.type === 'password') {
+    return (
+      <div className="relative">
+        <Input
+          className="h-10 pr-10 text-sm"
+          type={show ? 'text' : 'password'}
+          value={String(value ?? '')}
+          placeholder={secretSaved ? '已保存，留空表示不修改' : field.placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          aria-label={show ? '隐藏密钥' : '显示密钥'}
+          onClick={() => setShow((prev) => !prev)}
+        >
+          {show ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+        </button>
+      </div>
+    )
+  }
+  return (
+    <Input
+      className="h-10 text-sm"
+      type="text"
+      value={String(value ?? '')}
+      placeholder={field.placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
   )
 }
 
@@ -246,10 +237,10 @@ function TtsParamForm({
     <div className="grid grid-cols-2 gap-3">
       {specs.map((spec) => (
         <div key={spec.key}>
-          <Label className="mb-1 text-xs">{spec.label}</Label>
+          <Label className="mb-1.5 text-sm">{spec.label}</Label>
           {spec.type === 'select' ? (
             <Select value={String(valueOf(spec))} onValueChange={(value) => onChange(spec.key, value)}>
-              <SelectTrigger className="h-7 w-full text-xs">
+              <SelectTrigger className="h-9 w-full text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -262,7 +253,7 @@ function TtsParamForm({
             </Select>
           ) : (
             <Input
-              className="h-7 text-xs"
+              className="h-9 text-sm"
               type={spec.type === 'number' ? 'number' : 'text'}
               min={spec.min}
               max={spec.max}
@@ -275,7 +266,7 @@ function TtsParamForm({
               }}
             />
           )}
-          {spec.help && <p className="mt-1 text-[11px] text-muted-foreground">{spec.help}</p>}
+          {spec.help && <p className="mt-1 text-xs text-muted-foreground">{spec.help}</p>}
         </div>
       ))}
     </div>
@@ -336,9 +327,9 @@ function TtsTestDialog({
           </DialogTitle>
         </DialogHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto pr-1">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
           <div>
-            <Label className="mb-1 text-xs">模型与音色</Label>
+            <Label className="mb-1.5 text-sm font-medium">模型与音色</Label>
             <VoiceCascadePicker
               voiceId={voice}
               onPick={setVoice}
@@ -347,18 +338,18 @@ function TtsTestDialog({
             />
           </div>
           <div>
-            <Label className="mb-1 text-xs">测试文本</Label>
-            <Input className="h-8 text-xs" value={text} onChange={(e) => setText(e.target.value)} />
+            <Label className="mb-1.5 text-sm font-medium">测试文本</Label>
+            <Input className="h-10 text-sm" value={text} onChange={(e) => setText(e.target.value)} />
           </div>
 
           {result &&
             (result.ok ? (
-              <p className="text-xs text-emerald-600">
+              <p className="text-sm text-emerald-600">
                 合成成功{result.latencyMs ? ` · ${result.latencyMs} ms` : ''}
                 {result.playing ? ' · 已出声' : ''}
               </p>
             ) : (
-              <p className="text-xs text-destructive">{result.error}</p>
+              <p className="text-sm text-destructive">{result.error}</p>
             ))}
         </div>
 
@@ -377,22 +368,24 @@ function TtsTestDialog({
 
 /** 新建/编辑语音合成接入：接入名 + 凭据 + 模型（勾选 + 每个模型的参数）+ 实时合成 */
 function TtsConnectionEditorDialog({
-  providerId,
+  initialProviderId,
   connection,
-  onClose
+  onClose,
+  onTest,
+  onDelete
 }: {
-  providerId: TtsProvider
+  initialProviderId: TtsProvider
   connection?: TtsConnectionSafe
   onClose: () => void
+  onTest: (connection: TtsConnectionSafe) => void
+  onDelete: (connection: TtsConnectionSafe) => void
 }) {
   const providers = useAppStore((s) => s.ttsProviders)
-  const voices = useAppStore((s) => s.voices)
-  const connections = useAppStore((s) => s.ttsConnections)
   const setConnections = useAppStore((s) => s.setTtsConnections)
+  const [providerId, setProviderId] = useState(initialProviderId)
   const def = providers.find((item) => item.id === providerId)
-  const catalog = flattenModelCatalog(providers)
   const specs = (def?.models ?? []).filter((spec) => spec.kind !== 'realtime')
-  const fields = def ? credentialFields(def) : []
+  const fields = def?.configFields ?? []
   const firstTts = specs.find((spec) => spec.kind === 'tts')?.id ?? specs[0]?.id ?? ''
   const [name, setName] = useState(connection?.name ?? def?.label ?? '')
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
@@ -411,6 +404,27 @@ function TtsConnectionEditorDialog({
   const [realtime, setRealtime] = useState(connection?.realtime ?? false)
   const [expanded, setExpanded] = useState('')
   const [busy, setBusy] = useState(false)
+
+  /** 新建时换服务商：凭据按新服务商的字段重置，模型勾选回到新家的第一个 TTS 模型 */
+  const changeProvider = (next: TtsProvider) => {
+    if (connection || next === providerId) return
+    const nextDef = providers.find((item) => item.id === next)
+    if (!nextDef) return
+    // 名字还没改过（仍是上一家的 label）就跟着换，省得手填
+    if (!name.trim() || name === def?.label) setName(nextDef.label)
+    const nextParams: Record<string, string | number | boolean> = {}
+    for (const field of nextDef.configFields) {
+      if (field.default !== undefined) nextParams[field.key] = field.default
+    }
+    const nextSpecs = nextDef.models.filter((spec) => spec.kind !== 'realtime')
+    const nextFirst = nextSpecs.find((spec) => spec.kind === 'tts')?.id ?? nextSpecs[0]?.id ?? ''
+    setProviderId(next)
+    setParams(nextParams)
+    setEnabled(nextFirst ? [nextFirst] : [])
+    setModelParams({})
+    setRealtime(false)
+    setExpanded('')
+  }
 
   const toggleModel = (id: string, on: boolean) => {
     setEnabled(on ? [...enabled, id] : enabled.filter((item) => item !== id))
@@ -467,45 +481,73 @@ function TtsConnectionEditorDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ProviderIcon providerId={def.icon} />
-            {connection ? connection.name : `新建${def.label}接入`}
+            {connection ? `供应商接入 · ${connection.name || '未命名'}` : '新建供应商接入'}
           </DialogTitle>
         </DialogHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
-          <div className="flex flex-col gap-3">
-            <div>
-              <Label className="mb-1">接入名</Label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={`如：${def.label} 主号 / 备用账号`}
-              />
+          <div>
+            <Label className="mb-1.5 text-sm font-medium">服务商</Label>
+            <div className="flex flex-wrap gap-2">
+              {providers.map((item) => {
+                const active = item.id === providerId
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    disabled={Boolean(connection)}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm transition-colors',
+                      active
+                        ? 'border-primary bg-primary text-primary-foreground'
+                        : 'hover:bg-muted/60',
+                      connection && 'cursor-not-allowed opacity-60'
+                    )}
+                    onClick={() => changeProvider(item.id)}
+                  >
+                    <ProviderIcon providerId={item.icon} size="sm" />
+                    {item.label}
+                  </button>
+                )
+              })}
             </div>
-
-            {fields.map((field) => (
-              <div key={field.key}>
-                <Label className="mb-1">{field.label}</Label>
-                <ProviderField
-                  field={field}
-                  value={params[field.key] ?? ''}
-                  secretSaved={Boolean(connection?.hasSecret && field.secret)}
-                  onChange={(value) => setParams((prev) => ({ ...prev, [field.key]: value }))}
-                />
-                {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
-              </div>
-            ))}
+            {def.note && <p className="mt-1.5 truncate text-xs text-muted-foreground">{def.note}</p>}
           </div>
 
           <div>
-            <Label className="mb-2">模型（勾上要用的；展开配这个模型的参数，比如语速、语气）</Label>
+            <Label className="mb-1.5 text-sm font-medium">接入名</Label>
+            <Input
+              className="h-10 text-sm"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={`如：${def.label} 主号 / 备用账号`}
+            />
+          </div>
+
+          {fields.map((field) => (
+            <div key={field.key}>
+              <Label className="mb-1.5 text-sm font-medium">{field.label}</Label>
+              <CredentialField
+                field={field}
+                value={params[field.key] ?? ''}
+                secretSaved={Boolean(connection?.hasSecret && field.secret)}
+                onChange={(value) => setParams((prev) => ({ ...prev, [field.key]: value }))}
+              />
+              {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+            </div>
+          ))}
+
+          <div>
+            <Label className="mb-1.5 text-sm font-medium">模型列表（已启用 {enabled.length} 个）</Label>
             <div className="flex flex-col gap-2">
               {specs.map((spec) => {
                 const on = enabled.includes(spec.id)
-                const missingWorkspace = Boolean(spec.needsWorkspace) && !String(params.workspaceId ?? '').trim()
+                const missingWorkspace =
+                  Boolean(spec.needsWorkspace) && !String(params.workspaceId ?? '').trim()
                 const paramCount = Object.keys(modelParams[spec.id] ?? {}).length
                 return (
-                  <div key={spec.id} className="rounded-lg border bg-background">
-                    <div className="flex items-center gap-2.5 px-3 py-2.5">
+                  <div key={spec.id} className="rounded-xl border">
+                    <div className="flex items-center gap-3 px-4 py-3">
                       <Checkbox
                         checked={on}
                         onCheckedChange={(value) => toggleModel(spec.id, value === true)}
@@ -513,15 +555,21 @@ function TtsConnectionEditorDialog({
                       />
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="truncate text-sm">{spec.label}</span>
-                          {spec.kind === 'clone' && <Badge variant="outline">复刻模型</Badge>}
+                          <span className="truncate text-sm font-medium">{spec.label}</span>
+                          {spec.kind === 'clone' && (
+                            <Badge variant="outline" className="text-xs">
+                              复刻模型
+                            </Badge>
+                          )}
                           {missingWorkspace && (
-                            <Badge variant="outline" className="text-amber-600">
+                            <Badge variant="outline" className="text-xs text-amber-600">
                               需业务空间 ID
                             </Badge>
                           )}
                         </div>
-                        {spec.note && <p className="mt-0.5 truncate text-xs text-muted-foreground">{spec.note}</p>}
+                        {spec.note && (
+                          <p className="mt-0.5 truncate text-xs text-muted-foreground">{spec.note}</p>
+                        )}
                       </div>
                       {spec.params.length > 0 && (
                         <Button
@@ -535,13 +583,13 @@ function TtsConnectionEditorDialog({
                       )}
                     </div>
                     {on && expanded === spec.id && spec.params.length > 0 && (
-                      <div className="border-t px-3 py-3">
+                      <div className="border-t px-4 py-3">
                         <TtsParamForm
                           specs={spec.params}
                           values={modelParams[spec.id] ?? {}}
                           onChange={(key, value) => patchModelParam(spec.id, key, value)}
                         />
-                        <p className="mt-2 text-xs text-muted-foreground">清空某一项 = 用官方默认值</p>
+                        <p className="mt-2 text-xs text-muted-foreground">留空 = 用官方默认值</p>
                       </div>
                     )}
                   </div>
@@ -550,13 +598,13 @@ function TtsConnectionEditorDialog({
             </div>
           </div>
 
-          <div className="flex items-center justify-between gap-3 rounded-lg border px-3.5 py-3">
+          <div className="flex items-center justify-between gap-3 rounded-xl border px-4 py-3.5">
             <div>
-              <p className="text-sm">实时合成</p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
+              <p className="text-sm font-medium">实时合成</p>
+              <p className="mt-1 text-xs text-muted-foreground">
                 {restreamable
-                  ? '动态内容（评论回复等）边合成边播，首包更快；剧本类话术照旧提前预合成。双向实时通道协议核对中，暂时走 SSE 流式'
-                  : '勾上的模型都不支持流式，开不了'}
+                  ? '动态内容（评论回复等）边合成边播，首包更快（暂走 SSE 流式）'
+                  : '勾选的模型都不支持流式，开不了'}
               </p>
             </div>
             <Switch
@@ -567,16 +615,54 @@ function TtsConnectionEditorDialog({
             />
           </div>
 
-          <DocLinks items={def.links} />
+          {def.links.length > 0 && (
+            <div className="flex flex-wrap gap-x-4 gap-y-1">
+              {def.links.map((item) => (
+                <button
+                  key={item.url}
+                  type="button"
+                  className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+                  onClick={() => window.open(item.url, '_blank', 'noopener,noreferrer')}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" onClick={onClose}>
-            取消
-          </Button>
-          <Button disabled={busy} onClick={() => void save()}>
-            {busy ? '保存中…' : '保存'}
-          </Button>
+        <DialogFooter className="gap-2 sm:justify-between">
+          <div className="flex items-center gap-2">
+            {connection && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={connection.usableModels.length === 0}
+                  onClick={() => onTest(connection)}
+                >
+                  测试
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  onClick={() => onDelete(connection)}
+                >
+                  <Trash2 />
+                  删除接入
+                </Button>
+              </>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="ghost" onClick={onClose}>
+              取消
+            </Button>
+            <Button disabled={busy} onClick={() => void save()}>
+              {busy ? '保存中…' : '保存'}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -16,9 +16,10 @@ import {
  * 官方复刻 API 的 target_model 不含 cosyvoice-v1，所以 V1 不能作为复刻目标。
  */
 
-/** Qwen-Audio-TTS / CosyVoice 系共用的合成参数（maas SpeechSynthesizer） */
-function maasParams(withInstruction = false): ParamSpec[] {
-  const list: ParamSpec[] = [
+/** Qwen-Audio-TTS / CosyVoice 系共用的合成参数（maas SpeechSynthesizer）。
+ *  语气指令不放这里：演法归 agent 的 delivery（每次合成现给），静态底色由人设卡性格承担 */
+function maasParams(): ParamSpec[] {
+  return [
     {
       key: 'format',
       label: '输出格式',
@@ -38,18 +39,9 @@ function maasParams(withInstruction = false): ParamSpec[] {
       options: ['16000', '22050', '24000', '48000'].map((value) => ({ value, label: value }))
     },
     { key: 'volume', label: '音量', type: 'number', min: 0, max: 100, default: 50 },
-    { key: 'rate', label: '语速倍率', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 },
-    { key: 'pitch', label: '音调倍率', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 }
+    { key: 'rate', label: '语速倍率（接入默认，agent 可按条覆盖）', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 },
+    { key: 'pitch', label: '音调倍率（接入默认，agent 可按条覆盖）', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 }
   ]
-  if (withInstruction) {
-    list.push({
-      key: 'instruction',
-      label: '语气指令（可选）',
-      type: 'text',
-      help: '≤100 字，如「语速稍快，语气热情，像直播间卖货」'
-    })
-  }
-  return list
 }
 
 const QWEN_AUDIO_NOTE = '需要业务空间 ID；支持语气指令与文本内嵌情感标签'
@@ -94,7 +86,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: []
   },
   {
@@ -106,7 +98,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: []
   },
   {
@@ -118,7 +110,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: []
   },
   {
@@ -151,7 +143,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: cosyvoiceV3PlusVoices
   },
   {
@@ -163,7 +155,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: cosyvoiceV3FlashVoices
   },
   {
@@ -175,7 +167,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: []
   },
   {
@@ -187,7 +179,7 @@ const models: TtsModelSpec[] = [
     streaming: true,
     instruction: true,
     cloneTarget: true,
-    params: maasParams(true),
+    params: maasParams(),
     voices: []
   }
 ]

@@ -524,6 +524,10 @@ export interface SpeechItem {
   speechText?: string
   /** 现场表演指示（情绪/语气，一句话）：模型支持语气指令时随这次合成发出去（agent 的 say delivery） */
   delivery?: string
+  /** 语速倍率（1.0 基准，0.85~1.3）：演法硬参数，内部换算成服务商口径 */
+  rate?: number
+  /** 音调倍率（1.0 基准，0.9~1.1 保守）：克隆音色大变会不像本人 */
+  pitch?: number
   /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播（tts.realtime 开启时） */
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
@@ -547,6 +551,9 @@ export interface PoolSayInput {
   voiceId?: string
   /** 现场表演指示（情绪/语气，一句话）：模型支持语气指令时随合成发出去 */
   delivery?: string
+  /** 语速倍率（1.0 基准，0.85~1.3）/ 音调倍率（0.9~1.1 保守）：演法硬参数，空 = 接入默认 */
+  rate?: number
+  pitch?: number
   lane?: SpeechLane
   sourceKind?: SpeechSourceKind
   sourceAgentId?: string
@@ -1155,6 +1162,10 @@ export interface Utterance {
   bitType: string
   /** 表演指示（情绪/语速/停顿，一句话）：合成时随文本一起进 TTS 的语境，UI 可编辑 */
   delivery: string
+  /** 语速倍率（1.0 基准，0.85~1.3）：agent 演法的硬参数，内部换算成服务商口径；空 = 接入默认 */
+  rate?: number
+  /** 音调倍率（1.0 基准，保守 0.9~1.1）：克隆音色大变会不像本人；空 = 接入默认 */
+  pitch?: number
   /** 空 = 用场次/人设卡的音色 */
   voiceId: string
   audioPath: string | null

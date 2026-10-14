@@ -87,6 +87,16 @@ export interface TtsTestInput {
   text?: string
 }
 
+/** 一次合成的演法（agent 的 delivery/rate/pitch 下沉到这）：覆盖接入静态默认，参与缓存键 */
+export interface SynthPerformance {
+  /** 自然语言演法（情绪/语气/停顿）：模型支持语气指令（model.instruction）才发 */
+  instruction?: string
+  /** 语速倍率（1.0 基准，0.85~1.3） */
+  rate?: number
+  /** 音调倍率（1.0 基准，0.9~1.1 保守） */
+  pitch?: number
+}
+
 export interface TtsTestResult {
   ok: boolean
   error?: string
@@ -366,23 +376,43 @@ export class TtsService {
   }
 
   /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。
-   *  instruction：这次合成专用的表演指示（agent 写的 delivery）；模型支持语气指令才生效，
-   *  会覆盖接入上配的静态 instruction 并参与缓存键（不同演法不串缓存） */
+   *  perf：这次合成专用的演法（agent 写的 delivery/rate/pitch）——覆盖接入上的静态默认并参与缓存键（不同演法不串缓存） */
   async synthesize(
     itemId: string,
     text: string,
     voiceId?: string,
     signal?: AbortSignal,
-    instruction?: string
+    perf?: SynthPerformance
   ): Promise<string> {
-    return this.synthesizeWithRoute(itemId, text, this.withInstruction(this.route(voiceId), instruction), signal)
+    return this.synthesizeWithRoute(itemId, text, this.withPerformance(this.route(voiceId), perf), signal)
   }
 
-  /** delivery 覆盖路由的静态 instruction（模型标了 instruction 才生效；参与缓存键不串味） */
-  private withInstruction(route: TtsRoute, instruction?: string): TtsRoute {
-    const trimmed = instruction?.trim()
-    if (!trimmed || !route.model.instruction) return route
-    return { ...route, params: { ...route.params, instruction: trimmed } }
+  /**
+   * 演法覆盖到路由参数：instruction 覆盖静态语气指令（模型标了 instruction 才发）；
+   * rate/pitch 是 agent 侧的 1.0 基准倍率，按服务商口径换算（百炼倍率直发；火山 speech_rate 百分点 / pitch 半音），
+   * 模型参数表里没有对应键的不发。
+   */
+  private withPerformance(route: TtsRoute, perf?: SynthPerformance): TtsRoute {
+    if (!perf) return route
+    let params = route.params
+    const declares = (key: string) => route.model.params?.some((p) => p.key === key) ?? false
+    const trimmed = perf.instruction?.trim()
+    if (trimmed && route.model.instruction) params = { ...params, instruction: trimmed }
+    if (perf.rate !== undefined && Number.isFinite(perf.rate)) {
+      const rate = Math.min(1.3, Math.max(0.85, perf.rate))
+      if (declares('rate')) params = { ...params, rate: Math.round(rate * 100) / 100 }
+      else if (declares('speech_rate')) params = { ...params, speech_rate: Math.round((rate - 1) * 100) }
+    }
+    if (perf.pitch !== undefined && Number.isFinite(perf.pitch)) {
+      const pitch = Math.min(1.1, Math.max(0.9, perf.pitch))
+      if (route.provider === 'bailian' && declares('pitch')) {
+        params = { ...params, pitch: Math.round(pitch * 100) / 100 }
+      } else if (route.provider === 'volcano' && declares('pitch')) {
+        // 倍率 → 半音：12 * log2（0.9≈-2、1.1≈+2）
+        params = { ...params, pitch: Math.max(-12, Math.min(12, Math.round(12 * Math.log2(pitch)))) }
+      }
+    }
+    return params === route.params ? route : { ...route, params }
   }
 
   /** 这条音色路由所属服务商的预合成请求间隔（config 没显式配时的默认值，来自 manifest 的官方限流档） */
@@ -703,9 +733,9 @@ export class TtsService {
     text: string,
     voiceId?: string,
     signal?: AbortSignal,
-    instruction?: string
+    perf?: SynthPerformance
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    const route = this.withInstruction(this.route(voiceId), instruction)
+    const route = this.withPerformance(this.route(voiceId), perf)
     const apiKey = String(route.connection.params.apiKey ?? '')
     const sampleRate = asNumber(route.params.sample_rate, 24000)
 

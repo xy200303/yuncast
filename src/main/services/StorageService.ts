@@ -133,6 +133,8 @@ interface SpeechRow {
   audio_path: unknown
   speech_text: unknown
   delivery: unknown
+  rate: unknown
+  pitch: unknown
   stream: unknown
   origin_utterance_id: unknown
   para_id: unknown
@@ -192,6 +194,8 @@ function rowToItem(row: SpeechRow): SpeechItem {
     audioPath: str(row.audio_path) || undefined,
     speechText: str(row.speech_text) || undefined,
     delivery: str(row.delivery) || undefined,
+    rate: num(row.rate),
+    pitch: num(row.pitch),
     stream: num(row.stream) === 1,
     originUtteranceId: str(row.origin_utterance_id) || undefined,
     paraId: str(row.para_id) || undefined,
@@ -413,6 +417,9 @@ export class StorageService {
     this.ensureColumn('speech_items', 'speech_text', 'TEXT')
     // 现场表演指示（情绪/语气）：模型支持语气指令时随这次合成发出去
     this.ensureColumn('speech_items', 'delivery', 'TEXT')
+    // 演法硬参数：语速/音调倍率（agent 下沉，空 = 接入默认）
+    this.ensureColumn('speech_items', 'rate', 'REAL')
+    this.ensureColumn('speech_items', 'pitch', 'REAL')
     // 连贯段落标记（段落合成切句产物，见 shared/paragraph.ts）
     this.ensureColumn('speech_items', 'para_id', 'TEXT')
     this.ensureColumn('speech_items', 'para_pos', 'INTEGER')
@@ -422,6 +429,9 @@ export class StorageService {
     // 桥段制：内容形态标签（BIT_TYPES；'' = 旧式单句）+ 表演指示（情绪/语速/停顿）
     this.ensureColumn('utterances', 'bit_type', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('utterances', 'delivery', "TEXT NOT NULL DEFAULT ''")
+    // 演法硬参数：语速/音调倍率（agent 下沉，空 = 接入默认）
+    this.ensureColumn('utterances', 'rate', 'REAL')
+    this.ensureColumn('utterances', 'pitch', 'REAL')
     // 场景内创作顺序号：装池按它排（首轮严格按叙事顺序播放）
     this.ensureColumn('utterances', 'seq', 'INTEGER NOT NULL DEFAULT 0')
     // 音色库（M8 声音克隆）
@@ -1449,9 +1459,9 @@ export class StorageService {
       .prepare(
         `INSERT INTO speech_items
          (id, session_id, text, turn_id, seq, voice_id, source_agent_id, source_kind, lane,
-          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, stream,
+          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, rate, pitch, stream,
           origin_utterance_id, para_id, para_pos, para_len, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -1470,6 +1480,8 @@ export class StorageService {
         item.audioPath ?? null,
         item.speechText ?? null,
         item.delivery ?? null,
+        item.rate ?? null,
+        item.pitch ?? null,
         item.stream ? 1 : 0,
         item.originUtteranceId ?? null,
         item.paraId ?? null,
@@ -2056,12 +2068,13 @@ export class StorageService {
   utteranceSave(u: Utterance): void {
     this.db
       .prepare(
-        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, seq, text, bit_type, delivery, voice_id, audio_path,
+        `INSERT INTO utterances (id, plan_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, voice_id, audio_path,
                                  status, error, source, sources, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
            text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
+           rate = excluded.rate, pitch = excluded.pitch,
            voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
            sources = excluded.sources`
@@ -2075,6 +2088,8 @@ export class StorageService {
         u.text,
         u.bitType,
         u.delivery,
+        u.rate ?? null,
+        u.pitch ?? null,
         u.voiceId,
         u.audioPath ?? null,
         u.status,
@@ -2139,6 +2154,8 @@ function rowToUtterance(r: Record<string, unknown>): Utterance {
     text: str(r.text),
     bitType: str(r.bit_type),
     delivery: str(r.delivery),
+    rate: num(r.rate),
+    pitch: num(r.pitch),
     voiceId: str(r.voice_id),
     audioPath: str(r.audio_path) || null,
     synthVoice: str(r.synth_voice),

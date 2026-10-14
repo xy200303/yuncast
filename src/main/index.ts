@@ -2,8 +2,29 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { setDefaultResultOrder } from 'node:dns'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
+import { appendFileSync, mkdirSync } from 'node:fs'
 import { IPC } from '../shared/ipc-channels'
 import { POOL_LIMITS } from '../shared/types'
+
+/** 崩溃现场日志（无声退出排查）：追加写 userData/crash.log，只记事件类型不带业务数据 */
+function crashNote(kind: string, detail: string): void {
+  try {
+    const dir = app.getPath('userData')
+    mkdirSync(dir, { recursive: true })
+    appendFileSync(join(dir, 'crash.log'), `${new Date().toISOString()} ${kind} ${detail.slice(0, 800)}\n`)
+  } catch {
+    // 记不进去就算了
+  }
+}
+process.on('uncaughtException', (error) =>
+  crashNote('uncaughtException', error.stack ?? String(error))
+)
+process.on('unhandledRejection', (reason) =>
+  crashNote('unhandledRejection', reason instanceof Error ? (reason.stack ?? reason.message) : String(reason))
+)
+process.on('exit', (code) => crashNote('exit', `code=${code}`))
+app.on('before-quit', () => crashNote('before-quit', ''))
+app.on('child-process-gone', (_e, details) => crashNote('child-process-gone', JSON.stringify(details)))
 import {
   type AgentStatus,
   type AppConfig,
@@ -160,6 +181,12 @@ function createWindow(storage: StorageService): void {
     }
   })
   mainWindow = win
+
+  // 崩溃现场（无声退出排查）：渲染进程死了（崩溃/卡死被系统收）都记一笔到 userData/crash.log
+  win.webContents.on('render-process-gone', (_e, details) =>
+    crashNote('render-process-gone', JSON.stringify(details))
+  )
+  win.on('unresponsive', () => crashNote('unresponsive', ''))
 
   recoverBlankWindow(win)
 
@@ -920,6 +947,7 @@ if (!single) {
 }
 
 app.on('window-all-closed', () => {
+  crashNote('window-all-closed', '')
   if (timerInterval) clearInterval(timerInterval)
   connector?.stop()
   // 播放循环先停（它会把正在播的那条退回 ready），再收音频管线（杀掉解码进程、断了推流 BGM）

@@ -162,7 +162,9 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         text: Type.String({ description: '要说的话：一句短评，或一整段桥段' }),
         voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
         role: Type.Optional(Type.String({ description: '角色名（编剧模式），台词按该角色音色播出' })),
-        delivery: Type.Optional(Type.String({ description: '表演指示（情绪/语气，一句话），随这次合成发给模型' }))
+        delivery: Type.Optional(Type.String({ description: '表演指示（情绪/语气，一句话），随这次合成发给模型' })),
+        rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3）：催单加快、讲故事放慢' })),
+        pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守）：激动拔高、悄悄话压低' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
@@ -173,6 +175,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             text: params.text,
             voiceId,
             delivery: params.delivery,
+            rate: params.rate,
+            pitch: params.pitch,
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'scene'
           })
@@ -333,7 +337,9 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         id: Type.String({ description: '底稿条目 id（list_drafts 拿）' }),
         text: Type.String({ description: '新文本（桥段就传整段，单句就传一句）' }),
         type: Type.Optional(Type.String({ description: '桥段类型（不改不传）' })),
-        delivery: Type.Optional(Type.String({ description: '表演指示（不改不传）' }))
+        delivery: Type.Optional(Type.String({ description: '表演指示（不改不传）' })),
+        rate: Type.Optional(Type.Number({ description: '语速倍率（不改不传）' })),
+        pitch: Type.Optional(Type.Number({ description: '音调倍率（不改不传）' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
@@ -350,6 +356,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
               text: params.text,
               bitType: params.type?.trim() ?? existing.bitType,
               delivery: params.delivery?.trim() ?? existing.delivery,
+              rate: params.rate ?? existing.rate,
+              pitch: params.pitch ?? existing.pitch,
               voiceId: existing.voiceId,
               source: existing.source,
               sources: existing.sources
@@ -369,6 +377,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         text: Type.String({ description: '底稿文本（桥段就整段，单句就一句）' }),
         type: Type.Optional(Type.String({ description: '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/closer/general；closer=收尾段，不进自动轮播）' })),
         delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
+        rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
+        pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
         sceneId: Type.Optional(Type.String({ description: '记到哪个场景；不传记到当前场景，没有剧本则记为全场通用' }))
       }),
       execute: async (_id, params) =>
@@ -388,6 +398,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             text: params.text,
             bitType: params.type?.trim() ?? '',
             delivery: params.delivery?.trim() ?? '',
+            rate: params.rate,
+            pitch: params.pitch,
             voiceId: '',
             source: 'initial',
             sources: []
@@ -453,6 +465,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             type: Type.String({ description: '桥段类型（见工具描述），自定义类型也行' }),
             text: Type.String({ description: '桥段全文：多句连续口语，150~350 字，有铺垫有落点' }),
             delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
+            rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
+            pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
             sources: Type.Optional(
               Type.Array(
                 Type.Object({
@@ -480,6 +494,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
               text: item.text,
               bitType: item.type,
               delivery: item.delivery,
+              rate: item.rate,
+              pitch: item.pitch,
               sources: (item.sources ?? []).map(
                 (s): UtteranceSource => ({ type: s.type, id: '', name: s.name, snippet: s.snippet })
               )

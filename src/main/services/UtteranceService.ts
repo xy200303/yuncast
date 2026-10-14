@@ -58,7 +58,7 @@ export class UtteranceService {
   saveMany(
     planId: string,
     sceneId: string,
-    items: { text: string; bitType?: string; delivery?: string; sources?: Utterance['sources'] }[]
+    items: { text: string; bitType?: string; delivery?: string; rate?: number; pitch?: number; sources?: Utterance['sources'] }[]
   ): Utterance[] {
     const existing = this.storage.utteranceList(planId).filter((u) => u.sceneId === sceneId)
     let variantIdx = existing.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
@@ -72,6 +72,8 @@ export class UtteranceService {
           text: item.text.trim(),
           bitType: item.bitType?.trim() ?? '',
           delivery: item.delivery?.trim() ?? '',
+          rate: item.rate,
+          pitch: item.pitch,
           voiceId: '',
           source: 'initial',
           sources: item.sources ?? []
@@ -96,6 +98,8 @@ export class UtteranceService {
       text: input.text.trim(),
       bitType: input.bitType?.trim() ?? existing?.bitType ?? '',
       delivery: input.delivery?.trim() ?? existing?.delivery ?? '',
+      rate: input.rate ?? existing?.rate,
+      pitch: input.pitch ?? existing?.pitch,
       voiceId: input.voiceId ?? '',
       audioPath: textChanged ? null : (existing?.audioPath ?? null),
       status: textChanged ? 'pending' : (existing?.status ?? 'pending'),
@@ -234,8 +238,12 @@ export class UtteranceService {
         await new Promise((resolve) => setTimeout(resolve, 2000 * attempt))
       }
       try {
-        // delivery（agent 写的表演指示）随这次合成发给支持语气指令的模型——演法真正落到声音上
-        return await this.tts.synthesize(`utterance-${u.id}`, u.text, voice || undefined, signal, u.delivery || undefined)
+        // delivery（agent 写的表演指示）+ 语速/音调随这次合成发出去——演法真正落到声音上
+        return await this.tts.synthesize(`utterance-${u.id}`, u.text, voice || undefined, signal, {
+          instruction: u.delivery || undefined,
+          rate: u.rate,
+          pitch: u.pitch
+        })
       } catch (error) {
         lastError = error
         const message = error instanceof Error ? error.message : String(error)

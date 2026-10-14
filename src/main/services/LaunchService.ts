@@ -323,6 +323,9 @@ export class LaunchService {
         this.pool.say({
           text: u.text,
           voiceId: voice || undefined,
+          delivery: u.delivery || undefined,
+          rate: u.rate,
+          pitch: u.pitch,
           lane: 'normal',
           sourceKind: 'scene',
           sourceAgentId: LIBRARY_SOURCE_ID,

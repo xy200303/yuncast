@@ -241,6 +241,10 @@
     document.getElementById('commentPane').style.display = meta[k].interact ? '' : 'none'
     document.getElementById('interactTab').style.opacity = meta[k].interact ? 1 : .35
   }
+  // hash 直达：#queue / #long / #improv（审图/分享用）
+  const order = { queue: 0, long: 1, improv: 2 }
+  const h = location.hash.slice(1)
+  if (order[h] !== undefined) show(h, document.querySelectorAll('.facebar button')[order[h]])
 </script>
 </body>
 </html>

@@ -956,8 +956,6 @@ export interface LivePlan {
   name: string
   /** 本场主题/方向（注入主播 system prompt） */
   theme: string
-  /** 绑定人设卡（开播时应用为当前主播，docs/07 §8.5 ②） */
-  personaId: string | null
   /** 演出形式提示（单口/对口相声/幽默/朗诵…，注入 system prompt；docs/07 §5.6） */
   styleHint: string
   /** 直播模式 id（modes 表；'' = 默认互动模式）：事件接线 + 角色定位提示词模块 */
@@ -984,7 +982,6 @@ export const DEFAULT_MODE_ID = 'interactive'
 export const DEFAULT_LIVE_PLAN_INPUT: LivePlanInput = {
   name: '',
   theme: '',
-  personaId: null,
   styleHint: '',
   modeId: DEFAULT_MODE_ID,
   plannedMinutes: DEFAULT_PLANNED_MINUTES,

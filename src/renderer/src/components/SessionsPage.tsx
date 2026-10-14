@@ -25,7 +25,6 @@ import {
   type KnowledgeFile,
   type LiveMode,
   type LivePlan,
-  type Persona,
   type Product,
   type Script
 } from '../../../shared/types'
@@ -33,13 +32,12 @@ import { PlanDialog } from './sessions/PlanDialog'
 import { ModesDialog } from './sessions/ModesDialog'
 import { UtteranceDialog } from './sessions/UtteranceDialog'
 
-/** 场次：一场直播的完整配置（人设/形式/剧本/知识库/话术库/声音）。开播的唯一入口在直播台。 */
+/** 场次：一场直播的任务配置（形式/模式/剧本/知识库/话术库）。谁播由当前主播定，开播唯一入口在直播台。 */
 export function SessionsPage() {
   const config = useAppStore((s) => s.config)
   const loadConfig = useAppStore((s) => s.loadConfig)
   const [plans, setPlans] = useState<LivePlan[]>([])
   const [scripts, setScripts] = useState<Script[]>([])
-  const [personas, setPersonas] = useState<Persona[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [files, setFiles] = useState<KnowledgeFile[]>([])
   const [modes, setModes] = useState<LiveMode[]>([])
@@ -53,17 +51,15 @@ export function SessionsPage() {
   const activePlanId = config.live.activePlanId
 
   const reload = useCallback(async () => {
-    const [p, s, pe, pr, f, m] = await Promise.all([
+    const [p, s, pr, f, m] = await Promise.all([
       window.api.plan.list(),
       window.api.script.list(),
-      window.api.persona.list(),
       window.api.knowledge.listProducts(),
       window.api.knowledge.listFiles(),
       window.api.mode.list()
     ])
     setPlans(p)
     setScripts(s)
-    setPersonas(pe)
     setProducts(pr)
     setFiles(f)
     setModes(m)
@@ -90,7 +86,6 @@ export function SessionsPage() {
   }
 
   const scriptName = (id: string | null) => scripts.find((s) => s.id === id)?.title ?? null
-  const personaName = (id: string | null) => personas.find((p) => p.id === id)?.name ?? null
   const modeName = (id: string) =>
     modes.find((m) => m.id === (id || DEFAULT_MODE_ID))?.name ??
     modes.find((m) => m.id === DEFAULT_MODE_ID)?.name ??
@@ -101,7 +96,7 @@ export function SessionsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <CalendarDays className="size-4 text-primary" />
         <h1 className="text-sm font-medium">场次</h1>
-        <p className="text-xs text-muted-foreground">一场直播的完整配置：人设 + 形式 + 模式 + 剧本 + 知识库 + 话术库</p>
+        <p className="text-xs text-muted-foreground">一场直播的任务配置：形式 + 模式 + 剧本 + 知识库 + 话术库（谁播由当前主播定）</p>
         <div className="ml-auto flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => setModesOpen(true)}>
             <Drama />
@@ -138,11 +133,6 @@ export function SessionsPage() {
                       {plan.theme || '（没写主题）'}
                     </p>
                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                      {personaName(plan.personaId) ? (
-                        <Badge variant="secondary">{personaName(plan.personaId)}</Badge>
-                      ) : (
-                        <span>未绑人设</span>
-                      )}
                       {plan.styleHint && <Badge variant="outline">{plan.styleHint}</Badge>}
                       {modeName(plan.modeId) && <Badge variant="outline">{modeName(plan.modeId)}</Badge>}
                       {scriptName(plan.scriptId) ? (
@@ -194,7 +184,6 @@ export function SessionsPage() {
         open={editing !== null}
         plan={editing?.plan}
         scripts={scripts}
-        personas={personas}
         products={products}
         files={files}
         modes={modes}
@@ -219,7 +208,7 @@ export function SessionsPage() {
             <DialogTitle>删除场次</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            确认删除「{deleting?.name}」？本场话术库会一起删掉，绑定的剧本和人设卡不受影响。
+            确认删除「{deleting?.name}」？本场话术库会一起删掉，绑定的剧本不受影响。
           </p>
           <DialogFooter>
             <Button variant="ghost" onClick={() => setDeleting(null)}>

@@ -22,17 +22,15 @@ import {
   type LiveMode,
   type LivePlan,
   type LivePlanInput,
-  type Persona,
   type Product,
   type Script
 } from '../../../../shared/types'
 
-/** 场次新建/编辑弹窗（人设（必选）/模式/剧本/知识库/成本阀；音色归主播自己定，生成时长语气归生成弹窗） */
+/** 场次新建/编辑弹窗（模式/剧本/知识库/成本阀；谁播由当前主播定，生成时长语气归生成弹窗） */
 export function PlanDialog({
   open,
   plan,
   scripts,
-  personas,
   products,
   files,
   modes,
@@ -42,7 +40,6 @@ export function PlanDialog({
   open: boolean
   plan?: LivePlan
   scripts: Script[]
-  personas: Persona[]
   products: Product[]
   files: KnowledgeFile[]
   modes: LiveMode[]
@@ -52,8 +49,6 @@ export function PlanDialog({
   const [form, setForm] = useState<LivePlanInput>({
     name: plan?.name ?? '',
     theme: plan?.theme ?? '',
-    // 场次必须绑主播：默认跟当前主播（列表按 active DESC 排，第一个就是；旧表单值优先）
-    personaId: plan?.personaId ?? personas[0]?.id ?? null,
     styleHint: plan?.styleHint ?? '',
     modeId: plan?.modeId || DEFAULT_MODE_ID,
     plannedMinutes: plan?.plannedMinutes ?? DEFAULT_PLANNED_MINUTES,
@@ -80,10 +75,6 @@ export function PlanDialog({
 
   const submit = () => {
     if (!form.name.trim() || busy) return
-    if (!form.personaId) {
-      toast.error('场次必须绑定主播人设卡')
-      return
-    }
     setBusy(true)
     void window.api.plan
       .save(form, plan?.id)
@@ -128,25 +119,6 @@ export function PlanDialog({
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <div>
-              <Label className="mb-1">主播人设卡（必选）</Label>
-              <Select
-                value={form.personaId ?? ''}
-                onValueChange={(v) => setForm({ ...form, personaId: v || null })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="选择主播" />
-                </SelectTrigger>
-                <SelectContent>
-                  {personas.map((persona) => (
-                    <SelectItem key={persona.id} value={persona.id}>
-                      {persona.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">音色由主播自己定（人设默认音色 + 直播中可自己换）</p>
-            </div>
             <div>
               <Label className="mb-1">直播模式</Label>
               <Select

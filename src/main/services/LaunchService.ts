@@ -54,17 +54,11 @@ export class LaunchService {
     const items: PreflightItem[] = []
     const cfg = this.storage.getConfig()
 
-    // ① 主播身份
-    const persona = plan.personaId ? (this.persona.list().find((p) => p.id === plan.personaId) ?? null) : null
-    if (!plan.personaId) {
-      items.push({ level: 'block', label: '场次没有绑定人设卡', detail: '场次页编辑这场：人设决定谁在播' })
-    } else if (!persona) {
-      items.push({ level: 'block', label: '绑定的人设卡已不存在', detail: '重新选一张人设卡' })
-    } else {
-      const roles =
-        persona.roles.length > 0 ? `（角色：${persona.roles.map((r) => r.name).join(' / ')}）` : ''
-      items.push({ level: 'ok', label: `人设：${persona.name}${roles}` })
-    }
+    // ① 主播身份：当前主播（主播团 active 的那张卡；场次不绑人，想换人直接切当前主播）
+    const persona = this.persona.get()
+    const personaRoles =
+      persona.roles.length > 0 ? `（角色：${persona.roles.map((r) => r.name).join(' / ')}）` : ''
+    items.push({ level: 'ok', label: `主播：${persona.name}${personaRoles}` })
 
     // ② 大脑的凭据（模型解析和开播时用的完全是同一处逻辑）
     const brain = persona?.modelConnectionId
@@ -234,7 +228,7 @@ export class LaunchService {
     return items
   }
 
-  /** 启动场次：预检有阻断项就拒绝；否则按序应用并装载，失败回滚人设 */
+  /** 启动场次：预检有阻断项就拒绝；否则按序应用并装载。主播 = 当前主播，不在场次上 */
   async launch(planId: string): Promise<LaunchResult> {
     const plan = this.storage.planList().find((p) => p.id === planId) ?? null
     if (!plan) return { ok: false, error: '场次不存在' }
@@ -243,14 +237,8 @@ export class LaunchService {
       return { ok: false, error: `预检未通过：${blocked.map((item) => item.label).join('；')}` }
     }
 
-    const personaBefore = this.persona.get().id
-    let switched = false
     try {
       this.script.setActivePlan(plan.id)
-      if (plan.personaId && plan.personaId !== personaBefore) {
-        this.persona.setActive(plan.personaId)
-        switched = true
-      }
       const loaded = this.loadSceneUtterances(plan.id)
       // 有没合成的底稿就后台开蒸：0 就绪也允许开播（预检只是警告），边合成边补装，不空转
       void this.utterances.kickSynthesis(plan.id)
@@ -260,7 +248,6 @@ export class LaunchService {
       await this.agent.start('live')
       return { ok: true, loaded }
     } catch (error) {
-      if (switched) this.persona.setActive(personaBefore)
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
   }

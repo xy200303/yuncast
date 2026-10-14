@@ -362,8 +362,16 @@ export class StorageService {
     this.ensureColumn('agents', 'roles', "TEXT NOT NULL DEFAULT '[]'")
     // 多张人设卡（主播团）：active=1 的那张是当前主播
     this.ensureColumn('agents', 'active', 'INTEGER NOT NULL DEFAULT 0')
-    // 场次 = 开播单元（docs/07 §8.5）：人设/形式/生成配置/知识库范围/场次音色
-    this.ensureColumn('live_plans', 'persona_id', 'TEXT')
+    // 场次 = 开播单元（docs/07 §8.5）：形式/生成配置/知识库范围/场次音色
+    // 解耦重构：场次不再绑定主播（人格/模型/音色归主播卡），老库的 persona_id 直接删
+    if (
+      this.db
+        .prepare('PRAGMA table_info(live_plans)')
+        .all()
+        .some((row) => (row as Record<string, unknown>).name === 'persona_id')
+    ) {
+      this.db.exec('ALTER TABLE live_plans DROP COLUMN persona_id')
+    }
     this.ensureColumn('live_plans', 'style_hint', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('live_plans', 'gen_config', "TEXT NOT NULL DEFAULT '{}'")
     this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
@@ -1601,7 +1609,6 @@ export class StorageService {
           id: str(r.id),
           name: str(r.name),
           theme: str(r.theme),
-          personaId: str(r.persona_id) || null,
           styleHint: str(r.style_hint),
           modeId: str(r.mode_id),
           scriptId: str(r.script_id) || null,
@@ -1622,12 +1629,12 @@ export class StorageService {
   planSave(plan: LivePlan): void {
     this.db
       .prepare(
-        `INSERT INTO live_plans (id, name, theme, persona_id, style_hint, mode_id, planned_minutes, script_id,
+        `INSERT INTO live_plans (id, name, theme, style_hint, mode_id, planned_minutes, script_id,
                                  current_scene_idx, gen_config, knowledge_scope, voice_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            name = excluded.name, theme = excluded.theme,
-           persona_id = excluded.persona_id, style_hint = excluded.style_hint,
+           style_hint = excluded.style_hint,
            mode_id = excluded.mode_id,
            planned_minutes = excluded.planned_minutes,
            script_id = excluded.script_id, gen_config = excluded.gen_config,
@@ -1638,7 +1645,6 @@ export class StorageService {
         plan.id,
         plan.name,
         plan.theme,
-        plan.personaId ?? null,
         plan.styleHint,
         plan.modeId,
         plan.plannedMinutes,

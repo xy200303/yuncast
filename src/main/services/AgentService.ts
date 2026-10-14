@@ -276,7 +276,7 @@ export class AgentService {
         connection: connection
           ? [connection.providerId, connection.models, connection.params, connection.modelContextWindows]
           : null,
-        plan: [plan?.id, plan?.personaId, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
+        plan: [plan?.id, plan?.styleHint, plan?.scriptId, plan?.knowledgeScope],
         // 直播模式（事件接线 + 演法模块）也是出生资产：换模式这场就得重开
         mode: this.modes.fingerprint(plan?.modeId),
         script: script ? [script.title, script.scenes] : null,
@@ -564,16 +564,13 @@ export class AgentService {
     await this.ensurePrepSession()
   }
 
-  /** 主播就位（无会话时）：绑当前选中场次的资产（场次 → 人设 → 音色），恢复该场次存下的对话（没有就新起） */
+  /** 主播就位（无会话时）：当前主播的人格 + 选中场次的上下文，恢复该场次存下的对话（没有就新起） */
   private async ensurePrepSession(): Promise<void> {
     if (this.session) return
     const planId = this.storage.getConfig().live.activePlanId
     const plan = planId ? this.storage.planList().find((p) => p.id === planId) : null
     if (!plan) throw new Error('先在上方选一个场次：主播需要知道自己要播哪场，才有上下文')
     this.script.setActivePlan(plan.id)
-    if (plan.personaId && plan.personaId !== this.persona.get().id) {
-      this.persona.setActive(plan.personaId)
-    }
     await this.start('prep', this.restoredMessagesFor(plan.id))
   }
 
@@ -594,11 +591,8 @@ export class AgentService {
     }
     // 换场次：旧会话存回它自己场次名下，目标场次恢复它原来的对话接着写；同场次复用
     if (this.session && this.script.getActive().plan?.id !== plan.id) await this.stop()
-    // 资产切换跟开播装载同一套：场次 → 人设（音色归主播：人设默认音色，set_voice 运行时可换）
+    // 资产切换跟开播装载同一套：场次上下文换场重开（人格/模型/音色都归当前主播，不动）
     this.script.setActivePlan(plan.id)
-    if (plan.personaId && plan.personaId !== this.persona.get().id) {
-      this.persona.setActive(plan.personaId)
-    }
     if (!this.session) await this.start('prep', this.restoredMessagesFor(plan.id))
     this.directorSay(this.composeDraftBrief(plan, script))
   }

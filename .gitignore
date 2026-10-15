@@ -14,3 +14,7 @@ native/**/*.ipdb
 native/**/*.lib
 native/**/binding.sln
 native/**/config.gypi
+
+# VitePress
+website/.vitepress/dist/
+website/.vitepress/cache/

@@ -257,6 +257,12 @@ export interface ModelAdvancedParams {
   maxTokens?: number
 }
 
+/** 模型级单价（元/百万 tokens）：成本看板的换算来源；空 = 只记 token 不计金额 */
+export interface LlmModelPrice {
+  input?: number
+  output?: number
+}
+
 export interface ModelConnection {
   id: string
   /** 显示名，默认取服务商 label，可改 */
@@ -272,6 +278,8 @@ export interface ModelConnection {
   modelThinkingLevels: Record<string, ThinkingLevelChoice>
   /** 模型级高级参数：模型 id → { vision/温度/maxTokens }；缺省走官方/内置默认 */
   modelParams: Record<string, ModelAdvancedParams>
+  /** 模型级单价（元/百万 tokens）：模型 id → { input/output }；没配 = 只记用量不算钱 */
+  modelPrices: Record<string, LlmModelPrice>
   createdAt: number
   updatedAt: number
 }
@@ -297,6 +305,8 @@ export interface ModelConnectionInput {
   modelThinkingLevels?: Record<string, ThinkingLevelChoice>
   /** 模型级高级参数（可选，只保留 models 里存在的 id；空对象键不落盘） */
   modelParams?: Record<string, ModelAdvancedParams>
+  /** 模型级单价（可选，元/百万 tokens，只保留 models 里存在的 id；空对象键不落盘） */
+  modelPrices?: Record<string, LlmModelPrice>
 }
 
 /**
@@ -927,6 +937,8 @@ export interface LiveEvent {
   source: EventSource
   payload: Record<string, unknown>
   ts: number
+  /** 事件发生时选中的节目（写入时取 activeProgramId）；空 = 未选节目 */
+  programId?: string
 }
 
 export type TriggerMode = 'tool' | 'steer' | 'task'
@@ -1489,5 +1501,71 @@ export interface CommentConfig {
   connectorPort: number
   /** 连接器 MCP Bearer Token（在连接器设置页复制；敏感字段 加密落盘（secretBox）） */
   connectorToken: string
+}
+
+// ---------- 用量与成本采集（数据页成本看板，DB v3） ----------
+
+/** LLM 用量记录的用途分类 */
+export type UsageKind = 'chat' | 'draft' | 'compact'
+
+export const USAGE_KIND_LABEL: Record<UsageKind, string> = {
+  chat: '直播对话',
+  draft: '写稿',
+  compact: '上下文压缩'
+}
+
+/**
+ * 一次 LLM 请求的用量（usage_records 表）：真实 usage 直接落库；
+ * 服务商没给 usage 时按字符数/4 估算并标 estimated。
+ * cost 单位元，写入时按当时的模型单价算好；null = 该模型没配单价（改了单价不追溯历史）。
+ */
+export interface UsageRecord {
+  id: string
+  ts: number
+  programId: string | null
+  personaId: string
+  connectionId: string
+  model: string
+  kind: UsageKind
+  inputTokens: number
+  outputTokens: number
+  cacheRead: number
+  cacheWrite: number
+  /** true = 估算值（服务商没回 usage，按字符数/4 估的输出） */
+  estimated: boolean
+  cost: number | null
+}
+
+/** 一次 TTS 合成（tts_records 表）：chars = 送进合成的字符数；cost 单位元，null = 接入没配单价 */
+export interface TtsRecord {
+  id: string
+  ts: number
+  programId: string | null
+  connectionId: string
+  modelId: string
+  voiceId: string
+  chars: number
+  cost: number | null
+}
+
+/** 一段时间/全局的成本合计；unpriced = 没配单价的记录条数（这部分只记用量没算钱） */
+export interface CostBucket {
+  llmInputTokens: number
+  llmOutputTokens: number
+  llmCost: number
+  llmUnpriced: number
+  ttsChars: number
+  ttsCost: number
+  ttsUnpriced: number
+}
+
+/** 成本看板一屏数据（stats:dashboard） */
+export interface CostDashboard {
+  today: CostBucket
+  total: CostBucket
+  /** 近 30 天按天成本（本地时区，缺的天补 0） */
+  trend: { day: string; llmCost: number; ttsCost: number }[]
+  /** 按节目分组成本（全部时间；programId null = 未绑定节目） */
+  byProgram: { programId: string | null; programName: string; llmCost: number; ttsCost: number }[]
 }
 

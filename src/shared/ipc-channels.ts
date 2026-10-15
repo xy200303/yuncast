@@ -145,8 +145,10 @@ export const IPC = {
   triggerDelete: 'trigger:delete',
   triggerToggle: 'trigger:toggle',
 
-  // 事件时间线
-  eventRecent: 'event:recent',
+  // 成本看板（数据页）：合计 + 趋势 + 按节目分布 + 明细记录
+  statsDashboard: 'stats:dashboard',
+  statsUsageRecords: 'stats:usage-records',
+  statsTtsRecords: 'stats:tts-records',
 
   // 剧本
   scriptList: 'script:list',

@@ -12,12 +12,12 @@ import type {
   AudioProgressPayload,
   ConnectorStatus,
   ChatEntry,
+  CostDashboard,
   DirectorTimelineEvent,
   DirectorTimelineReset,
   EpisodeSummary,
   KnowledgeFile,
   LiveComment,
-  LiveEvent,
   LaunchResult,
   ModelConnectionInput,
   ModelConnectionSafe,
@@ -47,6 +47,8 @@ import type {
   SpeechLane,
   TtsConnectionInput,
   TtsConnectionSafe,
+  TtsRecord,
+  UsageRecord,
   Utterance,
   UtteranceInput,
   VoiceRecord,
@@ -357,9 +359,16 @@ const api = {
     toggle: (id: string, enabled: boolean) =>
       ipcRenderer.invoke(IPC.triggerToggle, id, enabled) as Promise<Trigger[]>
   },
-  event: {
-    /** 最近 n 条事件（数据页时间线） */
-    recent: (n: number) => ipcRenderer.invoke(IPC.eventRecent, n) as Promise<LiveEvent[]>
+  stats: {
+    /** 成本看板一屏数据：今日/累计合计 + 近 30 天趋势 + 按节目分布；programId 给了就只算那个节目 */
+    dashboard: (programId?: string) =>
+      ipcRenderer.invoke(IPC.statsDashboard, programId) as Promise<CostDashboard>,
+    /** 最近的 LLM 请求记录（明细表） */
+    usageRecords: (limit?: number, programId?: string) =>
+      ipcRenderer.invoke(IPC.statsUsageRecords, limit, programId) as Promise<UsageRecord[]>,
+    /** 最近的 TTS 合成记录（明细表） */
+    ttsRecords: (limit?: number, programId?: string) =>
+      ipcRenderer.invoke(IPC.statsTtsRecords, limit, programId) as Promise<TtsRecord[]>
   },
   script: {
     list: () => ipcRenderer.invoke(IPC.scriptList) as Promise<Script[]>,

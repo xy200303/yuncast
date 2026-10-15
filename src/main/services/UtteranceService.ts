@@ -515,7 +515,9 @@ export class UtteranceService {
             useHeadMusic: route.useHeadMusic,
             useTailMusic: route.useTailMusic
           },
-          { connectionId: route.connectionId, modelId: route.modelId }
+          { connectionId: route.connectionId, modelId: route.modelId },
+          undefined,
+          program.id
         )
         // 产物复制进预制音频目录：audio-cache 有 LRU 清扫，节目资产不能放在那里
         const audioPath = join(this.programAudioDir(), `${unit.kind}-${unit.id}-${unit.fingerprint}.mp3`)
@@ -869,7 +871,7 @@ export class UtteranceService {
           instruction: u.delivery || undefined,
           rate: u.rate,
           pitch: u.pitch
-        })
+        }, u.programId)
       } catch (error) {
         lastError = error
         const message = error instanceof Error ? error.message : String(error)

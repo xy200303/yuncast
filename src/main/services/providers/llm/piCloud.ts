@@ -10,6 +10,17 @@ const EXTRA_MODEL_SUGGESTIONS: Partial<Record<LlmProvider, string[]>> = {
 }
 
 /**
+ * 官方公开单价（元/百万 tokens）：设置页加模型时预填进单价栏（可改可清空）。
+ * 只收确信的主流公开价；打折/阶梯价（缓存命中价、夜间价）不展开，按未命中标准价记。
+ * - DeepSeek 官网价格页：deepseek-chat 输入 ¥2/百万（缓存未命中）、输出 ¥3/百万
+ * - 火山方舟定价页：doubao-pro-32k 输入 ¥0.8/百万、输出 ¥2/百万
+ */
+const DEFAULT_MODEL_PRICES: Partial<Record<LlmProvider, Record<string, { input: number; output: number }>>> = {
+  deepseek: { 'deepseek-chat': { input: 2, output: 3 } },
+  doubao: { 'doubao-pro-32k': { input: 0.8, output: 2 } }
+}
+
+/**
  * 各家上下文窗口（tokens）：只给自定义通道（models.json）用——内置目录里的模型以目录为准。
  * 估大了不怕（撑爆会走溢出压缩自愈），估小了会白白频繁压缩，所以都按主流型号的上限填。
  */
@@ -53,6 +64,7 @@ export const piCloudProviders: LlmProviderDef[] = LLM_PROVIDERS.map((id) => {
     ],
     defaultModel: meta.defaultModel,
     modelSuggestions: [...new Set([meta.defaultModel, ...(EXTRA_MODEL_SUGGESTIONS[id] ?? [])])],
+    modelPrices: DEFAULT_MODEL_PRICES[id],
     toModelConfig(params, model) {
       const baseUrl = String(params.baseUrl ?? '').trim() || meta.defaultBaseUrl
       return {

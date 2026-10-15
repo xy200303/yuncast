@@ -36,7 +36,11 @@ export interface TtsStreamSession {
 export class TtsStreamService {
   private sessions = new Map<string, { abort: AbortController }>()
 
-  constructor(private readonly tts: TtsService) {}
+  constructor(
+    private readonly tts: TtsService,
+    /** 用量归属的节目 id（成本采集）：由 index.ts 接当前选中节目 */
+    private readonly getProgramId: () => string = () => ''
+  ) {}
 
   isActive(sessionId: string): boolean {
     return this.sessions.has(sessionId)
@@ -96,24 +100,26 @@ export class TtsStreamService {
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     // 路由到百炼且模型标了 streaming 的音色直接用它的 SSE 真流式（接口已按官方文档核实）
     const route = this.tts.routeForVoice(voiceId)
+    const programId = this.getProgramId() || undefined
     if (route.provider === 'bailian' && route.model.streaming && route.connection.realtime) {
-      yield* this.tts.synthesizeBailianStream(text, voiceId, signal, perf)
+      yield* this.tts.synthesizeBailianStream(text, voiceId, signal, perf, programId)
       return
     }
     // 其余情况（火山整段合成 / 模型未开放流式）：整段合成 → 解码 → 切块
-    yield* this.chunkedFallback(text, voiceId, signal, perf)
+    yield* this.chunkedFallback(text, voiceId, signal, perf, programId)
   }
 
   private async *chunkedFallback(
     text: string,
     voiceId: string | undefined,
     signal: AbortSignal,
-    perf?: SynthPerformance
+    perf?: SynthPerformance,
+    programId?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     let tempFile = ''
     try {
       // 一次合成到缓存（将来这里换成服务商流式读取循环，下游不变）
-      tempFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal, perf)
+      tempFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal, perf, programId)
       if (signal.aborted) return
       // 解码成管线口径（48k 单声道），不在这里节流
       const pcm = await decodeToPcm(tempFile, { channels: 1 })

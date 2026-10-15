@@ -10,6 +10,8 @@ import {
   ENTRY_KINDS,
   parseAppConfig,
   type AppConfig,
+  type CostBucket,
+  type CostDashboard,
   type EpisodeSummary,
   type KnowledgeFile,
   type ModelConnection,
@@ -34,6 +36,8 @@ import {
   type TtsConnectionInput,
   type TtsConnectionModel,
   type TtsConnectionSafe,
+  type TtsRecord,
+  type UsageRecord,
   type Utterance,
   type UtteranceStatus,
   type ViewerProfile,
@@ -330,6 +334,8 @@ export class StorageService {
       )
     `)
     this.db.exec('CREATE INDEX IF NOT EXISTS event_log_ts ON event_log(ts)')
+    // v3 起事件绑节目（评论/触发器等事件写入时带当前 activeProgramId）
+    this.ensureColumn('event_log', 'program_id', 'TEXT')
     // 提示词模板（主播手册：缺 key 播种默认，用户改过的不动）
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS prompt_templates (
@@ -450,6 +456,40 @@ export class StorageService {
       )
     `)
     this.ensureColumn('tts_connections', 'realtime', 'INTEGER NOT NULL DEFAULT 0')
+    // 用量与成本采集（DB v3，数据页成本看板）：LLM 每次请求一条 usage_records，TTS 每次合成一条 tts_records
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS usage_records (
+        id TEXT PRIMARY KEY,
+        ts INTEGER NOT NULL,
+        program_id TEXT,
+        persona_id TEXT NOT NULL DEFAULT '',
+        connection_id TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL DEFAULT 'chat',
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_read INTEGER NOT NULL DEFAULT 0,
+        cache_write INTEGER NOT NULL DEFAULT 0,
+        estimated INTEGER NOT NULL DEFAULT 0,
+        cost REAL
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS usage_records_ts ON usage_records(ts)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS usage_records_program ON usage_records(program_id, ts)')
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS tts_records (
+        id TEXT PRIMARY KEY,
+        ts INTEGER NOT NULL,
+        program_id TEXT,
+        connection_id TEXT NOT NULL DEFAULT '',
+        model_id TEXT NOT NULL DEFAULT '',
+        voice_id TEXT NOT NULL DEFAULT '',
+        chars INTEGER NOT NULL DEFAULT 0,
+        cost REAL
+      )
+    `)
+    this.db.exec('CREATE INDEX IF NOT EXISTS tts_records_ts ON tts_records(ts)')
+    this.db.exec('CREATE INDEX IF NOT EXISTS tts_records_program ON tts_records(program_id, ts)')
     // 克隆音色绑定目标模型与克隆时的接入（合成路由按它反推，定死不可跨模型）
     this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
@@ -641,14 +681,26 @@ export class StorageService {
       if (Number.isFinite(maxTokens) && maxTokens >= 1024) clean.maxTokens = maxTokens
       if (Object.keys(clean).length > 0) modelParams[id2] = clean
     }
+    // 模型级单价（元/百万 tokens）：只收 models 里存在的 id、非负数才留；两个价都空 = 不计成本
+    const modelPrices: Record<string, { input?: number; output?: number }> = {}
+    for (const [key, value] of Object.entries(input.modelPrices ?? {})) {
+      const id2 = key.trim()
+      if (!models.includes(id2) || !value || typeof value !== 'object') continue
+      const clean: { input?: number; output?: number } = {}
+      const inputPrice = Number(value.input)
+      if (Number.isFinite(inputPrice) && inputPrice >= 0) clean.input = inputPrice
+      const outputPrice = Number(value.output)
+      if (Number.isFinite(outputPrice) && outputPrice >= 0) clean.output = outputPrice
+      if (clean.input !== undefined || clean.output !== undefined) modelPrices[id2] = clean
+    }
 
     this.db
       .prepare(
-        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, model_thinking, model_params, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @modelParams, @createdAt, @updatedAt)
+        `INSERT INTO model_connections (id, name, provider_id, params, models, model_windows, model_thinking, model_params, model_prices, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @modelParams, @modelPrices, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, model_params = @modelParams, updated_at = @updatedAt`
+           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, model_params = @modelParams, model_prices = @modelPrices, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -659,6 +711,7 @@ export class StorageService {
         modelWindows: JSON.stringify(modelContextWindows),
         modelThinking: JSON.stringify(modelThinkingLevels),
         modelParams: JSON.stringify(modelParams),
+        modelPrices: JSON.stringify(modelPrices),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
@@ -722,6 +775,19 @@ export class StorageService {
         }
       }
     }
+    const rawPrices = parseJson<unknown>(r.model_prices, {})
+    const modelPrices: ModelConnection['modelPrices'] = {}
+    if (rawPrices && typeof rawPrices === 'object' && !Array.isArray(rawPrices)) {
+      for (const [key, value] of Object.entries(rawPrices as Record<string, unknown>)) {
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const v = value as Record<string, unknown>
+          const price: { input?: number; output?: number } = {}
+          if (typeof v.input === 'number' && v.input >= 0) price.input = v.input
+          if (typeof v.output === 'number' && v.output >= 0) price.output = v.output
+          if (price.input !== undefined || price.output !== undefined) modelPrices[key] = price
+        }
+      }
+    }
     return {
       id: str(r.id),
       name: str(r.name),
@@ -731,6 +797,7 @@ export class StorageService {
       modelContextWindows,
       modelThinkingLevels,
       modelParams,
+      modelPrices,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -977,8 +1044,8 @@ export class StorageService {
     }
   }
 
-  /** 数据库结构版本（PRAGMA user_version）：1 = 节目化改造（programs 落成，modes/live_plans/plan_id 全删）；2 = 预制音频资产（utterances.rendered 列，docs/10 §9.6） */
-  private static readonly DB_VERSION = 2
+  /** 数据库结构版本（PRAGMA user_version）：1 = 节目化改造（programs 落成，modes/live_plans/plan_id 全删）；2 = 预制音频资产（utterances.rendered 列，docs/10 §9.6）；3 = 用量与成本采集（usage_records/tts_records 表 + event_log.program_id 列 + model_connections.model_prices 列） */
+  private static readonly DB_VERSION = 3
 
   /**
    * 节目化迁移（docs/10 §9.4，破坏性，一次性）：事务内直接得到最终表结构，不留兼容分支。
@@ -1070,6 +1137,50 @@ export class StorageService {
         // 预制音频资产列（RenderedAudioRef JSON）；全新库此时表还没建，由后面的 ensureColumn 兜底
         this.ensureColumn('utterances', 'rendered', 'TEXT')
       }
+      if (version < 3) {
+        // 用量与成本采集：两张新表 + event_log 绑节目列 + 接入的模型单价列。
+        // 都是纯增量：全新库由构造器的 CREATE IF NOT EXISTS / ensureColumn 兜底，这里管老库抬升
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS usage_records (
+            id TEXT PRIMARY KEY,
+            ts INTEGER NOT NULL,
+            program_id TEXT,
+            persona_id TEXT NOT NULL DEFAULT '',
+            connection_id TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'chat',
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_read INTEGER NOT NULL DEFAULT 0,
+            cache_write INTEGER NOT NULL DEFAULT 0,
+            estimated INTEGER NOT NULL DEFAULT 0,
+            cost REAL
+          )
+        `)
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS tts_records (
+            id TEXT PRIMARY KEY,
+            ts INTEGER NOT NULL,
+            program_id TEXT,
+            connection_id TEXT NOT NULL DEFAULT '',
+            model_id TEXT NOT NULL DEFAULT '',
+            voice_id TEXT NOT NULL DEFAULT '',
+            chars INTEGER NOT NULL DEFAULT 0,
+            cost REAL
+          )
+        `)
+        if (hasTable('event_log')) this.ensureColumn('event_log', 'program_id', 'TEXT')
+        if (hasTable('model_connections')) {
+          this.ensureColumn('model_connections', 'model_prices', "TEXT NOT NULL DEFAULT '{}'")
+        }
+        // 校验：v3 产物必须都在
+        for (const table of ['usage_records', 'tts_records']) {
+          if (!hasTable(table)) throw new Error(`v3 迁移后 ${table} 表不存在`)
+        }
+        if (hasTable('event_log') && !columnsOf('event_log').has('program_id')) {
+          throw new Error('event_log.program_id 迁移后仍不存在')
+        }
+      }
       this.db.exec(`PRAGMA user_version = ${StorageService.DB_VERSION}`)
       this.db.exec('COMMIT')
     } catch (error) {
@@ -1151,6 +1262,10 @@ export class StorageService {
     // 模型级高级参数列（model_params，JSON：模型 id → { vision/temperature/maxTokens }）
     if (!columns.includes('model_params')) {
       this.db.exec("ALTER TABLE model_connections ADD COLUMN model_params TEXT NOT NULL DEFAULT '{}'")
+    }
+    // 模型级单价列（model_prices，JSON：模型 id → { input/output }，元/百万 tokens）
+    if (!columns.includes('model_prices')) {
+      this.db.exec("ALTER TABLE model_connections ADD COLUMN model_prices TEXT NOT NULL DEFAULT '{}'")
     }
   }
 
@@ -1667,35 +1782,212 @@ export class StorageService {
   // ---------- 事件日志 ----------
 
   eventLogInsert(event: LiveEvent): void {
+    // 事件绑节目：写入时取当前选中节目（评论/触发器事件都落在它名下）
+    const programId = this.config.live.activeProgramId || null
     this.db
-      .prepare('INSERT INTO event_log (id, type, source, payload, ts) VALUES (?, ?, ?, ?, ?)')
-      .run(event.id, event.type, event.source, JSON.stringify(event.payload), event.ts)
+      .prepare('INSERT INTO event_log (id, type, source, payload, ts, program_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(event.id, event.type, event.source, JSON.stringify(event.payload), event.ts, programId)
     // 容量滚动清理：只留最近 5000 条
     this.db.exec(
       `DELETE FROM event_log WHERE id NOT IN (SELECT id FROM event_log ORDER BY ts DESC LIMIT 5000)`
     )
   }
 
-  eventLogRecent(n: number): LiveEvent[] {
-    return this.db
-      .prepare('SELECT * FROM event_log ORDER BY ts DESC LIMIT ?')
-      .all(Math.max(1, Math.min(n, 500)))
-      .map((row) => {
-        const r = row as Record<string, unknown>
-        let payload: Record<string, unknown> = {}
-        try {
-          payload = JSON.parse(str(r.payload) || '{}')
-        } catch {
-          payload = {}
-        }
-        return {
-          id: str(r.id),
-          type: str(r.type),
-          source: (str(r.source) || 'system') as LiveEvent['source'],
-          payload,
-          ts: num(r.ts) ?? 0
-        }
-      })
+  // ---------- 用量与成本采集（DB v3） ----------
+
+  usageInsert(record: UsageRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO usage_records
+         (id, ts, program_id, persona_id, connection_id, model, kind, input_tokens, output_tokens, cache_read, cache_write, estimated, cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        record.id,
+        record.ts,
+        record.programId,
+        record.personaId,
+        record.connectionId,
+        record.model,
+        record.kind,
+        record.inputTokens,
+        record.outputTokens,
+        record.cacheRead,
+        record.cacheWrite,
+        record.estimated ? 1 : 0,
+        record.cost
+      )
+  }
+
+  ttsInsert(record: TtsRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO tts_records (id, ts, program_id, connection_id, model_id, voice_id, chars, cost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        record.id,
+        record.ts,
+        record.programId,
+        record.connectionId,
+        record.modelId,
+        record.voiceId,
+        record.chars,
+        record.cost
+      )
+  }
+
+  /** 成本看板一屏数据：今日/累计合计 + 近 30 天趋势 + 按节目分布。programId 给了就只算那个节目 */
+  costDashboard(programId?: string): CostDashboard {
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+    const trendStart = todayStart - 29 * 24 * 3600_000
+    const where = programId ? 'WHERE program_id = @pid' : ''
+    const args: Record<string, string | number> = programId ? { pid: programId } : {}
+    const bucket = (table: 'usage_records' | 'tts_records', since?: number): CostBucket => {
+      const row = (
+        table === 'usage_records'
+          ? this.db
+              .prepare(
+                `SELECT COALESCE(SUM(input_tokens), 0) AS li, COALESCE(SUM(output_tokens), 0) AS lo,
+                        COALESCE(SUM(cost), 0) AS lc, SUM(cost IS NULL) AS lu
+                 FROM usage_records ${programId ? 'WHERE program_id = @pid' : ''}
+                 ${since !== undefined ? (programId ? 'AND' : 'WHERE') + ' ts >= @since' : ''}`
+              )
+              .get({ ...args, ...(since !== undefined ? { since } : {}) }) as Record<string, unknown>
+          : this.db
+              .prepare(
+                `SELECT COALESCE(SUM(chars), 0) AS tc, COALESCE(SUM(cost), 0) AS tco, SUM(cost IS NULL) AS tu
+                 FROM tts_records ${programId ? 'WHERE program_id = @pid' : ''}
+                 ${since !== undefined ? (programId ? 'AND' : 'WHERE') + ' ts >= @since' : ''}`
+              )
+              .get({ ...args, ...(since !== undefined ? { since } : {}) }) as Record<string, unknown>
+      )
+      return table === 'usage_records'
+        ? {
+            llmInputTokens: num(row.li) ?? 0,
+            llmOutputTokens: num(row.lo) ?? 0,
+            llmCost: num(row.lc) ?? 0,
+            llmUnpriced: num(row.lu) ?? 0,
+            ttsChars: 0,
+            ttsCost: 0,
+            ttsUnpriced: 0
+          }
+        : {
+            llmInputTokens: 0,
+            llmOutputTokens: 0,
+            llmCost: 0,
+            llmUnpriced: 0,
+            ttsChars: num(row.tc) ?? 0,
+            ttsCost: num(row.tco) ?? 0,
+            ttsUnpriced: num(row.tu) ?? 0
+          }
+    }
+    const merge = (a: CostBucket, b: CostBucket): CostBucket => ({
+      llmInputTokens: a.llmInputTokens + b.llmInputTokens,
+      llmOutputTokens: a.llmOutputTokens + b.llmOutputTokens,
+      llmCost: a.llmCost + b.llmCost,
+      llmUnpriced: a.llmUnpriced + b.llmUnpriced,
+      ttsChars: a.ttsChars + b.ttsChars,
+      ttsCost: a.ttsCost + b.ttsCost,
+      ttsUnpriced: a.ttsUnpriced + b.ttsUnpriced
+    })
+    const llmTrend = this.db
+      .prepare(
+        `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(cost), 0) AS cost
+         FROM usage_records ${where === '' ? 'WHERE' : where + ' AND'} ts >= @start GROUP BY day`
+      )
+      .all({ ...args, start: trendStart }) as { day: string; cost: number }[]
+    const ttsTrend = this.db
+      .prepare(
+        `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(cost), 0) AS cost
+         FROM tts_records ${where === '' ? 'WHERE' : where + ' AND'} ts >= @start GROUP BY day`
+      )
+      .all({ ...args, start: trendStart }) as { day: string; cost: number }[]
+    const llmByDay = new Map(llmTrend.map((row) => [row.day, row.cost]))
+    const ttsByDay = new Map(ttsTrend.map((row) => [row.day, row.cost]))
+    const trend: CostDashboard['trend'] = []
+    for (let i = 0; i < 30; i++) {
+      const date = new Date(trendStart + i * 24 * 3600_000)
+      const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+      trend.push({ day, llmCost: llmByDay.get(day) ?? 0, ttsCost: ttsByDay.get(day) ?? 0 })
+    }
+    // 按节目分布（不受筛选影响，始终全量——它就是用来做对比的）
+    const names = new Map(this.programList().map((program) => [program.id, program.name]))
+    const byProgramMap = new Map<string | null, { llmCost: number; ttsCost: number }>()
+    const collect = (table: 'usage_records' | 'tts_records', key: 'llmCost' | 'ttsCost') => {
+      const rows = this.db
+        .prepare(`SELECT program_id AS pid, COALESCE(SUM(cost), 0) AS cost FROM ${table} GROUP BY program_id`)
+        .all() as { pid: string | null; cost: number }[]
+      for (const row of rows) {
+        const entry = byProgramMap.get(row.pid) ?? { llmCost: 0, ttsCost: 0 }
+        entry[key] = row.cost
+        byProgramMap.set(row.pid, entry)
+      }
+    }
+    collect('usage_records', 'llmCost')
+    collect('tts_records', 'ttsCost')
+    const byProgram = [...byProgramMap.entries()]
+      .map(([pid, costs]) => ({
+        programId: pid,
+        programName: pid ? (names.get(pid) ?? '已删除节目') : '未绑定节目',
+        ...costs
+      }))
+      .filter((entry) => entry.llmCost > 0 || entry.ttsCost > 0)
+      .sort((a, b) => b.llmCost + b.ttsCost - (a.llmCost + a.ttsCost))
+    return {
+      today: merge(bucket('usage_records', todayStart), bucket('tts_records', todayStart)),
+      total: merge(bucket('usage_records'), bucket('tts_records')),
+      trend,
+      byProgram
+    }
+  }
+
+  /** 最近的 LLM 请求记录（成本看板的明细表） */
+  usageRecent(limit = 100, programId?: string): UsageRecord[] {
+    const rows = (
+      programId
+        ? this.db
+            .prepare('SELECT * FROM usage_records WHERE program_id = ? ORDER BY ts DESC LIMIT ?')
+            .all(programId, limit)
+        : this.db.prepare('SELECT * FROM usage_records ORDER BY ts DESC LIMIT ?').all(limit)
+    ) as Record<string, unknown>[]
+    return rows.map((r) => ({
+      id: str(r.id),
+      ts: num(r.ts) ?? 0,
+      programId: r.program_id ? str(r.program_id) : null,
+      personaId: str(r.persona_id),
+      connectionId: str(r.connection_id),
+      model: str(r.model),
+      kind: (str(r.kind) || 'chat') as UsageRecord['kind'],
+      inputTokens: num(r.input_tokens) ?? 0,
+      outputTokens: num(r.output_tokens) ?? 0,
+      cacheRead: num(r.cache_read) ?? 0,
+      cacheWrite: num(r.cache_write) ?? 0,
+      estimated: num(r.estimated) === 1,
+      cost: typeof r.cost === 'number' ? r.cost : null
+    }))
+  }
+
+  /** 最近的 TTS 合成记录（成本看板的明细表） */
+  ttsRecent(limit = 100, programId?: string): TtsRecord[] {
+    const rows = (
+      programId
+        ? this.db
+            .prepare('SELECT * FROM tts_records WHERE program_id = ? ORDER BY ts DESC LIMIT ?')
+            .all(programId, limit)
+        : this.db.prepare('SELECT * FROM tts_records ORDER BY ts DESC LIMIT ?').all(limit)
+    ) as Record<string, unknown>[]
+    return rows.map((r) => ({
+      id: str(r.id),
+      ts: num(r.ts) ?? 0,
+      programId: r.program_id ? str(r.program_id) : null,
+      connectionId: str(r.connection_id),
+      modelId: str(r.model_id),
+      voiceId: str(r.voice_id),
+      chars: num(r.chars) ?? 0,
+      cost: typeof r.cost === 'number' ? r.cost : null
+    }))
   }
 
   // ---------- 剧本 ----------

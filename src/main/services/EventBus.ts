@@ -4,7 +4,7 @@ import type { StorageService } from './StorageService'
 
 /**
  * 事件总线（docs/01 §3.5）：所有事件源的唯一入口。
- * emit() 落 event_log 表（数据页回放用）→ 同步派发给订阅者（TriggerRuntime 等）。
+ * emit() 落 event_log 表（持久化留档，带当前节目 id）→ 同步派发给订阅者（TriggerRuntime 等）。
  * EventRegistry：内建类型先注册，未来「注册即接入」。
  */
 
@@ -57,9 +57,5 @@ export class EventBus {
   subscribe(cb: (event: LiveEvent) => void): () => void {
     this.subscribers.add(cb)
     return () => this.subscribers.delete(cb)
-  }
-
-  recent(n: number): LiveEvent[] {
-    return this.storage.eventLogRecent(n)
   }
 }

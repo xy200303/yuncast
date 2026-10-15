@@ -3,6 +3,7 @@ import { Agent, type AgentMessage, type AgentTool } from '@earendil-works/pi-age
 import {
   normalizeContext,
   retryAssistantCall,
+  type AssistantMessage,
   type ImageContent,
   type Message,
   type Model,
@@ -20,8 +21,10 @@ import {
   type LiveComment,
   type PlaybackControlAction,
   type Program,
-  type Script
+  type Script,
+  type UsageKind
 } from '../../shared/types'
+import { llmUsageCost } from './costing'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { ConnectorService } from './ConnectorService'
@@ -244,6 +247,9 @@ export class AgentService {
   private compacting = false
   /** 本会话的上下文窗口（tokens）：状态栏进度条的分母 */
   private contextWindow = 0
+  /** 会话出生时的用量归属（成本采集）：接入/模型/主播在会话期间不变（变更走重开会话） */
+  private usageConnectionId = ''
+  private usageModel = ''
   /** system prompt + 工具表的固定开销（tokens，会话出生时估一次） */
   private contextOverhead = 0
   /** 上下文估算缓存：消息条数没变就不重算（status 广播很勤，全量估算不便宜）；
@@ -1090,6 +1096,58 @@ export class AgentService {
     this.emitTimeline({ turnId: this.turnId, entry: { type: 'ask', id: message.id, message } })
   }
 
+  // ---------- 用量与成本采集（数据页成本看板） ----------
+
+  /**
+   * 一次 LLM 请求落库：pi-ai 的 AssistantMessage 自带服务商回报的真实 usage（openai-completions
+   * 通道已请求 stream_options.include_usage），直接记；没拿到 usage（全 0）时按输出文本字符数/4
+   * 估算并标 estimated。纯失败的请求（error 且无正文）不记。落库失败静默，不影响直播。
+   */
+  private recordUsage(kind: UsageKind, message: AssistantMessage): void {
+    try {
+      const usage = message.usage
+      const real =
+        usage && (usage.input > 0 || usage.output > 0 || usage.cacheRead > 0 || usage.cacheWrite > 0)
+      let inputTokens = 0
+      let outputTokens = 0
+      let cacheRead = 0
+      let cacheWrite = 0
+      let estimated = false
+      if (real) {
+        inputTokens = usage.input
+        outputTokens = usage.output
+        cacheRead = usage.cacheRead
+        cacheWrite = usage.cacheWrite
+      } else {
+        // 估算兜底：只估输出（输入是整份会话上下文，在这里估不出来，估了反而误导）
+        const text = Array.isArray(message.content)
+          ? message.content.map((part) => (part.type === 'text' ? part.text : '')).join('')
+          : ''
+        if (!text.trim()) return
+        outputTokens = Math.ceil(text.length / 4)
+        estimated = true
+      }
+      const connection = this.usageConnectionId ? this.storage.connectionGet(this.usageConnectionId) : null
+      this.storage.usageInsert({
+        id: `ur-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        ts: Date.now(),
+        programId: this.sessionProgramId || this.storage.getConfig().live.activeProgramId || null,
+        personaId: this.persona.get().id,
+        connectionId: this.usageConnectionId,
+        model: this.usageModel,
+        kind,
+        inputTokens,
+        outputTokens,
+        cacheRead,
+        cacheWrite,
+        estimated,
+        cost: llmUsageCost(connection?.modelPrices?.[this.usageModel], inputTokens, outputTokens)
+      })
+    } catch (error) {
+      console.warn('[AgentAnchor] 用量记录落库失败:', error)
+    }
+  }
+
   // ---------- 上下文压缩（transformContext 钩子：超过阈值就把旧消息摘要成一条） ----------
 
   /**
@@ -1182,6 +1240,8 @@ export class AgentService {
           .map((part) => (part.type === 'text' ? part.text : ''))
           .join('')
           .trim()
+        // 摘要调用也是一次真实 LLM 请求：usage 落库（kind=compact，与正常对话分开统计）
+        this.recordUsage('compact', result)
         if (result.stopReason === 'error' || result.stopReason === 'aborted' || !summaryText) {
           throw new Error(result.errorMessage ?? '摘要为空')
         }
@@ -1313,6 +1373,9 @@ export class AgentService {
       await prepareLlmModel(resolved)
     this.modelLabel = modelLabel
     this.visionCapable = vision
+    // 成本采集的归属信息：本台会话的每次 LLM 请求都记到这套接入 + 模型名下
+    this.usageConnectionId = resolved.connectionId ?? ''
+    this.usageModel = resolved.model
     // 记下出生时的资产指纹：之后 UI 靠它判断"本场是不是旧版本"
     this.sessionFingerprint = this.assetFingerprint()
 
@@ -1475,6 +1538,10 @@ export class AgentService {
         // 一轮跑完：收件箱里忙时攒下的动态补排唤醒（闲时不叫主播，攒着等下一批）
         this.inbox.notifyIdle()
       } else if (event.type === 'message_end') {
+        // 用量采集：每条 assistant 消息 = 一次真实 LLM 请求（带工具轮次的一轮里有多条）
+        if (event.message.role === 'assistant') {
+          this.recordUsage(this.sessionPurpose === 'prep' ? 'draft' : 'chat', event.message as AssistantMessage)
+        }
         // 这条消息说完了：把节流压着的尾巴推出去（还接着调工具时，它仍是中间文本）
         this.flushText()
         if (this.draft) {

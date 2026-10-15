@@ -449,7 +449,9 @@ export class SpeechPool {
         item.speechText || textAtStart,
         item.voiceId || undefined,
         controller.signal,
-        { instruction: item.delivery, rate: item.rate, pitch: item.pitch }
+        { instruction: item.delivery, rate: item.rate, pitch: item.pitch },
+        // 用量归属当前节目（成本看板按节目分摊）
+        this.storage.getConfig().live.activeProgramId || undefined
       )
       if (controller.signal.aborted) return
       const current = this.storage.speechGet(item.id)

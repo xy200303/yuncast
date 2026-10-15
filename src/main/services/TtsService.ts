@@ -29,6 +29,7 @@ import {
   parseManualVoice,
   type ManualVoiceRef
 } from '../../shared/voiceProvider'
+import { ttsCharsCost } from './costing'
 
 /**
  * TTS 双通道合成。
@@ -141,6 +142,32 @@ export class TtsService {
 
   cacheStats(): { hits: number; misses: number } {
     return { hits: this.cacheHits, misses: this.cacheMisses }
+  }
+
+  /**
+   * 合成用量落库（成本看板）：每次真正打接口的合成记一条（缓存命中没花钱不记）。
+   * 成本按接入上的单价（元/万字符）当场算好；没配单价只记字符数。落库失败静默。
+   */
+  private recordSynthesis(
+    route: Pick<TtsRoute, 'connection' | 'modelId' | 'voice'>,
+    chars: number,
+    programId?: string
+  ): void {
+    try {
+      if (chars <= 0) return
+      this.storage.ttsInsert({
+        id: `tr-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+        ts: Date.now(),
+        programId: programId || null,
+        connectionId: route.connection.id,
+        modelId: route.modelId,
+        voiceId: route.voice,
+        chars,
+        cost: ttsCharsCost(route.connection, chars)
+      })
+    } catch (error) {
+      console.warn('[TTS] 用量记录落库失败:', error)
+    }
   }
 
   /**
@@ -377,15 +404,17 @@ export class TtsService {
   }
 
   /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。
-   *  perf：这次合成专用的演法（agent 写的 delivery/rate/pitch）——覆盖接入上的静态默认并参与缓存键（不同演法不串缓存） */
+   *  perf：这次合成专用的演法（agent 写的 delivery/rate/pitch）——覆盖接入上的静态默认并参与缓存键（不同演法不串缓存）
+   *  programId：用量归属的节目（成本看板按节目分摊）；现场 say 由调用方带 activeProgramId */
   async synthesize(
     itemId: string,
     text: string,
     voiceId?: string,
     signal?: AbortSignal,
-    perf?: SynthPerformance
+    perf?: SynthPerformance,
+    programId?: string
   ): Promise<string> {
-    return this.synthesizeWithRoute(itemId, text, this.withPerformance(this.route(voiceId), perf), signal)
+    return this.synthesizeWithRoute(itemId, text, this.withPerformance(this.route(voiceId), perf), signal, programId)
   }
 
   /**
@@ -401,7 +430,8 @@ export class TtsService {
     itemId: string,
     request: TtsSynthesisRequest,
     target: { connectionId: string; modelId: string },
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    programId?: string
   ): Promise<TtsSynthesisResult> {
     const connection = this.storage.ttsConnectionGet(target.connectionId)
     if (!connection) throw new Error('合成接入不存在（可能已被删除）：到节目设置里重选合成模型')
@@ -423,7 +453,7 @@ export class TtsService {
       }
       const invalid = validatePodcastRequest(request, caps)
       if (invalid) throw new Error(invalid)
-      return this.synthesizePodcast(itemId, request, connection, spec, signal)
+      return this.synthesizePodcast(itemId, request, connection, spec, signal, programId)
     }
 
     if (caps.input === 'dialogueTurns') {
@@ -446,7 +476,8 @@ export class TtsService {
       itemId,
       request.text,
       this.withPerformance(route, { instruction: request.instruction, rate: request.rate, pitch: request.pitch }),
-      signal
+      signal,
+      programId
     )
     return { audioPath }
   }
@@ -461,7 +492,8 @@ export class TtsService {
     request: Extract<TtsSynthesisRequest, { type: 'podcast' }>,
     connection: TtsConnection,
     spec: TtsModelSpec,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    programId?: string
   ): Promise<TtsSynthesisResult> {
     const apiKey = String(connection.params.apiKey ?? '')
     if (!apiKey) throw new Error('火山引擎接入缺 API Key：到设置 → 语音合成填新版控制台的 API Key')
@@ -522,6 +554,12 @@ export class TtsService {
       `[TTS] 播客整期合成完成：${request.turns.length} 轮，${(result.audio.length / 1024).toFixed(0)}KB` +
         `${result.fromAudioUrl ? '（服务端整期成品）' : '（逐轮拼接）'}`
     )
+    // 用量采集：podcast 按总轮次字符记（火山播客模型按字符计费）
+    this.recordSynthesis(
+      { connection, modelId: spec.id, voice: request.speakers.join('+') },
+      request.turns.reduce((sum, turn) => sum + turn.text.length, 0),
+      programId
+    )
     return { audioPath: cachePath, durationMs: result.durationMs }
   }
 
@@ -568,7 +606,8 @@ export class TtsService {
     itemId: string,
     text: string,
     route: TtsRoute,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    programId?: string
   ): Promise<string> {
     const format = String(route.params.format ?? 'mp3')
     const extension = format === 'pcm' ? 'pcm' : format === 'wav' ? 'wav' : format === 'ogg_opus' ? 'ogg' : 'mp3'
@@ -587,6 +626,7 @@ export class TtsService {
     } else {
       await this.synthesizeVolcano(text, tempPath, route, signal)
     }
+    this.recordSynthesis(route, text.length, programId)
     try {
       await rename(tempPath, cachePath)
       return cachePath
@@ -779,7 +819,8 @@ export class TtsService {
     text: string,
     voiceId?: string,
     signal?: AbortSignal,
-    perf?: SynthPerformance
+    perf?: SynthPerformance,
+    programId?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     const route = this.withPerformance(this.route(voiceId), perf)
     const apiKey = String(route.connection.params.apiKey ?? '')
@@ -807,39 +848,46 @@ export class TtsService {
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const blocks = buffer.split(sep)
-      buffer = blocks.pop() ?? ''
-      for (const block of blocks) {
-        for (const line of block.split(brk)) {
-          const trimmed = line.trim()
-          if (!trimmed.startsWith('data:')) continue
-          const payload = trimmed.slice(5).trim()
-          if (!payload || payload === '[DONE]') continue
-          let frame: {
-            status_code?: number
-            message?: string
-            output?: { audio?: { data?: string }; finish_reason?: string | null }
-          }
-          try {
-            frame = JSON.parse(payload)
-          } catch {
-            continue
-          }
-          if (frame.status_code && frame.status_code !== 200) {
-            throw new Error(
-              `百炼流式 TTS 返回 ${frame.status_code}${frame.message ? `：${frame.message}` : ''}`
-            )
-          }
-          const base64 = frame.output?.audio?.data
-          if (base64) {
-            yield { pcm: Buffer.from(base64, 'base64'), sampleRate }
+    let completed = false
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buffer += decoder.decode(value, { stream: true })
+        const blocks = buffer.split(sep)
+        buffer = blocks.pop() ?? ''
+        for (const block of blocks) {
+          for (const line of block.split(brk)) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith('data:')) continue
+            const payload = trimmed.slice(5).trim()
+            if (!payload || payload === '[DONE]') continue
+            let frame: {
+              status_code?: number
+              message?: string
+              output?: { audio?: { data?: string }; finish_reason?: string | null }
+            }
+            try {
+              frame = JSON.parse(payload)
+            } catch {
+              continue
+            }
+            if (frame.status_code && frame.status_code !== 200) {
+              throw new Error(
+                `百炼流式 TTS 返回 ${frame.status_code}${frame.message ? `：${frame.message}` : ''}`
+              )
+            }
+            const base64 = frame.output?.audio?.data
+            if (base64) {
+              yield { pcm: Buffer.from(base64, 'base64'), sampleRate }
+            }
           }
         }
       }
+      completed = true
+    } finally {
+      // 用量采集：整段合成正常收尾才记（中断/失败按没合成完处理）；流式通道没有内容寻址缓存，每次都真打接口
+      if (completed) this.recordSynthesis(route, text.length, programId)
     }
   }
 

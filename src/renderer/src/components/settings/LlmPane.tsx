@@ -277,7 +277,8 @@ function ConnectionEditorView({
   const [name, setName] = useState(
     connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
   )
-  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）+ 思考强度 + 高级参数（多模态/温度/回复上限）。
+  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认）+ 思考强度 + 高级参数（多模态/温度/回复上限）
+   *  + 单价（元/百万 tokens，空 = 只记 token 不计成本；manifest 有公开价的型号会预填）。
    * 窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
   const [models, setModels] = useState<
     {
@@ -287,12 +288,16 @@ function ConnectionEditorView({
       vision: boolean
       temperature: string
       maxTokens: string
+      /** 单价（元/百万 tokens）：输入价 / 输出价，留空 = 不计成本 */
+      priceInput: string
+      priceOutput: string
       /** 高级参数展开条（纯 UI 态，不落盘） */
       advancedOpen: boolean
     }[]
   >(
     (connection?.models ?? []).map((id) => {
       const adv = connection?.modelParams?.[id]
+      const price = connection?.modelPrices?.[id]
       return {
         id,
         window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : '',
@@ -300,6 +305,8 @@ function ConnectionEditorView({
         vision: adv?.vision === true,
         temperature: adv?.temperature != null ? String(adv.temperature) : '',
         maxTokens: adv?.maxTokens != null ? String(adv.maxTokens) : '',
+        priceInput: price?.input != null ? String(price.input) : '',
+        priceOutput: price?.output != null ? String(price.output) : '',
         advancedOpen: false
       }
     })
@@ -337,7 +344,19 @@ function ConnectionEditorView({
   }
 
   const setModelAt = (index: number, value: string) => {
-    setModels(models.map((row, i) => (i === index ? { ...row, id: value } : row)))
+    setModels(
+      models.map((row, i) => {
+        if (i !== index) return row
+        const next = { ...row, id: value }
+        // manifest 有公开单价的型号：手打进来的也顺手预填（没填过才填，可改可清空）
+        const preset = def?.modelPrices?.[value.trim()]
+        if (preset) {
+          if (!next.priceInput && preset.input !== undefined) next.priceInput = String(preset.input)
+          if (!next.priceOutput && preset.output !== undefined) next.priceOutput = String(preset.output)
+        }
+        return next
+      })
+    )
   }
 
   const setWindowAt = (index: number, value: string) => {
@@ -356,6 +375,11 @@ function ConnectionEditorView({
     setModels(models.map((row, i) => (i === index ? { ...row, ...part } : row)))
   }
 
+  /** 单价（元/百万 tokens）就地改 */
+  const patchPriceAt = (index: number, part: Partial<{ priceInput: string; priceOutput: string }>) => {
+    setModels(models.map((row, i) => (i === index ? { ...row, ...part } : row)))
+  }
+
   const removeModelAt = (index: number) => {
     setModels(models.filter((_, i) => i !== index))
   }
@@ -365,7 +389,19 @@ function ConnectionEditorView({
     for (const id of ids) {
       const value = id.trim()
       if (value && !next.some((row) => row.id === value)) {
-        next.push({ id: value, window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', advancedOpen: false })
+        // manifest 有公开单价的型号预填单价（成本看板开箱即算钱，可改可清空）
+        const preset = def?.modelPrices?.[value]
+        next.push({
+          id: value,
+          window: '',
+          thinking: 'off',
+          vision: false,
+          temperature: '',
+          maxTokens: '',
+          priceInput: preset?.input !== undefined ? String(preset.input) : '',
+          priceOutput: preset?.output !== undefined ? String(preset.output) : '',
+          advancedOpen: false
+        })
       }
     }
     setModels(next)
@@ -374,7 +410,7 @@ function ConnectionEditorView({
   /** 就地加一行空白模型行（id 空 = 手打），新行的 ID 输入框挂载时自动聚焦 */
   const addModelRow = () => {
     setFocusIndex(models.length)
-    setModels([...models, { id: '', window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', advancedOpen: false }])
+    setModels([...models, { id: '', window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', priceInput: '', priceOutput: '', advancedOpen: false }])
   }
 
   const save = async () => {
@@ -394,6 +430,8 @@ function ConnectionEditorView({
     const modelThinkingLevels: Record<string, ThinkingLevelChoice> = {}
     // 模型级高级参数：vision 只收开关、温度 0~2、回复上限 ≥1024，空的不落盘（主进程还会再滤一遍）
     const modelParams: Record<string, ModelAdvancedParams> = {}
+    // 模型级单价（元/百万 tokens）：填了才落盘，两个价都空 = 不计成本只记 token
+    const modelPrices: Record<string, { input?: number; output?: number }> = {}
     for (const row of models) {
       const id = row.id.trim()
       const value = Math.floor(Number(row.window))
@@ -408,6 +446,12 @@ function ConnectionEditorView({
       const maxTokens = Math.floor(Number(row.maxTokens))
       if (row.maxTokens.trim() && Number.isFinite(maxTokens) && maxTokens >= 1024) adv.maxTokens = maxTokens
       if (id && Object.keys(adv).length > 0) modelParams[id] = adv
+      const price: { input?: number; output?: number } = {}
+      const inputPrice = Number(row.priceInput)
+      if (row.priceInput.trim() && Number.isFinite(inputPrice) && inputPrice >= 0) price.input = inputPrice
+      const outputPrice = Number(row.priceOutput)
+      if (row.priceOutput.trim() && Number.isFinite(outputPrice) && outputPrice >= 0) price.output = outputPrice
+      if (id && (price.input !== undefined || price.output !== undefined)) modelPrices[id] = price
     }
     setBusy(true)
     try {
@@ -419,7 +463,8 @@ function ConnectionEditorView({
         models: ids,
         modelContextWindows,
         modelThinkingLevels,
-        modelParams
+        modelParams,
+        modelPrices
       })
       if (!result.ok) {
         toast.error('保存失败', { description: result.error })
@@ -557,6 +602,22 @@ function ConnectionEditorView({
                           <SelectItem value="high">高</SelectItem>
                         </SelectContent>
                       </Select>
+                      <Input
+                        value={row.priceInput}
+                        onChange={(e) => patchPriceAt(index, { priceInput: e.target.value.replace(/[^\d.]/g, '') })}
+                        placeholder="入价"
+                        title="输入单价（元/百万 tokens）：成本看板按它折算金额；留空 = 只记 token 不计成本。部分型号已按官方公开价预填"
+                        inputMode="decimal"
+                        className="h-9 w-20 shrink-0 text-sm"
+                      />
+                      <Input
+                        value={row.priceOutput}
+                        onChange={(e) => patchPriceAt(index, { priceOutput: e.target.value.replace(/[^\d.]/g, '') })}
+                        placeholder="出价"
+                        title="输出单价（元/百万 tokens）：成本看板按它折算金额；留空 = 只记 token 不计成本。部分型号已按官方公开价预填"
+                        inputMode="decimal"
+                        className="h-9 w-20 shrink-0 text-sm"
+                      />
                       <Button
                         variant="ghost"
                         size="icon-sm"
@@ -630,7 +691,7 @@ function ConnectionEditorView({
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  第二列是上下文窗口（tokens），留空按服务商默认；第三列是思考强度，思考过程会显示在对话时间线；每行末尾的扳手是多模态/温度/回复上限
+                  第二列是上下文窗口（tokens），留空按服务商默认；第三列是思考强度，思考过程会显示在对话时间线；「入价/出价」是单价（元/百万 tokens，成本看板折算金额用，留空不计成本）；每行末尾的扳手是多模态/温度/回复上限
                 </p>
               </div>
             )}

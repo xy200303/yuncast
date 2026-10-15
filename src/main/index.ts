@@ -826,8 +826,16 @@ function registerIpc(
     return triggers.list()
   })
 
-  // ---------- 事件时间线 ----------
-  ipcMain.handle(IPC.eventRecent, (_e, n: number) => bus.recent(n))
+  // ---------- 成本看板（数据页；事件时间线已并入播控台「事件流」，event_log 只留档不展示） ----------
+  ipcMain.handle(IPC.statsDashboard, (_e, programId?: string) =>
+    storage.costDashboard(String(programId ?? '') || undefined)
+  )
+  ipcMain.handle(IPC.statsUsageRecords, (_e, limit?: number, programId?: string) =>
+    storage.usageRecent(Math.max(1, Math.min(Number(limit) || 100, 500)), String(programId ?? '') || undefined)
+  )
+  ipcMain.handle(IPC.statsTtsRecords, (_e, limit?: number, programId?: string) =>
+    storage.ttsRecent(Math.max(1, Math.min(Number(limit) || 100, 500)), String(programId ?? '') || undefined)
+  )
 
   // ---------- 剧本 ----------
   ipcMain.handle(IPC.scriptList, () => script.listScripts())
@@ -1217,7 +1225,7 @@ if (!single) {
 
     // 实时 TTS：流式合成（整段合成 → 解码 → 分块吐 PCM，由 AudioPipeline 按真实速率排播；
     // 供应商流式接口见 docs/06）。它只对主进程内部开口，渲染层拿不到 PCM 通道。
-    ttsStream = new TtsStreamService(tts)
+    ttsStream = new TtsStreamService(tts, () => storage.getConfig().live.activeProgramId)
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)

@@ -1,44 +1,18 @@
-import { useEffect, useState } from 'react'
-import { Activity, BarChart3, NotebookText, Users } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { BarChart3, Coins, NotebookText, Users } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import type { EpisodeSummary, LiveEvent, ViewerProfile } from '../../../shared/types'
-
-/** 事件类型中文名（主进程 EventRegistry 的展示副本） */
-const EVENT_LABEL: Record<string, string> = {
-  'comment.new': '评论',
-  'viewer.join': '进场',
-  'gift.received': '礼物',
-  'like.burst': '点赞',
-  'pool.empty': '池空',
-  'pool.low': '低水位',
-  'timer.interval': '节拍',
-  'stream.started': '开播',
-  'stream.ended': '下播',
-  'trigger.fired': '触发',
-  'trigger.dropped': '拦截'
-}
-
-/** 事件 payload 的人类可读摘要（不甩 JSON 原文） */
-function summarizePayload(event: LiveEvent): string {
-  const p = event.payload as Record<string, unknown>
-  switch (event.type) {
-    case 'comment.new':
-      return `${p.author ?? ''}：${p.content ?? ''}`
-    case 'viewer.join':
-      return String(p.name ?? '')
-    case 'gift.received':
-      return `${p.author ?? ''} 送出 ${p.giftName ?? '礼物'}`
-    case 'like.burst':
-      return `点赞 ${p.count ?? ''}`
-    case 'trigger.fired':
-      return `${p.name ?? ''}（${p.mode === 'tool' ? '模板直连' : p.mode === 'steer' ? '引导' : '任务'}）`
-    case 'trigger.dropped':
-      return `${p.name ?? ''}（${p.reason ?? '被防护拦截'}）`
-    default:
-      return ''
-  }
-}
+import { EChart } from '@/components/EChart'
+import {
+  USAGE_KIND_LABEL,
+  type CostDashboard,
+  type EpisodeSummary,
+  type Program,
+  type TtsRecord,
+  type UsageRecord,
+  type ViewerProfile
+} from '../../../shared/types'
 
 function formatTime(ts: number): string {
   return new Date(ts).toLocaleString('zh-CN', {
@@ -49,20 +23,31 @@ function formatTime(ts: number): string {
   })
 }
 
-/** 数据页：观众画像 / 节目摘要 / 事件时间线，选项卡组织。 */
+/** token/字符数的紧凑显示：1.2k / 3.4万 */
+function formatCount(n: number): string {
+  if (n >= 100_000_000) return `${(n / 100_000_000).toFixed(1)}亿`
+  if (n >= 10_000) return `${(n / 10_000).toFixed(1)}万`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+
+/** 金额显示：小的多留位，大的两位；null/NaN 给占位 */
+function formatYuan(cost: number | null | undefined): string {
+  if (cost === null || cost === undefined || !Number.isFinite(cost)) return '—'
+  if (cost === 0) return '¥0'
+  if (cost < 0.01) return `¥${cost.toFixed(4)}`
+  return `¥${cost.toFixed(2)}`
+}
+
+/** 数据页：观众画像 / 节目摘要 / 成本看板，选项卡组织（事件时间线已并入播控台「事件流」）。 */
 export function StatsPage() {
   const [viewers, setViewers] = useState<ViewerProfile[]>([])
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([])
-  const [events, setEvents] = useState<LiveEvent[]>([])
-  const [tab, setTab] = useState<'viewers' | 'episodes' | 'events'>('viewers')
+  const [tab, setTab] = useState<'viewers' | 'episodes' | 'cost'>('viewers')
 
   useEffect(() => {
     void window.api.memory.viewers().then(setViewers)
     void window.api.memory.episodes().then(setEpisodes)
-    void window.api.event.recent(100).then(setEvents)
-    // 事件时间线 5s 轮询刷新（事件经由 EventBus 落库，量小直查即可）
-    const timer = setInterval(() => void window.api.event.recent(100).then(setEvents), 5000)
-    return () => clearInterval(timer)
   }, [])
 
   return (
@@ -70,7 +55,7 @@ export function StatsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <BarChart3 className="size-4 text-primary" />
         <h1 className="text-sm font-medium">数据</h1>
-        <p className="text-xs text-muted-foreground">观众画像 · 节目摘要 · 事件时间线</p>
+        <p className="text-xs text-muted-foreground">观众画像 · 节目摘要 · 成本看板</p>
       </header>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
@@ -78,7 +63,7 @@ export function StatsPage() {
           <TabsList variant="line">
             <TabsTrigger value="viewers" className="px-3">观众画像 · {viewers.length}</TabsTrigger>
             <TabsTrigger value="episodes" className="px-3">节目摘要 · {episodes.length}</TabsTrigger>
-            <TabsTrigger value="events" className="px-3">事件时间线</TabsTrigger>
+            <TabsTrigger value="cost" className="px-3">成本看板</TabsTrigger>
           </TabsList>
         </div>
 
@@ -136,34 +121,279 @@ export function StatsPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="events" className="overflow-auto p-4">
-          {events.length === 0 ? (
-            <EmptyState icon={Activity} text="还没有事件。开播或启动连接器演示模式后这里会滚起来" />
-          ) : (
-            <div className="flex flex-col gap-1">
-              {events.map((event) => {
-                const summary = summarizePayload(event)
-                return (
-                  <div key={event.id} className="flex items-center gap-2 rounded-md border bg-card px-3 py-1.5">
-                    <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
-                      {new Date(event.ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </span>
-                    <Badge variant={event.type.startsWith('trigger.') ? 'secondary' : 'outline'}>
-                      {EVENT_LABEL[event.type] ?? event.type}
-                    </Badge>
-                    {summary && (
-                      <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={summary}>
-                        {summary}
-                      </span>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
+        <TabsContent value="cost" className="min-h-0 overflow-auto">
+          {tab === 'cost' && <CostBoard />}
         </TabsContent>
       </Tabs>
     </div>
+  )
+}
+
+/** 成本看板：总览卡片 + 30 天趋势（堆叠柱）+ 按节目分布（饼图）+ 明细记录表 */
+function CostBoard() {
+  const [programs, setPrograms] = useState<Program[]>([])
+  const [programId, setProgramId] = useState('')
+  const [dashboard, setDashboard] = useState<CostDashboard | null>(null)
+  const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([])
+  const [ttsRecords, setTtsRecords] = useState<TtsRecord[]>([])
+  const [recordTab, setRecordTab] = useState<'llm' | 'tts'>('llm')
+
+  const refresh = useCallback((pid: string) => {
+    const filter = pid || undefined
+    void window.api.stats.dashboard(filter).then(setDashboard)
+    void window.api.stats.usageRecords(100, filter).then(setUsageRecords)
+    void window.api.stats.ttsRecords(100, filter).then(setTtsRecords)
+  }, [])
+
+  useEffect(() => {
+    void window.api.program.list().then(setPrograms)
+  }, [])
+
+  useEffect(() => {
+    refresh(programId)
+    // 直播在跑时用量持续增长，10s 轮询让看板自己往前走
+    const timer = setInterval(() => refresh(programId), 10_000)
+    return () => clearInterval(timer)
+  }, [programId, refresh])
+
+  const programName = useMemo(() => {
+    const names = new Map(programs.map((program) => [program.id, program.name]))
+    return (id: string | null) => (id ? (names.get(id) ?? '已删除节目') : '—')
+  }, [programs])
+
+  if (!dashboard) {
+    return <p className="p-4 text-sm text-muted-foreground">读取用量数据…</p>
+  }
+
+  const { today, total } = dashboard
+  const unpricedHints: string[] = []
+  if (total.llmUnpriced > 0) unpricedHints.push(`${total.llmUnpriced} 条 LLM 记录`)
+  if (total.ttsUnpriced > 0) unpricedHints.push(`${total.ttsUnpriced} 条 TTS 记录`)
+
+  const trendOption = {
+    tooltip: { trigger: 'axis' as const },
+    legend: { data: ['LLM', 'TTS'], top: 0, right: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 8, right: 8, top: 28, bottom: 0, containLabel: true },
+    xAxis: {
+      type: 'category' as const,
+      data: dashboard.trend.map((point) => point.day.slice(5)),
+      axisLabel: { fontSize: 10, interval: 4 }
+    },
+    yAxis: { type: 'value' as const, axisLabel: { fontSize: 10, formatter: (v: number) => `¥${v}` } },
+    series: [
+      { name: 'LLM', type: 'bar' as const, stack: 'cost', data: dashboard.trend.map((point) => round4(point.llmCost)), itemStyle: { color: '#c2693f' } },
+      { name: 'TTS', type: 'bar' as const, stack: 'cost', data: dashboard.trend.map((point) => round4(point.ttsCost)), itemStyle: { color: '#7d8a5a' } }
+    ]
+  }
+
+  const pieOption = {
+    tooltip: { trigger: 'item' as const, valueFormatter: (v: number) => formatYuan(v) },
+    legend: { bottom: 0, textStyle: { fontSize: 11 }, type: 'scroll' as const },
+    series: [
+      {
+        type: 'pie' as const,
+        radius: ['38%', '62%'],
+        center: ['50%', '44%'],
+        label: { fontSize: 11, formatter: '{b} {d}%' },
+        data: dashboard.byProgram.map((entry) => ({
+          name: entry.programName,
+          value: round4(entry.llmCost + entry.ttsCost)
+        }))
+      }
+    ]
+  }
+
+  return (
+    <div className="flex flex-col gap-3 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-xs text-muted-foreground">
+          金额按写入时的单价折算（改单价不追溯历史）；token 是服务商回报的真实用量
+        </p>
+        <Select value={programId || '__all__'} onValueChange={(v) => setProgramId(v === '__all__' ? '' : v)}>
+          <SelectTrigger className="h-8 w-44 shrink-0 text-xs">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent position="popper" sideOffset={6}>
+            <SelectItem value="__all__">全部节目</SelectItem>
+            {programs.map((program) => (
+              <SelectItem key={program.id} value={program.id}>
+                {program.name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3">
+        <OverviewCard
+          title="今日估算成本"
+          main={formatYuan(today.llmCost + today.ttsCost)}
+          sub={`LLM ${formatYuan(today.llmCost)} · TTS ${formatYuan(today.ttsCost)}`}
+        />
+        <OverviewCard
+          title="累计估算成本"
+          main={formatYuan(total.llmCost + total.ttsCost)}
+          sub={`LLM ${formatYuan(total.llmCost)} · TTS ${formatYuan(total.ttsCost)}`}
+        />
+        <OverviewCard
+          title="今日 LLM tokens"
+          main={formatCount(today.llmInputTokens + today.llmOutputTokens)}
+          sub={`输入 ${formatCount(today.llmInputTokens)} · 输出 ${formatCount(today.llmOutputTokens)} · 累计 ${formatCount(total.llmInputTokens + total.llmOutputTokens)}`}
+        />
+        <OverviewCard
+          title="今日 TTS 字符"
+          main={formatCount(today.ttsChars)}
+          sub={`累计 ${formatCount(total.ttsChars)}`}
+        />
+      </div>
+      {unpricedHints.length > 0 && (
+        <p className="rounded-lg border border-dashed border-amber-500/50 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          {unpricedHints.join('与')}未配单价，只记了用量没算钱——到「设置 → 语言模型 / 语音合成」给模型/接入填上单价后，新记录就会带金额
+        </p>
+      )}
+
+      <div className="grid grid-cols-2 gap-3">
+        <div className="rounded-lg border bg-card px-3 py-2.5">
+          <p className="text-xs font-medium text-muted-foreground">近 30 天成本趋势</p>
+          {dashboard.trend.every((point) => point.llmCost === 0 && point.ttsCost === 0) ? (
+            <EmptyChart text="近 30 天还没有可折算的成本记录" />
+          ) : (
+            <EChart option={trendOption} className="mt-1 h-48 w-full" />
+          )}
+        </div>
+        <div className="rounded-lg border bg-card px-3 py-2.5">
+          <p className="text-xs font-medium text-muted-foreground">按节目分布（累计）</p>
+          {dashboard.byProgram.length === 0 ? (
+            <EmptyChart text="还没有按节目归集的成本记录" />
+          ) : (
+            <EChart option={pieOption} className="mt-1 h-48 w-full" />
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-lg border bg-card">
+        <Tabs value={recordTab} onValueChange={(v) => setRecordTab(v as typeof recordTab)} className="gap-0">
+          <div className="flex items-center justify-between border-b px-3 pt-2">
+            <TabsList variant="line">
+              <TabsTrigger value="llm" className="px-3 text-xs">LLM 请求 · {usageRecords.length}</TabsTrigger>
+              <TabsTrigger value="tts" className="px-3 text-xs">TTS 合成 · {ttsRecords.length}</TabsTrigger>
+            </TabsList>
+            <span className="pb-1 text-[11px] text-muted-foreground">最近 100 条</span>
+          </div>
+          <TabsContent value="llm" className="max-h-72 overflow-auto">
+            {usageRecords.length === 0 ? (
+              <EmptyChart text="还没有 LLM 请求记录。主播说过话之后这里就有了" />
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card text-left text-muted-foreground">
+                  <tr>
+                    <Th>时间</Th>
+                    <Th>节目</Th>
+                    <Th>用途</Th>
+                    <Th>模型</Th>
+                    <Th className="text-right">输入</Th>
+                    <Th className="text-right">输出</Th>
+                    <Th className="text-right">成本</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {usageRecords.map((record) => (
+                    <tr key={record.id} className="border-t">
+                      <Td className="whitespace-nowrap tabular-nums text-muted-foreground">{formatTime(record.ts)}</Td>
+                      <Td className="max-w-28 truncate">{programName(record.programId)}</Td>
+                      <Td>
+                        <Badge variant="outline" className="text-[11px]">
+                          {USAGE_KIND_LABEL[record.kind] ?? record.kind}
+                        </Badge>
+                        {record.estimated && (
+                          <Badge variant="outline" className="ml-1 text-[11px] text-amber-600">
+                            估算
+                          </Badge>
+                        )}
+                      </Td>
+                      <Td className="max-w-36 truncate font-mono">{record.model}</Td>
+                      <Td className="text-right tabular-nums">
+                        {formatCount(record.inputTokens)}
+                        {record.cacheRead > 0 && (
+                          <span className="text-muted-foreground" title={`缓存命中 ${formatCount(record.cacheRead)} tokens`}>
+                            （缓 {formatCount(record.cacheRead)}）
+                          </span>
+                        )}
+                      </Td>
+                      <Td className="text-right tabular-nums">{formatCount(record.outputTokens)}</Td>
+                      <Td className="text-right tabular-nums">{formatYuan(record.cost)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </TabsContent>
+          <TabsContent value="tts" className="max-h-72 overflow-auto">
+            {ttsRecords.length === 0 ? (
+              <EmptyChart text="还没有 TTS 合成记录。合成过声音之后这里就有了" />
+            ) : (
+              <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-card text-left text-muted-foreground">
+                  <tr>
+                    <Th>时间</Th>
+                    <Th>节目</Th>
+                    <Th>模型</Th>
+                    <Th>音色</Th>
+                    <Th className="text-right">字符数</Th>
+                    <Th className="text-right">成本</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ttsRecords.map((record) => (
+                    <tr key={record.id} className="border-t">
+                      <Td className="whitespace-nowrap tabular-nums text-muted-foreground">{formatTime(record.ts)}</Td>
+                      <Td className="max-w-28 truncate">{programName(record.programId)}</Td>
+                      <Td className="max-w-36 truncate font-mono">{record.modelId}</Td>
+                      <Td className="max-w-28 truncate">{record.voiceId}</Td>
+                      <Td className="text-right tabular-nums">{formatCount(record.chars)}</Td>
+                      <Td className="text-right tabular-nums">{formatYuan(record.cost)}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </TabsContent>
+        </Tabs>
+      </div>
+    </div>
+  )
+}
+
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000
+}
+
+function OverviewCard({ title, main, sub }: { title: string; main: string; sub: string }) {
+  return (
+    <div className="rounded-lg border bg-card px-3 py-2.5">
+      <p className="flex items-center gap-1 text-xs text-muted-foreground">
+        <Coins className="size-3" />
+        {title}
+      </p>
+      <p className="mt-1 text-lg font-semibold tabular-nums">{main}</p>
+      <p className="mt-0.5 truncate text-[11px] text-muted-foreground" title={sub}>
+        {sub}
+      </p>
+    </div>
+  )
+}
+
+function Th({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return <th className={`px-3 py-2 font-medium ${className}`}>{children}</th>
+}
+
+function Td({ children, className = '' }: { children: React.ReactNode; className?: string }) {
+  return <td className={`px-3 py-1.5 ${className}`}>{children}</td>
+}
+
+function EmptyChart({ text }: { text: string }) {
+  return (
+    <p className="flex h-32 items-center justify-center text-xs text-muted-foreground">{text}</p>
   )
 }
 

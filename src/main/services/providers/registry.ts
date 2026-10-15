@@ -1,4 +1,5 @@
 import type {
+  LlmModelPrice,
   ModelAdvancedParams,
   ModelConnection,
   ThinkingLevelChoice,
@@ -55,6 +56,11 @@ export interface LlmProviderDef {
    * 查不到的（qwen / 豆包）只有这里列出的名字，所以只填确信存在的。
    */
   modelSuggestions: string[]
+  /**
+   * 常见模型的官方公开单价（元/百万 tokens），设置页加模型时预填（用户可改可清空）。
+   * 只填确信的公开价；不确定的不填——宁可空着不瞎编。
+   */
+  modelPrices?: Record<string, LlmModelPrice>
   /** 组装成 pi-agent 可用的模型描述（OpenAI 兼容通道） */
   toModelConfig(
     params: Record<string, string | number | boolean>,

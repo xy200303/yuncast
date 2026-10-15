@@ -179,8 +179,7 @@ export function LivePage() {
     <div className="flex min-h-0 flex-1">
         {/* 左栏 = 队列 / 评论流。「正在播什么」在右栏对话区底部的常驻状态行（一处就够） */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">            <Radio className="size-4 text-primary" />
-            <h1 className="text-sm font-medium">直播台</h1>
+          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
             {/* 开播控制贴最右：顶部居中的 toast 不会再盖住「启动/暂停」按钮 */}
             <div className="ml-auto flex items-center gap-3">
               <StreamIndicator />

@@ -10,7 +10,7 @@ import {
   Settings,
   type LucideIcon
 } from 'lucide-react'
-import logoUrl from '@/assets/logo.svg'
+import logoUrl from '../../assets/logo.svg'
 import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../../../shared/brand'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Button } from '@/components/ui/button'

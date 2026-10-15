@@ -97,9 +97,13 @@
 
 | 平台 | 文件 |
 | ---- | ---- |
-| Windows x64 | `小云播客坊 Setup <版本号>.exe` |
+| Windows x64 | `YunCast.Setup.<版本号>.exe` |
+| macOS（Apple Silicon） | `YunCast-<版本号>-arm64.dmg`、`YunCast-<版本号>-arm64.zip` |
+| Linux x64 | `YunCast-<版本号>-x64.AppImage`、`YunCast-<版本号>-x64.deb` |
 
 > ⚠️ **Windows**：SmartScreen 提示「未知发布者」时，点「更多信息」→「仍要运行」。
+> ⚠️ **macOS**：提示「应用已损坏」时执行 `xattr -cr /Applications/小云播客坊.app`。
+> ⚠️ **macOS / Linux 尚未真机验证**：窗口细节与音频设备路由如有问题欢迎提 Issue。
 
 ### 2. 配两把钥匙
 
@@ -123,7 +127,7 @@ npm run build        # 构建
 npm run dist:win     # 打包 Windows 安装包
 ```
 
-推送到 `main` 会跑类型检查和构建；打上与 `package.json` 版本一致的 tag（如 `v0.1.0`）后，CI 打包 Windows 安装包并发布 Release。
+推送到 `main` 会跑类型检查和构建；打上与 `package.json` 版本一致的 tag（如 `v0.1.0`）后，CI 在 Windows / macOS / Linux 三端打包并发布 Release。
 
 ## 📁 项目结构
 

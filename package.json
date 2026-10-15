@@ -4,6 +4,7 @@
   "description": "小云播客坊 YunCast - AI 直播工作台（智能主播 · 节目制作与播出）",
   "main": "out/main/index.js",
   "license": "MIT",
+  "author": "xy200303",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
@@ -83,7 +84,47 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "YunCast.Setup.${version}.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "YunCast-${version}-${arch}.${ext}",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "真人接管播报时需要使用麦克风"
+      }
+    },
+    "linux": {
+      "category": "AudioVideo",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "YunCast-${version}-${arch}.${ext}"
     }
   }
 }

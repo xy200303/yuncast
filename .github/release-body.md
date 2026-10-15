@@ -8,4 +8,4 @@
 - 评论互动：平台连接器（本地事件流）+ 事件收件箱自适应聚合，高频评论不刷屏、低频评论不掉
 - 节目音频导出 MP3/WAV（分章或合并、响度归一），用量看板统计 LLM tokens 与 TTS 字符
 
-安装包没有代码签名。Windows SmartScreen 提示「未知发布者」时，点「更多信息」→「仍要运行」。
+安装包没有代码签名。Windows SmartScreen 提示「未知发布者」时，点「更多信息」→「仍要运行」；macOS 提示「应用已损坏」时执行 `xattr -cr /Applications/小云播客坊.app`。

@@ -1,6 +1,6 @@
 /**
  * 生成应用图标：resources/icon.png（1024x1024）。
- * 图形与渲染层 BrandLogo 一致：天蓝→靛→紫渐变圆角底 + 白云 + 靛蓝声波柱。
+ * 图形与渲染层 src/renderer/src/assets/logo.svg 一致：天蓝→靛→紫渐变圆角底 + 白云 + 靛蓝声波柱。
  * 出图用 @napi-rs/canvas（pdf-parse 带进来的依赖，已装好，无需新增依赖）。
  */
 import { createRequire } from 'node:module'

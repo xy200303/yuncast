@@ -1,7 +1,11 @@
 /**
- * 品牌常量。改名只动这里 + package.json 的 build 字段 + resources/icon.*。
+ * 品牌常量：全部从 package.json 派生，单一数据源，改名只动 package.json。
+ *   中文名 = build.productName
+ *   英文名 = build.executableName
  */
-export const BRAND_NAME_ZH = '小云播客坊'
-export const BRAND_NAME_EN = 'YunCast'
+import pkg from '../../package.json'
+
+export const BRAND_NAME_ZH: string = pkg.build.productName
+export const BRAND_NAME_EN: string = pkg.build.executableName
 /** 窗口标题、关于信息等展示用全名 */
 export const BRAND_DISPLAY = `${BRAND_NAME_ZH} ${BRAND_NAME_EN}`

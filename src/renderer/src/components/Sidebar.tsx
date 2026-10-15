@@ -10,7 +10,8 @@ import {
   Settings,
   type LucideIcon
 } from 'lucide-react'
-import { BrandLogo } from './BrandLogo'
+import logoUrl from '@/assets/logo.svg'
+import { BRAND_NAME_EN, BRAND_NAME_ZH } from '../../../shared/brand'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -60,9 +61,9 @@ export function AppSidebar() {
       >
         {!collapsed && (
           <>
-            <BrandLogo className="size-5 shrink-0" />
+            <img src={logoUrl} alt={BRAND_NAME_ZH} className="size-5 shrink-0" />
             <span className="min-w-0 flex-1 truncate text-sm font-semibold">
-              小云播客坊 <span className="text-xs font-normal text-muted-foreground">YunCast</span>
+              {BRAND_NAME_ZH} <span className="text-xs font-normal text-muted-foreground">{BRAND_NAME_EN}</span>
             </span>
           </>
         )}

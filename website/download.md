@@ -1,3 +1,8 @@
+---
+title: 下载与安装
+description: 下载小云播客坊 YunCast 最新版：Windows 安装包、macOS dmg、Linux AppImage/deb，开源免费，含安装注意事项。
+---
+
 # 下载与安装
 
 前往 [Releases](https://github.com/xy200303/yuncast/releases/latest) 下载最新版：

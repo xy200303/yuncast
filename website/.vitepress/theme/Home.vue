@@ -38,6 +38,16 @@ const showcase = [
   { src: shotStats, title: '数据', desc: '画像 · 摘要 · 用量看板' }
 ]
 
+/* GEO：可见 FAQ 与 FAQPage JSON-LD 保持一致，供搜索引擎与 AI 答案引擎引用 */
+const faqs = [
+  { q: '小云播客坊 YunCast 是什么？', a: '一款开源免费（MIT）的 AI 直播工作台桌面软件：AI 主播自己写稿、用克隆的声音播报、看到评论自己决定怎么回。商品宣讲、直播带货、有声书、播客节目，一个工作台全包。' },
+  { q: '小云播客坊收费吗？', a: '软件本身完全免费且开源（MIT 协议）。运行时需自配 LLM 和 TTS 云服务的 API Key，用量费用按服务商计价，应用内的用量看板可以看到每笔消耗。' },
+  { q: '不会写直播稿能用吗？', a: '可以，这正是它的主业。主播 Agent 有人设卡和编剧模式：说一句「给这场写稿」，它自己查资料、写稿、合成、排进播出队列，全程不用你动笔。' },
+  { q: '能克隆店家自己的声音吗？', a: '能。在音色库上传一段 10 秒以上的干净录音即可克隆音色，支持火山引擎、阿里云百炼和播客专用大模型等多家 TTS 服务。' },
+  { q: '支持哪些直播平台和场景？', a: '软件本身平台无关：合成声音经虚拟声卡/OBS 推流到任意直播平台，评论通过平台连接器接入。除直播带货外，还支持有声书、播客、FM 等预制节目，可整场导出 MP3/WAV 上传喜马拉雅、小宇宙。' },
+  { q: '数据会上传到云端吗？', a: '不会。除调用你自配的 LLM/TTS 云 API 外，所有数据（剧本、音频、评论记录、用量）都存在你自己电脑上，软件无服务端。' }
+]
+
 /* ---------- hero 声波音浪：三层正弦波叠加，logo 三色渐变，鼠标视差 ---------- */
 const waveCanvas = ref<HTMLCanvasElement | null>(null)
 let raf = 0
@@ -46,6 +56,20 @@ let onResize: (() => void) | null = null
 let onPointer: ((e: PointerEvent) => void) | null = null
 
 onMounted(() => {
+  const ld = document.createElement('script')
+  ld.type = 'application/ld+json'
+  ld.id = 'faq-jsonld'
+  ld.textContent = JSON.stringify({
+    '@context': 'https://schema.org',
+    '@type': 'FAQPage',
+    mainEntity: faqs.map((f) => ({
+      '@type': 'Question',
+      name: f.q,
+      acceptedAnswer: { '@type': 'Answer', text: f.a }
+    }))
+  })
+  document.head.appendChild(ld)
+
   observer = new IntersectionObserver(
     (entries) => entries.forEach((e) => e.isIntersecting && e.target.classList.add('in')),
     { threshold: 0.12 }
@@ -121,6 +145,7 @@ onMounted(() => {
   draw(0)
 })
 onUnmounted(() => {
+  document.getElementById('faq-jsonld')?.remove()
   observer?.disconnect()
   cancelAnimationFrame(raf)
   if (onResize) window.removeEventListener('resize', onResize)
@@ -203,6 +228,17 @@ $ npm run dev</code></pre>
           <h3>MIT 协议</h3>
           <p>Electron 44 · React 19 · TypeScript。LLM/TTS 直连云 API，数据全部存在你自己电脑上，无服务端、不上传。</p>
         </div>
+      </div>
+    </section>
+
+    <!-- FAQ（GEO：问答式内容，供搜索/AI 引擎引用） -->
+    <section class="section faq-section">
+      <h2 class="display reveal">常见问题</h2>
+      <div class="faq-list">
+        <details v-for="(f, i) in faqs" :key="f.q" class="faq-item reveal" :style="{ transitionDelay: (i % 3) * 60 + 'ms' }">
+          <summary>{{ f.q }}</summary>
+          <p>{{ f.a }}</p>
+        </details>
       </div>
     </section>
 
@@ -425,6 +461,50 @@ $ npm run dev</code></pre>
   font-size: 13.5px;
   line-height: 1.9;
   overflow-x: auto;
+}
+
+/* ---------- FAQ ---------- */
+.faq-list { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+.faq-item {
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 0 22px;
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+.faq-item:hover { border-color: rgba(99, 102, 241, 0.35); }
+.faq-item[open] {
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 8px 30px -12px rgba(99, 102, 241, 0.25);
+}
+.faq-item summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 18px 28px 18px 0;
+  font-size: 15.5px;
+  font-weight: 600;
+  color: #0f172a;
+  position: relative;
+}
+.faq-item summary::-webkit-details-marker { display: none; }
+.faq-item summary::after {
+  content: '+';
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 20px;
+  font-weight: 400;
+  color: #6366f1;
+  transition: transform 0.25s ease;
+}
+.faq-item[open] summary::after { transform: translateY(-50%) rotate(45deg); }
+.faq-item p {
+  margin: 0;
+  padding: 0 0 18px;
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--vp-c-text-2);
 }
 
 /* ---------- Final ---------- */

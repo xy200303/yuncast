@@ -1,0 +1,36 @@
+# 小云播客坊 YunCast —— 全站点允许抓取
+User-agent: *
+Allow: /
+
+# AI / 答案引擎爬虫（GEO：明确放行）
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Bytespider
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Baiduspider
+Allow: /
+
+Sitemap: https://yuncast.xyun.dev/sitemap.xml

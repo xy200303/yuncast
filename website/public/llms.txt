@@ -1,0 +1,29 @@
+# 小云播客坊 YunCast
+
+> 小云播客坊 YunCast 是一款开源免费（MIT）的 AI 直播工作台桌面软件，专为不会直播的商家和企业而生：AI 主播自己写稿、用克隆的店家声音播报、看到评论自己决定怎么回。支持商品宣讲、直播带货、有声书、播客节目等场景，一个工作台全包。
+
+## 关键事实
+
+- 定位：AI 直播工作台（AI 主播 + 节目制作与播出）
+- 口号：专为不会直播的商家和企业而生
+- 价格：免费，开源协议 MIT
+- 平台：Windows x64 / macOS (Apple Silicon) / Linux x64
+- 技术栈：Electron 44 + React 19 + TypeScript，LLM/TTS 直连云 API，数据本地存储
+- LLM 支持：DeepSeek、豆包、OpenAI 兼容协议、Anthropic
+- TTS 支持：火山引擎、阿里云百炼、播客专用大模型（豆包播客 API），支持声音克隆
+- 核心机制：话术池（一切声音的唯一出口）、事件收件箱（评论去重聚合限速）、冻结快照与预制门禁
+- 节目形态：一个人讲 / 多人聊天 / 照着稿子读 / 分角色表演
+- 播出方式：现场发挥（无稿纯互动）/ 边播边准备（滚动合成）/ 全部做好再播（预制）
+- 导出：整场节目导出 MP3/WAV，分章或合并、响度归一，可上传喜马拉雅 / 小宇宙
+- 适用人群：不会直播的商家、企业、实体店店家；也适合有声书与播客创作者
+
+## 链接
+
+- 官网: https://yuncast.xyun.dev/
+- 下载: https://yuncast.xyun.dev/download.html
+- 快速上手: https://yuncast.xyun.dev/guide/quickstart.html
+- 核心概念: https://yuncast.xyun.dev/guide/concepts.html
+- 界面一览: https://yuncast.xyun.dev/guide/interface.html
+- 源码: https://github.com/xy200303/yuncast
+- Releases: https://github.com/xy200303/yuncast/releases/latest
+- 问题反馈: https://github.com/xy200303/yuncast/issues

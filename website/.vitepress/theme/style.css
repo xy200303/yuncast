@@ -1,0 +1,41 @@
+/* Codex 风格：黑白极简，全站强制深色（config.ts appearance: force-dark） */
+:root,
+.dark {
+  --vp-c-brand-1: #fafafa;
+  --vp-c-brand-2: #d4d4d8;
+  --vp-c-brand-3: #a1a1aa;
+  --vp-c-brand-soft: rgba(255, 255, 255, 0.08);
+
+  --vp-c-bg: #0a0a0a;
+  --vp-c-bg-alt: #0a0a0a;
+  --vp-c-bg-soft: #111113;
+  --vp-c-bg-elv: #161618;
+
+  --vp-c-divider: rgba(255, 255, 255, 0.08);
+  --vp-c-gutter: rgba(255, 255, 255, 0.08);
+
+  --vp-c-text-1: #fafafa;
+  --vp-c-text-2: #a1a1aa;
+  --vp-c-text-3: #71717a;
+
+  /* 首页按钮（VPButton 用到的地方） */
+  --vp-button-brand-border: rgba(255, 255, 255, 0.2);
+  --vp-button-brand-text: #0a0a0a;
+  --vp-button-brand-bg: #fafafa;
+  --vp-button-brand-hover-border: rgba(255, 255, 255, 0.4);
+  --vp-button-brand-hover-text: #0a0a0a;
+  --vp-button-brand-hover-bg: #e4e4e7;
+  --vp-button-brand-active-border: rgba(255, 255, 255, 0.4);
+  --vp-button-brand-active-text: #0a0a0a;
+  --vp-button-brand-active-bg: #d4d4d8;
+}
+
+/* layout: page 给落地页让出全宽 */
+.VPPage,
+.VPPage .container,
+.VPPage .content,
+.VPPage .content-container {
+  max-width: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+}

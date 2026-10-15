@@ -3,7 +3,8 @@ import { defineConfig } from 'vitepress'
 export default defineConfig({
   lang: 'zh-CN',
   title: '小云播客坊 YunCast',
-  description: '你的 AI 主播，开场就能播——直播带货、有声书、播客节目，一个工作台全包',
+  description: '专为不会直播的商家和企业而生——低成本开播：商品宣讲、直播带货、有声书、播客节目，一个工作台全包',
+  appearance: 'force-dark',
   base: '/',
   head: [['link', { rel: 'icon', href: '/logo.svg' }]],
   themeConfig: {

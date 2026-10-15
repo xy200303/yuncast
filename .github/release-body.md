@@ -13,6 +13,6 @@
 | ---- | ---- |
 | Windows x64 | `YunCast.Setup.0.1.1.exe` |
 | macOS（Apple Silicon） | `YunCast-0.1.1-arm64.dmg`、`YunCast-0.1.1-arm64.zip` |
-| Linux x64 | `YunCast-0.1.1-x64.AppImage`、`YunCast-0.1.1-x64.deb` |
+| Linux x64 | `YunCast-0.1.1-x86_64.AppImage`、`YunCast-0.1.1-amd64.deb` |
 
 安装包没有代码签名。Windows SmartScreen 提示「未知发布者」时，点「更多信息」→「仍要运行」；macOS 提示「应用已损坏」时执行 `xattr -cr /Applications/小云播客坊.app`。macOS / Linux 尚未真机验证，遇到问题欢迎提 [Issue](https://github.com/xy200303/yuncast/issues)。

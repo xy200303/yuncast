@@ -6,7 +6,7 @@
 | ---- | ---- |
 | Windows x64 | `YunCast.Setup.<版本号>.exe` |
 | macOS（Apple Silicon） | `YunCast-<版本号>-arm64.dmg`、`YunCast-<版本号>-arm64.zip` |
-| Linux x64 | `YunCast-<版本号>-x64.AppImage`、`YunCast-<版本号>-x64.deb` |
+| Linux x64 | `YunCast-<版本号>-x86_64.AppImage`、`YunCast-<版本号>-amd64.deb` |
 
 ## Windows
 
@@ -29,7 +29,7 @@ xattr -cr /Applications/小云播客坊.app
 ## Linux
 
 - AppImage：chmod +x 后直接运行
-- deb：`sudo dpkg -i YunCast-<版本号>-x64.deb`
+- deb：`sudo dpkg -i YunCast-<版本号>-amd64.deb`
 
 ::: warning 注意
 macOS 与 Linux 版本暂未真机验证，窗口细节与音频设备路由如有问题欢迎到 [Issue](https://github.com/xy200303/yuncast/issues) 反馈。

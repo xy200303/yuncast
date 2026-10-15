@@ -45,6 +45,34 @@
 
 ---
 
+## 📸 界面预览
+
+<p align="center">
+  <img src="website/guide/screenshots/live.png" alt="直播台" />
+  <br><em>直播台：话术池队列 + 评论流 + 事件流，右侧直接和主播对话</em>
+</p>
+
+<table>
+  <tr>
+    <td><img src="website/guide/screenshots/programs.png" alt="节目" /></td>
+    <td><img src="website/guide/screenshots/anchors.png" alt="主播团" /></td>
+  </tr>
+  <tr>
+    <td align="center"><em>节目：形态 × 播出方式 × 播完策略</em></td>
+    <td align="center"><em>主播团：人设卡点击弹窗配置</em></td>
+  </tr>
+  <tr>
+    <td><img src="website/guide/screenshots/voices.png" alt="音色库" /></td>
+    <td><img src="website/guide/screenshots/stats.png" alt="数据" /></td>
+  </tr>
+  <tr>
+    <td align="center"><em>音色库：云端音色 + 声音克隆</em></td>
+    <td align="center"><em>数据：画像 · 摘要 · 用量看板</em></td>
+  </tr>
+</table>
+
+---
+
 ## 💡 技术亮点
 
 ### 话术池：一切声音的唯一出口

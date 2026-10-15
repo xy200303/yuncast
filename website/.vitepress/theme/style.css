@@ -1,4 +1,12 @@
 /* 浅色专业感：白底 + logo 靛蓝做品牌点缀（config.ts appearance: force-light） */
+
+/* 得意黑 Smiley Sans（SIL OFL，atelier-anchor/smiley-sans）自托管，标题专用 */
+@font-face {
+  font-family: 'Smiley Sans';
+  src: url('/fonts/SmileySans-Oblique.ttf.woff2') format('woff2');
+  font-display: swap;
+}
+
 :root {
   --vp-c-brand-1: #4f46e5;
   --vp-c-brand-2: #6366f1;
@@ -20,6 +28,13 @@
 
 /* 强制浅色后隐藏导航栏的主题切换按钮 */
 .VPNavBarAppearance { display: none !important; }
+
+/* 导航品牌名也用得意黑 */
+.VPNavBarTitle .title {
+  font-family: 'Smiley Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+}
 
 /* layout: page 给落地页让出全宽 */
 .VPPage,

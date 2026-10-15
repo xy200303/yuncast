@@ -7,15 +7,28 @@ import shotAnchors from '../../guide/screenshots/anchors.png'
 import shotVoices from '../../guide/screenshots/voices.png'
 import shotStats from '../../guide/screenshots/stats.png'
 
+/* lucide 风格线性图标（stroke, 24x24 viewBox），v-html 注入 svg 内部 */
+const svg = (inner: string) => inner
+const ICONS = {
+  mic: svg('<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>'),
+  layers: svg('<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>'),
+  shuffle: svg('<path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.8-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/>'),
+  waveform: svg('<path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/>'),
+  message: svg('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/>'),
+  sliders: svg('<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>'),
+  download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>'),
+  chart: svg('<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>')
+}
+
 const features = [
-  { icon: '🎙️', title: '智能主播 Agent', desc: '人设卡 + 编剧模式，主播自己写稿自己播。评论回不回、怎么回，它像真人一样看着办。' },
-  { icon: '📻', title: '四种节目形态', desc: '一个人讲、多人聊天、照着稿子读、分角色表演——直播带货、有声书、播客、FM 全覆盖。' },
-  { icon: '🔀', title: '三种播出方式', desc: '现场发挥、边播边准备、全部做好再播。预制节目有门禁：音频不齐，不开播。' },
-  { icon: '🗣️', title: '克隆店家的声音', desc: '火山引擎 / 阿里云百炼 / 播客专用大模型多 TTS 适配，一段录音克隆音色。' },
-  { icon: '💬', title: '像真人一样看评论', desc: '评论先进收件箱：去重、归组、自适应聚合。洪峰一批批看，冷清一条不漏。' },
-  { icon: '🎚️', title: '导演级播出控制', desc: '话术池车道、BGM ducking、麦克风真人接管、一键急停。人在场控，随时抢过话筒。' },
-  { icon: '📤', title: '音频导出', desc: '整场导出 MP3/WAV，分章或合并、响度归一，直接上传喜马拉雅、小宇宙。' },
-  { icon: '📊', title: '用量看板', desc: 'LLM tokens 与 TTS 字符按节目归组，30 天趋势可视化，花多少心里有数。' }
+  { icon: ICONS.mic, title: '智能主播 Agent', desc: '人设卡 + 编剧模式，主播自己写稿自己播。评论回不回、怎么回，它像真人一样看着办。' },
+  { icon: ICONS.layers, title: '四种节目形态', desc: '一个人讲、多人聊天、照着稿子读、分角色表演——直播带货、有声书、播客、FM 全覆盖。' },
+  { icon: ICONS.shuffle, title: '三种播出方式', desc: '现场发挥、边播边准备、全部做好再播。预制节目有门禁：音频不齐，不开播。' },
+  { icon: ICONS.waveform, title: '克隆店家的声音', desc: '火山引擎 / 阿里云百炼 / 播客专用大模型多 TTS 适配，一段录音克隆音色。' },
+  { icon: ICONS.message, title: '像真人一样看评论', desc: '评论先进收件箱：去重、归组、自适应聚合。洪峰一批批看，冷清一条不漏。' },
+  { icon: ICONS.sliders, title: '导演级播出控制', desc: '话术池车道、BGM ducking、麦克风真人接管、一键急停。人在场控，随时抢过话筒。' },
+  { icon: ICONS.download, title: '音频导出', desc: '整场导出 MP3/WAV，分章或合并、响度归一，直接上传喜马拉雅、小宇宙。' },
+  { icon: ICONS.chart, title: '用量看板', desc: 'LLM tokens 与 TTS 字符按节目归组，30 天趋势可视化，花多少心里有数。' }
 ]
 
 const showcase = [
@@ -153,7 +166,7 @@ onUnmounted(() => {
       </h2>
       <div class="grid">
         <div v-for="(f, i) in features" :key="f.title" class="card reveal" :style="{ transitionDelay: (i % 4) * 60 + 'ms' }">
-          <div class="card-icon">{{ f.icon }}</div>
+          <div class="card-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" v-html="f.icon" /></div>
           <h3>{{ f.title }}</h3>
           <p>{{ f.desc }}</p>
         </div>
@@ -196,7 +209,7 @@ $ npm run dev</code></pre>
     <!-- Final CTA -->
     <section class="final">
       <div class="final-inner reveal">
-        <h2 class="display"><span class="grad-text">下一场直播，</span><br>让主播自己上。</h2>
+        <h2 class="display"><span class="grad-text">让 AI 的声音</span><br>改变世界。</h2>
         <a class="btn primary big" href="https://github.com/xy200303/yuncast/releases/latest" target="_blank" rel="noreferrer">免费下载</a>
         <p class="footnote">MIT License · © 2026 小云播客坊 YunCast</p>
       </div>
@@ -248,10 +261,11 @@ $ npm run dev</code></pre>
 }
 .hero-title {
   margin: 28px 0 20px;
+  font-family: 'Smiley Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-size: clamp(2.8rem, 7.5vw, 5.2rem);
   font-weight: 800;
   line-height: 1.15;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.01em;
   border: none;
   color: #0f172a;
 }
@@ -336,9 +350,10 @@ $ npm run dev</code></pre>
 .section.alt { max-width: none; background: #f6f7fb; }
 .section.alt > * { max-width: 1152px; margin-left: auto; margin-right: auto; }
 .display {
+  font-family: 'Smiley Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   font-size: clamp(2rem, 4.6vw, 3.4rem);
   font-weight: 800;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.01em;
   line-height: 1.25;
   text-align: center;
   margin: 0 auto 56px;
@@ -365,7 +380,19 @@ $ npm run dev</code></pre>
   border-color: rgba(99, 102, 241, 0.4);
   box-shadow: 0 20px 48px rgba(79, 70, 229, 0.13);
 }
-.card-icon { font-size: 26px; margin-bottom: 12px; }
+.card-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  color: #4f46e5;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.12), rgba(99, 102, 241, 0.14) 55%, rgba(168, 85, 247, 0.12));
+  border: 1px solid rgba(99, 102, 241, 0.16);
+}
+.card-icon svg { width: 21px; height: 21px; }
 .card h3 { margin: 0 0 8px; font-size: 16px; border: none; color: #0f172a; }
 .card p { margin: 0; font-size: 14px; line-height: 1.8; color: var(--vp-c-text-2); }
 

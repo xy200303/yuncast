@@ -129,12 +129,19 @@ function UsageBoard() {
   const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([])
   const [ttsRecords, setTtsRecords] = useState<TtsRecord[]>([])
   const [recordTab, setRecordTab] = useState<'llm' | 'tts'>('llm')
+  const [loadError, setLoadError] = useState('')
 
   const refresh = useCallback((pid: string) => {
     const filter = pid || undefined
-    void window.api.stats.dashboard(filter).then(setDashboard)
-    void window.api.stats.usageRecords(100, filter).then(setUsageRecords)
-    void window.api.stats.ttsRecords(100, filter).then(setTtsRecords)
+    window.api.stats
+      .dashboard(filter)
+      .then((d) => {
+        setDashboard(d)
+        setLoadError('')
+      })
+      .catch((e) => setLoadError(e instanceof Error ? e.message : String(e)))
+    void window.api.stats.usageRecords(100, filter).then(setUsageRecords).catch(() => {})
+    void window.api.stats.ttsRecords(100, filter).then(setTtsRecords).catch(() => {})
   }, [])
 
   useEffect(() => {
@@ -154,6 +161,14 @@ function UsageBoard() {
   }, [programs])
 
   if (!dashboard) {
+    if (loadError) {
+      return (
+        <div className="flex flex-col items-center gap-2 p-8 text-center">
+          <p className="text-sm text-destructive">用量数据读取失败：{loadError}</p>
+          <p className="text-xs text-muted-foreground">主进程可能是旧版本，重启应用后自动恢复重试</p>
+        </div>
+      )
+    }
     return <p className="p-4 text-sm text-muted-foreground">读取用量数据…</p>
   }
 

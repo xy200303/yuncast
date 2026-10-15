@@ -50,12 +50,14 @@ import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { CommentList } from './live/CommentList'
+import { EventStream } from './live/EventStream'
 import { ImprovisedPanel } from './live/ImprovisedPanel'
 import { PreparedPanel } from './live/PreparedPanel'
 import type {
   ChatEntry,
   DirectorMessage,
   LiveComment,
+  LiveInboxEvent,
   Program,
   Persona,
   PreflightItem,
@@ -107,8 +109,10 @@ export function LivePage() {
   const pool = useAppStore((s) => s.pool)
   const levels = useAppStore((s) => s.levels)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
-  const [leftTab, setLeftTab] = useState<'pool' | 'comments'>('pool')
+  const [leftTab, setLeftTab] = useState<'pool' | 'comments' | 'events'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
+  /** 发给主播的直播间动态收件箱（事件流选项卡；主进程 250ms 节流推快照） */
+  const [inboxEvents, setInboxEvents] = useState<LiveInboxEvent[]>([])
   /** 右栏选项卡：对话是主区（铺满高度），操作切过去才显示 */
   const [rightTab, setRightTab] = useState<'chat' | 'control'>('chat')
   /** 对话未读数（切走时有新条目在选项卡上亮红点） */
@@ -132,9 +136,9 @@ export function LivePage() {
   /** 中间区布局由播出方式决定：现场发挥 / 边播边准备（默认，含未选节目）/ 全部做好再播 */
   const broadcastMode = activeProgram?.broadcastMode ?? 'rolling'
 
-  // 节目关了直播间动态而标签还停在评论流：切回队列
+  // 节目关了直播间动态而标签还停在评论流/事件流：切回队列
   useEffect(() => {
-    if (!allowLiveEvents && leftTab === 'comments') setLeftTab('pool')
+    if (!allowLiveEvents && leftTab !== 'pool') setLeftTab('pool')
   }, [allowLiveEvents, leftTab])
 
   // 评论订阅提到页面层（标签上要显示条数），保持最近 100 条
@@ -143,6 +147,13 @@ export function LivePage() {
     return window.api.comment.onComment((comment) => {
       setComments((prev) => [...prev.slice(-99), comment])
     })
+  }, [])
+
+  // 事件流：先拉快照，再订阅变更（主进程已节流）
+  useEffect(() => {
+    if (!('api' in window)) return
+    void window.api.agent.inboxList().then(setInboxEvents)
+    return window.api.agent.onInbox(setInboxEvents)
   }, [])
 
   // 主播工具触发的播报控制（pause_broadcast / resume_broadcast / skip_current）
@@ -216,6 +227,11 @@ export function LivePage() {
                     评论流 · {comments.length}
                   </TabsTrigger>
                 )}
+                {allowLiveEvents && (
+                  <TabsTrigger value="events" className="px-3 text-xs" title="发送给主播的直播间动态（收件箱状态）">
+                    事件流 · {inboxEvents.filter((e) => e.state === 'new' || e.state === 'seen').length}
+                  </TabsTrigger>
+                )}
               </TabsList>
             </div>
             <TabsContent value="pool" className="min-h-0 overflow-y-auto p-3">
@@ -252,6 +268,11 @@ export function LivePage() {
             {allowLiveEvents && (
               <TabsContent value="comments" className="min-h-0 overflow-y-auto px-4 pb-2">
                 <CommentList comments={comments} />
+              </TabsContent>
+            )}
+            {allowLiveEvents && (
+              <TabsContent value="events" className="min-h-0 overflow-y-auto px-4 pb-2">
+                <EventStream events={inboxEvents} />
               </TabsContent>
             )}
           </Tabs>

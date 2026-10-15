@@ -137,6 +137,13 @@ export class AgentService {
     isAgentBusy: () => this.busy,
     flush: (batchText, events) => this.deliverInboxBatch(batchText, events)
   })
+  /** 收件箱变更广播钩子（index.ts 接上，播控台「事件流」用；节流也在那边做） */
+  onInboxChange: (() => void) | null = null
+
+  /** 收件箱快照（新的在前），给 IPC `agent:inbox` 用 */
+  inboxSnapshot(): LiveInboxEvent[] {
+    return this.inbox.snapshot()
+  }
   /** 场景推进后的装载钩子（ProgramPlaybackService 接上：把新场景话术库载入池） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
   /** 主播自己开播（start_live 工具）：ProgramPlaybackService 接上，返回给主播看的成败说明 */
@@ -206,7 +213,9 @@ export class AgentService {
     private readonly utterances: UtteranceService,
     private readonly broadcast: (status: AgentStatus) => void,
     private readonly onDirectorTimeline?: (event: DirectorTimelineEvent | DirectorTimelineReset) => void
-  ) {}
+  ) {
+    this.inbox.onChange = () => this.onInboxChange?.()
+  }
 
   /** 设置本场音色（开播装载时写入节目音色；运行中热切换音色也走这里） */
   setProgramVoice(voiceId: string): void {

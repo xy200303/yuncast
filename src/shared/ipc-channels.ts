@@ -54,6 +54,10 @@ export const IPC = {
   agentDraftStart: 'agent:draft-start',
   /** main → renderer：Agent 状态 + 生成中预览 */
   agentStatusEvent: 'agent:status-event',
+  /** renderer → main：拉直播间动态收件箱快照（播控台「事件流」） */
+  agentInbox: 'agent:inbox',
+  /** main → renderer：收件箱变更（携带最新快照，250ms 节流） */
+  agentInboxEvent: 'agent:inbox-event',
 
   // 导演对话
   directorSend: 'director:send',

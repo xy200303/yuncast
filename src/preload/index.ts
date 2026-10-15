@@ -42,6 +42,7 @@ import type {
   ProductInput,
   Script,
   ScriptInput,
+  LiveInboxEvent,
   SpeechItem,
   SpeechLane,
   TtsConnectionInput,
@@ -171,6 +172,16 @@ const api = {
       ipcRenderer.on(IPC.agentStatusEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.agentStatusEvent, listener)
+      }
+    },
+    /** 直播间动态收件箱快照（播控台「事件流」） */
+    inboxList: () => ipcRenderer.invoke(IPC.agentInbox) as Promise<LiveInboxEvent[]>,
+    /** 订阅收件箱变更（携带最新快照，主进程 250ms 节流），返回取消订阅函数 */
+    onInbox: (cb: (events: LiveInboxEvent[]) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, events: LiveInboxEvent[]) => cb(events)
+      ipcRenderer.on(IPC.agentInboxEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.agentInboxEvent, listener)
       }
     }
   },

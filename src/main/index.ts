@@ -530,6 +530,30 @@ function registerIpc(
   })
   ipcMain.handle(IPC.agentHandoff, async (_e, personaId: string) => agent.handoff(personaId))
   ipcMain.handle(IPC.agentStatus, () => agent.status())
+  // 直播间动态收件箱（播控台「事件流」）：快照拉取 + 250ms 节流广播
+  ipcMain.handle(IPC.agentInbox, () => agent.inboxSnapshot())
+  {
+    let inboxTimer: NodeJS.Timeout | null = null
+    let inboxLastSent = 0
+    agent.onInboxChange = () => {
+      const send = () => {
+        inboxLastSent = Date.now()
+        const snapshot = agent.inboxSnapshot()
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send(IPC.agentInboxEvent, snapshot)
+        }
+      }
+      const wait = 250 - (Date.now() - inboxLastSent)
+      if (wait <= 0 && !inboxTimer) return send()
+      if (!inboxTimer) {
+        inboxTimer = setTimeout(() => {
+          inboxTimer = null
+          send()
+        }, Math.max(wait, 0))
+        inboxTimer.unref?.()
+      }
+    }
+  }
   // 统一开播控制里的「暂停」：停播报（主进程播放循环）+ 停主播产出（评论/触发器不派、say 被拒）
   ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => {
     const value = Boolean(paused)

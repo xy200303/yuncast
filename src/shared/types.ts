@@ -1115,6 +1115,37 @@ export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
   knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
 }
 
+// ---------- 直播间动态收件箱（docs/10 §5.3）：播控台「事件流」直接展示这份状态 ----------
+
+export type LiveEventState = 'new' | 'seen' | 'handled' | 'ignored' | 'expired'
+export type LiveInboxKind = 'comment' | 'gift' | 'follow' | 'entrance' | 'trigger'
+
+export interface LiveInboxEvent {
+  id: string
+  /** 连接器事件 id（去重用；触发器通知没有） */
+  connectorEventId?: string
+  kind: LiveInboxKind
+  author: string
+  /** 评论文本 / 礼物描述 / 触发器通知文本 */
+  content: string
+  /** 老粉画像（评论用，入箱时已拼好） */
+  profileHint?: string
+  /** 提问/价格/售后类识别为 high */
+  priority: 'high' | 'normal'
+  state: LiveEventState
+  /** 相同内容归组计数 */
+  count: number
+  receivedAt: number
+}
+
+export const LIVE_EVENT_STATE_LABELS: Record<LiveEventState, string> = {
+  new: '聚合中',
+  seen: '已送达主播',
+  handled: '已回应',
+  ignored: '主播没理',
+  expired: '已过期'
+}
+
 // ---------- 话术库（docs/07 §3 utterances：节目底稿库，与运行态 speech_items 分工） ----------
 
 export type UtteranceStatus = 'pending' | 'synthesizing' | 'ready' | 'failed'

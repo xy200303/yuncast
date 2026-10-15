@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import type { LiveInboxEvent, LiveInboxKind } from '../../shared/types'
+
+export type { LiveEventState, LiveInboxEvent, LiveInboxKind } from '../../shared/types'
 
 /**
  * 直播间动态收件箱（docs/10 §5.3 / §15.3）：评论/礼物/关注/进场/内容类触发器通知统一进箱。
@@ -46,28 +49,7 @@ const MAX_KEPT_EVENTS = 500
  */
 const HIGH_PRIORITY_HINTS = ['?', '？', '吗', '怎么', '如何', '多少', '价格', '多少钱', '售后', '退', '质量', '发货']
 
-export type LiveEventState = 'new' | 'seen' | 'handled' | 'ignored' | 'expired'
-export type LiveInboxKind = 'comment' | 'gift' | 'follow' | 'entrance' | 'trigger'
-
-export interface LiveInboxEvent {
-  id: string
-  /** 连接器事件 id（去重用；触发器通知没有） */
-  connectorEventId?: string
-  kind: LiveInboxKind
-  author: string
-  /** 评论文本 / 礼物描述 / 触发器通知文本 */
-  content: string
-  /** 老粉画像（评论用，入箱时已拼好） */
-  profileHint?: string
-  /** 提问/价格/售后类识别为 high */
-  priority: 'high' | 'normal'
-  state: LiveEventState
-  /** 相同内容归组计数 */
-  count: number
-  receivedAt: number
-}
-
-export interface LiveInboxPush {
+export type LiveInboxPush = {
   connectorEventId?: string
   kind: LiveInboxKind
   author: string
@@ -102,6 +84,8 @@ function groupKeyOf(event: Pick<LiveInboxEvent, 'kind' | 'content'>): string {
 }
 
 export class LiveEventInbox {
+  /** 事件流 UI 订阅：任何新增/归组/状态变化后回调（广播节流由调用方做） */
+  onChange: (() => void) | null = null
   private events: LiveInboxEvent[] = []
   /** 连接器事件 id 去重（LRU：Map 插入序，删了重插刷新热度，超容量淘汰最旧） */
   private readonly dedup = new Map<string, true>()
@@ -121,6 +105,11 @@ export class LiveEventInbox {
   constructor(private readonly deps: LiveInboxDeps) {
     this.sweepTimer = setInterval(() => this.sweep(), SWEEP_INTERVAL_MS)
     this.sweepTimer.unref?.()
+  }
+
+  /** 事件流快照（新的在前），给播控台「事件流」选项卡用 */
+  snapshot(): LiveInboxEvent[] {
+    return [...this.events].sort((a, b) => b.receivedAt - a.receivedAt)
   }
 
   /** 事件入箱：去重 → 过滤 → 归组 → 排唤醒。任何分支都不会抛（事件通路不能反过来影响直播） */
@@ -159,6 +148,7 @@ export class LiveEventInbox {
       if (input.profileHint) existing.profileHint = input.profileHint
       this.arrivals.push(now)
       this.scheduleWake(existing)
+      this.onChange?.()
       return
     }
 
@@ -169,6 +159,7 @@ export class LiveEventInbox {
       const ev = this.events.find((e) => e.id === spam.eventId)
       if (ev) ev.count += 1
       spam.ts = now
+      this.onChange?.()
       return
     }
 
@@ -189,6 +180,7 @@ export class LiveEventInbox {
     this.spamSeen.set(spamKey, { ts: now, eventId: event.id })
     this.arrivals.push(now)
     this.scheduleWake(event)
+    this.onChange?.()
   }
 
   /** Agent 一轮跑完（AgentService 在 agent_end 时叫）：忙时攒下的事件补排一个唤醒 */
@@ -214,6 +206,7 @@ export class LiveEventInbox {
       marked += 1
     }
     const label = state === 'handled' ? '已回应' : '不理'
+    if (marked > 0) this.onChange?.()
     return skipped > 0
       ? `已把 ${marked} 条标为「${label}」；${skipped} 个 id 不存在或已过期，无需处理`
       : `已把 ${marked} 条标为「${label}」`
@@ -228,6 +221,7 @@ export class LiveEventInbox {
     this.spamSeen.clear()
     this.arrivals = []
     this.wakesAt = []
+    this.onChange?.()
   }
 
   // ---------- 内部 ----------
@@ -302,6 +296,7 @@ export class LiveEventInbox {
       event.state = 'seen'
       this.pendingByNorm.delete(groupKeyOf(event))
     }
+    this.onChange?.()
 
     let text = included.map((event) => this.formatLine(event)).join('\n')
     if (overflow.length > 0) {
@@ -334,19 +329,23 @@ export class LiveEventInbox {
   /** TTL 过期与内存裁剪：new/seen 超过保留时间置 expired（不会再补答）；箱内条数有界 */
   private sweep(): void {
     const now = Date.now()
+    let changed = false
     for (const event of this.events) {
       if ((event.state === 'new' || event.state === 'seen') && now - event.receivedAt > EVENT_TTL_MS) {
         event.state = 'expired'
         this.pendingByNorm.delete(groupKeyOf(event))
+        changed = true
       }
     }
     if (this.events.length > MAX_KEPT_EVENTS) {
       this.events = this.events.filter(
         (e) => e.state === 'new' || e.state === 'seen' || now - e.receivedAt < EVENT_TTL_MS
       )
+      changed = true
     }
     for (const [key, rec] of this.spamSeen) {
       if (now - rec.ts > SPAM_REPEAT_WINDOW_MS) this.spamSeen.delete(key)
     }
+    if (changed) this.onChange?.()
   }
 }

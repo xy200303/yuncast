@@ -10,7 +10,6 @@ import {
   Download,
   Loader2,
   Megaphone,
-  OctagonAlert,
   Paperclip,
   Pause,
   Play,
@@ -527,7 +526,7 @@ function ProgramLauncher() {
         variant="destructive"
         onClick={() => {
           audioEngine.stopCurrent()
-          toast.message('已紧急停止声音', { description: '主播和话术池没动，要彻底急停用右侧操作面板的「紧急停止」' })
+          toast.message('已紧急停止声音', { description: '主播和话术池没动，只掐断了声音输出' })
         }}
         title="紧急停止声音：立刻掐掉所有 AI 声音（主播和话术池不动）"
       >
@@ -1468,25 +1467,11 @@ function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking'
   )
 }
 
-/** 右侧操作面板：人工控制入口（人工播报 / 切场景 / 急停 / 场控指令 → 对话 / 调音量） */
+/** 右侧操作面板：人工控制入口（人工播报 / 切场景 / 场控指令 → 对话 / 调音量）。急停统一在顶栏「急停声音」。 */
 function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
   const [broadcastOpen, setBroadcastOpen] = useState(false)
-  const [panicOpen, setPanicOpen] = useState(false)
   const [volumeOpen, setVolumeOpen] = useState(false)
   const [sceneOpen, setSceneOpen] = useState(false)
-
-  const panic = () => {
-    setPanicOpen(false)
-    void (async () => {
-      // 急停链：停主播 → 清全部车道 → 主进程掐断当前播报（解码与排播都在那边）
-      await window.api.agent.stop()
-      for (const lane of ['interrupt', 'next', 'normal', 'filler'] as const) {
-        await window.api.pool.clearLane(lane)
-      }
-      audioEngine.stopCurrent()
-      toast.success('已紧急停止', { description: '主播已停，话术池已清空' })
-    })()
-  }
 
   return (
     <div className="shrink-0 border-t p-3">
@@ -1500,10 +1485,6 @@ function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
           <Clapperboard />
           切场景
         </Button>
-        <Button variant="destructive" size="sm" onClick={() => setPanicOpen(true)}>
-          <OctagonAlert />
-          紧急停止
-        </Button>
         <Button variant="outline" size="sm" onClick={onOpenChat} title="到对话区直接指挥主播">
           <RadioTower />
           场控指令
@@ -1516,24 +1497,6 @@ function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
       <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
       <VolumeDialog open={volumeOpen} onOpenChange={setVolumeOpen} />
       <SceneDialog open={sceneOpen} onOpenChange={setSceneOpen} />
-      <Dialog open={panicOpen} onOpenChange={setPanicOpen}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>紧急停止</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            立即停止主播 Agent、清空话术池全部车道、停止当前播报。池里未播的内容都会作废。
-          </p>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setPanicOpen(false)}>
-              取消
-            </Button>
-            <Button variant="destructive" onClick={panic}>
-              确认急停
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

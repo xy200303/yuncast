@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { AudioLines, BookOpen, Brain, Cable, MessageSquareText, Palette } from 'lucide-react'
+import { AudioLines, BookOpen, Brain, Cable, Info, MessageSquareText, Palette } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
+import { AboutPane } from './settings/AboutPane'
 import { AppearancePane } from './settings/AppearancePane'
 import { LlmSection } from './settings/LlmPane'
 import { PromptsSection } from './settings/PromptsPane'
@@ -10,7 +11,7 @@ import { TtsSection } from './settings/TtsPane'
 import { StreamSection } from './settings/StreamPane'
 import { CommentGatewayCard } from './settings/CommentPane'
 
-type Pane = 'appearance' | 'llm' | 'prompts' | 'tts' | 'stream' | 'comment'
+type Pane = 'appearance' | 'llm' | 'prompts' | 'tts' | 'stream' | 'comment' | 'about'
 
 const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
@@ -18,7 +19,8 @@ const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'prompts', label: '主播手册', icon: BookOpen },
   { id: 'tts', label: '语音合成', icon: AudioLines },
   { id: 'stream', label: '推流', icon: Cable },
-  { id: 'comment', label: '连接器', icon: MessageSquareText }
+  { id: 'comment', label: '连接器', icon: MessageSquareText },
+  { id: 'about', label: '关于', icon: Info }
 ]
 
 /** 设置：全局弹窗（对齐 TermPilot），左侧栏目、右侧当前项。从侧边栏底部入口打开。 */
@@ -59,6 +61,7 @@ export function SettingsDialog() {
             {pane === 'tts' && <div className="max-w-3xl"><TtsSection /></div>}
             {pane === 'stream' && <div className="max-w-xl"><StreamSection /></div>}
             {pane === 'comment' && <div className="max-w-xl"><CommentGatewayCard /></div>}
+            {pane === 'about' && <div className="max-w-xl"><AboutPane /></div>}
           </div>
         </div>
       </DialogContent>

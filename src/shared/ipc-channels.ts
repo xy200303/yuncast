@@ -4,6 +4,13 @@ export const IPC = {
   configGet: 'config:get',
   configSet: 'config:set',
 
+  // 应用更新（设置 → 关于）
+  updateCheck: 'update:check',
+  updateDownload: 'update:download',
+  updateInstall: 'update:install',
+  /** main → renderer：更新状态变化（检查中/有新版本/下载进度/已就绪/出错） */
+  updateStatusEvent: 'update:status-event',
+
   // 话术池
   poolSay: 'pool:say',
   poolInsertNext: 'pool:insert-next',

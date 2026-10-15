@@ -459,6 +459,17 @@ export interface AppInfo {
   platform: NodeJS.Platform
 }
 
+/** 应用更新状态（设置 → 关于，main 广播 + check() 返回值共用） */
+export interface UpdateStatus {
+  state: 'idle' | 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+  /** available / downloaded 时的新版本号 */
+  version?: string
+  /** downloading 时的进度百分比 */
+  percent?: number
+  /** error 时的可读信息 */
+  message?: string
+}
+
 // ---------- 话术池（SpeechPool，docs/01 §3.2/3.3） ----------
 
 export const SPEECH_LANES = ['interrupt', 'next', 'normal', 'filler'] as const

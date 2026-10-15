@@ -4,6 +4,7 @@ import type {
   AgentStatus,
   AppConfig,
   AppInfo,
+  UpdateStatus,
   AudioBgmAction,
   AudioCommandResult,
   AudioEndPayload,
@@ -71,6 +72,20 @@ const api = {
   platform: process.platform,
   app: {
     info: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>
+  },
+  update: {
+    /** 手动检查更新；状态变化（含进度）走 onStatus 广播 */
+    check: () => ipcRenderer.invoke(IPC.updateCheck) as Promise<UpdateStatus>,
+    download: () => ipcRenderer.invoke(IPC.updateDownload) as Promise<void>,
+    /** 重启并安装已下载的更新 */
+    install: () => ipcRenderer.invoke(IPC.updateInstall) as Promise<void>,
+    onStatus: (cb: (status: UpdateStatus) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, status: UpdateStatus) => cb(status)
+      ipcRenderer.on(IPC.updateStatusEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.updateStatusEvent, listener)
+      }
+    }
   },
   config: {
     get: () => ipcRenderer.invoke(IPC.configGet) as Promise<AppConfig>,

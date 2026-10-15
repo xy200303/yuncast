@@ -92,6 +92,7 @@ import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
 import { ProgramPlaybackService } from './services/ProgramPlaybackService'
 import { ExportService } from './services/ExportService'
+import { UpdateService } from './services/UpdateService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
 import { AudioPipeline } from './services/audio/AudioPipeline'
@@ -116,6 +117,7 @@ app.setPath('userData', userDataOverride ?? userDataDir)
 
 let mainWindow: BrowserWindow | null = null
 let pool: SpeechPool | null = null
+let updater: UpdateService | null = null
 
 /** Windows 上标题栏覆盖层偶发把第一帧停在白底。显示后改一次尺寸让系统重画；画面仍是空的就重新加载。 */
 function recoverBlankWindow(win: BrowserWindow): void {
@@ -232,6 +234,13 @@ function createWindow(storage: StorageService): void {
   } else {
     win.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+/** 应用更新 IPC（检查/下载/安装，状态由 UpdateService 广播） */
+function registerUpdateIpc(u: UpdateService): void {
+  ipcMain.handle(IPC.updateCheck, () => u.check())
+  ipcMain.handle(IPC.updateDownload, () => u.download())
+  ipcMain.handle(IPC.updateInstall, () => u.install())
 }
 
 /** 池快照广播给所有窗口；顺带探测 pool.empty / pool.low（沿只发一次，恢复后可再发） */
@@ -1253,7 +1262,10 @@ if (!single) {
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）
     storage.onConfigChange((config) => paintAllWindows(config.theme))
+    updater = new UpdateService()
+    updater.init()
     registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, programPlayback, exporter)
+    registerUpdateIpc(updater)
     createWindow(storage)
 
     app.on('activate', () => {

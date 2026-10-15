@@ -121,14 +121,10 @@ export default function App() {
     const offConnector = window.api.connector.onStatus(setConnector)
     const offVoices = window.api.voice.onChanged(setVoices)
     void window.api.voice.list().then(setVoices)
-    const offComment = window.api.comment.onComment((comment) => {
-      toast.message(`💬 ${comment.author}`, { description: comment.content })
-    })
     return () => {
       offAgent()
       offStream()
       offConnector()
-      offComment()
       offVoices()
     }
   }, [setAgent, setStream, setConnector, setVoices, setConnector])

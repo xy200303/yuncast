@@ -1,4 +1,4 @@
-# Agent Anchor（智能体主播）
+# 小云播客坊 YunCast（原 Agent Anchor）
 
 基于智能体的 AI 直播助播：AI 主播有人设、有知识、有记忆、有感知，像真人一样直播带货。
 

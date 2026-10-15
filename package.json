@@ -1,7 +1,7 @@
 {
-  "name": "agent-anchor",
+  "name": "yuncast",
   "version": "0.1.0",
-  "description": "Agent Anchor - 智能体主播（AI 直播助播）",
+  "description": "小云播客坊 YunCast - AI 直播工作台（智能主播 · 节目制作与播出）",
   "main": "out/main/index.js",
   "license": "MIT",
   "scripts": {
@@ -52,10 +52,10 @@
     "vite": "^7.3.6"
   },
   "build": {
-    "appId": "app.agentanchor.desktop",
-    "productName": "Agent Anchor",
-    "executableName": "Agent Anchor",
-    "copyright": "Copyright © Agent Anchor",
+    "appId": "app.yuncast.desktop",
+    "productName": "小云播客坊",
+    "executableName": "YunCast",
+    "copyright": "Copyright © 小云播客坊 YunCast",
     "directories": {
       "output": "release"
     },

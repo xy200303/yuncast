@@ -1,6 +1,5 @@
 import type { CSSProperties } from 'react'
 import {
-  Anchor,
   AudioLines,
   BarChart3,
   BookOpen,
@@ -11,6 +10,7 @@ import {
   Settings,
   type LucideIcon
 } from 'lucide-react'
+import { BrandLogo } from './BrandLogo'
 import { useSidebar } from '@/components/ui/sidebar'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
@@ -60,8 +60,10 @@ export function AppSidebar() {
       >
         {!collapsed && (
           <>
-            <Anchor className="size-5 shrink-0 text-primary" />
-            <span className="min-w-0 flex-1 truncate text-sm font-semibold">Agent Anchor</span>
+            <BrandLogo className="size-5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">
+              小云播客坊 <span className="text-xs font-normal text-muted-foreground">YunCast</span>
+            </span>
           </>
         )}
         <Button

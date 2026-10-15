@@ -2,9 +2,10 @@ import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
 import { setDefaultResultOrder } from 'node:dns'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
-import { appendFileSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
+import { BRAND_DISPLAY } from '../shared/brand'
 import { POOL_LIMITS } from '../shared/types'
 
 /** 崩溃现场日志（无声退出排查）：追加写 userData/crash.log，只记事件类型不带业务数据 */
@@ -96,10 +97,22 @@ import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } fr
 import { AudioPipeline } from './services/audio/AudioPipeline'
 import { PlaybackLoop } from './services/audio/PlaybackLoop'
 
-// 固定到 %APPDATA%\AgentAnchor。必须在 ready 之前设置，
-// 否则开发时叫 agent-anchor、打包后叫 Agent Anchor，配置会看起来"丢了"。
-// 测试/并行实例可用 AGENT_ANCHOR_USER_DATA 指向别的目录。
-app.setPath('userData', process.env['AGENT_ANCHOR_USER_DATA'] ?? join(app.getPath('appData'), 'AgentAnchor'))
+// 固定到 %APPDATA%\YunCast。必须在 ready 之前设置，
+// 否则开发时和打包后目录名不一致，配置会看起来"丢了"。
+// 旧品牌目录 AgentAnchor 做一次性整体搬迁；测试/并行实例可用 YUN_CAST_USER_DATA（兼容 AGENT_ANCHOR_USER_DATA）指向别的目录。
+const userDataOverride = process.env['YUN_CAST_USER_DATA'] ?? process.env['AGENT_ANCHOR_USER_DATA']
+const userDataDir = join(app.getPath('appData'), 'YunCast')
+if (!userDataOverride && !existsSync(userDataDir)) {
+  const legacyDir = join(app.getPath('appData'), 'AgentAnchor')
+  if (existsSync(legacyDir)) {
+    try {
+      renameSync(legacyDir, userDataDir)
+    } catch {
+      // 目录被占用等原因搬不动就放弃，新目录从零开始
+    }
+  }
+}
+app.setPath('userData', userDataOverride ?? userDataDir)
 
 let mainWindow: BrowserWindow | null = null
 let pool: SpeechPool | null = null
@@ -177,7 +190,9 @@ function createWindow(storage: StorageService): void {
     minHeight: 600,
     show: false,
     backgroundColor: windowBackground(dark),
-    title: 'Agent Anchor',
+    title: BRAND_DISPLAY,
+    // 开发模式下 exe 还是 Electron 默认图标，窗口图标显式指到 resources；打包后 exe 自带图标
+    ...(app.isPackaged ? {} : { icon: join(app.getAppPath(), 'resources', 'icon.png') }),
     autoHideMenuBar: true,
     ...(process.platform === 'win32'
       ? {
@@ -416,7 +431,7 @@ function registerIpc(
   exporter: ExportService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
-    name: 'Agent Anchor',
+    name: BRAND_DISPLAY,
     version: app.getVersion(),
     platform: process.platform
   }))

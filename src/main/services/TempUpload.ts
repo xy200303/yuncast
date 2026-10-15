@@ -123,7 +123,7 @@ export class TempUploadService {
     let uploadPath = filePath
     let uploadFile = file
     if (!['mp3', 'wav', 'm4a'].includes(sampleFormat(filePath))) {
-      const prepared = await ensureCloneSample(filePath, join(tmpdir(), 'agent-anchor-upload'))
+      const prepared = await ensureCloneSample(filePath, join(tmpdir(), 'yuncast-upload'))
       if (!prepared.ok || !prepared.path) {
         return { ok: false, error: prepared.error ?? '样本转码失败' }
       }

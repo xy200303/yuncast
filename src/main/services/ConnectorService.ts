@@ -116,7 +116,7 @@ export class ConnectorService {
     const { connectorPort, connectorToken } = this.storage.getConfig().comment
     this.setState('connecting')
     try {
-      const client = new Client({ name: 'agent-anchor', version: '0.1.0' })
+      const client = new Client({ name: 'yuncast', version: '0.1.0' })
       const transport = new StreamableHTTPClientTransport(
         new URL(`http://127.0.0.1:${connectorPort}/mcp`),
         { requestInit: { headers: { Authorization: `Bearer ${connectorToken}` } } }

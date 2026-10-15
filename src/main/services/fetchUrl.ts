@@ -31,7 +31,7 @@ export async function fetchUrlGuarded(rawUrl: string): Promise<string> {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'AgentAnchor/0.1 (+content-fetch)', Accept: 'text/html,text/plain,*/*' },
+      headers: { 'User-Agent': 'YunCast/0.1 (+content-fetch)', Accept: 'text/html,text/plain,*/*' },
       redirect: 'follow'
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -76,7 +76,7 @@ export async function fetchRawGuarded(rawUrl: string): Promise<string> {
   try {
     const res = await fetch(url, {
       signal: controller.signal,
-      headers: { 'User-Agent': 'AgentAnchor/0.1 (+search)' },
+      headers: { 'User-Agent': 'YunCast/0.1 (+search)' },
       redirect: 'follow'
     })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)

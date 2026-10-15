@@ -287,7 +287,7 @@ function TtsTestDialog({
 }) {
   const [modelId, setModelId] = useState(connection.models[0]?.id ?? '')
   const [voice, setVoice] = useState('')
-  const [text, setText] = useState('你好，欢迎来到直播间，这里是 Agent Anchor 智能体主播。')
+  const [text, setText] = useState('你好，欢迎来到直播间，这里是小云播客坊智能主播。')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{
     ok: boolean

@@ -135,7 +135,7 @@ onUnmounted(() => {
       <div class="hero-dots" aria-hidden="true" />
       <canvas ref="waveCanvas" class="hero-waves" aria-hidden="true" />
       <div class="hero-inner">
-        <div class="badge reveal">v0.1.1 · Windows / macOS / Linux 同步发布</div>
+        <div class="badge reveal">v0.1.2 · Windows / macOS / Linux 同步发布</div>
         <h1 class="hero-title">
           <span class="line"><span class="word">专为</span> <span class="word">不会</span> <span class="word">直播的</span></span>
           <span class="line"><span class="word grad">商家</span> <span class="word grad">和</span> <span class="word grad">企业</span> <span class="word grad">而生。</span></span>

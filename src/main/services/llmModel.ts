@@ -1,9 +1,12 @@
-import type { Model } from '@earendil-works/pi-ai'
+import type { Model, SimpleStreamOptions, TranscriptContext } from '@earendil-works/pi-ai'
+import { streamSimple as streamCompletions } from '@earendil-works/pi-ai/api/openai-completions'
+import { streamSimple as streamResponses } from '@earendil-works/pi-ai/api/openai-responses'
 import { type ModelConnection, type Persona, type ThinkingLevelChoice } from '../../shared/types'
 import {
   connectionFirstModel,
   getLlmProvider,
   isModelConnectionReady,
+  type LlmApi,
   type ResolvedModel
 } from './providers/registry'
 import type { StorageService } from './StorageService'
@@ -90,14 +93,14 @@ function selectedModelOf(
 }
 
 export interface PreparedLlm {
-  /** 手工构造的 OpenAI 兼容模型描述（pi-ai 直接吃，不需要 models.json/目录） */
-  model: Model<'openai-completions'>
+  /** 手工构造的模型描述（pi-ai 直接吃，不需要 models.json/目录）；协议由接入配置决定 */
+  model: Model<LlmApi>
   /** 凭据：随 stream options 注入，不落盘 */
   apiKey: string
   modelLabel: string
   /** 自动压缩的标尺：接入上配的模型级窗口 > 服务商声明 > 128k 兜底 */
   contextWindow: number
-  /** 思考强度（接入的模型级配置）：off = 不思考；开了 pi 会把 reasoning_content 解析成 thinking 事件 */
+  /** 思考强度（接入的模型级配置）：off = 不思考；responses 协议映射 reasoning effort，completions 协议解析 reasoning_content */
   thinkingLevel: ThinkingLevelChoice
   /** 温度（接入的模型级高级参数）：undefined = 服务商默认 */
   temperature?: number
@@ -106,29 +109,44 @@ export interface PreparedLlm {
 }
 
 /**
+ * 按模型的 api 协议分发到对应的 pi-ai 流实现（openai-completions / openai-responses）。
+ * options.reasoning（pi-agent-core 从 thinkingLevel 映射来）两个实现都认：
+ * completions 解析 reasoning_content，responses 映射成 reasoning.effort。
+ */
+export function streamLlmModel(
+  model: Model<LlmApi>,
+  context: TranscriptContext,
+  options?: SimpleStreamOptions
+) {
+  return model.api === 'openai-responses'
+    ? streamResponses(model as Model<'openai-responses'>, context, options)
+    : streamCompletions(model as Model<'openai-completions'>, context, options)
+}
+
+/**
  * LLM 会话准备（主播会话用，直播/写稿同一条装配线）：
- * 接入配置 → 手工构造 Model 对象。所有接入统一走 OpenAI 兼容协议（manifest 的 toModelConfig 给出地址/密钥/模型名）。
+ * 接入配置 → 手工构造 Model 对象。协议由 manifest 的 toModelConfig 给出（地址/密钥/模型名/api）。
  */
 export async function prepareLlmModel(resolved: ResolvedModel): Promise<PreparedLlm> {
   const def = getLlmProvider(resolved.providerId)
   if (!def) throw new Error(`不认识的服务商：${resolved.providerId}（到设置 → 语言模型里重新选一个）`)
 
-  const { baseUrl, apiKey, model: modelId } = def.toModelConfig(resolved.params, resolved.model)
+  const { baseUrl, apiKey, model: modelId, api } = def.toModelConfig(resolved.params, resolved.model)
   if (!modelId) throw new Error(`还没选模型：${def.label}（设置 → 语言模型里给它加一个模型）`)
 
   const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow ?? FALLBACK_CONTEXT_WINDOW
   const thinkingLevel: ThinkingLevelChoice = resolved.thinkingLevel ?? 'off'
   const advanced = resolved.advanced ?? {}
-  const model: Model<'openai-completions'> = {
+  const model: Model<LlmApi> = {
     id: modelId,
     name: modelId,
-    api: 'openai-completions',
+    api,
     provider: resolved.providerId,
     baseUrl,
     // 多模态是模型级配置（接入编辑器模型行「高级」里开）：开了图像附件才进会话
     input: advanced.vision ? ['text', 'image'] : ['text'],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    // reasoning=true 才会解析/回传思考流（reasoning_content）；关了思考就别开
+    // reasoning=true 才会解析/回传思考流（completions 的 reasoning_content / responses 的 reasoning effort）；关了思考就别开
     reasoning: thinkingLevel !== 'off',
     contextWindow,
     maxTokens: advanced.maxTokens ?? 8192
@@ -145,7 +163,7 @@ export async function prepareLlmModel(resolved: ResolvedModel): Promise<Prepared
 }
 
 /**
- * 接入连通性测试：打 {baseUrl}/chat/completions 发一个 max_tokens=1 的最小请求。
+ * 接入连通性测试：按接入协议打一个最小请求（completions → /chat/completions，responses → /responses）。
  * 调用方一般逐个模型测（界面就是这么做的）；没指定就用列表第一个。
  * 不走 pi（那里没有「测试」入口），错误翻成中文给 UI。
  */
@@ -170,7 +188,13 @@ export async function testModelConnection(
   const cfg = def.toModelConfig(connection.params, target)
   if (!cfg.model) return { ok: false, error: `还没有模型（${def.label}）：先加一个模型再测` }
 
-  const url = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`
+  const base = cfg.baseUrl.replace(/\/+$/, '')
+  // Responses 协议要求 max_output_tokens ≥ 16（GPT-5 系思考模型更低会直接 400）
+  const url = cfg.api === 'openai-responses' ? `${base}/responses` : `${base}/chat/completions`
+  const body =
+    cfg.api === 'openai-responses'
+      ? { model: cfg.model, input: 'ping', max_output_tokens: 16 }
+      : { model: cfg.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }
   const startedAt = Date.now()
   try {
     const res = await fetch(url, {
@@ -179,11 +203,7 @@ export async function testModelConnection(
         'Content-Type': 'application/json',
         ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {})
       },
-      body: JSON.stringify({
-        model: cfg.model,
-        messages: [{ role: 'user', content: 'ping' }],
-        max_tokens: 1
-      }),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(TEST_TIMEOUT_MS)
     })
     if (res.status === 401 || res.status === 403) {

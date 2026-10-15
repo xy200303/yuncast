@@ -9,7 +9,6 @@ import {
   type Model,
   type UserMessage
 } from '@earendil-works/pi-ai'
-import { streamSimple } from '@earendil-works/pi-ai/api/openai-completions'
 import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import {
   type AgentStatus,
@@ -24,7 +23,6 @@ import {
   type Script,
   type UsageKind
 } from '../../shared/types'
-import { llmUsageCost } from './costing'
 import type { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { ConnectorService } from './ConnectorService'
@@ -37,9 +35,9 @@ import type { UtteranceService } from './UtteranceService'
 import { buildAnchorTools } from './anchorTools'
 import { buildAnchorSystemTools } from './anchorSystemTools'
 import { LiveEventInbox, type LiveInboxEvent } from './LiveEventInbox'
-import { prepareLlmModel, resolveModelForPersona } from './llmModel'
+import { prepareLlmModel, resolveModelForPersona, streamLlmModel } from './llmModel'
 import { clampOversizedMessages, estimateMsgTokens, oneLine, renderMessageForSummary } from './agentText'
-import type { ResolvedModel } from './providers/registry'
+import type { LlmApi, ResolvedModel } from './providers/registry'
 import type { VoiceService } from './VoiceService'
 import type { TriggerRuntime } from './TriggerRuntime'
 import type { StreamService } from './stream/StreamService'
@@ -50,7 +48,7 @@ import type { ExportService } from './ExportService'
  * - 引擎：pi-agent-core 的 Agent 裸用。会话树/models.json/资源发现都不存在也不需要——
  *   会话按节目自己存 SQLite（线性消息数组），system prompt 就是人设卡 + 节目
  * - 只挂主播工具（anchorTools，一切声音走话术池）；core 没有内置工具，不用 allowlist
- * - 模型：手工构造 OpenAI 兼容 Model，凭据随 stream options 注入不落盘；我们的 config 里 secretBox 加密
+ * - 模型：手工构造 Model（OpenAI 兼容 completions / OpenAI Responses，由接入协议决定），凭据随 stream options 注入不落盘；我们的 config 里 secretBox 加密
  * - 上下文压缩：transformContext 钩子里自研——估算超阈值就把旧消息发给 LLM 摘要，替换 state.messages
  * - text_delta 既累积成"AI 正在组织语言"预览（提词器），也推给对话时间线（docs/09 §11）
  * - 对话时间线照事件流原样渲染：文本流式 / 工具卡片 / 请示卡片，不做二次解释（thinking_delta 不渲染）
@@ -1096,12 +1094,13 @@ export class AgentService {
     this.emitTimeline({ turnId: this.turnId, entry: { type: 'ask', id: message.id, message } })
   }
 
-  // ---------- 用量与成本采集（数据页成本看板） ----------
+  // ---------- 用量采集（数据页用量看板） ----------
 
   /**
-   * 一次 LLM 请求落库：pi-ai 的 AssistantMessage 自带服务商回报的真实 usage（openai-completions
-   * 通道已请求 stream_options.include_usage），直接记；没拿到 usage（全 0）时按输出文本字符数/4
-   * 估算并标 estimated。纯失败的请求（error 且无正文）不记。落库失败静默，不影响直播。
+   * 一次 LLM 请求落库：pi-ai 的 AssistantMessage 自带服务商回报的真实 usage（completions
+   * 通道已请求 stream_options.include_usage；responses 通道从 response.usage 映射，含缓存命中），
+   * 直接记；没拿到 usage（全 0）时按输出文本字符数/4 估算并标 estimated。
+   * 纯失败的请求（error 且无正文）不记。cost 恒为 null（用量看板只统计用量，不折算金额）。落库失败静默，不影响直播。
    */
   private recordUsage(kind: UsageKind, message: AssistantMessage): void {
     try {
@@ -1127,7 +1126,6 @@ export class AgentService {
         outputTokens = Math.ceil(text.length / 4)
         estimated = true
       }
-      const connection = this.usageConnectionId ? this.storage.connectionGet(this.usageConnectionId) : null
       this.storage.usageInsert({
         id: `ur-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
         ts: Date.now(),
@@ -1141,7 +1139,7 @@ export class AgentService {
         cacheRead,
         cacheWrite,
         estimated,
-        cost: llmUsageCost(connection?.modelPrices?.[this.usageModel], inputTokens, outputTokens)
+        cost: null
       })
     } catch (error) {
       console.warn('[AgentAnchor] 用量记录落库失败:', error)
@@ -1167,7 +1165,7 @@ export class AgentService {
     agent: Agent,
     messages: AgentMessage[],
     contextWindow: number,
-    model: Model<'openai-completions'>,
+    model: Model<LlmApi>,
     apiKey: string,
     signal?: AbortSignal
   ): Promise<AgentMessage[]> {
@@ -1226,7 +1224,7 @@ export class AgentService {
         // 摘要是非流式一次性调用：用 retryAssistantCall 做应用层重试（瞬断自动再来，quota 类错误快速失败）
         const result = await retryAssistantCall(
           async () => {
-            const stream = await streamSimple(
+            const stream = await streamLlmModel(
               model,
               normalizeContext({ messages: [summaryMessage] }),
               { apiKey, timeoutMs: LLM_TIMEOUT_MS, maxRetries: 2, signal }
@@ -1472,7 +1470,7 @@ export class AgentService {
       // 凭据/超时随 stream options 注入：httpIdleTimeoutMs → timeoutMs（60s）；重试靠传输层 maxRetries
       // （应用层 retryAssistantCall 是消息级的，包主链路会丢掉流式——coding-agent 也只把它用在摘要调用上）
       streamFn: (mdl, context, options) =>
-        streamSimple(mdl as Model<'openai-completions'>, context, {
+        streamLlmModel(mdl as Model<LlmApi>, context, {
           ...options,
           apiKey,
           timeoutMs: LLM_TIMEOUT_MS,

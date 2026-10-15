@@ -826,9 +826,9 @@ function registerIpc(
     return triggers.list()
   })
 
-  // ---------- 成本看板（数据页；事件时间线已并入播控台「事件流」，event_log 只留档不展示） ----------
-  ipcMain.handle(IPC.statsDashboard, (_e, programId?: string) =>
-    storage.costDashboard(String(programId ?? '') || undefined)
+  // ---------- 用量看板（数据页；事件时间线已并入播控台「事件流」，event_log 只留档不展示） ----------
+  ipcMain.handle(IPC.statsUsageDashboard, (_e, programId?: string) =>
+    storage.usageDashboard(String(programId ?? '') || undefined)
   )
   ipcMain.handle(IPC.statsUsageRecords, (_e, limit?: number, programId?: string) =>
     storage.usageRecent(Math.max(1, Math.min(Number(limit) || 100, 500)), String(programId ?? '') || undefined)

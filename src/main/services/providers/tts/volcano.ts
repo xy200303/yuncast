@@ -195,13 +195,6 @@ export const volcanoTtsProvider: TtsProviderManifest = {
       required: true,
       placeholder: '新版语音控制台 → API Key 管理',
       help: 'V3 接口用 X-Api-Key 头鉴权；旧的 AppId / Access Token / Cluster（V1）已放弃'
-    },
-    {
-      key: 'pricePer10kChars',
-      label: '单价（元/万字符，可选）',
-      type: 'number',
-      placeholder: '留空 = 只记字符数',
-      help: '成本看板按它折算金额：成本 = 字符数 ÷ 10000 × 单价；只影响之后的新记录'
     }
   ],
   models,

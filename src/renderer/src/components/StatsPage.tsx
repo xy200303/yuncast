@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { BarChart3, Coins, NotebookText, Users } from 'lucide-react'
+import { Activity, BarChart3, NotebookText, Users } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EChart } from '@/components/EChart'
 import {
   USAGE_KIND_LABEL,
-  type CostDashboard,
   type EpisodeSummary,
   type Program,
   type TtsRecord,
+  type UsageDashboard,
   type UsageRecord,
   type ViewerProfile
 } from '../../../shared/types'
@@ -31,19 +31,11 @@ function formatCount(n: number): string {
   return String(n)
 }
 
-/** 金额显示：小的多留位，大的两位；null/NaN 给占位 */
-function formatYuan(cost: number | null | undefined): string {
-  if (cost === null || cost === undefined || !Number.isFinite(cost)) return '—'
-  if (cost === 0) return '¥0'
-  if (cost < 0.01) return `¥${cost.toFixed(4)}`
-  return `¥${cost.toFixed(2)}`
-}
-
-/** 数据页：观众画像 / 节目摘要 / 成本看板，选项卡组织（事件时间线已并入播控台「事件流」）。 */
+/** 数据页：观众画像 / 节目摘要 / 用量看板，选项卡组织（事件时间线已并入播控台「事件流」）。 */
 export function StatsPage() {
   const [viewers, setViewers] = useState<ViewerProfile[]>([])
   const [episodes, setEpisodes] = useState<EpisodeSummary[]>([])
-  const [tab, setTab] = useState<'viewers' | 'episodes' | 'cost'>('viewers')
+  const [tab, setTab] = useState<'viewers' | 'episodes' | 'usage'>('viewers')
 
   useEffect(() => {
     void window.api.memory.viewers().then(setViewers)
@@ -55,7 +47,7 @@ export function StatsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <BarChart3 className="size-4 text-primary" />
         <h1 className="text-sm font-medium">数据</h1>
-        <p className="text-xs text-muted-foreground">观众画像 · 节目摘要 · 成本看板</p>
+        <p className="text-xs text-muted-foreground">观众画像 · 节目摘要 · 用量看板</p>
       </header>
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="min-h-0 flex-1 gap-0">
@@ -63,7 +55,7 @@ export function StatsPage() {
           <TabsList variant="line">
             <TabsTrigger value="viewers" className="px-3">观众画像 · {viewers.length}</TabsTrigger>
             <TabsTrigger value="episodes" className="px-3">节目摘要 · {episodes.length}</TabsTrigger>
-            <TabsTrigger value="cost" className="px-3">成本看板</TabsTrigger>
+            <TabsTrigger value="usage" className="px-3">用量看板</TabsTrigger>
           </TabsList>
         </div>
 
@@ -121,19 +113,19 @@ export function StatsPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="cost" className="min-h-0 overflow-auto">
-          {tab === 'cost' && <CostBoard />}
+        <TabsContent value="usage" className="min-h-0 overflow-auto">
+          {tab === 'usage' && <UsageBoard />}
         </TabsContent>
       </Tabs>
     </div>
   )
 }
 
-/** 成本看板：总览卡片 + 30 天趋势（堆叠柱）+ 按节目分布（饼图）+ 明细记录表 */
-function CostBoard() {
+/** 用量看板：总览卡片 + 30 天趋势（双轴柱）+ 按节目分布（双轴柱）+ 明细记录表 */
+function UsageBoard() {
   const [programs, setPrograms] = useState<Program[]>([])
   const [programId, setProgramId] = useState('')
-  const [dashboard, setDashboard] = useState<CostDashboard | null>(null)
+  const [dashboard, setDashboard] = useState<UsageDashboard | null>(null)
   const [usageRecords, setUsageRecords] = useState<UsageRecord[]>([])
   const [ttsRecords, setTtsRecords] = useState<TtsRecord[]>([])
   const [recordTab, setRecordTab] = useState<'llm' | 'tts'>('llm')
@@ -166,40 +158,43 @@ function CostBoard() {
   }
 
   const { today, total } = dashboard
-  const unpricedHints: string[] = []
-  if (total.llmUnpriced > 0) unpricedHints.push(`${total.llmUnpriced} 条 LLM 记录`)
-  if (total.ttsUnpriced > 0) unpricedHints.push(`${total.ttsUnpriced} 条 TTS 记录`)
 
+  // tokens 与字符是两个量纲：双轴并列，不堆叠
   const trendOption = {
     tooltip: { trigger: 'axis' as const },
-    legend: { data: ['LLM', 'TTS'], top: 0, right: 0, textStyle: { fontSize: 11 } },
+    legend: { data: ['LLM tokens', 'TTS 字符'], top: 0, right: 0, textStyle: { fontSize: 11 } },
     grid: { left: 8, right: 8, top: 28, bottom: 0, containLabel: true },
     xAxis: {
       type: 'category' as const,
       data: dashboard.trend.map((point) => point.day.slice(5)),
       axisLabel: { fontSize: 10, interval: 4 }
     },
-    yAxis: { type: 'value' as const, axisLabel: { fontSize: 10, formatter: (v: number) => `¥${v}` } },
+    yAxis: [
+      { type: 'value' as const, axisLabel: { fontSize: 10, formatter: (v: number) => formatCount(v) } },
+      { type: 'value' as const, axisLabel: { fontSize: 10, formatter: (v: number) => formatCount(v) } }
+    ],
     series: [
-      { name: 'LLM', type: 'bar' as const, stack: 'cost', data: dashboard.trend.map((point) => round4(point.llmCost)), itemStyle: { color: '#c2693f' } },
-      { name: 'TTS', type: 'bar' as const, stack: 'cost', data: dashboard.trend.map((point) => round4(point.ttsCost)), itemStyle: { color: '#7d8a5a' } }
+      { name: 'LLM tokens', type: 'bar' as const, data: dashboard.trend.map((point) => point.llmTokens), itemStyle: { color: '#c2693f' } },
+      { name: 'TTS 字符', type: 'bar' as const, yAxisIndex: 1, data: dashboard.trend.map((point) => point.ttsChars), itemStyle: { color: '#7d8a5a' } }
     ]
   }
 
-  const pieOption = {
-    tooltip: { trigger: 'item' as const, valueFormatter: (v: number) => formatYuan(v) },
-    legend: { bottom: 0, textStyle: { fontSize: 11 }, type: 'scroll' as const },
+  const byProgramOption = {
+    tooltip: { trigger: 'axis' as const },
+    legend: { data: ['LLM tokens', 'TTS 字符'], top: 0, right: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 8, right: 8, top: 28, bottom: 0, containLabel: true },
+    xAxis: {
+      type: 'category' as const,
+      data: dashboard.byProgram.map((entry) => entry.programName),
+      axisLabel: { fontSize: 10, interval: 0, rotate: dashboard.byProgram.length > 4 ? 24 : 0 }
+    },
+    yAxis: [
+      { type: 'value' as const, axisLabel: { fontSize: 10, formatter: (v: number) => formatCount(v) } },
+      { type: 'value' as const, axisLabel: { fontSize: 10, formatter: (v: number) => formatCount(v) } }
+    ],
     series: [
-      {
-        type: 'pie' as const,
-        radius: ['38%', '62%'],
-        center: ['50%', '44%'],
-        label: { fontSize: 11, formatter: '{b} {d}%' },
-        data: dashboard.byProgram.map((entry) => ({
-          name: entry.programName,
-          value: round4(entry.llmCost + entry.ttsCost)
-        }))
-      }
+      { name: 'LLM tokens', type: 'bar' as const, data: dashboard.byProgram.map((entry) => entry.llmTokens), itemStyle: { color: '#c2693f' } },
+      { name: 'TTS 字符', type: 'bar' as const, yAxisIndex: 1, data: dashboard.byProgram.map((entry) => entry.ttsChars), itemStyle: { color: '#7d8a5a' } }
     ]
   }
 
@@ -207,7 +202,7 @@ function CostBoard() {
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-muted-foreground">
-          金额按写入时的单价折算（改单价不追溯历史）；token 是服务商回报的真实用量
+          只统计用量：token 是服务商回报的真实用量（没回 usage 的按字符估算并标「估算」），TTS 按送进合成的字符数记
         </p>
         <Select value={programId || '__all__'} onValueChange={(v) => setProgramId(v === '__all__' ? '' : v)}>
           <SelectTrigger className="h-8 w-44 shrink-0 text-xs">
@@ -226,37 +221,32 @@ function CostBoard() {
 
       <div className="grid grid-cols-4 gap-3">
         <OverviewCard
-          title="今日估算成本"
-          main={formatYuan(today.llmCost + today.ttsCost)}
-          sub={`LLM ${formatYuan(today.llmCost)} · TTS ${formatYuan(today.ttsCost)}`}
-        />
-        <OverviewCard
-          title="累计估算成本"
-          main={formatYuan(total.llmCost + total.ttsCost)}
-          sub={`LLM ${formatYuan(total.llmCost)} · TTS ${formatYuan(total.ttsCost)}`}
-        />
-        <OverviewCard
           title="今日 LLM tokens"
           main={formatCount(today.llmInputTokens + today.llmOutputTokens)}
-          sub={`输入 ${formatCount(today.llmInputTokens)} · 输出 ${formatCount(today.llmOutputTokens)} · 累计 ${formatCount(total.llmInputTokens + total.llmOutputTokens)}`}
+          sub={`输入 ${formatCount(today.llmInputTokens)} · 输出 ${formatCount(today.llmOutputTokens)} · 缓存命中 ${formatCount(today.llmCacheRead)}`}
+        />
+        <OverviewCard
+          title="累计 LLM tokens"
+          main={formatCount(total.llmInputTokens + total.llmOutputTokens)}
+          sub={`输入 ${formatCount(total.llmInputTokens)} · 输出 ${formatCount(total.llmOutputTokens)} · 缓存命中 ${formatCount(total.llmCacheRead)}`}
         />
         <OverviewCard
           title="今日 TTS 字符"
           main={formatCount(today.ttsChars)}
           sub={`累计 ${formatCount(total.ttsChars)}`}
         />
+        <OverviewCard
+          title="累计 TTS 字符"
+          main={formatCount(total.ttsChars)}
+          sub={`今日 ${formatCount(today.ttsChars)}`}
+        />
       </div>
-      {unpricedHints.length > 0 && (
-        <p className="rounded-lg border border-dashed border-amber-500/50 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          {unpricedHints.join('与')}未配单价，只记了用量没算钱——到「设置 → 语言模型 / 语音合成」给模型/接入填上单价后，新记录就会带金额
-        </p>
-      )}
 
       <div className="grid grid-cols-2 gap-3">
         <div className="rounded-lg border bg-card px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">近 30 天成本趋势</p>
-          {dashboard.trend.every((point) => point.llmCost === 0 && point.ttsCost === 0) ? (
-            <EmptyChart text="近 30 天还没有可折算的成本记录" />
+          <p className="text-xs font-medium text-muted-foreground">近 30 天用量趋势</p>
+          {dashboard.trend.every((point) => point.llmTokens === 0 && point.ttsChars === 0) ? (
+            <EmptyChart text="近 30 天还没有用量记录" />
           ) : (
             <EChart option={trendOption} className="mt-1 h-48 w-full" />
           )}
@@ -264,9 +254,9 @@ function CostBoard() {
         <div className="rounded-lg border bg-card px-3 py-2.5">
           <p className="text-xs font-medium text-muted-foreground">按节目分布（累计）</p>
           {dashboard.byProgram.length === 0 ? (
-            <EmptyChart text="还没有按节目归集的成本记录" />
+            <EmptyChart text="还没有按节目归集的用量记录" />
           ) : (
-            <EChart option={pieOption} className="mt-1 h-48 w-full" />
+            <EChart option={byProgramOption} className="mt-1 h-48 w-full" />
           )}
         </div>
       </div>
@@ -293,7 +283,7 @@ function CostBoard() {
                     <Th>模型</Th>
                     <Th className="text-right">输入</Th>
                     <Th className="text-right">输出</Th>
-                    <Th className="text-right">成本</Th>
+                    <Th className="text-right">缓存命中</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -312,16 +302,11 @@ function CostBoard() {
                         )}
                       </Td>
                       <Td className="max-w-36 truncate font-mono">{record.model}</Td>
-                      <Td className="text-right tabular-nums">
-                        {formatCount(record.inputTokens)}
-                        {record.cacheRead > 0 && (
-                          <span className="text-muted-foreground" title={`缓存命中 ${formatCount(record.cacheRead)} tokens`}>
-                            （缓 {formatCount(record.cacheRead)}）
-                          </span>
-                        )}
-                      </Td>
+                      <Td className="text-right tabular-nums">{formatCount(record.inputTokens)}</Td>
                       <Td className="text-right tabular-nums">{formatCount(record.outputTokens)}</Td>
-                      <Td className="text-right tabular-nums">{formatYuan(record.cost)}</Td>
+                      <Td className="text-right tabular-nums">
+                        {record.cacheRead > 0 ? formatCount(record.cacheRead) : '—'}
+                      </Td>
                     </tr>
                   ))}
                 </tbody>
@@ -340,7 +325,6 @@ function CostBoard() {
                     <Th>模型</Th>
                     <Th>音色</Th>
                     <Th className="text-right">字符数</Th>
-                    <Th className="text-right">成本</Th>
                   </tr>
                 </thead>
                 <tbody>
@@ -351,7 +335,6 @@ function CostBoard() {
                       <Td className="max-w-36 truncate font-mono">{record.modelId}</Td>
                       <Td className="max-w-28 truncate">{record.voiceId}</Td>
                       <Td className="text-right tabular-nums">{formatCount(record.chars)}</Td>
-                      <Td className="text-right tabular-nums">{formatYuan(record.cost)}</Td>
                     </tr>
                   ))}
                 </tbody>
@@ -364,15 +347,11 @@ function CostBoard() {
   )
 }
 
-function round4(value: number): number {
-  return Math.round(value * 10000) / 10000
-}
-
 function OverviewCard({ title, main, sub }: { title: string; main: string; sub: string }) {
   return (
     <div className="rounded-lg border bg-card px-3 py-2.5">
       <p className="flex items-center gap-1 text-xs text-muted-foreground">
-        <Coins className="size-3" />
+        <Activity className="size-3" />
         {title}
       </p>
       <p className="mt-1 text-lg font-semibold tabular-nums">{main}</p>

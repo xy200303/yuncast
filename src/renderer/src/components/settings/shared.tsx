@@ -26,6 +26,10 @@ export const LLM_LINKS: Record<string, { console: string; docs: string } | undef
   zai: {
     console: 'https://open.bigmodel.cn/usercenter/apikeys',
     docs: 'https://docs.bigmodel.cn/cn/guide/develop/openai/introduction'
+  },
+  openai: {
+    console: 'https://platform.openai.com/api-keys',
+    docs: 'https://platform.openai.com/docs/api-reference/responses'
   }
 }
 

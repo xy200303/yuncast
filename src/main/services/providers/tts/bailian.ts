@@ -217,13 +217,6 @@ export const bailianTtsProvider: TtsProviderManifest = {
       label: 'API 地址（可选）',
       type: 'text',
       placeholder: '留空用官方默认 https://dashscope.aliyuncs.com/api/v1'
-    },
-    {
-      key: 'pricePer10kChars',
-      label: '单价（元/万字符，可选）',
-      type: 'number',
-      placeholder: '留空 = 只记字符数',
-      help: '成本看板按它折算金额：成本 = 字符数 ÷ 10000 × 单价；只影响之后的新记录'
     }
   ],
   models,

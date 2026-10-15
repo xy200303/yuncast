@@ -450,7 +450,7 @@ export class SpeechPool {
         item.voiceId || undefined,
         controller.signal,
         { instruction: item.delivery, rate: item.rate, pitch: item.pitch },
-        // 用量归属当前节目（成本看板按节目分摊）
+        // 用量归属当前节目（用量看板按节目分摊）
         this.storage.getConfig().live.activeProgramId || undefined
       )
       if (controller.signal.aborted) return

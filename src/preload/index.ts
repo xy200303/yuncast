@@ -12,7 +12,7 @@ import type {
   AudioProgressPayload,
   ConnectorStatus,
   ChatEntry,
-  CostDashboard,
+  UsageDashboard,
   DirectorTimelineEvent,
   DirectorTimelineReset,
   EpisodeSummary,
@@ -360,9 +360,9 @@ const api = {
       ipcRenderer.invoke(IPC.triggerToggle, id, enabled) as Promise<Trigger[]>
   },
   stats: {
-    /** 成本看板一屏数据：今日/累计合计 + 近 30 天趋势 + 按节目分布；programId 给了就只算那个节目 */
+    /** 用量看板一屏数据：今日/累计合计 + 近 30 天趋势 + 按节目分布；programId 给了就只算那个节目 */
     dashboard: (programId?: string) =>
-      ipcRenderer.invoke(IPC.statsDashboard, programId) as Promise<CostDashboard>,
+      ipcRenderer.invoke(IPC.statsUsageDashboard, programId) as Promise<UsageDashboard>,
     /** 最近的 LLM 请求记录（明细表） */
     usageRecords: (limit?: number, programId?: string) =>
       ipcRenderer.invoke(IPC.statsUsageRecords, limit, programId) as Promise<UsageRecord[]>,

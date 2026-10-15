@@ -1,5 +1,4 @@
 import type {
-  LlmModelPrice,
   ModelAdvancedParams,
   ModelConnection,
   ThinkingLevelChoice,
@@ -9,6 +8,7 @@ import type {
   TtsProvider
 } from '../../../shared/types'
 import { piCloudProviders } from './llm/piCloud'
+import { openAiProvider } from './llm/openai'
 import { localOpenAiProvider } from './llm/localOpenAi'
 import { volcanoTtsProvider } from './tts/volcano'
 import { bailianTtsProvider } from './tts/bailian'
@@ -37,8 +37,11 @@ export interface FieldSpec {
   wide?: boolean
 }
 
+/** LLM 接入支持的协议（pi-ai 内置 API 实现）：completions = 各家 OpenAI 兼容通道；responses = OpenAI 官方 Responses */
+export type LlmApi = 'openai-completions' | 'openai-responses'
+
 export interface LlmProviderDef {
-  /** 'deepseek' | 'qwen' | 'doubao' | 'kimi' | 'zai' | 'local-openai' */
+  /** 'deepseek' | 'qwen' | 'doubao' | 'kimi' | 'zai' | 'openai' | 'local-openai' */
   id: string
   label: string
   /** 渲染层图标键，见 ProviderIcon */
@@ -53,15 +56,15 @@ export interface LlmProviderDef {
   /**
    * 该服务商的常见模型 id，给设置页的模型列表做下拉建议。
    * pi 内置目录里能查到真实可用模型的（deepseek / kimi / zai）由目录兜底，
-   * 查不到的（qwen / 豆包）只有这里列出的名字，所以只填确信存在的。
+   * 查不到的（qwen / 豆包 / openai）只有这里列出的名字，所以只填确信存在的。
    */
   modelSuggestions: string[]
   /**
-   * 常见模型的官方公开单价（元/百万 tokens），设置页加模型时预填（用户可改可清空）。
-   * 只填确信的公开价；不确定的不填——宁可空着不瞎编。
+   * 常见型号的官方上下文窗口（tokens）：设置页加模型时预填进窗口栏（用户可改可清空）。
+   * 只填确信的官方值；capabilities.contextWindow 是全服务商兜底，这里是逐型号精修。
    */
-  modelPrices?: Record<string, LlmModelPrice>
-  /** 组装成 pi-agent 可用的模型描述（OpenAI 兼容通道） */
+  modelContextWindows?: Record<string, number>
+  /** 组装成 pi-agent 可用的模型描述（协议由接入配置决定：completions / responses） */
   toModelConfig(
     params: Record<string, string | number | boolean>,
     model: string
@@ -69,7 +72,7 @@ export interface LlmProviderDef {
     baseUrl: string
     apiKey: string
     model: string
-    api: 'openai-completions'
+    api: LlmApi
   }
 }
 
@@ -91,7 +94,7 @@ export interface ResolvedModel {
   advanced?: ModelAdvancedParams
 }
 
-const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, localOpenAiProvider]
+const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, openAiProvider, localOpenAiProvider]
 
 export function listLlmProviders(): LlmProviderManifest[] {
   return LLM_PROVIDER_DEFS.map(({ toModelConfig: _toModelConfig, ...manifest }) => manifest)

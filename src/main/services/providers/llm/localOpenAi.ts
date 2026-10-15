@@ -25,6 +25,16 @@ export const localOpenAiProvider: LlmProviderDef = {
       secret: true,
       optional: true,
       placeholder: '留空即可'
+    },
+    {
+      key: 'apiProtocol',
+      label: 'API 协议',
+      type: 'select',
+      default: 'completions',
+      options: [
+        { value: 'completions', label: 'Chat Completions（Ollama / vLLM / LM Studio 默认）' },
+        { value: 'responses', label: 'Responses（少数服务才支持）' }
+      ]
     }
   ],
   // 本地服务的模型名由用户自己拉过什么模型决定，没有通用默认值
@@ -35,7 +45,7 @@ export const localOpenAiProvider: LlmProviderDef = {
       baseUrl: String(params.baseUrl ?? '').trim() || DEFAULT_BASE_URL,
       apiKey: String(params.apiKey ?? ''),
       model: model.trim(),
-      api: 'openai-completions'
+      api: String(params.apiProtocol ?? '') === 'responses' ? 'openai-responses' : 'openai-completions'
     }
   }
 }

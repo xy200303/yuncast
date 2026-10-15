@@ -29,7 +29,6 @@ import {
   parseManualVoice,
   type ManualVoiceRef
 } from '../../shared/voiceProvider'
-import { ttsCharsCost } from './costing'
 
 /**
  * TTS 双通道合成。
@@ -145,8 +144,8 @@ export class TtsService {
   }
 
   /**
-   * 合成用量落库（成本看板）：每次真正打接口的合成记一条（缓存命中没花钱不记）。
-   * 成本按接入上的单价（元/万字符）当场算好；没配单价只记字符数。落库失败静默。
+   * 合成用量落库（用量看板）：每次真正打接口的合成记一条（缓存命中不记）。
+   * cost 恒 null（只统计字符数，不折算金额）。落库失败静默。
    */
   private recordSynthesis(
     route: Pick<TtsRoute, 'connection' | 'modelId' | 'voice'>,
@@ -163,7 +162,7 @@ export class TtsService {
         modelId: route.modelId,
         voiceId: route.voice,
         chars,
-        cost: ttsCharsCost(route.connection, chars)
+        cost: null
       })
     } catch (error) {
       console.warn('[TTS] 用量记录落库失败:', error)
@@ -405,7 +404,7 @@ export class TtsService {
 
   /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。
    *  perf：这次合成专用的演法（agent 写的 delivery/rate/pitch）——覆盖接入上的静态默认并参与缓存键（不同演法不串缓存）
-   *  programId：用量归属的节目（成本看板按节目分摊）；现场 say 由调用方带 activeProgramId */
+   *  programId：用量归属的节目（用量看板按节目分摊）；现场 say 由调用方带 activeProgramId */
   async synthesize(
     itemId: string,
     text: string,

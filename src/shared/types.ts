@@ -257,7 +257,7 @@ export interface ModelAdvancedParams {
   maxTokens?: number
 }
 
-/** 模型级单价（元/百万 tokens）：成本看板的换算来源；空 = 只记 token 不计金额 */
+/** 模型级单价（历史遗留）：DB 的 model_prices 列与旧数据保留，但单价配置已停用——UI 不再提供录入，用量看板不折算金额 */
 export interface LlmModelPrice {
   input?: number
   output?: number
@@ -278,7 +278,7 @@ export interface ModelConnection {
   modelThinkingLevels: Record<string, ThinkingLevelChoice>
   /** 模型级高级参数：模型 id → { vision/温度/maxTokens }；缺省走官方/内置默认 */
   modelParams: Record<string, ModelAdvancedParams>
-  /** 模型级单价（元/百万 tokens）：模型 id → { input/output }；没配 = 只记用量不算钱 */
+  /** 模型级单价（已停用，仅为旧库数据回读保留；UI 不再录入，看板不折算金额） */
   modelPrices: Record<string, LlmModelPrice>
   createdAt: number
   updatedAt: number
@@ -305,7 +305,7 @@ export interface ModelConnectionInput {
   modelThinkingLevels?: Record<string, ThinkingLevelChoice>
   /** 模型级高级参数（可选，只保留 models 里存在的 id；空对象键不落盘） */
   modelParams?: Record<string, ModelAdvancedParams>
-  /** 模型级单价（可选，元/百万 tokens，只保留 models 里存在的 id；空对象键不落盘） */
+  /** 模型级单价（已停用：UI 不再发送，仅为兼容旧调用保留；空对象键不落盘） */
   modelPrices?: Record<string, LlmModelPrice>
 }
 
@@ -1503,7 +1503,7 @@ export interface CommentConfig {
   connectorToken: string
 }
 
-// ---------- 用量与成本采集（数据页成本看板，DB v3） ----------
+// ---------- 用量采集（数据页用量看板，DB v3） ----------
 
 /** LLM 用量记录的用途分类 */
 export type UsageKind = 'chat' | 'draft' | 'compact'
@@ -1517,7 +1517,7 @@ export const USAGE_KIND_LABEL: Record<UsageKind, string> = {
 /**
  * 一次 LLM 请求的用量（usage_records 表）：真实 usage 直接落库；
  * 服务商没给 usage 时按字符数/4 估算并标 estimated。
- * cost 单位元，写入时按当时的模型单价算好；null = 该模型没配单价（改了单价不追溯历史）。
+ * cost 列保留在库（历史数据），但已停用：新记录恒为 null，看板只统计用量不折算金额。
  */
 export interface UsageRecord {
   id: string
@@ -1533,10 +1533,11 @@ export interface UsageRecord {
   cacheWrite: number
   /** true = 估算值（服务商没回 usage，按字符数/4 估的输出） */
   estimated: boolean
+  /** 已停用（恒 null）：历史记录里可能还有按当时单价折算的金额 */
   cost: number | null
 }
 
-/** 一次 TTS 合成（tts_records 表）：chars = 送进合成的字符数；cost 单位元，null = 接入没配单价 */
+/** 一次 TTS 合成（tts_records 表）：chars = 送进合成的字符数；cost 已停用（恒 null，历史记录可能有值） */
 export interface TtsRecord {
   id: string
   ts: number
@@ -1545,27 +1546,25 @@ export interface TtsRecord {
   modelId: string
   voiceId: string
   chars: number
+  /** 已停用（恒 null） */
   cost: number | null
 }
 
-/** 一段时间/全局的成本合计；unpriced = 没配单价的记录条数（这部分只记用量没算钱） */
-export interface CostBucket {
+/** 一段时间/全局的用量合计（用量看板总览卡） */
+export interface UsageBucket {
   llmInputTokens: number
   llmOutputTokens: number
-  llmCost: number
-  llmUnpriced: number
+  llmCacheRead: number
   ttsChars: number
-  ttsCost: number
-  ttsUnpriced: number
 }
 
-/** 成本看板一屏数据（stats:dashboard） */
-export interface CostDashboard {
-  today: CostBucket
-  total: CostBucket
-  /** 近 30 天按天成本（本地时区，缺的天补 0） */
-  trend: { day: string; llmCost: number; ttsCost: number }[]
-  /** 按节目分组成本（全部时间；programId null = 未绑定节目） */
-  byProgram: { programId: string | null; programName: string; llmCost: number; ttsCost: number }[]
+/** 用量看板一屏数据（stats:usage-dashboard） */
+export interface UsageDashboard {
+  today: UsageBucket
+  total: UsageBucket
+  /** 近 30 天按天用量（本地时区，缺的天补 0）：llmTokens = 输入 + 输出 tokens */
+  trend: { day: string; llmTokens: number; ttsChars: number }[]
+  /** 按节目分组用量（全部时间；programId null = 未绑定节目） */
+  byProgram: { programId: string | null; programName: string; llmTokens: number; ttsChars: number }[]
 }
 

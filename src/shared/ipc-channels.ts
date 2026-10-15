@@ -145,8 +145,8 @@ export const IPC = {
   triggerDelete: 'trigger:delete',
   triggerToggle: 'trigger:toggle',
 
-  // 成本看板（数据页）：合计 + 趋势 + 按节目分布 + 明细记录
-  statsDashboard: 'stats:dashboard',
+  // 用量看板（数据页）：合计 + 趋势 + 按节目分布 + 明细记录
+  statsUsageDashboard: 'stats:usage-dashboard',
   statsUsageRecords: 'stats:usage-records',
   statsTtsRecords: 'stats:tts-records',
 

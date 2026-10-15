@@ -12,6 +12,7 @@ const PROVIDER_STYLES: Record<string, { glyph: string; className: string }> = {
   doubao: { glyph: '豆', className: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400' },
   kimi: { glyph: 'K', className: 'bg-amber-500/15 text-amber-600 dark:text-amber-400' },
   zai: { glyph: '智', className: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' },
+  openai: { glyph: 'OA', className: 'bg-teal-500/15 text-teal-700 dark:text-teal-300' },
   'local-openai': { glyph: '本', className: 'bg-slate-500/15 text-slate-600 dark:text-slate-400' },
   // 语音合成服务商（同一套色块 + 字形）
   volcano: { glyph: '火', className: 'bg-blue-500/15 text-blue-600 dark:text-blue-400' },

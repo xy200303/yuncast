@@ -10,8 +10,8 @@ import {
   ENTRY_KINDS,
   parseAppConfig,
   type AppConfig,
-  type CostBucket,
-  type CostDashboard,
+  type UsageBucket,
+  type UsageDashboard,
   type EpisodeSummary,
   type KnowledgeFile,
   type ModelConnection,
@@ -456,7 +456,7 @@ export class StorageService {
       )
     `)
     this.ensureColumn('tts_connections', 'realtime', 'INTEGER NOT NULL DEFAULT 0')
-    // 用量与成本采集（DB v3，数据页成本看板）：LLM 每次请求一条 usage_records，TTS 每次合成一条 tts_records
+    // 用量采集（DB v3，数据页用量看板）：LLM 每次请求一条 usage_records，TTS 每次合成一条 tts_records
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS usage_records (
         id TEXT PRIMARY KEY,
@@ -681,7 +681,7 @@ export class StorageService {
       if (Number.isFinite(maxTokens) && maxTokens >= 1024) clean.maxTokens = maxTokens
       if (Object.keys(clean).length > 0) modelParams[id2] = clean
     }
-    // 模型级单价（元/百万 tokens）：只收 models 里存在的 id、非负数才留；两个价都空 = 不计成本
+    // 模型级单价（已停用：UI 不再发送，仅为兼容旧调用与旧库数据保留读写；两个价都空的键不落盘）
     const modelPrices: Record<string, { input?: number; output?: number }> = {}
     for (const [key, value] of Object.entries(input.modelPrices ?? {})) {
       const id2 = key.trim()
@@ -1793,7 +1793,7 @@ export class StorageService {
     )
   }
 
-  // ---------- 用量与成本采集（DB v3） ----------
+  // ---------- 用量采集（DB v3；cost 列已停用，恒 NULL） ----------
 
   usageInsert(record: UsageRecord): void {
     this.db
@@ -1837,27 +1837,27 @@ export class StorageService {
       )
   }
 
-  /** 成本看板一屏数据：今日/累计合计 + 近 30 天趋势 + 按节目分布。programId 给了就只算那个节目 */
-  costDashboard(programId?: string): CostDashboard {
+  /** 用量看板一屏数据：今日/累计合计 + 近 30 天趋势 + 按节目分布。programId 给了就只算那个节目 */
+  usageDashboard(programId?: string): UsageDashboard {
     const now = new Date()
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
     const trendStart = todayStart - 29 * 24 * 3600_000
     const where = programId ? 'WHERE program_id = @pid' : ''
     const args: Record<string, string | number> = programId ? { pid: programId } : {}
-    const bucket = (table: 'usage_records' | 'tts_records', since?: number): CostBucket => {
+    const bucket = (table: 'usage_records' | 'tts_records', since?: number): UsageBucket => {
       const row = (
         table === 'usage_records'
           ? this.db
               .prepare(
                 `SELECT COALESCE(SUM(input_tokens), 0) AS li, COALESCE(SUM(output_tokens), 0) AS lo,
-                        COALESCE(SUM(cost), 0) AS lc, SUM(cost IS NULL) AS lu
+                        COALESCE(SUM(cache_read), 0) AS lcr
                  FROM usage_records ${programId ? 'WHERE program_id = @pid' : ''}
                  ${since !== undefined ? (programId ? 'AND' : 'WHERE') + ' ts >= @since' : ''}`
               )
               .get({ ...args, ...(since !== undefined ? { since } : {}) }) as Record<string, unknown>
           : this.db
               .prepare(
-                `SELECT COALESCE(SUM(chars), 0) AS tc, COALESCE(SUM(cost), 0) AS tco, SUM(cost IS NULL) AS tu
+                `SELECT COALESCE(SUM(chars), 0) AS tc
                  FROM tts_records ${programId ? 'WHERE program_id = @pid' : ''}
                  ${since !== undefined ? (programId ? 'AND' : 'WHERE') + ' ts >= @since' : ''}`
               )
@@ -1867,74 +1867,73 @@ export class StorageService {
         ? {
             llmInputTokens: num(row.li) ?? 0,
             llmOutputTokens: num(row.lo) ?? 0,
-            llmCost: num(row.lc) ?? 0,
-            llmUnpriced: num(row.lu) ?? 0,
-            ttsChars: 0,
-            ttsCost: 0,
-            ttsUnpriced: 0
+            llmCacheRead: num(row.lcr) ?? 0,
+            ttsChars: 0
           }
         : {
             llmInputTokens: 0,
             llmOutputTokens: 0,
-            llmCost: 0,
-            llmUnpriced: 0,
-            ttsChars: num(row.tc) ?? 0,
-            ttsCost: num(row.tco) ?? 0,
-            ttsUnpriced: num(row.tu) ?? 0
+            llmCacheRead: 0,
+            ttsChars: num(row.tc) ?? 0
           }
     }
-    const merge = (a: CostBucket, b: CostBucket): CostBucket => ({
+    const merge = (a: UsageBucket, b: UsageBucket): UsageBucket => ({
       llmInputTokens: a.llmInputTokens + b.llmInputTokens,
       llmOutputTokens: a.llmOutputTokens + b.llmOutputTokens,
-      llmCost: a.llmCost + b.llmCost,
-      llmUnpriced: a.llmUnpriced + b.llmUnpriced,
-      ttsChars: a.ttsChars + b.ttsChars,
-      ttsCost: a.ttsCost + b.ttsCost,
-      ttsUnpriced: a.ttsUnpriced + b.ttsUnpriced
+      llmCacheRead: a.llmCacheRead + b.llmCacheRead,
+      ttsChars: a.ttsChars + b.ttsChars
     })
     const llmTrend = this.db
       .prepare(
-        `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(cost), 0) AS cost
+        `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day,
+                COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens
          FROM usage_records ${where === '' ? 'WHERE' : where + ' AND'} ts >= @start GROUP BY day`
       )
-      .all({ ...args, start: trendStart }) as { day: string; cost: number }[]
+      .all({ ...args, start: trendStart }) as { day: string; tokens: number }[]
     const ttsTrend = this.db
       .prepare(
-        `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(cost), 0) AS cost
+        `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(chars), 0) AS chars
          FROM tts_records ${where === '' ? 'WHERE' : where + ' AND'} ts >= @start GROUP BY day`
       )
-      .all({ ...args, start: trendStart }) as { day: string; cost: number }[]
-    const llmByDay = new Map(llmTrend.map((row) => [row.day, row.cost]))
-    const ttsByDay = new Map(ttsTrend.map((row) => [row.day, row.cost]))
-    const trend: CostDashboard['trend'] = []
+      .all({ ...args, start: trendStart }) as { day: string; chars: number }[]
+    const llmByDay = new Map(llmTrend.map((row) => [row.day, row.tokens]))
+    const ttsByDay = new Map(ttsTrend.map((row) => [row.day, row.chars]))
+    const trend: UsageDashboard['trend'] = []
     for (let i = 0; i < 30; i++) {
       const date = new Date(trendStart + i * 24 * 3600_000)
       const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-      trend.push({ day, llmCost: llmByDay.get(day) ?? 0, ttsCost: ttsByDay.get(day) ?? 0 })
+      trend.push({ day, llmTokens: llmByDay.get(day) ?? 0, ttsChars: ttsByDay.get(day) ?? 0 })
     }
     // 按节目分布（不受筛选影响，始终全量——它就是用来做对比的）
     const names = new Map(this.programList().map((program) => [program.id, program.name]))
-    const byProgramMap = new Map<string | null, { llmCost: number; ttsCost: number }>()
-    const collect = (table: 'usage_records' | 'tts_records', key: 'llmCost' | 'ttsCost') => {
-      const rows = this.db
-        .prepare(`SELECT program_id AS pid, COALESCE(SUM(cost), 0) AS cost FROM ${table} GROUP BY program_id`)
-        .all() as { pid: string | null; cost: number }[]
+    const byProgramMap = new Map<string | null, { llmTokens: number; ttsChars: number }>()
+    const collect = (table: 'usage_records' | 'tts_records', key: 'llmTokens' | 'ttsChars') => {
+      const rows =
+        table === 'usage_records'
+          ? (this.db
+              .prepare(
+                'SELECT program_id AS pid, COALESCE(SUM(input_tokens + output_tokens), 0) AS value FROM usage_records GROUP BY program_id'
+              )
+              .all() as { pid: string | null; value: number }[])
+          : (this.db
+              .prepare('SELECT program_id AS pid, COALESCE(SUM(chars), 0) AS value FROM tts_records GROUP BY program_id')
+              .all() as { pid: string | null; value: number }[])
       for (const row of rows) {
-        const entry = byProgramMap.get(row.pid) ?? { llmCost: 0, ttsCost: 0 }
-        entry[key] = row.cost
+        const entry = byProgramMap.get(row.pid) ?? { llmTokens: 0, ttsChars: 0 }
+        entry[key] = row.value
         byProgramMap.set(row.pid, entry)
       }
     }
-    collect('usage_records', 'llmCost')
-    collect('tts_records', 'ttsCost')
+    collect('usage_records', 'llmTokens')
+    collect('tts_records', 'ttsChars')
     const byProgram = [...byProgramMap.entries()]
-      .map(([pid, costs]) => ({
+      .map(([pid, usage]) => ({
         programId: pid,
         programName: pid ? (names.get(pid) ?? '已删除节目') : '未绑定节目',
-        ...costs
+        ...usage
       }))
-      .filter((entry) => entry.llmCost > 0 || entry.ttsCost > 0)
-      .sort((a, b) => b.llmCost + b.ttsCost - (a.llmCost + a.ttsCost))
+      .filter((entry) => entry.llmTokens > 0 || entry.ttsChars > 0)
+      .sort((a, b) => b.llmTokens + b.ttsChars - (a.llmTokens + a.ttsChars))
     return {
       today: merge(bucket('usage_records', todayStart), bucket('tts_records', todayStart)),
       total: merge(bucket('usage_records'), bucket('tts_records')),
@@ -1943,7 +1942,7 @@ export class StorageService {
     }
   }
 
-  /** 最近的 LLM 请求记录（成本看板的明细表） */
+  /** 最近的 LLM 请求记录（用量看板的明细表） */
   usageRecent(limit = 100, programId?: string): UsageRecord[] {
     const rows = (
       programId
@@ -1969,7 +1968,7 @@ export class StorageService {
     }))
   }
 
-  /** 最近的 TTS 合成记录（成本看板的明细表） */
+  /** 最近的 TTS 合成记录（用量看板的明细表） */
   ttsRecent(limit = 100, programId?: string): TtsRecord[] {
     const rows = (
       programId

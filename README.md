@@ -15,7 +15,7 @@
 
 <p align="center">
   <a href="https://github.com/xy200303/yuncast/releases/latest">📦 下载</a> •
-  <a href="https://xy200303.github.io/yuncast/">📖 使用文档</a> •
+  <a href="https://yuncast.xyun.dev/">📖 使用文档</a> •
   <a href="https://github.com/xy200303/yuncast/issues">💬 反馈</a>
 </p>
 
@@ -81,7 +81,7 @@
 
 **建主播**（人设卡 + 音色）→ **建节目**（选形态与播出方式）→ **让主播写稿**（对话框里说一句「给这场写稿」）→ **启动节目**。评论接入由平台连接器负责（独立小程序，本地事件流对接，主应用不含任何平台 SDK）。
 
-详细图文教程见 [使用文档](https://xy200303.github.io/yuncast/)。
+详细图文教程见 [使用文档](https://yuncast.xyun.dev/)。
 
 ---
 

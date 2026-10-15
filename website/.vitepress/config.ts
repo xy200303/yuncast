@@ -4,8 +4,8 @@ export default defineConfig({
   lang: 'zh-CN',
   title: '小云播客坊 YunCast',
   description: '你的 AI 主播，开场就能播——直播带货、有声书、播客节目，一个工作台全包',
-  base: '/yuncast/',
-  head: [['link', { rel: 'icon', href: '/yuncast/logo.svg' }]],
+  base: '/',
+  head: [['link', { rel: 'icon', href: '/logo.svg' }]],
   themeConfig: {
     logo: '/logo.svg',
     nav: [

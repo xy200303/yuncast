@@ -516,6 +516,29 @@ export class StorageService {
     this.sweepInterruptedRendered()
     // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
     this.migrateLegacySecrets()
+    // 品牌改名后目录从 AgentAnchor 搬到 YunCast：库里存量绝对路径（音频缓存/预制音频/音色样本/知识库文件）跟着改写
+    this.rewriteLegacyDataPaths()
+  }
+
+  /** 一次性路径迁移：把库里以旧品牌目录开头的绝对路径改写到当前 userData（文件本身由 index.ts 的目录搬迁保证已就位） */
+  private rewriteLegacyDataPaths(): void {
+    const dir = app.getPath('userData')
+    const legacyDir = join(app.getPath('appData'), 'AgentAnchor')
+    if (legacyDir === dir) return
+    const targets: [string, string][] = [
+      ['speech_items', 'audio_path'],
+      ['utterances', 'audio_path'],
+      ['knowledge_files', 'file_path'],
+      ['voices', 'sample_path']
+    ]
+    let total = 0
+    for (const [table, column] of targets) {
+      const { changes } = this.db
+        .prepare(`UPDATE ${table} SET ${column} = ? || substr(${column}, ?) WHERE instr(${column}, ?) = 1`)
+        .run(dir, legacyDir.length + 1, legacyDir)
+      total += Number(changes)
+    }
+    if (total > 0) console.log(`[YunCast] 存量音频/文件路径迁移：改写 ${total} 行（${legacyDir} → ${dir}）`)
   }
 
   // ---------- 节目会话持久化（节目即会话） ----------

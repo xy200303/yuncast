@@ -191,6 +191,25 @@ export class LiveEventInbox {
     this.scheduleWake(pending.find((e) => e.priority === 'high') ?? pending[0])
   }
 
+  /**
+   * 批次送达被闸门拒收（会话停了/写稿中/暂停中）：把本批事件从 seen 退回 new——
+   * 事件不丢，恢复后由 notifyIdle/新事件补排唤醒。
+   * 这里不主动排唤醒：flush 只由新事件/notifyIdle 驱动，暂停期间不会自己叫醒自己（防自旋）。
+   * receivedAt 不动：TTL 从到达时刻算，退回不给事件续命，过期照样过期。
+   */
+  requeue(events: LiveInboxEvent[]): void {
+    let changed = false
+    for (const event of events) {
+      const found = this.events.find((e) => e.id === event.id)
+      if (!found || found.state !== 'seen') continue
+      found.state = 'new'
+      // 归组索引恢复：退回的事件重新参与「同内容合并计数」
+      this.pendingByNorm.set(groupKeyOf(found), found.id)
+      changed = true
+    }
+    if (changed) this.onChange?.()
+  }
+
   /** Agent 处理后标记（mark_live_events 工具）；不标也行，TTL 到了自然过期 */
   markEvents(ids: string[], state: 'handled' | 'ignored'): string {
     let marked = 0

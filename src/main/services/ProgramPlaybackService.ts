@@ -524,6 +524,26 @@ export class ProgramPlaybackService {
     return this.utterances.list(programId).length >= DRAFT_HARD_CAP
   }
 
+  /**
+   * 当前场景还有没就绪但正在排队/合成中的可播底稿：池空了先等它们出炉（允许冷场），
+   * 不算整轮播完——finishMode=stop 的「播完即停」决策用它区分「真播完了」和「内容还在路上」。
+   */
+  hasIncomingUtterances(programId: string): boolean {
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    if (!program) return false
+    const script = this.script.getScript(program.scriptId)
+    if (!script || script.scenes.length === 0) return false
+    const sceneId = script.scenes[this.sceneIndex(program, script.scenes.length)].id
+    return this.utterances
+      .list(programId)
+      .some(
+        (u) =>
+          (u.status === 'pending' || u.status === 'synthesizing') &&
+          u.bitType !== 'closer' &&
+          (u.sceneId === sceneId || u.sceneId === '')
+      )
+  }
+
   /** 切场景（播控台按钮 / goto_scene 工具）：跳过去并把新场景话术库载入池 */
   gotoScene(programId: string, index: number): { ok: boolean; loaded: number; title?: string; error?: string } {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null

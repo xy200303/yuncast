@@ -192,6 +192,7 @@ export function ProgramsPage() {
               const stats = utteranceStats[program.id]
               const audio = audioStats[program.id]
               const prepared = program.broadcastMode === 'prepared'
+              const improvised = program.broadcastMode === 'improvised'
               const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
               return (
                 <Card key={program.id} className={active ? 'border-primary/50' : ''}>
@@ -227,6 +228,11 @@ export function ProgramsPage() {
                         ) : (
                           <span>还没有文稿（点「底稿库」生成）</span>
                         )}
+                      </div>
+                    ) : improvised ? (
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <BookOpenText className="size-3.5" />
+                        <span>现场发挥：无底稿，主播临场说</span>
                       </div>
                     ) : (
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -271,10 +277,12 @@ export function ProgramsPage() {
                         <Check />
                         {active ? '取消当前' : '设为当前'}
                       </Button>
-                      <Button variant="outline" size="sm" onClick={() => setReviewing(program)}>
-                        <BookOpenText />
-                        底稿库
-                      </Button>
+                      {!improvised && (
+                        <Button variant="outline" size="sm" onClick={() => setReviewing(program)}>
+                          <BookOpenText />
+                          底稿库
+                        </Button>
+                      )}
                       <Button variant="ghost" size="icon-sm" title="配置" onClick={() => setEditing({ program })}>
                         <Pencil />
                       </Button>

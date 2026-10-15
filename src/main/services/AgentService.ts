@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { Agent, type AgentMessage } from '@earendil-works/pi-agent-core'
+import { Agent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import {
   normalizeContext,
   retryAssistantCall,
@@ -84,8 +84,60 @@ const COMPACT_KEEP_RECENT_TOKENS = 20_000
 const SUMMARY_TRANSCRIPT_MAX_CHARS = 50_000
 /** HTTP 请求超时：DeepSeek 偶尔挂住连接一个字节都不吐，收紧到 60s——超时变 error 态（可重试） */
 const LLM_TIMEOUT_MS = 60_000
-/** 工具表 schema 的粗估开销（tokens）：50+ 个主播工具不进 messages 但真实占窗口，状态栏进度条要算上 */
-const TOOL_SCHEMA_OVERHEAD_TOKENS = 8000
+
+/**
+ * 工具按场景裁剪（docs/10 §10 的工具表瘦身）：黑名单命中的工具不进会话——schema 不占上下文、模型也看不到，
+ * 减少误调；工具内部的运行时门禁（getPurpose/getSpeakingPaused 等）保留兜底，裁剪只是省 token 不是安全边界。
+ * - prep（写稿）会话：播出通道本就关着，播出控制/急停/对外副作用/直播动态标记都不该在备稿时发生；
+ *   produce_program_audio 保留——写完稿顺手合成是正常动作
+ * - 即兴节目（现场发挥）：没有底稿概念，底稿族（写稿 + 底稿 CRUD）全裁，挂上去只会引诱模型写稿
+ * - live 会话：全量保留
+ */
+const PREP_TOOL_EXCLUDE: ReadonlySet<string> = new Set([
+  // 播出控制类
+  'say',
+  'insert_next',
+  'pause_broadcast',
+  'resume_broadcast',
+  'skip_current',
+  'start_live',
+  'emergency_stop',
+  // 对外副作用类
+  'start_rtmp',
+  'export_program',
+  // 直播动态标记（写稿会话不接评论/触发器，没有可标的东西）
+  'mark_live_events'
+])
+const IMPROVISED_TOOL_EXCLUDE: ReadonlySet<string> = new Set([
+  'write_bits',
+  'list_drafts',
+  'edit_draft',
+  'add_draft',
+  'remove_draft',
+  'clear_drafts'
+])
+
+/**
+ * 工具表 schema 的粗估开销（tokens）：每个工具的 name+label+description+参数 schema 的 JSON 字符数 ÷ 4
+ * （与 pi-ai 的上下文估算同口径；中文描述按字符算偏低估，状态栏进度条仅供参考）。
+ * 裁剪后按实际进会话的工具算：live 全量 64 个约 8k，prep 裁掉 10 个后更少，不再是固定常数。
+ */
+function estimateToolSchemaTokens(tools: readonly AgentTool[]): number {
+  let chars = 0
+  for (const tool of tools) {
+    try {
+      chars += JSON.stringify({
+        name: tool.name,
+        label: tool.label,
+        description: tool.description,
+        parameters: tool.parameters
+      }).length
+    } catch {
+      chars += 400
+    }
+  }
+  return Math.ceil(chars / 4)
+}
 
 /** 一条 assistant 消息在时间线上的文本状态（按 messageId 更新，不重复追加条目） */
 interface TimelineText {
@@ -340,8 +392,10 @@ export class AgentService {
               program.theme,
               program.contentType,
               program.broadcastMode,
+              program.finishMode,
               program.allowLiveEvents,
               program.enabledTriggerIds,
+              program.audioConfig,
               program.scriptId,
               program.knowledgeScope
             ]
@@ -361,7 +415,7 @@ export class AgentService {
     const resolved = resolveModelForPersona(this.storage, this.persona.get())
     this.setState('starting')
     try {
-      this.session = await this.createSession(resolved, restoredMessages)
+      this.session = await this.createSession(resolved, purpose, restoredMessages)
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error))
       throw error
@@ -549,10 +603,20 @@ export class AgentService {
     return this.inbox.markEvents(ids, state)
   }
 
-  /** 收件箱批次送达：窗口期间停了播/切了暂停就整批丢掉（事件已 seen，随后 TTL 过期，不补答） */
+  /**
+   * 收件箱批次送达：窗口期间会话停了/切了写稿/已暂停就整批退回 new（requeue）——
+   * 事件不丢，暂停恢复/会话起来后由 notifyIdle 或新事件补排；退回不主动排唤醒，暂停期间不会自旋叫醒。
+   */
   private deliverInboxBatch(batchText: string, events: LiveInboxEvent[]): void {
-    if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
-    if (this.sessionPurpose !== 'live' || this.speakingPaused) return
+    if (
+      !this.session ||
+      (this.state !== 'running' && this.state !== 'error') ||
+      this.sessionPurpose !== 'live' ||
+      this.speakingPaused
+    ) {
+      this.inbox.requeue(events)
+      return
+    }
     // 批次里最后一条评论更新 lastComment：insert_next 挂 replyTo 用
     const lastCommentEvent = [...events].reverse().find((e) => e.kind === 'comment')
     if (lastCommentEvent) {
@@ -564,6 +628,16 @@ export class AgentService {
       }
     }
     void this.ask(this.prompts.render('user.live_batch', { events: batchText }))
+  }
+
+  /**
+   * 节目整轮播完（finishMode=stop）的收尾通知：播出循环的决策点（index.ts pool.empty）调。
+   * 以系统通知口吻派给主播——说完 closer/道别这场就收播；暂停中说不出话就不派（兜底定时器会收）。
+   */
+  notifyProgramFinished(): void {
+    if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    if (this.sessionPurpose !== 'live' || this.speakingPaused) return
+    this.deliver(this.prompts.render('user.program_finish'), 'task')
   }
 
   /** 实际投递：导演指令绕过暂停检查走这里，其余的入口统一先过暂停闸门 */
@@ -691,10 +765,13 @@ export class AgentService {
   async startDrafting(programId: string): Promise<void> {
     const program = this.storage.programList().find((p) => p.id === programId)
     if (!program) throw new Error('节目不存在')
-    const script = this.script.getScript(program.scriptId)
-    if (!script || script.scenes.length === 0) {
-      throw new Error('先给节目绑定剧本——写稿按场景逐场产出')
+    // 即兴节目没有底稿概念：不进写稿模式，给一句能照做的提示（备料走知识库）
+    if (program.broadcastMode === 'improvised') {
+      throw new Error(`「${program.name}」是现场发挥的节目，不需要底稿；要备料可以让我把内容直接存进知识库`)
     }
+    // 没绑剧本不拦：自动建一本空剧本绑到节目（与 create_scene 工具同一套「主播自编」），
+    // 场景让主播用 create_scene 自己搭——兑现任务书里「场景不够自己搭」的承诺
+    const { script } = this.script.ensureProgramScript(program.id)
     if (this.session && this.sessionPurpose === 'live') {
       throw new Error('正在直播：写稿先下播，或者用对话直接改底稿')
     }
@@ -708,13 +785,16 @@ export class AgentService {
 
   /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走主播手册（user.draft_brief）；写多少由主播自己判断 */
   private composeDraftBrief(script: Script): string {
-    const scenes = script.scenes
-      .map(
-        (scene, i) =>
-          `  ${i + 1}. 「${scene.title}」（sceneId=${scene.id}，约 ${scene.estDurationMin} 分钟）` +
-          `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
-      )
-      .join('\n')
+    const scenes =
+      script.scenes.length === 0
+        ? '  （还没有场景——先按节目主题用 create_scene 把场次搭出来，再逐场写）'
+        : script.scenes
+            .map(
+              (scene, i) =>
+                `  ${i + 1}. 「${scene.title}」（sceneId=${scene.id}，约 ${scene.estDurationMin} 分钟）` +
+                `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
+            )
+            .join('\n')
     return this.prompts.render('user.draft_brief', { scenes })
   }
 
@@ -1014,7 +1094,7 @@ export class AgentService {
 
   /**
    * 压缩阈值：窗口 - reserve。reserve 取 16k 与窗口 40% 的小者——窗口配置偏小时留的比例不变，
-   * 否则「system prompt + 50+ 个工具的 schema」这个地板就可能比阈值还高，压完立刻又超，每轮白压一遍。
+   * 否则「system prompt + 工具表 schema」这个地板就可能比阈值还高，压完立刻又超，每轮白压一遍。
    */
   private compactThreshold(contextWindow: number): number {
     return contextWindow - Math.min(COMPACT_RESERVE_TOKENS, Math.floor(contextWindow * 0.4))
@@ -1224,7 +1304,11 @@ export class AgentService {
     })
   }
 
-  private async createSession(resolved: ResolvedModel, restoredMessages?: AgentMessage[]): Promise<Agent> {
+  private async createSession(
+    resolved: ResolvedModel,
+    purpose: 'live' | 'prep',
+    restoredMessages?: AgentMessage[]
+  ): Promise<Agent> {
     const { model, apiKey, modelLabel, contextWindow, thinkingLevel, temperature, vision } =
       await prepareLlmModel(resolved)
     this.modelLabel = modelLabel
@@ -1236,14 +1320,79 @@ export class AgentService {
     const { program, script } = this.script.getActive()
     // 人设卡的音色即主播的嗓子，必选；没选时不留兜底，合成路由会直接报错（预检也会拦下）
     const systemPrompt = this.persona.buildSystemPrompt(persona, program, script)
-    // 上下文仪表：窗口 + 固定开销（system prompt + 工具表 schema）出生时就位
+
+    const allTools = [
+      ...buildAnchorTools({
+      pool: this.pool,
+      knowledge: this.knowledge,
+      memory: this.memory,
+      persona: this.persona,
+      script: this.script,
+      utterances: this.utterances,
+      getLastComment: () => this.lastComment,
+      onSceneChanged: () => this.notifySceneChanged(),
+      getProgramVoice: () => this.programVoiceId,
+      onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
+      onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
+      setProgramVoice: (voiceId) => this.setProgramVoice(voiceId),
+      setProgramGap: (ms) => this.setProgramGap(ms),
+      onPlaybackControl: (action) => this.onPlaybackControl?.(action),
+      getSpeakingPaused: () => this.speakingPaused,
+      getPurpose: () => this.sessionPurpose,
+      markLiveEvents: (ids, state) => this.markLiveEvents(ids, state),
+      onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动节目」',
+      syncProducts: async () =>
+        this.knowledge.syncFromConnector({
+          listTools: () => this.getConnector?.()?.listTools() ?? Promise.resolve([]),
+          callTool: (name, args) => {
+            const c = this.getConnector?.()
+            if (!c) return Promise.reject(new Error('连接器没接线'))
+            return c.callTool(name, args)
+          }
+        }),
+      connector: this.getConnector?.() ?? null
+      }),
+      ...buildAnchorSystemTools({
+        storage: this.storage,
+        script: this.script,
+        persona: this.persona,
+        utterances: this.utterances,
+        pool: this.pool,
+        getStatus: () => this.status(),
+        getSessionInfo: () => this.sessionInfo(),
+        getActivePersonaId: () => this.persona.get().id,
+        handoffPersona: (personaId) => this.handoff(personaId),
+        onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
+        notifyTimeline: (text) => this.notifyTimeline(text),
+        warmupProgram: (programId) => {
+          if (programId) void this.warmupPrepSession().catch(() => undefined)
+        },
+        onEmergencyStop: () => this.onEmergencyStop?.() ?? Promise.resolve(),
+        getConnector: () => this.getConnector?.() ?? null,
+        getVoices: () => this.getVoices?.() ?? null,
+        getTriggers: () => this.getTriggers?.() ?? null,
+        getStream: () => this.getStream?.() ?? null,
+        getExporter: () => this.getExporter?.() ?? null,
+        // 统一音频生产入口（produce_program_audio 工具，docs/10 §7.5-7.6）
+        produceProgramAudio: (programId) => this.utterances.produceProgramAudio(programId),
+        describeProducePlan: (programId) => this.utterances.describeProducePlan(programId)
+      })
+    ]
+    // 工具按场景裁剪（规则见 PREP_TOOL_EXCLUDE / IMPROVISED_TOOL_EXCLUDE 的注释）
+    const improvised = program?.broadcastMode === 'improvised'
+    const tools = allTools.filter(
+      (tool) =>
+        !(purpose === 'prep' && PREP_TOOL_EXCLUDE.has(tool.name)) &&
+        !(improvised && IMPROVISED_TOOL_EXCLUDE.has(tool.name))
+    )
+    // 上下文仪表：窗口 + 固定开销（system prompt + 实际进会话的工具表 schema）出生时就位
     this.contextWindow = contextWindow
     this.contextOverhead =
       estimateMsgTokens({
         role: 'user',
         content: [{ type: 'text', text: systemPrompt }],
         timestamp: 0
-      } as unknown as AgentMessage) + TOOL_SCHEMA_OVERHEAD_TOKENS
+      } as unknown as AgentMessage) + estimateToolSchemaTokens(tools)
     this.contextCache = { messagesLength: -1, tokens: 0, at: 0 }
 
     const agent = new Agent({
@@ -1252,64 +1401,8 @@ export class AgentService {
         model,
         // 思考强度来自接入的模型级配置（off=不思考）；思考流会进对话时间线的「思考过程」
         thinkingLevel,
-        // 主播工具（说话/写稿/播出控制）+ 系统控制工具（节目/剧本/主播/音色/触发器/全局状态，docs/10 §10.2）
-        tools: [
-          ...buildAnchorTools({
-          pool: this.pool,
-          knowledge: this.knowledge,
-          memory: this.memory,
-          persona: this.persona,
-          script: this.script,
-          utterances: this.utterances,
-          getLastComment: () => this.lastComment,
-          onSceneChanged: () => this.notifySceneChanged(),
-          getProgramVoice: () => this.programVoiceId,
-          onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
-          onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
-          setProgramVoice: (voiceId) => this.setProgramVoice(voiceId),
-          setProgramGap: (ms) => this.setProgramGap(ms),
-          onPlaybackControl: (action) => this.onPlaybackControl?.(action),
-          getSpeakingPaused: () => this.speakingPaused,
-          getPurpose: () => this.sessionPurpose,
-          markLiveEvents: (ids, state) => this.markLiveEvents(ids, state),
-          onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动节目」',
-          syncProducts: async () =>
-            this.knowledge.syncFromConnector({
-              listTools: () => this.getConnector?.()?.listTools() ?? Promise.resolve([]),
-              callTool: (name, args) => {
-                const c = this.getConnector?.()
-                if (!c) return Promise.reject(new Error('连接器没接线'))
-                return c.callTool(name, args)
-              }
-            }),
-          connector: this.getConnector?.() ?? null
-          }),
-          ...buildAnchorSystemTools({
-            storage: this.storage,
-            script: this.script,
-            persona: this.persona,
-            utterances: this.utterances,
-            pool: this.pool,
-            getStatus: () => this.status(),
-            getSessionInfo: () => this.sessionInfo(),
-            getActivePersonaId: () => this.persona.get().id,
-            handoffPersona: (personaId) => this.handoff(personaId),
-            onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
-            notifyTimeline: (text) => this.notifyTimeline(text),
-            warmupProgram: (programId) => {
-              if (programId) void this.warmupPrepSession().catch(() => undefined)
-            },
-            onEmergencyStop: () => this.onEmergencyStop?.() ?? Promise.resolve(),
-            getConnector: () => this.getConnector?.() ?? null,
-            getVoices: () => this.getVoices?.() ?? null,
-            getTriggers: () => this.getTriggers?.() ?? null,
-            getStream: () => this.getStream?.() ?? null,
-            getExporter: () => this.getExporter?.() ?? null,
-            // 统一音频生产入口（produce_program_audio 工具，docs/10 §7.5-7.6）
-            produceProgramAudio: (programId) => this.utterances.produceProgramAudio(programId),
-            describeProducePlan: (programId) => this.utterances.describeProducePlan(programId)
-          })
-        ],
+        // 主播工具（说话/写稿/播出控制）+ 系统控制工具（节目/剧本/主播/音色/触发器/全局状态，docs/10 §10.2），按场景裁剪后挂入
+        tools,
         // 节目即会话：恢复时把该节目存下的消息重建进内存会话，上下文原样回来
         messages: restoredMessages
       },

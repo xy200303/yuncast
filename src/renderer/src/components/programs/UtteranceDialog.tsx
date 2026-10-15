@@ -204,10 +204,13 @@ export function UtteranceDialog({
         </DialogHeader>
 
         <div className="flex shrink-0 items-center gap-2">
-          <Button size="sm" onClick={() => setDraftAsk(true)}>
-            <Sparkles />
-            {items.length > 0 ? '去播控台续写' : '生成底稿'}
-          </Button>
+          {/* 即兴节目没有底稿概念：写稿入口不露面（startDrafting 后端也会拦） */}
+          {program.broadcastMode !== 'improvised' && (
+            <Button size="sm" onClick={() => setDraftAsk(true)}>
+              <Sparkles />
+              {items.length > 0 ? '去播控台续写' : '生成底稿'}
+            </Button>
+          )}
           <div className="ml-auto flex items-center gap-2">
             <Button
               size="sm"

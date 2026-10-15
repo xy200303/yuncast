@@ -353,6 +353,38 @@ let streamSvc: StreamService | null = null
 let pipeline: AudioPipeline | null = null
 let playback: PlaybackLoop | null = null
 
+/**
+ * finishMode=stop 的收播两阶段状态（pool.empty 决策点用）：
+ * 第一阶段整轮播完 → 通知主播收尾（说 closer/道别），并挂兜底定时器；
+ * 第二阶段收尾也播完（池再次见底）或兜底到点 → 正式收播（stream.ended + 收开播态 + 停会话写复盘）。
+ * 开播成功时复位。
+ */
+let stopWrap: { programId: string; timer: NodeJS.Timeout | null } | null = null
+
+function resetStopWrap(): void {
+  if (stopWrap?.timer) clearTimeout(stopWrap.timer)
+  stopWrap = null
+}
+
+function finishRoundStop(programId: string): void {
+  if (!stopWrap) {
+    stopWrap = { programId, timer: null }
+    console.log('[AgentAnchor] 整轮播完（finishMode=stop）：通知主播收尾，说完收播')
+    agent?.notifyProgramFinished()
+    // 主播没接话（暂停中/生成失败等）就 2 分钟后兜底收播，节目不能挂在半空
+    stopWrap.timer = setTimeout(() => finishRoundStop(programId), 120_000)
+    stopWrap.timer.unref?.()
+    return
+  }
+  if (stopWrap.programId !== programId) return
+  resetStopWrap()
+  console.log('[AgentAnchor] finishMode=stop：收尾播完，节目结束')
+  agent?.setLiveActive(false)
+  bus?.emit('stream.ended', {}, 'system')
+  // 会话一并收掉：与手动「结束节目」同口径——live 会话有对话会先让主播自我复盘写进场次摘要
+  void agent?.stop()
+}
+
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
 function guard<T>(fn: () => T): { ok: true; item: T } | { ok: false; error: string }
 function guard(fn: () => void): PoolResult
@@ -510,6 +542,7 @@ function registerIpc(
   ipcMain.handle(IPC.agentStop, async () => {
     const statusBefore = agent.status()
     const wasRunning = statusBefore.state !== 'stopped'
+    resetStopWrap()
     await agent.stop()
     // 结束节目：开播态归引擎——就算 agent 早就没起来，这场也算收了
     if (statusBefore.live) agent.setLiveActive(false)
@@ -828,6 +861,8 @@ function registerIpc(
       allowPartial: opts?.allowPartial === true
     })
     if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
+    // 新一轮开播：上一场可能停在「收尾中」状态，复位
+    if (result.ok) resetStopWrap()
     // 0 就绪开播：底稿还在后台合成，开播空隙叫「续写补给」顶上（agent 现场编一段，不冷场）
     if (result.ok && (result.loaded ?? 0) === 0) bus.emit('pool.low', { remaining: 0 }, 'system')
     return result
@@ -1124,6 +1159,8 @@ if (!single) {
       const result = await programPlayback.launch(programId)
       if (!result.ok) return `开播被预检拦下了：${result.error}`
       if (!wasLive) bus!.emit('stream.started', {}, 'agent')
+      // 新一轮开播：上一场可能停在「收尾中」状态，复位
+      resetStopWrap()
       // 0 就绪开播：后台合成还没出活，开播空隙叫「续写补给」顶上
       if ((result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
       return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
@@ -1136,6 +1173,20 @@ if (!single) {
       if (status?.state !== 'running' || status.purpose !== 'live') return
       const programId = storage.getConfig().live.activeProgramId
       if (!programId) return
+      const program = storage.programList().find((p) => p.id === programId) ?? null
+      // 「整轮播完/池见底」决策点读节目 finishMode（docs/10 §7）：stop = 播完即停，不循环重播。
+      // 判定整轮真播完：没有没进过池的（首轮还在播叫「接着播」）、也没有排队/合成中的（内容在路上就等，允许冷场不自旋）。
+      // 即兴（improvised）没有循环概念，天然走不到这（没有底稿可装）。
+      if (
+        program &&
+        program.broadcastMode !== 'improvised' &&
+        program.finishMode === 'stop' &&
+        !programPlayback.hasFreshUtterances(programId) &&
+        !programPlayback.hasIncomingUtterances(programId)
+      ) {
+        finishRoundStop(programId)
+        return
+      }
       if (!programPlayback.hasFreshUtterances(programId) && !programPlayback.atDraftCap(programId)) {
         console.log('[AgentAnchor] 池空了但未到段数上限：不循环重播，等主播续写/合成（允许冷场）')
         return
@@ -1150,6 +1201,7 @@ if (!single) {
       playback?.setRunning(false)
       agent?.setSpeakingPaused(true)
       const wasLive = agent?.status().live ?? false
+      resetStopWrap()
       await agent?.panic()
       if (wasLive) {
         agent?.setLiveActive(false)

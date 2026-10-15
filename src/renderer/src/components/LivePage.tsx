@@ -430,8 +430,9 @@ function ProgramLauncher() {
     if (busy) return
     setBusy(true)
     try {
+      useAppStore.getState().setLoopRunning(false)
       await window.api.agent.stop()
-      toast.message('节目已停止', { description: '池里的存货会继续播完' })
+      toast.message('节目已停止', { description: '播报一并停止，池里的存货保留，下次开播接着用' })
     } finally {
       setBusy(false)
     }
@@ -511,7 +512,7 @@ function ProgramLauncher() {
             variant="outline"
             disabled={busy}
             onClick={() => void stop()}
-            title="结束本场（池里的存货会播完）"
+            title="结束本场：播报停止，池里的存货保留"
           >
             {busy ? <Loader2 className="animate-spin" /> : <Square />}
             结束节目

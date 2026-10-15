@@ -567,6 +567,8 @@ function registerIpc(
     const statusBefore = agent.status()
     const wasRunning = statusBefore.state !== 'stopped'
     resetStopWrap()
+    // 结束节目 = 收播：播放循环一起停（掐当前音频、正在播的退回 ready），存货留在池里不播
+    playback?.setRunning(false)
     await agent.stop()
     // 结束节目：开播态归引擎——就算 agent 早就没起来，这场也算收了
     if (statusBefore.live) agent.setLiveActive(false)

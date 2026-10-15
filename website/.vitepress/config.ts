@@ -4,7 +4,7 @@ export default defineConfig({
   lang: 'zh-CN',
   title: '小云播客坊 YunCast',
   description: '专为不会直播的商家和企业而生——低成本开播：商品宣讲、直播带货、有声书、播客节目，一个工作台全包',
-  appearance: 'force-dark',
+  appearance: 'force-light',
   base: '/',
   head: [['link', { rel: 'icon', href: '/logo.svg' }]],
   themeConfig: {

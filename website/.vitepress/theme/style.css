@@ -1,34 +1,25 @@
-/* Codex 风格：黑白极简，全站强制深色（config.ts appearance: force-dark） */
-:root,
-.dark {
-  --vp-c-brand-1: #fafafa;
-  --vp-c-brand-2: #d4d4d8;
-  --vp-c-brand-3: #a1a1aa;
-  --vp-c-brand-soft: rgba(255, 255, 255, 0.08);
+/* 浅色专业感：白底 + logo 靛蓝做品牌点缀（config.ts appearance: force-light） */
+:root {
+  --vp-c-brand-1: #4f46e5;
+  --vp-c-brand-2: #6366f1;
+  --vp-c-brand-3: #818cf8;
+  --vp-c-brand-soft: rgba(99, 102, 241, 0.12);
 
-  --vp-c-bg: #0a0a0a;
-  --vp-c-bg-alt: #0a0a0a;
-  --vp-c-bg-soft: #111113;
-  --vp-c-bg-elv: #161618;
+  --vp-c-bg: #ffffff;
+  --vp-c-bg-alt: #f6f7fb;
+  --vp-c-bg-soft: #f6f7fb;
+  --vp-c-bg-elv: #ffffff;
 
-  --vp-c-divider: rgba(255, 255, 255, 0.08);
-  --vp-c-gutter: rgba(255, 255, 255, 0.08);
+  --vp-c-divider: rgba(15, 23, 42, 0.08);
+  --vp-c-gutter: rgba(15, 23, 42, 0.08);
 
-  --vp-c-text-1: #fafafa;
-  --vp-c-text-2: #a1a1aa;
-  --vp-c-text-3: #71717a;
-
-  /* 首页按钮（VPButton 用到的地方） */
-  --vp-button-brand-border: rgba(255, 255, 255, 0.2);
-  --vp-button-brand-text: #0a0a0a;
-  --vp-button-brand-bg: #fafafa;
-  --vp-button-brand-hover-border: rgba(255, 255, 255, 0.4);
-  --vp-button-brand-hover-text: #0a0a0a;
-  --vp-button-brand-hover-bg: #e4e4e7;
-  --vp-button-brand-active-border: rgba(255, 255, 255, 0.4);
-  --vp-button-brand-active-text: #0a0a0a;
-  --vp-button-brand-active-bg: #d4d4d8;
+  --vp-c-text-1: #0f172a;
+  --vp-c-text-2: #475569;
+  --vp-c-text-3: #94a3b8;
 }
+
+/* 强制浅色后隐藏导航栏的主题切换按钮 */
+.VPNavBarAppearance { display: none !important; }
 
 /* layout: page 给落地页让出全宽 */
 .VPPage,

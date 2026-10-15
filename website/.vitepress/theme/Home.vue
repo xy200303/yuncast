@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { withBase } from 'vitepress'
 import shotLive from '../../guide/screenshots/live.png'
 import shotPrograms from '../../guide/screenshots/programs.png'
@@ -25,24 +25,102 @@ const showcase = [
   { src: shotStats, title: '数据', desc: '画像 · 摘要 · 用量看板' }
 ]
 
+/* ---------- hero 声波音浪：三层正弦波叠加，logo 三色渐变，鼠标视差 ---------- */
+const waveCanvas = ref<HTMLCanvasElement | null>(null)
+let raf = 0
 let observer: IntersectionObserver | null = null
+let onResize: (() => void) | null = null
+let onPointer: ((e: PointerEvent) => void) | null = null
+
 onMounted(() => {
   observer = new IntersectionObserver(
     (entries) => entries.forEach((e) => e.isIntersecting && e.target.classList.add('in')),
     { threshold: 0.12 }
   )
   document.querySelectorAll('.reveal').forEach((el) => observer!.observe(el))
+
+  const canvas = waveCanvas.value
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+
+  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  let w = 0
+  let h = 0
+  let mx = 0.5 // 鼠标水平位置 0-1，驱动视差
+  let mxTarget = 0.5
+
+  onResize = () => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2)
+    w = canvas.clientWidth
+    h = canvas.clientHeight
+    canvas.width = w * dpr
+    canvas.height = h * dpr
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  }
+  onResize()
+  window.addEventListener('resize', onResize)
+  onPointer = (e) => {
+    mxTarget = e.clientX / window.innerWidth
+  }
+  window.addEventListener('pointermove', onPointer)
+
+  // 三层波：离视线越近振幅越大、透明度越高
+  const layers = [
+    { amp: 22, len: 0.0042, speed: 0.00035, base: 0.42, alpha: 0.10 },
+    { amp: 30, len: 0.0033, speed: 0.0005, base: 0.58, alpha: 0.14 },
+    { amp: 38, len: 0.0026, speed: 0.0007, base: 0.74, alpha: 0.18 }
+  ]
+
+  const grad = () => {
+    const g = ctx.createLinearGradient(0, 0, w, 0)
+    g.addColorStop(0, '#38bdf8')
+    g.addColorStop(0.55, '#6366f1')
+    g.addColorStop(1, '#a855f7')
+    return g
+  }
+
+  const draw = (t: number) => {
+    ctx.clearRect(0, 0, w, h)
+    mx += (mxTarget - mx) * 0.04
+    const g = grad()
+    for (const [i, layer] of layers.entries()) {
+      const parallax = (mx - 0.5) * (i + 1) * 14
+      ctx.beginPath()
+      ctx.moveTo(-4, h + 4)
+      for (let x = -4; x <= w + 4; x += 4) {
+        const y =
+          h * layer.base +
+          Math.sin(x * layer.len + t * layer.speed + i * 2.1) * layer.amp +
+          Math.sin(x * layer.len * 0.5 - t * layer.speed * 0.7) * layer.amp * 0.5 +
+          parallax
+        ctx.lineTo(x, y)
+      }
+      ctx.lineTo(w + 4, h + 4)
+      ctx.closePath()
+      ctx.globalAlpha = layer.alpha
+      ctx.fillStyle = g
+      ctx.fill()
+    }
+    ctx.globalAlpha = 1
+    if (!reduced) raf = requestAnimationFrame(draw)
+  }
+  draw(0)
 })
-onUnmounted(() => observer?.disconnect())
+onUnmounted(() => {
+  observer?.disconnect()
+  cancelAnimationFrame(raf)
+  if (onResize) window.removeEventListener('resize', onResize)
+  if (onPointer) window.removeEventListener('pointermove', onPointer)
+})
 </script>
 
 <template>
   <div class="landing">
     <!-- Hero -->
     <section class="hero">
-      <div class="hero-blobs" aria-hidden="true">
-        <span class="blob b1" /><span class="blob b2" /><span class="blob b3" />
-      </div>
+      <div class="hero-dots" aria-hidden="true" />
+      <canvas ref="waveCanvas" class="hero-waves" aria-hidden="true" />
       <div class="hero-inner">
         <div class="badge reveal">v0.1.1 · Windows / macOS / Linux 同步发布</div>
         <h1 class="hero-title">
@@ -130,30 +208,32 @@ $ npm run dev</code></pre>
 .landing {
   overflow-x: clip;
   color: var(--vp-c-text-1);
-  background: #0a0a0a;
+  background: #ffffff;
 }
 
 /* ---------- Hero ---------- */
 .hero {
   position: relative;
-  padding: 96px 24px 64px;
-  background: transparent;
+  padding: 96px 24px 0;
+  background: linear-gradient(180deg, #f8faff 0%, #ffffff 78%);
+  overflow: hidden;
 }
-.hero-blobs { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.blob {
+.hero-dots {
   position: absolute;
-  border-radius: 50%;
-  filter: blur(110px);
-  opacity: 0.1;
-  background: #ffffff;
-  animation: drift 18s ease-in-out infinite alternate;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(99, 102, 241, 0.14) 1px, transparent 1px);
+  background-size: 26px 26px;
+  mask-image: radial-gradient(ellipse 75% 55% at 50% 32%, #000 30%, transparent 75%);
 }
-.b1 { width: 560px; height: 560px; top: -260px; left: -140px; }
-.b2 { width: 480px; height: 480px; top: -180px; right: -100px; animation-delay: -6s; opacity: 0.07; }
-.b3 { width: 420px; height: 420px; top: 260px; left: 42%; animation-delay: -12s; opacity: 0.05; }
-@keyframes drift {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(60px, 40px) scale(1.12); }
+.hero-waves {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  width: 100%;
+  height: 240px;
+  pointer-events: none;
 }
 
 .hero-inner { position: relative; max-width: 960px; margin: 0 auto; text-align: center; }
@@ -162,9 +242,9 @@ $ npm run dev</code></pre>
   padding: 6px 16px;
   border-radius: 999px;
   font-size: 13px;
-  color: var(--vp-c-text-2);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #4f46e5;
+  background: rgba(99, 102, 241, 0.09);
+  border: 1px solid rgba(99, 102, 241, 0.22);
 }
 .hero-title {
   margin: 28px 0 20px;
@@ -173,7 +253,7 @@ $ npm run dev</code></pre>
   line-height: 1.15;
   letter-spacing: -0.02em;
   border: none;
-  color: #fafafa;
+  color: #0f172a;
 }
 .hero-title .line { display: block; overflow: hidden; }
 .hero-title .word {
@@ -188,7 +268,7 @@ $ npm run dev</code></pre>
   to { transform: translateY(0); opacity: 1; }
 }
 .grad {
-  background: linear-gradient(120deg, #fafafa 20%, #a1a1aa);
+  background: linear-gradient(120deg, #0ea5e9, #4f46e5 55%, #a855f7);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -202,46 +282,58 @@ $ npm run dev</code></pre>
   font-weight: 600;
   font-size: 15px;
   text-decoration: none;
-  transition: transform 0.25s, box-shadow 0.25s, background 0.25s, border-color 0.25s, opacity 0.25s;
+  transition: transform 0.25s, box-shadow 0.25s, background 0.25s, border-color 0.25s;
 }
 .btn.primary {
-  color: #0a0a0a;
-  background: #fafafa;
-  box-shadow: 0 8px 30px rgba(255, 255, 255, 0.12);
+  color: #fff;
+  background: linear-gradient(120deg, #4f46e5, #7c6cf8);
+  box-shadow: 0 10px 30px rgba(99, 102, 241, 0.35);
 }
-.btn.primary:hover { transform: translateY(-2px); background: #e4e4e7; color: #0a0a0a; box-shadow: 0 14px 38px rgba(255, 255, 255, 0.18); }
+.btn.primary:hover { transform: translateY(-2px); color: #fff; box-shadow: 0 16px 40px rgba(99, 102, 241, 0.45); }
 .btn.ghost {
   color: var(--vp-c-text-1);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: #ffffff;
 }
-.btn.ghost:hover { transform: translateY(-2px); border-color: rgba(255, 255, 255, 0.38); color: #fafafa; }
+.btn.ghost:hover { transform: translateY(-2px); border-color: #6366f1; color: #4f46e5; }
 .btn.big { padding: 16px 44px; font-size: 17px; }
 
-.hero-shot { margin-top: 64px; }
+.hero-shot { margin-top: 64px; padding-bottom: 56px; }
 .window {
   border-radius: 14px;
   overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: #111113;
-  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.65);
-  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.35s;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  background: #ffffff;
+  box-shadow: 0 24px 70px rgba(30, 41, 82, 0.16), 0 4px 14px rgba(30, 41, 82, 0.06);
+  transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.5s;
 }
-.window:hover { transform: translateY(-6px) scale(1.005); border-color: rgba(255, 255, 255, 0.2); }
+.window:hover { transform: translateY(-6px) scale(1.005); box-shadow: 0 34px 90px rgba(30, 41, 82, 0.22), 0 6px 18px rgba(30, 41, 82, 0.08); }
 .window-bar {
   display: flex;
   gap: 7px;
   padding: 10px 14px;
-  background: #111113;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: #f8fafc;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.07);
 }
-.window-bar i { width: 10px; height: 10px; border-radius: 50%; background: #3f3f46; }
+.window-bar i { width: 10px; height: 10px; border-radius: 50%; }
+.window-bar i:nth-child(1) { background: #fca5a5; }
+.window-bar i:nth-child(2) { background: #fcd34d; }
+.window-bar i:nth-child(3) { background: #86efac; }
 .window img { display: block; width: 100%; }
-.caption { margin-top: 14px; font-size: 14px; color: var(--vp-c-text-3); }
+.caption {
+  display: inline-block;
+  margin-top: 14px;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  color: var(--vp-c-text-2);
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(6px);
+}
 
 /* ---------- Sections ---------- */
 .section { padding: 110px 24px; max-width: 1152px; margin: 0 auto; }
-.section.alt { max-width: none; background: #0e0e10; }
+.section.alt { max-width: none; background: #f6f7fb; }
 .section.alt > * { max-width: 1152px; margin-left: auto; margin-right: auto; }
 .display {
   font-size: clamp(2rem, 4.6vw, 3.4rem);
@@ -251,10 +343,10 @@ $ npm run dev</code></pre>
   text-align: center;
   margin: 0 auto 56px;
   border: none;
-  color: #fafafa;
+  color: #0f172a;
 }
 .grad-text {
-  background: linear-gradient(120deg, #fafafa 20%, #71717a);
+  background: linear-gradient(120deg, #0ea5e9, #4f46e5 55%, #a855f7);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -264,26 +356,26 @@ $ npm run dev</code></pre>
 .card {
   padding: 26px 22px;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: #111113;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #ffffff;
   transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s, border-color 0.35s;
 }
 .card:hover {
   transform: translateY(-6px);
-  border-color: rgba(255, 255, 255, 0.24);
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55);
+  border-color: rgba(99, 102, 241, 0.4);
+  box-shadow: 0 20px 48px rgba(79, 70, 229, 0.13);
 }
 .card-icon { font-size: 26px; margin-bottom: 12px; }
-.card h3 { margin: 0 0 8px; font-size: 16px; border: none; color: #fafafa; }
+.card h3 { margin: 0 0 8px; font-size: 16px; border: none; color: #0f172a; }
 .card p { margin: 0; font-size: 14px; line-height: 1.8; color: var(--vp-c-text-2); }
 
 /* ---------- Showcase ---------- */
 .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-.shot h3 { margin: 14px 0 4px; border: none; font-size: 16px; color: #fafafa; }
+.shot h3 { margin: 14px 0 4px; border: none; font-size: 16px; color: #0f172a; }
 .shot p { margin: 0; font-size: 14px; color: var(--vp-c-text-2); }
-.window.sm { box-shadow: 0 14px 40px rgba(0, 0, 0, 0.5); }
+.window.sm { box-shadow: 0 12px 36px rgba(30, 41, 82, 0.1); }
 .more { margin-top: 32px; text-align: center; font-size: 14px; color: var(--vp-c-text-3); }
-.more a { color: #fafafa; }
+.more a { color: #4f46e5; }
 @media (max-width: 720px) { .shots { grid-template-columns: 1fr; } }
 
 /* ---------- Dev ---------- */
@@ -292,18 +384,17 @@ $ npm run dev</code></pre>
 .dev-card {
   padding: 28px;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: #111113;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: #ffffff;
 }
-.dev-card h3 { margin-top: 0; border: none; color: #fafafa; }
+.dev-card h3 { margin-top: 0; border: none; color: #0f172a; }
 .dev-card p { color: var(--vp-c-text-2); line-height: 1.9; margin-bottom: 0; }
 .dev-card pre {
   margin: 12px 0 0;
   padding: 18px;
   border-radius: 10px;
-  background: #000000;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  color: #d4d4d8;
+  background: #0f172a;
+  color: #93c5fd;
   font-size: 13.5px;
   line-height: 1.9;
   overflow-x: auto;
@@ -314,8 +405,8 @@ $ npm run dev</code></pre>
   padding: 130px 24px;
   text-align: center;
   background:
-    radial-gradient(640px 320px at 50% 120%, rgba(255, 255, 255, 0.09), transparent),
-    #0a0a0a;
+    radial-gradient(680px 340px at 50% 120%, rgba(99, 102, 241, 0.16), transparent),
+    linear-gradient(180deg, #ffffff, #f4f6fe);
 }
 .final .display { margin-bottom: 40px; }
 .footnote { margin-top: 36px; font-size: 13px; color: var(--vp-c-text-3); }
@@ -332,6 +423,5 @@ $ npm run dev</code></pre>
 .reveal.d3 { transition-delay: 0.36s; }
 @media (prefers-reduced-motion: reduce) {
   .reveal, .hero-title .word { opacity: 1 !important; transform: none !important; animation: none !important; }
-  .blob { animation: none; }
 }
 </style>

@@ -3,7 +3,7 @@ import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { withBase } from 'vitepress'
 import DotField from './components/DotField.vue'
 import SignalStrip from './components/SignalStrip.vue'
-import { EASE, initSmoothScroll, loadMotion, prefersReduced } from './motion/engine'
+import { EASE, hasFinePointer, initSmoothScroll, loadMotion, prefersReduced } from './motion/engine'
 import shotLive from '../../guide/screenshots/live.png'
 import shotPrograms from '../../guide/screenshots/programs.png'
 import shotAnchors from '../../guide/screenshots/anchors.png'
@@ -109,7 +109,8 @@ const localFirst = [
   {
     icon: ICONS.noAccount,
     t: '没有账号，也没有我们的服务器',
-    d: '下载即用，不注册、不登录、不收集遥测。'
+    d: '下载即用，不注册、不登录、不收集遥测。',
+    chips: ['无账号', '无登录', '无遥测']
   },
   {
     icon: ICONS.drive,
@@ -121,7 +122,12 @@ const localFirst = [
     t: '云 API 只走你配的 Key',
     d: 'LLM 与 TTS 直连服务商，用多少、花多少在「统计 → 用量」里按节目可查。'
   },
-  { icon: ICONS.code, t: '源码开放，可自行核对', d: 'MIT 许可，主进程与界面都在同一个仓库里，没有黑盒组件。' }
+  {
+    icon: ICONS.code,
+    t: '源码开放，可自行核对',
+    d: 'MIT 许可，主进程与界面都在同一个仓库里，没有黑盒组件。',
+    chips: ['主进程 / 界面同仓', '无黑盒组件', '可自行构建']
+  }
 ]
 
 /** 三种播出方式：对应「合成策略 / 播放策略」，写法与节目编辑弹窗里的选项一致 */
@@ -239,6 +245,7 @@ const faqs = [
 
 /* ---------- 动效：滚入 / 数字滚动 / 指示器 / 平滑滚动 ---------- */
 const heroEl = ref<HTMLElement | null>(null)
+const shotEl = ref<HTMLElement | null>(null)
 const tabsEl = ref<HTMLElement | null>(null)
 let stopScroll: (() => void) | null = null
 const teardowns: (() => void)[] = []
@@ -399,6 +406,32 @@ onMounted(async () => {
     teardowns.push(scroll(animate(field, { y: [0, -64] }, { ease: 'linear' }), { target: hero, offset: ['start start', 'end start'] }))
   }
 
+  /* 产品窗：指针倾斜（幅度很小、弹簧跟随，回到 0 时也走弹簧，不会突然弹回去） */
+  const frame = shotEl.value
+  if (frame && !reduced && hasFinePointer()) {
+    let ctrl: { stop: () => void } | null = null
+    const aim = (rx: number, ry: number, stiffness = 150) => {
+      ctrl?.stop()
+      ctrl = animate(frame, { rotateX: rx, rotateY: ry }, { type: 'spring', stiffness, damping: 22 })
+    }
+    const onMove = (e: PointerEvent) => {
+      const r = frame.getBoundingClientRect()
+      const nx = (e.clientX - (r.left + r.width / 2)) / (r.width / 2)
+      const ny = (e.clientY - (r.top + r.height / 2)) / (r.height / 2)
+      const cx = Math.max(-1, Math.min(1, nx))
+      const cy = Math.max(-1, Math.min(1, ny))
+      aim(-cy * 2.4, cx * 3.2)
+    }
+    const reset = () => aim(0, 0, 190)
+    window.addEventListener('pointermove', onMove, { passive: true })
+    frame.addEventListener('pointerleave', reset)
+    teardowns.push(() => {
+      ctrl?.stop()
+      window.removeEventListener('pointermove', onMove)
+      frame.removeEventListener('pointerleave', reset)
+    })
+  }
+
   /* FAQ：把 <details> 的原生瞬开改成高度 + 透明度过渡 */
   if (!reduced) {
     const items = Array.from(document.querySelectorAll<HTMLDetailsElement>('.faq-item'))
@@ -509,12 +542,18 @@ onUnmounted(() => {
         </div>
 
         <div class="hero-shot">
-          <div class="window">
-            <div class="window-bar"><i /><i /><i /><span class="window-url">小云播客坊 YunCast</span></div>
-            <video class="hero-video" src="/demo-loop.mp4" poster="/demo-poster.jpg" autoplay muted loop playsinline />
-            <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放完整演示">
-              <span v-html="ICONS.play" />
-            </button>
+          <div ref="shotEl" class="shot-frame">
+            <div class="window">
+              <div class="window-bar"><i /><i /><i /><span class="window-url">小云播客坊 YunCast</span></div>
+              <video class="hero-video" src="/demo-loop.mp4" poster="/demo-poster.jpg" autoplay muted loop playsinline />
+              <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放完整演示">
+                <span v-html="ICONS.play" />
+              </button>
+            </div>
+            <!-- 细线标注：把界面上的三个位置直接指出来，比下面的说明文字更有用 -->
+            <span class="call call--left call-a"><em>四档话术池</em><i /></span>
+            <span class="call call--left call-b"><em>吸底播放条</em><i /></span>
+            <span class="call call--right call-c"><i /><em>导演面板</em></span>
           </div>
           <p class="caption">
             直播台：左栏「接下来 / 评论流 / 事件流」，底部吸底播放条，右下角唤起导演面板
@@ -546,6 +585,7 @@ onUnmounted(() => {
     <!-- ============ 三条主线：写稿 / 播出 / 互动 ============ -->
     <section class="section tracks-section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>01</i>三条主线</span>
         <h2 class="display reveal">写稿 · 播出 · 互动，<span>三件事各有一套界面</span></h2>
         <p class="lead reveal d1">点开看每条主线具体能做什么。</p>
         <div ref="tabsEl" class="tabs reveal d2" role="tablist">
@@ -585,6 +625,7 @@ onUnmounted(() => {
     <!-- ============ 流水线 ============ -->
     <section class="section pipeline-section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>02</i>一条流水线</span>
         <h2 class="display reveal">一条流水线，<span>从写稿到复盘</span></h2>
         <p class="lead reveal d1">每一步都有对应的界面，改哪一步都不会动到已经做好的部分。</p>
         <ol class="pipeline">
@@ -607,19 +648,23 @@ onUnmounted(() => {
     <!-- ============ 本地优先 ============ -->
     <section class="section alt">
       <div class="inner">
+        <span class="eyebrow reveal"><i>03</i>免费开源</span>
         <h2 class="display reveal">免费、开源、<span>数据在本机</span></h2>
         <p class="lead reveal d1">软件本身 MIT 免费，运行成本只有你自配的语言模型与语音合成，用量在应用里可查。</p>
-        <div class="grid two">
+        <div class="bento">
           <article
             v-for="(l, i) in localFirst"
             :key="l.t"
             v-lift="4"
             class="card reveal"
-            :style="{ transitionDelay: (i % 2) * 70 + 'ms' }"
+            :style="{ transitionDelay: i * 60 + 'ms' }"
           >
             <div class="card-icon" v-html="l.icon" />
             <h3>{{ l.t }}</h3>
             <p>{{ l.d }}</p>
+            <ul v-if="l.chips" class="card-chips">
+              <li v-for="c in l.chips" :key="c">{{ c }}</li>
+            </ul>
           </article>
         </div>
         <p class="more reveal">
@@ -631,6 +676,7 @@ onUnmounted(() => {
     <!-- ============ 三种播出方式 ============ -->
     <section class="section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>04</i>播出方式</span>
         <h2 class="display reveal">三种播出方式，<span>先想清楚再开播</span></h2>
         <p class="lead reveal d1">节目上选一次，之后合成与播放都按它来。</p>
         <div class="modes">
@@ -664,6 +710,7 @@ onUnmounted(() => {
     <!-- ============ 演示视频 ============ -->
     <section id="demo" class="section alt video-section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>05</i>完整演示</span>
         <h2 class="display reveal">完整演示</h2>
         <p class="lead reveal d1">
           3 分 07 秒，全程真实操作：让导演写稿、底稿库与合成声音、人工播报真实合成，最后真的开播出声。
@@ -691,6 +738,7 @@ onUnmounted(() => {
     <!-- ============ 界面 ============ -->
     <section class="section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>06</i>界面一览</span>
         <h2 class="display reveal">界面<span>一览</span></h2>
         <div class="shots">
           <figure v-for="(s, i) in showcase" :key="s.title" class="shot reveal" :style="{ transitionDelay: (i % 2) * 80 + 'ms' }">
@@ -710,6 +758,7 @@ onUnmounted(() => {
     <!-- ============ 对照 ============ -->
     <section class="section alt">
       <div class="inner">
+        <span class="eyebrow reveal"><i>07</i>前后对比</span>
         <h2 class="display reveal">以前怎么做，<span>现在谁做</span></h2>
         <div class="table-wrap reveal d1">
           <table class="compare">
@@ -731,6 +780,7 @@ onUnmounted(() => {
     <!-- ============ 技术规格 ============ -->
     <section class="section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>08</i>技术规格</span>
         <h2 class="display reveal">技术规格</h2>
         <p class="lead reveal d1">给要评估接入的同学：下面是实际支持的协议、服务与落盘位置。</p>
         <div class="table-wrap reveal d2">
@@ -749,6 +799,7 @@ onUnmounted(() => {
     <!-- ============ 开源 ============ -->
     <section class="section alt">
       <div class="inner">
+        <span class="eyebrow reveal"><i>09</i>本地运行</span>
         <h2 class="display reveal">开源，<span>本地跑</span></h2>
         <div class="dev-grid">
           <div class="dev-card reveal">
@@ -774,6 +825,7 @@ $ npm run dev</code></pre>
     <!-- ============ 更新日志 ============ -->
     <section class="section">
       <div class="inner">
+        <span class="eyebrow reveal"><i>10</i>持续迭代</span>
         <h2 class="display reveal">在持续迭代</h2>
         <p class="lead reveal d1">
           每个版本都发布三端安装包与更新说明，应用内「设置 → 关于」可以直接检查更新。
@@ -805,6 +857,7 @@ $ npm run dev</code></pre>
     <!-- ============ FAQ（与 JSON-LD 一致） ============ -->
     <section class="section faq-section alt">
       <div class="inner narrow">
+        <span class="eyebrow reveal"><i>11</i>常见问题</span>
         <h2 class="display reveal">常见问题</h2>
         <div class="faq-list">
           <details
@@ -891,6 +944,31 @@ $ npm run dev</code></pre>
 }
 /* 标题里的重点短语用品牌色点出来（实色，不做渐变字） */
 .display > span { color: var(--yc-accent); }
+
+/* 章节头：编号眉标 + 左对齐标题/说明。
+   整页都居中是最像模板的做法，所以正文各节改成左对齐；
+   首屏与收尾保持居中，形成"首尾收拢、中间松散"的节奏 */
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 14px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  color: var(--vp-c-text-3);
+}
+.eyebrow i { font-style: normal; color: var(--yc-accent); }
+.section .inner > .display {
+  text-align: left;
+  font-size: clamp(23px, 2.6vw, 33px);
+}
+.section .inner > .lead {
+  text-align: left;
+  max-width: 620px;
+  margin: 0 0 48px;
+}
 .lead {
   text-align: center;
   color: var(--vp-c-text-2);
@@ -1054,6 +1132,32 @@ $ npm run dev</code></pre>
 
 /* 两列卡片（本地优先那节） */
 .grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* bento：大小格交错，破掉"几张等大卡"的均质感。
+   4 格排成 3 列 —— 第一格与第四格各跨两列，视觉重心左右交替 */
+.bento {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.bento > :nth-child(1),
+.bento > :nth-child(4) { grid-column: span 2; }
+.card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.card-chips li {
+  padding: 3px 8px;
+  border: 1px solid var(--yc-line);
+  border-radius: var(--yc-radius-xs);
+  font-family: var(--vp-font-family-mono);
+  font-size: 11.5px;
+  color: var(--vp-c-text-3);
+}
 
 /* ---------- 更新日志 ---------- */
 .releases {
@@ -1229,6 +1333,7 @@ $ npm run dev</code></pre>
 .hero-shot {
   position: relative;
   margin-top: 56px;
+  perspective: 1600px;
   animation: yc-window-in 1s cubic-bezier(0.16, 1, 0.3, 1) both;
   animation-delay: 0.86s;
 }
@@ -1242,6 +1347,49 @@ $ npm run dev</code></pre>
     transform: none;
   }
 }
+.shot-frame { position: relative; }
+/* 标注：极小号等宽字 + 1px 引线 + 端点圆点 */
+.call {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--vp-font-family-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  color: var(--vp-c-text-3);
+  white-space: nowrap;
+  opacity: 0;
+  animation: yc-fade-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+.call em {
+  font-style: normal;
+  padding: 3px 7px;
+  border-radius: var(--yc-radius-xs);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--yc-line);
+}
+.call i {
+  position: relative;
+  display: block;
+  width: 58px;
+  height: 1px;
+  background: var(--yc-line-strong);
+}
+.call i::after {
+  content: '';
+  position: absolute;
+  top: -2.5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--yc-accent);
+}
+.call--left i::after { right: 0; }
+.call--right i::after { left: 0; }
+.call-a { left: 26px; top: 21%; animation-delay: 1.3s; }
+.call-b { left: 30%; bottom: 13%; animation-delay: 1.44s; }
+.call-c { right: 26px; top: 15%; animation-delay: 1.58s; }
 .window {
   position: relative;
   border-radius: var(--yc-radius-lg);
@@ -1568,12 +1716,18 @@ table.specs tr:last-child th, table.specs tr:last-child td { border-bottom: none
 @media (max-width: 860px) {
   .modes { grid-template-columns: 1fr; }
   .grid.two { grid-template-columns: 1fr; }
+  .bento { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .bento > :nth-child(3) { grid-column: span 2; }
+  .bento > :nth-child(4) { grid-column: span 1; }
   .notice-text { white-space: normal; }
   .track-panel { padding: 22px 20px; }
   .dev-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 680px) {
-  .grid, .shots, .pipeline { grid-template-columns: 1fr; }
+  .grid, .shots, .pipeline, .bento { grid-template-columns: 1fr; }
+  .bento > :nth-child(1),
+  .bento > :nth-child(3),
+  .bento > :nth-child(4) { grid-column: auto; }
   .pipe { border-left: none; border-top: 1px solid var(--yc-line-soft); }
   .pipe:first-child { border-top: none; }
   .hero { padding-top: 68px; }

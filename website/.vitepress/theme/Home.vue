@@ -346,7 +346,7 @@ onUnmounted(() => {
           <a class="btn primary" :href="withBase('/download')">下载安装包</a>
           <button class="btn ghost" type="button" @click="openVideo">
             <span class="btn-ico" v-html="ICONS.play" />
-            看演示（1 分 52 秒）
+            看演示（3 分 07 秒）
           </button>
           <a class="btn ghost" :href="withBase('/guide/quickstart')">使用文档</a>
         </div>
@@ -437,7 +437,7 @@ onUnmounted(() => {
       <div class="inner">
         <h2 class="display reveal">完整演示</h2>
         <p class="lead reveal d1">
-          1 分 52 秒，从直播台、导演面板，到节目配置、底稿库、合成声音与逐页浏览。
+          3 分 07 秒，全程真实操作：让导演写稿、底稿库与合成声音、人工播报真实合成，最后真的开播出声。
         </p>
         <div class="video-wrap reveal d2">
           <video
@@ -451,8 +451,9 @@ onUnmounted(() => {
           />
         </div>
         <ul class="video-notes reveal d3">
-          <li>配音由应用内的语音合成生成（用的是演示主播的嗓音），画面为真实操作录制</li>
-          <li>演示里的对话、节目与数据都是样例，用来展示界面布局与交互</li>
+          <li>旁白与播出音频都来自应用内的语音合成（演示主播的嗓音），界面为真实操作录制</li>
+          <li>最后一段是真实开播：池子里的内容按四档优先级依次播出，播完手动作收</li>
+          <li>演示里的底稿、节目与评论是样例数据，用来展示流程</li>
           <li>想看每一步的细节说明，翻 <a :href="withBase('/guide/interface')">界面一览</a></li>
         </ul>
       </div>
@@ -578,7 +579,7 @@ $ npm run dev</code></pre>
         <header>
           <div>
             <strong>小云播客坊 · 功能演示</strong>
-            <span>1 分 52 秒 · 含配音</span>
+            <span>3 分 07 秒 · 含配音</span>
           </div>
           <button type="button" class="modal-close" aria-label="关闭" @click="closeVideo">✕</button>
         </header>

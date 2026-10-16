@@ -35,8 +35,8 @@
 <a href="https://yuncast.xyun.dev/#demo"><img src="docs/media/demo.gif" alt="小云播客坊功能演示" width="100%" /></a>
 
 <p align="center">
-  <a href="https://yuncast.xyun.dev/#demo"><strong>▶ 看完整演示（1 分 52 秒，含配音）</strong></a><br>
-  <sub>配音由应用内的语音合成生成；演示里的对话与节目是样例数据</sub>
+  <a href="https://yuncast.xyun.dev/#demo"><strong>▶ 看完整演示（3 分 07 秒，含配音）</strong></a><br>
+  <sub>全程真实操作：让导演写稿 → 底稿库与合成声音 → 人工播报真实合成 → 真的开播出声；旁白与播出音频都来自应用内的语音合成</sub>
 </p>
 
 ---

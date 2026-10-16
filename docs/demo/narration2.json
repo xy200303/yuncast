@@ -1,0 +1,52 @@
+[
+  {
+    "at": 2.0,
+    "text": "小云播客坊，一个桌面工作台，把写稿、配音、播出、控场、互动串成一条流水线。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\7d\\7db513b1cc48001b3f802f8533207ea8f4fb5b6e1a65a55107779767b5e44de8.mp3"
+  },
+  {
+    "at": 12.0,
+    "text": "左边是直播间：评论、礼物、进场先进事件流，去重之后按批喂给主播。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\21\\21df1b2847294f4ec4dcf48f9e7d3db9adcdf4627679675bf2cb685c2fe5d5d3.mp3"
+  },
+  {
+    "at": 22.0,
+    "text": "右下角唤起导演。这个面板可以停靠，也能拖成悬浮窗，一边看页面一边对话。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\c4\\c45703d22894efa6278de7c53ec6eeb4346bb7ff34a385a3de4dc6ab18b9bc59.mp3"
+  },
+  {
+    "at": 33.0,
+    "text": "让它写稿：说一句「给这一场写三条开场话术」，它自己查资料、按场景写，过程都留在时间线上。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\94\\94d0b5ce385816e357bba07c0956d8c5646c099fe1bcc17ff267543fc40ed38b.mp3"
+  },
+  {
+    "at": 52.0,
+    "text": "写好的底稿进底稿库，逐条能改、能重合成，也能导入外部录音。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\e6\\e6359821990f83d7c876fcb2c1591f8d9a44f05451174778830939760199c41a.mp3"
+  },
+  {
+    "at": 64.0,
+    "text": "合成前先选声音：接入、模型、音色三级，选完冻结进每一段音频。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\ae\\ae01e23b2428c3b9c2d5fbc2c18b3a57271bf378f61cfe9bd33054495e6f6ebf.mp3"
+  },
+  {
+    "at": 90.0,
+    "text": "想临时插一句话，人工播报选好音色丢进池子里，它会合成好，按优先级排队播出。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\01\\0186d06f127ccb337a7b9bdff1fdc22bef33ba3a5115d81c2b71a56f9fa19a6e.mp3"
+  },
+  {
+    "at": 108.0,
+    "text": "准备好了就能开播：先过预检，再出声。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\8e\\8e316e5a4002bf7b4c24e86241d89eabad85c7c22807cd1b6a1329c1d0130699.mp3"
+  },
+  {
+    "at": 147.0,
+    "text": "结束后会留档：逐条话术、评论、事件和观众画像，用量按节目归组统计。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\01\\0154078f57a7cf9b459a5dd81b9d0fce5bd56edb12da0c62c43148fa2d99951a.mp3"
+  },
+  {
+    "at": 162.0,
+    "text": "软件开源免费，语言模型和语音合成用你自己的 Key，其余数据都留在本机。感谢观看。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\56\\56ef5bc06bd43d0f0b04d49f6881aaf869d256990c8f9bad9adb9a7f481eea6d.mp3"
+  }
+]

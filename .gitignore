@@ -27,3 +27,9 @@ docs/demo/frames/
 docs/demo/seq/
 docs/demo/frames.json
 docs/demo/*.mp4
+docs/demo/frames2/
+docs/demo/seq2/
+docs/demo/frame-t0.json
+docs/demo/marks.json
+docs/demo/utterances-before.json
+docs/demo/utterances-new.json

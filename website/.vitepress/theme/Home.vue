@@ -23,7 +23,6 @@ const ICONS = {
   monitor: svg('<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>'),
   play: svg('<path d="M6 4.5v15l13-7.5Z"/>'),
   arrow: svg('<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>'),
-  check: svg('<path d="M20 6 9 17l-5-5"/>'),
   noAccount: svg('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="17" x2="22" y1="8" y2="13"/><line x1="22" x2="17" y1="8" y2="13"/>'),
   drive: svg('<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>'),
   key: svg('<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>'),
@@ -618,16 +617,10 @@ onUnmounted(() => {
         rel="noreferrer"
       >
         <span class="notice-tag">v0.1.3</span>
-        <span class="notice-text">
-          刚发布：工作台重做、声音合成统一入口、时间线性能 18.5 → 6.0 次/秒 · 查看更新说明
-        </span>
+        <span class="notice-text">刚发布：工作台重做、声音合成统一入口 · 查看更新说明</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">
-        <div class="badge reveal">
-          <span class="badge-dot" />
-          v0.1.3 · Windows / macOS（Apple 芯片）/ Linux
-        </div>
         <h1 class="hero-title">
           <span v-for="(line, li) in heroLines" :key="li" class="line">
             <span
@@ -640,9 +633,7 @@ onUnmounted(() => {
           </span>
         </h1>
         <p class="hero-sub reveal d1">
-          写稿、配音、播出、控场、互动，一条流水线都在一个桌面工作台里。<br />
-          声音能克隆成店家自己的，成品音频可以整场导出。<br />
-          直播带货、商品宣讲、有声书、播客，同一套流程。
+          写稿、配音、播出、控场、互动，一条流水线都在一个桌面工作台里。
         </p>
         <div class="hero-cta reveal d2">
           <a v-press class="btn primary" :href="withBase('/download')">
@@ -670,16 +661,7 @@ onUnmounted(() => {
             <span class="call call--left call-b"><em>吸底播放条</em><i /></span>
             <span class="call call--right call-c"><i /><em>导演面板</em></span>
           </div>
-          <p class="caption">
-            直播台：左栏「接下来 / 评论流 / 事件流」，底部吸底播放条，右下角唤起导演面板
-          </p>
         </div>
-
-        <ul class="hero-facts">
-          <li><span v-html="ICONS.check" />MIT 开源，无账号、无服务端</li>
-          <li><span v-html="ICONS.check" />LLM 与 TTS 直连你自配的云 API</li>
-          <li><span v-html="ICONS.check" />数据全部存在本机</li>
-        </ul>
       </div>
       <SignalStrip class="hero-signal" :height="72" :lines="3" />
     </section>
@@ -1428,27 +1410,7 @@ $ npm run dev</code></pre>
 }
 .hero-inner { position: relative; max-width: 1020px; margin: 0 auto; text-align: center; }
 /* 首屏信号带：出血到两侧，做 hero 的收口 */
-.hero-signal { margin: 34px -24px 0; width: calc(100% + 48px); }
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border-radius: var(--yc-radius-xs);
-  font-size: 12.5px;
-  color: var(--vp-c-text-2);
-  background: #fff;
-  border: 1px solid var(--yc-line);
-  font-variant-numeric: tabular-nums;
-}
-.badge-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #16a34a;
-  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.14);
-}
+.hero-signal { margin: 56px -24px 0; width: calc(100% + 48px); }
 
 .hero-title {
   font-family: var(--font-display);
@@ -1456,7 +1418,7 @@ $ npm run dev</code></pre>
   font-weight: 540;
   line-height: 1.2;
   letter-spacing: -0.01em;
-  margin: 30px 0 0;
+  margin: 10px 0 0;
 }
 /* 每行一个裁切盒：字从下方升上来，被行盒切住 */
 .hero-title .line {
@@ -1563,7 +1525,7 @@ $ npm run dev</code></pre>
 }
 .btn:hover .arw { transform: translateX(3px); }
 .btn-ico { display: inline-flex; width: 15px; height: 15px; }
-.btn-ico :deep(svg), .btn .arw :deep(svg), .hero-facts :deep(svg), .card-icon :deep(svg), .pipe-icon :deep(svg), .dev-list :deep(svg) {
+.btn-ico :deep(svg), .btn .arw :deep(svg), .card-icon :deep(svg), .pipe-icon :deep(svg), .dev-list :deep(svg) {
   width: 100%;
   height: 100%;
   stroke-width: 1.8;
@@ -1671,23 +1633,6 @@ $ npm run dev</code></pre>
 }
 .play-hint:hover { background: #1a1a19; }
 .play-hint :deep(svg) { width: 22px; height: 22px; fill: currentColor; stroke: none; }
-.caption { margin-top: 16px; font-size: 13px; color: var(--vp-c-text-3); }
-
-.hero-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 26px;
-  justify-content: center;
-  margin: 30px 0 0;
-  padding: 0 0 28px;
-  list-style: none;
-  font-size: 13.5px;
-  color: var(--vp-c-text-2);
-  animation: yc-fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
-  animation-delay: 1s;
-}
-.hero-facts li { display: inline-flex; align-items: center; gap: 6px; }
-.hero-facts li span { display: inline-flex; width: 14px; height: 14px; color: var(--yc-accent); }
 
 /* ---------- 流水线：一条五格的流程带，靠竖 hairline 分隔 ---------- */
 /* 上方导轨：进入视口时线从左画出来，五个节点依次点亮（由动效引擎驱动） */
@@ -2009,7 +1954,6 @@ table.specs tr:last-child th, table.specs tr:last-child td { border-bottom: none
   .pipe { border-left: none; border-top: 1px solid var(--yc-line-soft); }
   .pipe:first-child { border-top: none; }
   .hero { padding-top: 68px; }
-  .hero-facts { padding-bottom: 48px; }
   .stat { border-left: none; }
   .stat:nth-child(n + 2) { border-top: 1px solid var(--yc-line-soft); }
   .stat strong { font-size: 21px; }
@@ -2024,7 +1968,6 @@ table.specs tr:last-child th, table.specs tr:last-child td { border-bottom: none
   .hero-title .ch,
   .hero-sub,
   .hero-cta,
-  .hero-facts,
   .hero-shot,
   .call { animation: none; opacity: 1; transform: none; }
 }

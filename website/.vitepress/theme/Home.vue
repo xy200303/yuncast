@@ -9,66 +9,116 @@ import shotVoices from '../../guide/screenshots/voices.png'
 import shotSessions from '../../guide/screenshots/sessions.png'
 import shotStats from '../../guide/screenshots/stats.png'
 
-/* lucide 风格线性图标（stroke, 24x24 viewBox），v-html 注入 svg 内部 */
-const svg = (inner: string) => inner
+/* lucide 风格线性图标（stroke, 24x24 viewBox）；v-html 需要完整 svg 外壳，只给内部路径点不渲染 */
+const svg = (inner: string) =>
+  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`
 const ICONS = {
   pen: svg('<path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>'),
   waveform: svg('<path d="M2 13a2 2 0 0 0 2-2V7a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0V4a2 2 0 0 1 4 0v13a2 2 0 0 0 4 0v-4a2 2 0 0 1 2-2"/>'),
-  layers: svg('<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>'),
   message: svg('<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/><path d="M8 10h.01"/><path d="M12 10h.01"/><path d="M16 10h.01"/>'),
-  sliders: svg('<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>'),
-  download: svg('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>'),
   chart: svg('<path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>'),
-  receipt: svg('<path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1Z"/><path d="M8 7h8"/><path d="M8 11h8"/><path d="M8 15h5"/>'),
-  plug: svg('<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v2a6 6 0 0 1-12 0V8Z"/>'),
-  lock: svg('<rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>'),
   monitor: svg('<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>'),
   play: svg('<path d="M6 4.5v15l13-7.5Z"/>'),
   arrow: svg('<path d="M5 12h14"/><path d="m13 6 6 6-6 6"/>'),
-  check: svg('<path d="M20 6 9 17l-5-5"/>')
+  check: svg('<path d="M20 6 9 17l-5-5"/>'),
+  noAccount: svg('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="17" x2="22" y1="8" y2="13"/><line x1="22" x2="17" y1="8" y2="13"/>'),
+  drive: svg('<line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/>'),
+  key: svg('<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/>'),
+  code: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>')
 }
 
-const features = [
+/** 首屏数字条：只放本仓库可验证的实测值，不编造"用户数 / 客户 logo"这类背书 */
+const stats = [
+  { value: '712 ms', label: '单句合成实测延迟', note: '阿里云百炼 qwen3-tts-flash，本机实测' },
+  { value: '8 段 · 约 4 分钟', label: '一次预合成的量', note: '点合成前先报段数与预估时长' },
+  { value: '6 次/秒', label: '状态广播合并上限', note: '优化前 18.5 次/秒；流式期间长任务 0' },
+  { value: '0 服务端', label: '数据只落本机', note: '除你自配的云 API 外不外发任何数据' }
+]
+
+/** 三条主线：写稿 / 播出 / 互动。每条 = 一句主张 + 四条能力 + 一个文档出口 */
+const tracks = [
   {
-    icon: ICONS.pen,
-    title: '按剧本写整版底稿',
-    desc: '绑好剧本与知识范围，说一句「给这场写稿」，它按场景逐段写、查商品资料核对价格口径，产出的底稿进底稿库，你可以逐条改。'
+    id: 'write',
+    name: '写稿',
+    lead: '绑好剧本与知识范围，说一句「给这场写稿」，它按场景逐段写、查商品资料核对价格，产出进底稿库等你过目。',
+    to: '/guide/quickstart',
+    toText: '看写稿流程',
+    items: [
+      { t: '按剧本分幕', d: '开场、痛点、讲解、收尾各写各的，不用你交代结构' },
+      { t: '报价必须查证', d: '价格只认知识库核过的口径，查不到会明说而不是编' },
+      { t: '逐条可改', d: '改一条只影响这一条，已经合成好的音频不会被动' },
+      { t: '过程留痕', d: '思考过程、调用过哪些工具，时间线上都看得见' }
+    ]
   },
   {
-    icon: ICONS.waveform,
-    title: '声音克隆与逐段配音',
-    desc: '火山引擎、阿里云百炼、火山播客专用模型三种 TTS 走同一套选择器：接入 → 模型 → 音色。克隆店家嗓音要 10–30 秒干净人声。'
+    id: 'play',
+    name: '播出',
+    lead: '三种播出方式覆盖不同场景，声音在合成那一刻定死，之后换主播、改人设都不会改写已经出好的音频。',
+    to: '/guide/concepts',
+    toText: '看播出机制',
+    items: [
+      { t: '现场发挥', d: '没有底稿，说一句合成一句，像真人一样接话' },
+      { t: '边播边准备', d: '边播边合成，随时改后面的稿，已播的不受影响' },
+      { t: '全部做好再播', d: '整本合成完，过门禁才开播，缺项不静默跳过' },
+      { t: '四档话术池', d: '打断 / 下一条 / 常规 / 垫底，人工播报可以插队' }
+    ]
   },
   {
-    icon: ICONS.layers,
-    title: '按场景挑播出方式',
-    desc: '现场发挥（无稿纯互动）、边播边准备（边播边合成，随时改后面的稿）、全部做好再播（整本合成，过门禁才开播）。'
-  },
-  {
-    icon: ICONS.message,
-    title: '评论按批喂给主播',
-    desc: '同人同内容 30 秒去重、按观众归组、5–30 秒自适应聚合、每分钟最多唤醒 6 次。回一条还是回一批，由主播自己判断。'
-  },
-  {
-    icon: ICONS.sliders,
-    title: '四档话术池与手动接管',
-    desc: '打断 / 下一条 / 常规 / 垫底四条优先级，人工播报插队；暂停、跳过、急停声音、主音量都在吸底播放条上。'
-  },
-  {
-    icon: ICONS.download,
-    title: '整场导出成音频',
-    desc: '预制节目导出 MP3/WAV，分章或合并、响度归一，直接传喜马拉雅、小宇宙；场次记录里也能导出某一整场。'
-  },
-  {
-    icon: ICONS.chart,
-    title: '用量与复盘',
-    desc: '统计页按节目归组 LLM tokens 与 TTS 字符，30 天趋势；场次记录留档每场逐条话术、评论、事件与观众画像。'
-  },
-  {
-    icon: ICONS.plug,
-    title: '平台无关，接口解耦',
-    desc: '主程序不带平台 SDK：评论由独立的连接器小软件经本机 MCP 接入，声音经虚拟声卡或推流进入任意直播软件。'
+    id: 'chat',
+    name: '互动',
+    lead: '评论先进事件流去重、归组、按批交给主播；回一条还是回一批由它判断，拿不准的事会递一张请示卡给你。',
+    to: '/guide/interface',
+    toText: '看界面说明',
+    items: [
+      { t: '先聚合再给主播', d: '30 秒同人同内容去重、5–30 秒自适应聚合、每分钟最多 6 次唤醒' },
+      { t: '自己判断回不回', d: '不值得回的话就不回，不会为了热闹硬刷话' },
+      { t: '人工随时插播', d: '人工播报可插为下一条，打断优先级最高的是它' },
+      { t: '拿不准就问你', d: '价格、承诺、违规风险这类，弹请示卡等你点一下' }
+    ]
   }
+]
+
+/** 更新日志：只写仓库里查得到的事实 */
+const changelog = [
+  {
+    v: 'v0.1.3',
+    when: '最新',
+    items: [
+      '工作台重做：吸底播放条、可停靠/悬浮的导演面板、场次记录与统计拆页',
+      '声音统一到一个选择器，合成那一刻选定并冻结进每段产物',
+      '时间线与流式的性能改造：状态广播 18.5 → 6.0 次/秒，长任务 0'
+    ]
+  },
+  {
+    v: 'v0.1.2',
+    when: '修复版',
+    items: ['结束节目会同时停掉播放循环，存货保留但不再续播', 'Debian 包元数据补全']
+  },
+  {
+    v: 'v0.1.1',
+    when: '首个公开版',
+    items: ['三端发布；写稿、合成、播出、评论互动跑通', '节目音频导出与用量看板']
+  }
+]
+
+/** 本地优先：把"数据在哪"讲清楚，比喊口号有用 */
+const localFirst = [
+  {
+    icon: ICONS.noAccount,
+    t: '没有账号，也没有我们的服务器',
+    d: '下载即用，不注册、不登录、不收集遥测。'
+  },
+  {
+    icon: ICONS.drive,
+    t: '数据只落本机',
+    d: '剧本、底稿、音频、评论记录都在用户数据目录；卸载不会删，整目录拷走即备份。'
+  },
+  {
+    icon: ICONS.key,
+    t: '云 API 只走你配的 Key',
+    d: 'LLM 与 TTS 直连服务商，用多少、花多少在「统计 → 用量」里按节目可查。'
+  },
+  { icon: ICONS.code, t: '源码开放，可自行核对', d: 'MIT 许可，主进程与界面都在同一个仓库里，没有黑盒组件。' }
 ]
 
 /** 三种播出方式：对应「合成策略 / 播放策略」，写法与节目编辑弹窗里的选项一致 */
@@ -169,6 +219,18 @@ const faqs = [
   {
     q: '数据会上传到云端吗？',
     a: '不会。除了调用你自己配置的 LLM / TTS 云 API，其余数据（剧本、底稿、音频、评论记录、用量）都存在本机用户数据目录里，软件没有服务端，也不收集遥测。'
+  },
+  {
+    q: '平台会不会判定成录播、违规？',
+    a: '判定规则在平台，不在软件。软件这边能保证的是：声音由模型实时合成而不是播录音、话术按你绑定的知识范围生成、涉及价格必须查过知识库口径。建议先用小号试播一场，把话术和承诺逐条审一遍。'
+  },
+  {
+    q: '需要什么配置的电脑？',
+    a: 'Windows 10 及以上、macOS 13 及以上（只有 Apple 芯片版本）、主流 64 位 Linux。做推流时建议 8GB 内存以上；不推流、只做预制内容导出的话，普通办公本也够。'
+  },
+  {
+    q: '能在多个平台同时播吗？',
+    a: '软件与平台无关：它只负责出声，声音经虚拟声卡或推流进入你的直播软件，要同时推几个平台由那套软件决定。评论接入目前提供的是抖音连接器，其他平台需要对应连接器。'
   }
 ]
 
@@ -291,6 +353,9 @@ onMounted(() => {
   draw(0)
 })
 
+/* ---------- 三条主线的 tab 状态 ---------- */
+const track = ref('write')
+
 /* ---------- 演示视频弹窗 ---------- */
 const videoOpen = ref(false)
 const videoEl = ref<HTMLVideoElement | null>(null)
@@ -325,6 +390,18 @@ onUnmounted(() => {
   <div class="landing">
     <!-- ============ Hero ============ -->
     <section class="hero">
+      <a
+        class="notice reveal"
+        href="https://github.com/xy200303/yuncast/releases/latest"
+        target="_blank"
+        rel="noreferrer"
+      >
+        <span class="notice-tag">v0.1.3</span>
+        <span class="notice-text">
+          刚发布：工作台重做、声音合成统一入口、时间线性能 18.5 → 6.0 次/秒 · 查看更新说明
+        </span>
+        <span class="notice-arrow" v-html="ICONS.arrow" />
+      </a>
       <div class="fx-aurora" aria-hidden="true"><i /><i /><i /><i /></div>
       <div class="fx-dots hero-dots" aria-hidden="true" />
       <canvas ref="waveCanvas" class="hero-waves" aria-hidden="true" />
@@ -339,7 +416,8 @@ onUnmounted(() => {
           <span class="line"><span class="word grad-text">也能自己开一场。</span></span>
         </h1>
         <p class="hero-sub reveal d1">
-          桌面工作台把写稿、配音、播出、控场、互动串成一条流水线。声音可以克隆成店家的，成品音频能整场导出。<br />
+          写稿、配音、播出、控场、互动，一条流水线都在一个桌面工作台里。<br />
+          声音能克隆成店家自己的，成品音频可以整场导出。<br />
           直播带货、商品宣讲、有声书、播客，同一套流程。
         </p>
         <div class="hero-cta reveal d2">
@@ -372,6 +450,56 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <!-- ============ 数字条（只放实测值） ============ -->
+    <section class="section statband">
+      <div class="inner">
+        <ul class="stats">
+          <li v-for="(s, i) in stats" :key="s.label" class="stat reveal" :style="{ transitionDelay: i * 70 + 'ms' }">
+            <strong>{{ s.value }}</strong>
+            <span class="stat-label">{{ s.label }}</span>
+            <span class="stat-note">{{ s.note }}</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ 三条主线：写稿 / 播出 / 互动 ============ -->
+    <section class="section tracks-section">
+      <div class="inner">
+        <h2 class="display reveal">写稿 · 播出 · 互动，<span class="grad-text">三件事各有一套界面</span></h2>
+        <p class="lead reveal d1">点开看每条主线具体能做什么。</p>
+        <div class="tabs reveal d2" role="tablist">
+          <button
+            v-for="t in tracks"
+            :key="t.id"
+            type="button"
+            role="tab"
+            :aria-selected="track === t.id"
+            :class="['tab', track === t.id && 'on']"
+            @click="track = t.id"
+          >
+            {{ t.name }}
+          </button>
+        </div>
+        <div class="track-panel reveal d3">
+          <template v-for="t in tracks" :key="t.id">
+            <div v-if="track === t.id" class="track-body">
+              <p class="track-lead">{{ t.lead }}</p>
+              <ul class="track-items">
+                <li v-for="it in t.items" :key="it.t">
+                  <strong>{{ it.t }}</strong>
+                  <span>{{ it.d }}</span>
+                </li>
+              </ul>
+              <a class="track-link" :href="withBase(t.to)">
+                {{ t.toText }} <span v-html="ICONS.arrow" />
+              </a>
+            </div>
+          </template>
+        </div>
+      </div>
+    </section>
+
     <!-- ============ 流水线 ============ -->
     <section class="section pipeline-section">
       <div class="fx-grid" aria-hidden="true" />
@@ -389,18 +517,21 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <!-- ============ 功能 ============ -->
+    <!-- ============ 本地优先 ============ -->
     <section class="section alt">
       <div class="inner">
-        <h2 class="display reveal">它具体<span class="grad-text">怎么用</span></h2>
-        <p class="lead reveal d1">下面每一条都是界面上真实存在的能力，不是概念。</p>
-        <div class="grid">
-          <article v-for="(f, i) in features" :key="f.title" class="card reveal" :style="{ transitionDelay: (i % 4) * 60 + 'ms' }">
-            <div class="card-icon" v-html="f.icon" />
-            <h3>{{ f.title }}</h3>
-            <p>{{ f.desc }}</p>
+        <h2 class="display reveal">免费、开源、<span class="grad-text">数据在本机</span></h2>
+        <p class="lead reveal d1">软件本身 MIT 免费，运行成本只有你自配的语言模型与语音合成，用量在应用里可查。</p>
+        <div class="grid two">
+          <article v-for="(l, i) in localFirst" :key="l.t" class="card reveal" :style="{ transitionDelay: (i % 2) * 70 + 'ms' }">
+            <div class="card-icon" v-html="l.icon" />
+            <h3>{{ l.t }}</h3>
+            <p>{{ l.d }}</p>
           </article>
         </div>
+        <p class="more reveal">
+          花费怎么估、按什么选模型，见 <a :href="withBase('/guide/cost')">费用与选型</a>
+        </p>
       </div>
     </section>
 
@@ -543,12 +674,44 @@ $ npm run dev</code></pre>
       </div>
     </section>
 
+    <!-- ============ 更新日志 ============ -->
+    <section class="section">
+      <div class="fx-grid faint" aria-hidden="true" />
+      <div class="inner">
+        <h2 class="display reveal">在持续迭代</h2>
+        <p class="lead reveal d1">
+          每个版本都发布三端安装包与更新说明，应用内「设置 → 关于」可以直接检查更新。
+        </p>
+        <ol class="releases">
+          <li v-for="(r, i) in changelog" :key="r.v" class="rel reveal" :style="{ transitionDelay: i * 70 + 'ms' }">
+            <div class="rel-head">
+              <span class="rel-v">{{ r.v }}</span>
+              <span class="rel-when">{{ r.when }}</span>
+            </div>
+            <ul>
+              <li v-for="item in r.items" :key="item">{{ item }}</li>
+            </ul>
+          </li>
+        </ol>
+        <p class="more reveal">
+          完整历史见
+          <a href="https://github.com/xy200303/yuncast/releases" target="_blank" rel="noreferrer">GitHub Releases</a>
+        </p>
+      </div>
+    </section>
+
     <!-- ============ FAQ（与 JSON-LD 一致） ============ -->
-    <section class="section faq-section">
+    <section class="section faq-section alt">
       <div class="inner narrow">
         <h2 class="display reveal">常见问题</h2>
         <div class="faq-list">
-          <details v-for="(f, i) in faqs" :key="f.q" class="faq-item reveal" :style="{ transitionDelay: (i % 3) * 50 + 'ms' }">
+          <details
+            v-for="(f, i) in faqs"
+            :key="f.q"
+            class="faq-item reveal"
+            :open="i === 0"
+            :style="{ transitionDelay: (i % 3) * 50 + 'ms' }"
+          >
             <summary>{{ f.q }}</summary>
             <p>{{ f.a }}</p>
           </details>
@@ -626,6 +789,172 @@ $ npm run dev</code></pre>
   margin: 0 auto 44px;
 }
 .more { text-align: center; color: var(--vp-c-text-3); font-size: 14px; margin-top: 28px; }
+
+/* ---------- 顶部公告条（迭代可见性） ---------- */
+.notice {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 auto 26px;
+  padding: 7px 14px 7px 8px;
+  border-radius: 999px;
+  font-size: 13px;
+  color: var(--vp-c-text-2);
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(99, 102, 241, 0.22);
+  box-shadow: var(--yc-shadow-sm);
+  backdrop-filter: blur(8px);
+  transition: transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.24s, color 0.24s;
+}
+.notice:hover { transform: translateY(-1px); border-color: rgba(99, 102, 241, 0.5); color: var(--vp-c-text-1); }
+.notice-tag {
+  flex: none;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #fff;
+  background: var(--yc-grad-brand);
+}
+.notice-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.notice-arrow { flex: none; display: inline-flex; width: 14px; height: 14px; color: var(--vp-c-brand-1); }
+.notice-arrow :deep(svg) { width: 100%; height: 100%; }
+
+/* ---------- 数字条 ---------- */
+.statband { padding: 54px 0 10px; }
+.stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.stat {
+  padding: 18px 20px;
+  border-radius: var(--yc-radius);
+  background: linear-gradient(180deg, #ffffff, #fbfbfe);
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: var(--yc-shadow-sm);
+}
+.stat strong {
+  display: block;
+  font-family: var(--font-display);
+  font-size: 26px;
+  line-height: 1.15;
+  background: var(--yc-grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.stat-label { display: block; margin-top: 6px; font-size: 13.5px; color: var(--vp-c-text-1); }
+.stat-note { display: block; margin-top: 3px; font-size: 12px; color: var(--vp-c-text-3); line-height: 1.6; }
+
+/* ---------- 三条主线（tabs） ---------- */
+.tracks-section { padding: var(--yc-section-y) 0 84px; }
+.tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  margin: 0 auto 22px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.04);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  width: fit-content;
+}
+.tracks-section .tabs { display: flex; }
+.tab {
+  padding: 8px 22px;
+  border-radius: 999px;
+  border: none;
+  font-size: 15px;
+  color: var(--vp-c-text-2);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.24s, color 0.24s, box-shadow 0.24s;
+}
+.tab:hover { color: var(--vp-c-text-1); }
+.tab.on {
+  color: var(--vp-c-text-1);
+  background: #fff;
+  box-shadow: var(--yc-shadow-sm);
+  font-weight: 500;
+}
+.track-panel {
+  padding: 30px 32px 26px;
+  border-radius: var(--yc-radius-lg);
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: var(--yc-shadow);
+}
+.track-body { display: flex; flex-direction: column; gap: 18px; }
+.track-lead { margin: 0; font-size: 15.5px; line-height: 1.85; color: var(--vp-c-text-2); }
+.track-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 28px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.track-items li {
+  position: relative;
+  padding-left: 16px;
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--vp-c-text-2);
+}
+.track-items li::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 9px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--yc-grad-brand);
+}
+.track-items strong { display: block; color: var(--vp-c-text-1); font-weight: 500; }
+.track-link {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--vp-c-brand-1);
+}
+.track-link :deep(svg) { width: 15px; height: 15px; transition: transform 0.24s; }
+.track-link:hover :deep(svg) { transform: translateX(3px); }
+
+/* 两列卡片（本地优先那节） */
+.grid.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+/* ---------- 更新日志 ---------- */
+.releases {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rel {
+  padding: 20px 22px;
+  border-radius: var(--yc-radius);
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  box-shadow: var(--yc-shadow-sm);
+}
+.rel-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.rel-v { font-family: var(--font-display); font-size: 20px; }
+.rel-when { font-size: 12px; color: var(--vp-c-text-3); }
+.rel ul { margin: 0; padding-left: 18px; }
+.rel li { font-size: 13.5px; line-height: 1.8; color: var(--vp-c-text-2); }
 
 /* ---------- Hero ---------- */
 .hero {
@@ -1057,15 +1386,22 @@ table.specs tr:last-child th, table.specs tr:last-child td { border-bottom: none
   .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .shots { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pipeline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .releases { grid-template-columns: 1fr; }
+  .track-items { grid-template-columns: 1fr; }
 }
 @media (max-width: 860px) {
   .modes { grid-template-columns: 1fr; }
+  .grid.two { grid-template-columns: 1fr; }
+  .notice-text { white-space: normal; }
+  .track-panel { padding: 22px 20px; }
   .dev-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 680px) {
   .grid, .shots, .pipeline { grid-template-columns: 1fr; }
   .hero { padding-top: 68px; }
   .hero-facts { padding-bottom: 48px; }
+  .stat strong { font-size: 21px; }
   table.specs th { width: auto; }
 }
 </style>

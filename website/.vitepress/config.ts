@@ -116,7 +116,8 @@ export default defineConfig({
     docFooter: { prev: '上一页', next: '下一页' },
     lastUpdated: { text: '最后更新' },
     footer: {
-      message: '基于 MIT 协议发布',
+      message:
+        '基于 MIT 协议发布 · <a href="https://yuncast.xyun.dev/guide/quickstart.html">快速上手</a> · <a href="https://yuncast.xyun.dev/guide/concepts.html">核心概念</a> · <a href="https://yuncast.xyun.dev/guide/interface.html">界面一览</a> · <a href="https://yuncast.xyun.dev/guide/cost.html">费用与选型</a> · <a href="https://yuncast.xyun.dev/guide/troubleshooting.html">运行要求与排错</a> · <a href="https://yuncast.xyun.dev/download.html">下载</a> · <a href="https://github.com/xy200303/yuncast/releases">更新日志</a> · <a href="https://github.com/xy200303/yuncast/issues">反馈问题</a>',
       copyright: 'Copyright © 2026 小云播客坊 YunCast'
     }
   }

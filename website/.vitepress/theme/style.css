@@ -1,4 +1,8 @@
-/* 浅色专业感：白底 + logo 靛蓝做品牌点缀（config.ts appearance: force-light） */
+/* ===========================================================================
+   小云播客坊 YunCast · 站点视觉基底
+   - 字体：正文 Noto Sans SC（SIL OFL，自托管切片）／标题 得意黑 Smiley Sans（SIL OFL）
+   - 浅色专业感：白底 + 靛蓝品牌色，动效只用 transform/opacity（尊重 reduced-motion）
+   =========================================================================== */
 
 /* 得意黑 Smiley Sans（SIL OFL，atelier-anchor/smiley-sans）自托管，标题专用 */
 @font-face {
@@ -8,14 +12,15 @@
 }
 
 :root {
+  /* 品牌色 */
   --vp-c-brand-1: #4f46e5;
   --vp-c-brand-2: #6366f1;
   --vp-c-brand-3: #818cf8;
   --vp-c-brand-soft: rgba(99, 102, 241, 0.12);
 
   --vp-c-bg: #ffffff;
-  --vp-c-bg-alt: #f6f7fb;
-  --vp-c-bg-soft: #f6f7fb;
+  --vp-c-bg-alt: #f7f8fc;
+  --vp-c-bg-soft: #f7f8fc;
   --vp-c-bg-elv: #ffffff;
 
   --vp-c-divider: rgba(15, 23, 42, 0.08);
@@ -24,19 +29,299 @@
   --vp-c-text-1: #0f172a;
   --vp-c-text-2: #475569;
   --vp-c-text-3: #94a3b8;
+
+  /* 字体 */
+  --vp-font-family-base: 'Noto Sans SC', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  --vp-font-family-mono: 'JetBrains Mono', 'Cascadia Code', 'SFMono-Regular', Consolas, 'Liberation Mono',
+    monospace;
+  --font-display: 'Smiley Sans', 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* 自有 token：间距 / 圆角 / 阴影 / 渐变 */
+  --yc-section-y: 104px;
+  --yc-radius-sm: 10px;
+  --yc-radius: 16px;
+  --yc-radius-lg: 24px;
+  --yc-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --yc-shadow: 0 10px 30px -12px rgba(15, 23, 42, 0.16), 0 2px 8px -4px rgba(15, 23, 42, 0.08);
+  --yc-shadow-lg: 0 36px 80px -32px rgba(30, 27, 75, 0.32), 0 12px 32px -20px rgba(15, 23, 42, 0.18);
+  --yc-ring: 0 0 0 1px rgba(15, 23, 42, 0.07);
+  --yc-grad-brand: linear-gradient(100deg, #38bdf8 0%, #6366f1 52%, #a855f7 100%);
+  --yc-grad-text: linear-gradient(96deg, #0ea5e9 0%, #4f46e5 48%, #9333ea 100%);
+  --yc-container: 1180px;
 }
 
-/* 强制浅色后隐藏导航栏的主题切换按钮 */
+/* ---------- 动效：只用 transform / opacity，跑在合成层 ---------- */
+@keyframes yc-drift {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(3%, -4%, 0) scale(1.06); }
+  66% { transform: translate3d(-3%, 3%, 0) scale(0.97); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+@keyframes yc-float {
+  0%, 100% { transform: translate3d(0, 0, 0); opacity: 0.5; }
+  50% { transform: translate3d(0, -14px, 0); opacity: 0.9; }
+}
+@keyframes yc-spin-slow {
+  to { transform: rotate(360deg); }
+}
+@keyframes yc-sheen {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(220%); }
+}
+@keyframes yc-pulse-ring {
+  0% { transform: scale(0.82); opacity: 0.55; }
+  70% { transform: scale(1.5); opacity: 0; }
+  100% { opacity: 0; }
+}
+@keyframes yc-scan {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(420%); }
+}
+
+/* 滚动入场：默认可见，只有「在视口下方」的元素才被 JS 加上 .reveal-pre 先藏起来动画进来
+   —— 这样 JS 失效（水合失败、禁用脚本）时页面依然完整可读，不会白屏 */
+.reveal { opacity: 1; }
+.reveal-pre {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0);
+  transition: opacity 0.72s cubic-bezier(0.16, 1, 0.3, 1), transform 0.72s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+.reveal-pre.in {
+  opacity: 1;
+  transform: none;
+}
+.reveal.d1, .reveal-pre.d1 { transition-delay: 0.08s; }
+.reveal.d2, .reveal-pre.d2 { transition-delay: 0.16s; }
+.reveal.d3, .reveal-pre.d3 { transition-delay: 0.24s; }
+.reveal.d4, .reveal-pre.d4 { transition-delay: 0.32s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .reveal, .reveal-pre { opacity: 1; transform: none; transition: none; }
+  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* ---------- 可复用的背景层 ---------- */
+.fx-aurora {
+  position: absolute;
+  inset: -20% -10%;
+  pointer-events: none;
+  overflow: hidden;
+}
+.fx-aurora i {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.5;
+  animation: yc-drift 26s ease-in-out infinite;
+}
+.fx-aurora i:nth-child(1) { width: 46vw; height: 46vw; left: -6vw; top: -8vw; background: rgba(56, 189, 248, 0.32); }
+.fx-aurora i:nth-child(2) { width: 40vw; height: 40vw; right: -4vw; top: 4vw; background: rgba(129, 140, 248, 0.34); animation-delay: -6s; }
+.fx-aurora i:nth-child(3) { width: 34vw; height: 34vw; left: 32vw; top: 18vw; background: rgba(168, 85, 247, 0.22); animation-delay: -13s; }
+.fx-aurora i:nth-child(4) { width: 26vw; height: 26vw; right: 18vw; bottom: -6vw; background: rgba(45, 212, 191, 0.22); animation-delay: -19s; }
+
+.fx-grid {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(rgba(15, 23, 42, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(15, 23, 42, 0.045) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+.fx-dots {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(99, 102, 241, 0.16) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+.fx-noise {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
+}
+.fx-orb {
+  position: absolute;
+  border-radius: 50%;
+  pointer-events: none;
+  animation: yc-float 9s ease-in-out infinite;
+}
+
+.grad-text {
+  background: var(--yc-grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* 玻璃卡片 */
+.glass {
+  background: rgba(255, 255, 255, 0.72);
+  backdrop-filter: saturate(160%) blur(14px);
+  border: 1px solid rgba(15, 23, 42, 0.07);
+}
+
+/* ===========================================================================
+   VitePress 外壳：导航 / 侧边栏 / 正文排版 / 页脚
+   =========================================================================== */
+
+/* 强制浅色后隐藏主题切换 */
 .VPNavBarAppearance { display: none !important; }
 
-/* 导航品牌名也用得意黑 */
+.VPNavBar {
+  background: rgba(255, 255, 255, 0.78) !important;
+  backdrop-filter: saturate(180%) blur(16px);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+.VPNavBar.has-sidebar .content { backdrop-filter: none; }
 .VPNavBarTitle .title {
-  font-family: 'Smiley Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-family: var(--font-display);
   font-size: 19px;
-  letter-spacing: 0.01em;
+  letter-spacing: 0.005em;
+}
+.VPNavBarMenuLink {
+  font-weight: 500;
+  position: relative;
+}
+.VPNavBarMenuLink::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 2px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--yc-grad-brand);
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.VPNavBarMenuLink:hover::after,
+.VPNavBarMenuLink.active::after { transform: scaleX(1); }
+
+/* 文档内正文：字距与行距再收一点，长文更好读 */
+.vp-doc {
+  font-size: 15.5px;
+  line-height: 1.78;
+}
+.vp-doc h1 {
+  font-family: var(--font-display);
+  font-size: 34px;
+  letter-spacing: 0.005em;
+  margin-bottom: 12px;
+}
+.vp-doc h2 {
+  position: relative;
+  font-family: var(--font-display);
+  font-size: 24px;
+  margin-top: 52px;
+  padding-top: 22px;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+}
+.vp-doc h2::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 0;
+  width: 56px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--yc-grad-brand);
+}
+.vp-doc h3 { font-size: 18px; margin-top: 32px; }
+.vp-doc p, .vp-doc li { color: var(--vp-c-text-2); }
+.vp-doc strong { color: var(--vp-c-text-1); }
+
+.vp-doc a {
+  font-weight: 500;
+  text-decoration-color: rgba(99, 102, 241, 0.35);
+  text-underline-offset: 3px;
+  transition: color 0.2s, text-decoration-color 0.2s;
+}
+.vp-doc a:hover { color: var(--vp-c-brand-1); text-decoration-color: var(--vp-c-brand-1); }
+
+/* 表格：圆角 + 表头底色 + 斑马纹 */
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  border-radius: var(--yc-radius-sm);
+  overflow: hidden;
+  font-size: 14.5px;
+}
+.vp-doc tr { background: transparent; border: none; }
+.vp-doc th {
+  background: #f7f8fc;
+  color: var(--vp-c-text-1);
+  font-weight: 600;
+  border: none;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  white-space: nowrap;
+}
+.vp-doc td { border: none; border-top: 1px solid rgba(15, 23, 42, 0.05); }
+.vp-doc tbody tr:nth-child(even) td { background: rgba(247, 248, 252, 0.6); }
+.vp-doc tr:first-child th:first-child { border-top-left-radius: var(--yc-radius-sm); }
+
+/* 代码块 */
+.vp-doc div[class*='language-'] {
+  border-radius: var(--yc-radius-sm);
+  box-shadow: var(--yc-shadow-sm);
+  border: 1px solid rgba(15, 23, 42, 0.06);
+}
+.vp-doc :not(pre) > code {
+  background: rgba(99, 102, 241, 0.09);
+  color: #4338ca;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 0.9em;
 }
 
-/* layout: page 给落地页让出全宽 */
+/* 提示容器 */
+.vp-doc .custom-block {
+  border-radius: var(--yc-radius-sm);
+  border-width: 1px;
+  box-shadow: var(--yc-shadow-sm);
+}
+.vp-doc .custom-block.tip { background: rgba(16, 185, 129, 0.06); border-color: rgba(16, 185, 129, 0.24); }
+.vp-doc .custom-block.warning { background: rgba(245, 158, 11, 0.07); border-color: rgba(245, 158, 11, 0.28); }
+.vp-doc .custom-block.danger { background: rgba(239, 68, 68, 0.06); border-color: rgba(239, 68, 68, 0.24); }
+
+/* 侧边栏 */
+.VPSidebar {
+  border-right: 1px solid rgba(15, 23, 42, 0.06);
+  background: #fbfbfe;
+}
+.VPSidebarItem.level-0 > .item .text {
+  font-family: var(--font-display);
+  font-size: 14px;
+  letter-spacing: 0.02em;
+}
+.VPSidebarItem.is-active > .item .text { color: var(--vp-c-brand-1); }
+.VPSidebarItem .item:hover .text { color: var(--vp-c-brand-1); }
+
+/* 页脚 */
+.VPFooter {
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+  background: #fbfbfe;
+}
+
+/* 文档页里的截图：圆角 + 细边 + 悬浮微放大 */
+.vp-doc img {
+  border-radius: var(--yc-radius-sm);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: var(--yc-shadow);
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s;
+}
+.vp-doc img:hover { transform: translateY(-2px); box-shadow: var(--yc-shadow-lg); }
+
+/* 落地页让出全宽 */
 .VPPage,
 .VPPage .container,
 .VPPage .content,
@@ -44,4 +329,10 @@
   max-width: none !important;
   padding: 0 !important;
   margin: 0 !important;
+}
+
+@media (max-width: 768px) {
+  :root { --yc-section-y: 68px; }
+  .vp-doc h1 { font-size: 27px; }
+  .vp-doc h2 { font-size: 21px; margin-top: 40px; }
 }

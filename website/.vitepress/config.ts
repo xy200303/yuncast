@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 const SITE_URL = 'https://yuncast.xyun.dev'
 const SITE_NAME = '小云播客坊 YunCast'
 const SITE_DESC =
-  '专为不会直播的商家和企业而生——低成本开播：AI 主播自己写稿、克隆声音播报、看评论自己回复。商品宣讲、直播带货、有声书、播客节目，一个桌面工作台全包。开源免费，Windows / macOS / Linux。'
+  '面向不会直播的商家与实体店：桌面工作台把写稿、配音、播出、控场、互动串成一条流水线。声音可克隆成店家的，成品音频能整场导出。开源免费（MIT），Windows / macOS / Linux。'
 const OG_IMAGE = `${SITE_URL}/og-image.png`
 
 const softwareJsonLd = {
@@ -49,6 +49,8 @@ export default defineConfig({
   head: [
     ['link', { rel: 'icon', href: '/logo.svg' }],
     ['link', { rel: 'preload', href: '/fonts/SmileySans-Oblique.ttf.woff2', as: 'font', type: 'font/woff2', crossorigin: '' }],
+    // 正文中文用 Noto Sans SC（SIL OFL，自托管、按 unicode-range 切片，浏览器只取用到的那几片）
+    ['link', { rel: 'stylesheet', href: '/fonts/noto/noto-sans-sc.css' }],
     ['meta', { name: 'keywords', content: 'AI直播,AI主播,无人直播,直播带货,商品宣讲,声音克隆,TTS语音合成,有声书制作,播客制作,评论自动回复,虚拟主播,直播软件,小云播客坊,YunCast' }],
     ['meta', { name: 'author', content: '小云 (xy200303)' }],
     ['meta', { name: 'robots', content: 'index, follow, max-image-preview:large, max-snippet:-1' }],
@@ -57,7 +59,7 @@ export default defineConfig({
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:site_name', content: SITE_NAME }],
     ['meta', { property: 'og:locale', content: 'zh_CN' }],
-    ['meta', { property: 'og:title', content: `${SITE_NAME} - 专为不会直播的商家和企业而生` }],
+    ['meta', { property: 'og:title', content: `${SITE_NAME} - 不会直播，也能自己开一场` }],
     ['meta', { property: 'og:description', content: SITE_DESC }],
     ['meta', { property: 'og:url', content: SITE_URL }],
     ['meta', { property: 'og:image', content: OG_IMAGE }],
@@ -66,7 +68,7 @@ export default defineConfig({
     ['meta', { property: 'og:image:alt', content: '小云播客坊 YunCast - AI 直播工作台' }],
     // Twitter
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
-    ['meta', { name: 'twitter:title', content: `${SITE_NAME} - 专为不会直播的商家和企业而生` }],
+    ['meta', { name: 'twitter:title', content: `${SITE_NAME} - 不会直播，也能自己开一场` }],
     ['meta', { name: 'twitter:description', content: SITE_DESC }],
     ['meta', { name: 'twitter:image', content: OG_IMAGE }],
     // 结构化数据：软件 + 站点（FAQPage 由首页 Home.vue 注入，与可见 FAQ 一致）
@@ -86,17 +88,25 @@ export default defineConfig({
     logo: '/logo.svg',
     nav: [
       { text: '首页', link: '/' },
+      { text: '演示', link: '/#demo' },
       { text: '使用文档', link: '/guide/quickstart' },
       { text: '下载', link: '/download' }
     ],
     sidebar: {
       '/guide/': [
         {
-          text: '使用文档',
+          text: '上手',
           items: [
             { text: '快速上手', link: '/guide/quickstart' },
             { text: '核心概念', link: '/guide/concepts' },
             { text: '界面一览', link: '/guide/interface' }
+          ]
+        },
+        {
+          text: '使用与运维',
+          items: [
+            { text: '费用与选型', link: '/guide/cost' },
+            { text: '运行要求与排错', link: '/guide/troubleshooting' }
           ]
         }
       ]

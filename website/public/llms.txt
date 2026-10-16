@@ -13,6 +13,8 @@
 - TTS 支持：火山引擎（豆包语音）、阿里云百炼、播客专用大模型（豆包播客 API），支持声音克隆
 - 核心机制：话术池（一切声音的唯一出口，四档：打断 / 下一条 / 常规 / 垫底）、事件流（评论去重、归组、自适应聚合、限速）、冻结快照与预制门禁
 - 声音怎么定：声音不在节目里配，合成时在「合成声音」弹窗里选（接入 → 模型 → 音色），选完冻结进每一段产物，之后换主播、改人设都不改写已有音频
+- 演示视频：官网首页有 1 分 52 秒的功能演示（无声，画面录制自应用），另有首页 hero 的循环短片
+- 费用：软件 MIT 免费，运行成本只有你自配的 LLM tokens 与 TTS 字符，用量在「统计 → 用量」按节目查看
 - 节目形态：一个人讲 / 多人聊天 / 照着稿子读 / 分角色表演
 - 播出方式：现场发挥（无稿纯互动）/ 边播边准备（滚动合成）/ 全部做好再播（预制）
 - 导出：整场节目导出 MP3/WAV，分章或合并、响度归一，可上传喜马拉雅 / 小宇宙
@@ -22,9 +24,12 @@
 
 - 官网: https://yuncast.xyun.dev/
 - 下载: https://yuncast.xyun.dev/download.html
+- 演示视频: https://yuncast.xyun.dev/#demo
 - 快速上手: https://yuncast.xyun.dev/guide/quickstart.html
 - 核心概念: https://yuncast.xyun.dev/guide/concepts.html
 - 界面一览: https://yuncast.xyun.dev/guide/interface.html
+- 费用与选型: https://yuncast.xyun.dev/guide/cost.html
+- 运行要求与排错: https://yuncast.xyun.dev/guide/troubleshooting.html
 - 源码: https://github.com/xy200303/yuncast
 - Releases: https://github.com/xy200303/yuncast/releases/latest
 - 问题反馈: https://github.com/xy200303/yuncast/issues

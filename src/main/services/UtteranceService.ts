@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises'
-import { basename, extname, join, resolve } from 'node:path'
-import { app } from 'electron'
+import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { dirname, extname, resolve } from 'node:path'
 import type {
   ProduceAudioResult,
   ProducePlanInfo,
+  ProduceVoiceOverride,
   Program,
   RenderedAudioRef,
   Utterance,
@@ -14,12 +14,13 @@ import type {
 } from '../../shared/types'
 import { stableHash, utteranceFingerprint, sceneFingerprint } from '../../shared/fingerprint'
 import { buildPodcastTurns } from '../../shared/podcast'
-import { findCloneVoice } from '../../shared/voiceProvider'
+import { findCloneVoice, parseManualVoice } from '../../shared/voiceProvider'
 import type { StorageService } from './StorageService'
+import type { BlobStoreService } from './BlobStoreService'
 import type { TtsService } from './TtsService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
-import { getTtsProvider, ttsModelBlocker, ttsModelCapabilities, ttsModelSpec } from './providers/registry'
+import { findTtsCatalogVoice, getTtsProvider, ttsModelBlocker, ttsModelCapabilities, ttsModelSpec } from './providers/registry'
 import { getFfmpegPath } from './stream/ffmpeg/bin'
 import { listAudioUnits, narrativeOrder, type AudioUnit } from './programUnits'
 
@@ -54,6 +55,8 @@ export class UtteranceService {
   /** 正在后台合成的节目（重入转 dirty，跑完补一轮） */
   private readonly synthRunning = new Set<string>()
   private readonly synthDirty = new Set<string>()
+  /** 最近一次后台合成带的声音覆盖（dirty 补跑沿用最后一次的选择） */
+  private readonly synthOverride = new Map<string, ProduceVoiceOverride | undefined>()
   /** 正在预制生产的节目（与滚动合成共用一把锁，防两条流水线踩同一份文稿） */
   private readonly produceRunning = new Set<string>()
 
@@ -61,14 +64,17 @@ export class UtteranceService {
     private readonly storage: StorageService,
     private readonly tts: TtsService,
     private readonly persona: PersonaService,
-    private readonly script: ScriptService
+    private readonly script: ScriptService,
+    private readonly blobs: BlobStoreService
   ) {}
 
   /**
    * 后台把节目里 pending/failed 的条目合成就绪（带节目锁）：
    * 预合成按钮、主播改/补底稿后的重合成都走这里。同时在跑就标 dirty，本轮结束自动补跑一轮。
+   * voiceOverride：声音选择弹窗里用户显式选的声音（docs/REDESIGN 4.4），空 = 跟随当前主播/段落指定。
    */
-  async kickSynthesis(programId: string): Promise<void> {
+  async kickSynthesis(programId: string, voiceOverride?: ProduceVoiceOverride): Promise<void> {
+    this.synthOverride.set(programId, voiceOverride)
     if (this.synthRunning.has(programId)) {
       this.synthDirty.add(programId)
       return
@@ -78,13 +84,14 @@ export class UtteranceService {
       do {
         this.synthDirty.delete(programId)
         try {
-          await this.synthesizeAll(programId, (u) => this.onEvent?.(u))
+          await this.synthesizeAll(programId, (u) => this.onEvent?.(u), undefined, this.synthOverride.get(programId))
         } catch (error) {
           console.warn(`[话术库] 后台合成中断：${error instanceof Error ? error.message : String(error)}`)
         }
       } while (this.synthDirty.has(programId))
     } finally {
       this.synthRunning.delete(programId)
+      this.synthOverride.delete(programId)
       this.onBatchDone?.(programId)
     }
   }
@@ -175,6 +182,42 @@ export class UtteranceService {
   }
 
   /**
+   * 清空已合成音频（文稿一个字不动）：滚动段回 pending 待重合成，预制资产摘除引用。
+   * 换音色/换演法语法后想全部重蒸时用。外部导入的音频是用户自己的素材，不动。
+   * 池里正在播的条目不受影响：文件仍被池引用的不会删，播完自然淘汰。
+   * 返回清掉的音频段数（滚动段 + 预制单元）。
+   */
+  clearAudio(programId: string): number {
+    const doomed: (string | null | undefined)[] = []
+    let cleared = 0
+    for (const u of this.storage.utteranceList(programId)) {
+      if (u.audioPath || u.status !== 'pending') {
+        doomed.push(u.audioPath)
+        this.storage.utteranceSetAudio(u.id, 'pending', null, undefined, '')
+        this.onEvent?.({ ...u, status: 'pending', audioPath: null, error: undefined, synthVoice: '' })
+        if (u.audioPath) cleared++
+      }
+      if (u.rendered && !u.rendered.external) {
+        doomed.push(u.rendered.audioPath)
+        this.storage.utteranceSetRendered(u.id, null)
+        cleared++
+      }
+    }
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    const script = program ? this.script.getScript(program.scriptId) : null
+    for (const scene of script?.scenes ?? []) {
+      if (scene.rendered && !scene.rendered.external) {
+        doomed.push(scene.rendered.audioPath)
+        this.script.setSceneRendered(script!.id, scene.id, null)
+        cleared++
+      }
+    }
+    this.deleteOrphanAudio(doomed)
+    this.onRenderedEvent?.(programId)
+    return cleared
+  }
+
+  /**
    * 预制音频 stale 检测（docs/10 §15.6）：文稿（utterance.text/delivery/rate/pitch 或章内段落集合）
    * 变了则对应 rendered.sourceFingerprint 与当前指纹不一致 → 置 'stale'（不删文件）；
    * 改回来（指纹重新一致）则从 stale 恢复 ready。改稿入口（save/saveMany/remove/clear/
@@ -222,6 +265,8 @@ export class UtteranceService {
       [...this.storage.utteranceAllAudioPaths(), ...this.storage.speechReferencedAudioPaths()].map(normalize)
     )
     for (const path of candidates) {
+      // blob 路径由引用钩子（行删除时已解除登记）+ 宽限期 GC 管，这里不直接删文件
+      if (this.blobs.isBlobPath(path)) continue
       if (referenced.has(normalize(path))) continue
       void rm(path, { force: true })
         .then(() => console.log(`[话术库] 底稿删除，孤儿音频一并清掉：${path}`))
@@ -237,13 +282,16 @@ export class UtteranceService {
   async synthesizeAll(
     programId: string,
     onProgress?: (u: Utterance) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    voiceOverride?: ProduceVoiceOverride
   ): Promise<{ done: number; failed: number }> {
     const pending = this.storage
       .utteranceList(programId)
       .filter((u) => u.status === 'pending' || u.status === 'failed')
-    // 合成用的音色与开播装载时的判定口径一致（人设默认音色，u.voiceId 可单条覆盖）
-    const voiceOf = (u: Utterance) => this.persona.resolveProgramVoice(undefined, u.voiceId) ?? ''
+    // 合成用的音色与开播装载时的判定口径一致（人设默认音色，u.voiceId 可单条覆盖）；
+    // 弹窗里显式选的声音优先级最高（用户已在弹窗里看过「混音」提醒）
+    const explicit = voiceOverride?.voiceId?.trim() ?? ''
+    const voiceOf = (u: Utterance) => explicit || this.persona.resolveProgramVoice(u.voiceId) || ''
 
     let done = 0
     let failed = 0
@@ -277,14 +325,15 @@ export class UtteranceService {
    * 统一生产入口（program:produce-audio / produce_program_audio 工具的后端）：
    * - rolling/improvised：等同「提前合成全部」，后台逐段合成（不是播放门禁），立即返回；
    * - prepared：按合成计划逐单元生产（同步跑完返回汇总；进度走 onEvent / onRenderedEvent）。
+   * voiceOverride：声音选择弹窗（docs/REDESIGN 4.4）里用户显式选的声音，本次合成冻结它，不改节目配置。
    */
-  async produceProgramAudio(programId: string): Promise<ProduceAudioResult> {
+  async produceProgramAudio(programId: string, voiceOverride?: ProduceVoiceOverride): Promise<ProduceAudioResult> {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) {
       return { ok: false, mode: 'prepared', total: 0, done: 0, failed: 0, skipped: 0, error: '节目不存在' }
     }
     if (program.broadcastMode !== 'prepared') {
-      void this.kickSynthesis(programId)
+      void this.kickSynthesis(programId, voiceOverride)
       return {
         ok: true,
         mode: program.broadcastMode,
@@ -309,7 +358,7 @@ export class UtteranceService {
     this.produceRunning.add(programId)
     this.synthRunning.add(programId)
     try {
-      return await this.producePrepared(program)
+      return await this.producePrepared(program, voiceOverride)
     } finally {
       this.produceRunning.delete(programId)
       this.synthRunning.delete(programId)
@@ -317,12 +366,33 @@ export class UtteranceService {
     }
   }
 
-  /** 生产前的合成计划摘要（Agent 确认卡 / UI 确认弹窗用）：范围、预计时长、将用的模型与声音快照 */
+  /**
+   * 生产前的合成计划摘要（声音选择弹窗 / Agent 确认卡用）：
+   * 范围、就绪与待合成计数、粗估时长、默认将用的模型与声音描述（弹窗里选「其他」会覆盖，见 ProduceVoiceOverride）。
+   */
   describeProducePlan(programId: string): ProducePlanInfo {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return { ok: false, error: '节目不存在' }
+    // 滚动/即兴：提前合成的计划 = 库里待合成段数 + 跟随当前主播的声音描述
     if (program.broadcastMode !== 'prepared') {
-      return { ok: false, error: '只有预制节目需要生成节目音频；滚动节目用「提前合成全部」即可' }
+      const all = this.storage.utteranceList(program.id)
+      if (all.length === 0) return { ok: false, error: '节目还没有文稿：先写稿，再提前合成' }
+      const pending = all.filter((u) => u.status === 'pending' || u.status === 'failed')
+      const ready = all.filter((u) => u.status === 'ready').length
+      const totalChars = pending.reduce((sum, u) => sum + u.text.length, 0)
+      const persona = this.persona.get()
+      return {
+        ok: true,
+        segments: all.length,
+        readyCount: ready,
+        pendingSegments: pending.length,
+        totalChars,
+        estMinutes: Math.round((totalChars / CHARS_PER_SECOND / 60) * 10) / 10,
+        modelDesc: `跟随当前主播（「${persona.name}」音色路由）`,
+        voiceDesc: persona.voiceId
+          ? `当前主播「${persona.name}」的音色：${this.voiceDisplayName(persona.voiceId)}`
+          : '当前主播还没选音色'
+      }
     }
     const script = this.script.getScript(program.scriptId)
     const units = listAudioUnits(program, script, this.storage.utteranceList(program.id))
@@ -334,7 +404,16 @@ export class UtteranceService {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
     const segments = units.reduce((sum, unit) => sum + unit.utterances.length, 0)
-    const totalChars = units.reduce(
+    // 已就绪且指纹一致、文件还在的单元本次会跳过：待合成段数/字数只算剩下的
+    const pendingUnits = units.filter(
+      (unit) =>
+        !(
+          unit.rendered?.status === 'ready' &&
+          unit.rendered.sourceFingerprint === unit.fingerprint &&
+          existsSync(unit.rendered.audioPath)
+        )
+    )
+    const totalChars = pendingUnits.reduce(
       (sum, unit) => sum + unit.utterances.reduce((s, u) => s + u.text.length, 0),
       0
     )
@@ -348,6 +427,8 @@ export class UtteranceService {
       units: units.length,
       scenes: units.filter((unit) => unit.kind === 'scene').length,
       segments,
+      readyCount: units.length - pendingUnits.length,
+      pendingSegments: pendingUnits.reduce((sum, unit) => sum + unit.utterances.length, 0),
       totalChars,
       estMinutes: Math.round((totalChars / CHARS_PER_SECOND / 60) * 10) / 10,
       modelDesc: frozen.modelDesc,
@@ -361,7 +442,7 @@ export class UtteranceService {
    * 场景类单元 = 该章所有段逐段合成后 ffmpeg 拼接成整章音频挂 Scene.rendered；
    * 拼接失败降级为只保留段级 rendered，error 里说明。单段失败不中断整批。
    */
-  private async producePrepared(program: Program): Promise<ProduceAudioResult> {
+  private async producePrepared(program: Program, voiceOverride?: ProduceVoiceOverride): Promise<ProduceAudioResult> {
     const script = this.script.getScript(program.scriptId)
     const units = listAudioUnits(program, script, this.storage.utteranceList(program.id))
     const base: ProduceAudioResult = {
@@ -375,7 +456,7 @@ export class UtteranceService {
     if (units.length === 0) return { ...base, error: '节目还没有文稿：先让主播写稿，再生成节目音频' }
     let frozen: FrozenSnapshot
     try {
-      frozen = this.resolveFrozenSnapshot(program)
+      frozen = this.resolveFrozenSnapshot(program, voiceOverride)
     } catch (error) {
       return { ...base, error: error instanceof Error ? error.message : String(error) }
     }
@@ -519,10 +600,8 @@ export class UtteranceService {
           undefined,
           program.id
         )
-        // 产物复制进预制音频目录：audio-cache 有 LRU 清扫，节目资产不能放在那里
-        const audioPath = join(this.programAudioDir(), `${unit.kind}-${unit.id}-${unit.fingerprint}.mp3`)
-        await copyFile(result.audioPath, audioPath)
-        writeUnitRendered(unit, { ...pending, status: 'ready', audioPath, durationMs: result.durationMs })
+        // 产物已是 blob（播客合成走 BlobStore 缓存）：直接挂 rendered，引用钩子随 writeUnitRendered 登记，不再复制一份
+        writeUnitRendered(unit, { ...pending, status: 'ready', audioPath: result.audioPath, durationMs: result.durationMs })
         base.done++
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -554,13 +633,33 @@ export class UtteranceService {
     return null
   }
 
-  /** 播客发音人解析：cast 里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id） */
+  /** 播客发音人解析：cast 里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id；手动复合串取音色段） */
   private resolvePodcastSpeaker(voiceId: string): string {
     const voice = voiceId.trim()
     const clone =
       findCloneVoice(this.storage.listVoices(), voice) ??
       this.storage.listVoices().find((item) => item.name === voice && item.voiceType)
-    return clone?.voiceType.trim() || voice
+    if (clone?.voiceType.trim()) return clone.voiceType.trim()
+    const manual = parseManualVoice(voice)
+    if (manual) return manual.voice
+    return voice
+  }
+
+  /** 音色的人读名字（确认卡/弹窗展示用）：音色库克隆音色显示名字；手动复合串显示截断 ID；目录音色查目录名 */
+  private voiceDisplayName(voiceId: string): string {
+    const id = voiceId.trim()
+    if (!id) return ''
+    const clone = findCloneVoice(this.storage.listVoices(), id)
+    if (clone) return clone.name
+    const manual = parseManualVoice(id)
+    if (manual) return `手动 ID · ${manual.voice.length > 12 ? `${manual.voice.slice(0, 12)}…` : manual.voice}`
+    for (const hit of findTtsCatalogVoice(id)) {
+      for (const group of hit.model.voices) {
+        const found = group.voices.find((voice) => voice.id === id)
+        if (found) return found.name
+      }
+    }
+    return id
   }
 
   /**
@@ -625,10 +724,11 @@ export class UtteranceService {
       }
     }
     try {
-      return await this.concatAudioFiles(
-        segmentPaths,
-        join(this.programAudioDir(), `scene-${unit.id}-${unit.fingerprint}.mp3`)
-      )
+      // 整章拼接：产物落暂存区 → 入 BlobStore（同内容去重；引用随 writeUnitRendered 的钩子登记）
+      const staged = this.blobs.tmpPath(`scene-${unit.id}-${unit.fingerprint}.mp3`)
+      const concatPath = await this.concatAudioFiles(segmentPaths, staged)
+      const put = await this.blobs.putFile(concatPath, 'mp3')
+      return put.path
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       throw new Error(`整章拼接失败：${message}（各段音频已就绪，可逐段试听）`)
@@ -636,16 +736,77 @@ export class UtteranceService {
   }
 
   /**
-   * 冻结声音快照（§9.6）：开始预制合成时把节目 audioConfig 解析成具体接入/模型/音色，
+   * 冻结声音快照（§9.6）：开始预制合成时把节目 audioConfig（或弹窗里的显式覆盖）解析成具体接入/模型/音色，
    * 连同音色（或角色表）指纹一起写进每个单元的 rendered；之后切换主播/改主播音色不改写已有产物。
+   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：
+   * castVoices（播客双主持）> voiceId（单音色）> forcePresenter（忽略自定义跟随主播）> 节目 audioConfig。
    */
-  private resolveFrozenSnapshot(program: Program): FrozenSnapshot {
+  private resolveFrozenSnapshot(program: Program, override?: ProduceVoiceOverride): FrozenSnapshot {
+    // 弹窗显式覆盖：播客双主持（两个音色必须路由到同一条接入、同一个播客模型）
+    if (override?.castVoices) {
+      const [voiceA, voiceB] = override.castVoices.map((voice) => voice.trim())
+      if (!voiceA || !voiceB) throw new Error('播客双主持要选好两个音色：回到合成声音弹窗把两位主持人都选上')
+      const routeA = this.tts.routeForVoice(voiceA)
+      const routeB = this.tts.routeForVoice(voiceB)
+      if (routeA.connection.id !== routeB.connection.id || routeA.modelId !== routeB.modelId) {
+        throw new Error('两位主持人的音色要走同一条接入、同一个播客模型：回到合成声音弹窗重选')
+      }
+      const caps = ttsModelCapabilities(routeA.model)
+      if (caps.kind !== 'podcast') {
+        throw new Error(`模型「${routeA.model.label}」不是双人播客模型：回到合成声音弹窗换成 Podcast 模型或单音色`)
+      }
+      const speakers: [string, string] = [this.resolvePodcastSpeaker(voiceA), this.resolvePodcastSpeaker(voiceB)]
+      const castFingerprint = stableHash(JSON.stringify(override.castVoices))
+      // 配乐：弹窗里选了就按这次选的，没给就退回节目存的历史值（老数据）/服务商默认
+      const useHeadMusic = override.useHeadMusic ?? program.audioConfig.useHeadMusic ?? true
+      const useTailMusic = override.useTailMusic ?? program.audioConfig.useTailMusic ?? false
+      return {
+        podcast: {
+          connectionId: routeA.connection.id,
+          modelId: routeA.modelId,
+          speakers,
+          castVoices: [voiceA, voiceB],
+          castFingerprint,
+          maxCharsPerTurn: caps.maxCharsPerTurn ?? 300,
+          useHeadMusic,
+          useTailMusic
+        },
+        voiceFor: () => {
+          throw new Error('双人播客路线不按段落取音色（整期一次合成）')
+        },
+        snapshotFor: () => ({
+          ttsConnectionId: routeA.connection.id,
+          ttsModelId: routeA.modelId,
+          voiceOrCastFingerprint: castFingerprint
+        }),
+        modelDesc: `Podcast 双人合成 · ${routeA.model.label}（${routeA.connection.name}）`,
+        voiceDesc:
+          `本次指定：主持人 A → ${this.voiceDisplayName(voiceA)}、` +
+          `主持人 B → ${this.voiceDisplayName(voiceB)}` +
+          `（${useHeadMusic ? '含' : '不含'}开场音乐 / ${useTailMusic ? '含' : '不含'}结尾音乐）`
+      }
+    }
+    // 弹窗显式覆盖：单音色（全部段落都用它；接入/模型由音色路由反推冻结）
+    if (override?.voiceId?.trim()) {
+      const voice = override.voiceId.trim()
+      const route = this.tts.routeForVoice(voice)
+      return {
+        voiceFor: () => voice,
+        snapshotFor: () => ({
+          ttsConnectionId: route.connection.id,
+          ttsModelId: route.modelId,
+          voiceOrCastFingerprint: stableHash(voice)
+        }),
+        modelDesc: `${route.connection.name} / ${route.model.label}`,
+        voiceDesc: `本次指定音色：${this.voiceDisplayName(voice)}`
+      }
+    }
     const cfg = program.audioConfig
-    if (cfg.mode === 'custom') {
+    if (cfg.mode === 'custom' && !override?.forcePresenter) {
       const connectionId = cfg.ttsConnectionId?.trim() ?? ''
       const modelId = cfg.ttsModelId?.trim() ?? ''
       if (!connectionId || !modelId) {
-        throw new Error('自定义节目声音还没选合成接入和模型：到节目设置里选「合成模型」')
+        throw new Error('这个节目存的自定义声音配置缺接入/模型：点「生成节目音频」，在「合成声音」弹窗里重选一套')
       }
       const connection = this.storage.ttsConnectionGet(connectionId)
       if (!connection) throw new Error('节目声音配置里的合成接入已被删除：到节目设置里重选')
@@ -654,7 +815,11 @@ export class UtteranceService {
       const blocker = ttsModelBlocker(connection, getTtsProvider(connection.providerId), modelId)
       if (blocker) throw new Error(`合成模型现在用不了：${blocker}（接入「${connection.name}」）`)
       const cast = (cfg.cast ?? []).filter((member) => member.voiceId.trim())
-      const castFingerprint = stableHash(JSON.stringify(cast))
+      // 指纹带上默认音色；没配默认音色时与旧版指纹一致——别让升级本身把已有产物标脏
+      const defaultVoice = (cfg.voiceId ?? '').trim()
+      const castFingerprint = stableHash(
+        JSON.stringify(defaultVoice ? { cast, voice: defaultVoice } : cast)
+      )
       // capability 分流（§7.5/§7.6）：podcast 模型 → 双人轮次整期合成；其余（standard/longform
       // 未接适配器）→ standard 逐段（+整章拼接）路线
       const caps = ttsModelCapabilities(spec)
@@ -689,15 +854,16 @@ export class UtteranceService {
           }),
           modelDesc: `Podcast 双人合成 · ${spec.label}（${connection.name}）`,
           voiceDesc:
-            `${cast[0].roleName || '主持人 A'} → ${speakers[0]}、` +
-            `${cast[1].roleName || '主持人 B'} → ${speakers[1]}` +
+            `${cast[0].roleName || '主持人 A'} → ${this.voiceDisplayName(cast[0].voiceId)}、` +
+            `${cast[1].roleName || '主持人 B'} → ${this.voiceDisplayName(cast[1].voiceId)}` +
             `（${cfg.useHeadMusic ?? true ? '含' : '不含'}开场音乐 / ${cfg.useTailMusic ?? false ? '含' : '不含'}结尾音乐）`
         }
       }
       return {
         voiceFor: (u) => {
-          const voice = u.voiceId.trim() || cast[0]?.voiceId.trim() || ''
-          if (!voice) throw new Error('自定义节目声音还没配角色音色：到节目设置里配声音安排')
+          // 优先级：段落单独指定 > 角色表第一条 > 节目默认音色（都是「自定义节目声音」这一档）
+          const voice = u.voiceId.trim() || cast[0]?.voiceId.trim() || defaultVoice
+          if (!voice) throw new Error('自定义节目声音还没配音色：点「生成节目音频」，在「合成声音」弹窗里选一个音色（段落里单独指定过的不受影响）')
           return voice
         },
         snapshotFor: () => ({
@@ -708,15 +874,17 @@ export class UtteranceService {
         modelDesc: `${connection.name} / ${spec.label}`,
         voiceDesc:
           cast.length > 0
-            ? cast.map((member) => `${member.roleName}→${member.voiceId}`).join('、')
-            : '按段落指定音色'
+            ? cast.map((member) => `${member.roleName}→${this.voiceDisplayName(member.voiceId)}`).join('、')
+            : defaultVoice
+              ? `默认音色：${this.voiceDisplayName(defaultVoice)}（段落没指定就用它）`
+              : '按段落指定音色'
       }
     }
     // 跟随当前主播：快照取当前主播音色路由出的接入/模型（只用于填充快照，不形成永久绑定）
     const persona = this.persona.get()
     return {
       voiceFor: (u) => {
-        const voice = this.persona.resolveProgramVoice(undefined, u.voiceId)
+        const voice = this.persona.resolveProgramVoice(u.voiceId)
         if (!voice) throw new Error('文稿没有可用音色：当前主播没选音色，段落也没单独指定')
         return voice
       },
@@ -729,7 +897,9 @@ export class UtteranceService {
         }
       },
       modelDesc: `跟随当前主播（「${persona.name}」音色路由）`,
-      voiceDesc: persona.voiceId ? `当前主播「${persona.name}」的音色 ${persona.voiceId}` : '当前主播还没选音色'
+      voiceDesc: persona.voiceId
+        ? `当前主播「${persona.name}」的音色：${this.voiceDisplayName(persona.voiceId)}`
+        : '当前主播还没选音色'
     }
   }
 
@@ -740,19 +910,10 @@ export class UtteranceService {
     return '分段合成并拼接成整章：不承诺原生长文/播客模型的连续表演效果'
   }
 
-  /** 预制音频目录（userData/program-audio）：整章拼接产物与导入的外部音频放这里——不进 audio-cache 的 LRU 清扫 */
-  private programAudioDir(): string {
-    const dir = join(app.getPath('userData'), 'program-audio')
-    void mkdir(dir, { recursive: true }).catch(() => undefined)
-    return dir
-  }
-
-  /** ffmpeg 拼接（concat demuxer + 统一转 mp3）：段文件格式可能混着 mp3/wav，重编码保证拼得出 */
+  /** ffmpeg 拼接（concat demuxer + 统一转 mp3）：段文件格式可能混着 mp3/wav，重编码保证拼得出；清单文件落暂存区 */
   private async concatAudioFiles(files: string[], outPath: string): Promise<string> {
-    const listPath = join(
-      this.programAudioDir(),
-      `concat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`
-    )
+    const listPath = this.blobs.tmpPath(`concat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
+    await mkdir(dirname(listPath), { recursive: true }).catch(() => undefined)
     const content = files.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join('\n')
     await writeFile(listPath, content, 'utf8')
     try {
@@ -779,7 +940,7 @@ export class UtteranceService {
   }
 
   /**
-   * 导入外部音频（§7.4，program:import-audio 的后端）：拷贝进预制音频目录，
+   * 导入外部音频（§7.4，program:import-audio 的后端）：单流复制入 BlobStore（不动用户原文件），
    * 挂到指定 Scene/Utterance 的 rendered（status='ready'、external=true、快照字段记 'external'、
    * 指纹取当前文稿指纹）。外部音频不参与重新合成。
    */
@@ -808,9 +969,8 @@ export class UtteranceService {
         fingerprint = utteranceFingerprint(utterance)
       }
 
-      const safeName = basename(sourcePath, ext).replace(/[\\/:*?"<>|]/g, '_').slice(0, 40) || 'audio'
-      const audioPath = join(this.programAudioDir(), `import-${Date.now()}-${safeName}${ext}`)
-      await copyFile(sourcePath, audioPath)
+      const put = await this.blobs.putFile(sourcePath, ext.replace(/^\./, ''), { move: false })
+      const audioPath = put.path
       const rendered: RenderedAudioRef = {
         audioPath,
         status: 'ready',

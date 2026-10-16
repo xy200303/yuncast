@@ -1,4 +1,5 @@
 import type {
+  LlmApiProtocol,
   ModelAdvancedParams,
   ModelConnection,
   ThinkingLevelChoice,
@@ -9,7 +10,7 @@ import type {
 } from '../../../shared/types'
 import { piCloudProviders } from './llm/piCloud'
 import { openAiProvider } from './llm/openai'
-import { localOpenAiProvider } from './llm/localOpenAi'
+import { customProvider } from './llm/custom'
 import { volcanoTtsProvider } from './tts/volcano'
 import { bailianTtsProvider } from './tts/bailian'
 
@@ -37,11 +38,27 @@ export interface FieldSpec {
   wide?: boolean
 }
 
-/** LLM 接入支持的协议（pi-ai 内置 API 实现）：completions = 各家 OpenAI 兼容通道；responses = OpenAI 官方 Responses */
-export type LlmApi = 'openai-completions' | 'openai-responses'
+/** LLM 接入支持的协议（pi-ai 内置 API 实现）：completions = 各家 OpenAI 兼容通道；responses = OpenAI 官方 Responses；anthropic = Claude 兼容端点（Claude / Kimi Code 编程端点） */
+export type LlmApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages'
+
+/** 接入上选的协议（params.apiProtocol，词表见 shared/types）映射成 pi-ai 的 api 实现 */
+export function resolveLlmApi(
+  def: Pick<LlmProviderDef, 'defaultApi'>,
+  params: Record<string, string | number | boolean>
+): LlmApi {
+  const chosen = String(params.apiProtocol ?? '') || def.defaultApi
+  switch (chosen) {
+    case 'responses':
+      return 'openai-responses'
+    case 'anthropic':
+      return 'anthropic-messages'
+    default:
+      return 'openai-completions'
+  }
+}
 
 export interface LlmProviderDef {
-  /** 'deepseek' | 'qwen' | 'doubao' | 'kimi' | 'zai' | 'openai' | 'local-openai' */
+  /** 'deepseek' | 'qwen' | 'doubao' | 'kimi' | 'zai' | 'openai' | 'local-openai' | 'kimi-coding' */
   id: string
   label: string
   /** 渲染层图标键，见 ProviderIcon */
@@ -49,7 +66,12 @@ export interface LlmProviderDef {
   /** 一句话说明，UI 里做副标题 */
   note: string
   capabilities: { tools: boolean; streaming: boolean; contextWindow?: number }
-  /** 各家自有参数（baseUrl / region / apiKey …） */
+  /**
+   * 默认 API 协议（params.apiProtocol 没选时用它）：服务商只是预设（地址/说明/图标），
+   * 协议在接入编辑器里可自由切换。
+   */
+  defaultApi: LlmApiProtocol
+  /** 各家自有参数（baseUrl / region / apiKey …）。协议不在这里——它是接入级通用配置 */
   configFields: FieldSpec[]
   /** 该服务商的兜底模型名：只在完全没给出模型名时用（如本地服务），不是接入级的默认模型 */
   defaultModel: string
@@ -64,7 +86,7 @@ export interface LlmProviderDef {
    * 只填确信的官方值；capabilities.contextWindow 是全服务商兜底，这里是逐型号精修。
    */
   modelContextWindows?: Record<string, number>
-  /** 组装成 pi-agent 可用的模型描述（协议由接入配置决定：completions / responses） */
+  /** 组装成 pi-agent 可用的模型描述（地址/密钥/模型名；协议由 resolveLlmApi 统一判定） */
   toModelConfig(
     params: Record<string, string | number | boolean>,
     model: string
@@ -72,7 +94,6 @@ export interface LlmProviderDef {
     baseUrl: string
     apiKey: string
     model: string
-    api: LlmApi
   }
 }
 
@@ -94,7 +115,7 @@ export interface ResolvedModel {
   advanced?: ModelAdvancedParams
 }
 
-const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, openAiProvider, localOpenAiProvider]
+const LLM_PROVIDER_DEFS: LlmProviderDef[] = [...piCloudProviders, openAiProvider, customProvider]
 
 export function listLlmProviders(): LlmProviderManifest[] {
   return LLM_PROVIDER_DEFS.map(({ toModelConfig: _toModelConfig, ...manifest }) => manifest)

@@ -13,11 +13,16 @@ import { AnchorsPage } from './components/AnchorsPage'
 import { KnowledgePage } from './components/KnowledgePage'
 import { VoicesPage } from './components/VoicesPage'
 import { ProgramsPage } from './components/ProgramsPage'
+import { SessionsPage } from './components/SessionsPage'
 import { StatsPage } from './components/StatsPage'
 import { SettingsDialog } from './components/SettingsDialog'
+import { AgentPanel } from './components/AgentPanel'
+import { OnboardingPage } from './components/OnboardingPage'
 import { useAppStore, type NavPage } from './stores/useAppStore'
 import { audioEngine } from './audio/engine'
 import { streamPlayer } from './audio/streamPlayer'
+import { ONBOARDING_DONE_KEY } from './lib/onboarding'
+import { llmReady } from '../../shared/types'
 
 const PAGES: Record<NavPage, ComponentType> = {
   live: LivePage,
@@ -25,11 +30,15 @@ const PAGES: Record<NavPage, ComponentType> = {
   knowledge: KnowledgePage,
   voices: VoicesPage,
   programs: ProgramsPage,
+  sessions: SessionsPage,
   stats: StatsPage
 }
 
 export default function App() {
   const page = useAppStore((s) => s.page)
+  const onboardingOpen = useAppStore((s) => s.onboardingOpen)
+  const agentPanelMode = useAppStore((s) => s.agentPanelMode)
+  const agentPanelWidth = useAppStore((s) => s.agentPanelWidth)
   const loadConfig = useAppStore((s) => s.loadConfig)
   const loadModelLibrary = useAppStore((s) => s.loadModelLibrary)
   const syncSystemTheme = useAppStore((s) => s.syncSystemTheme)
@@ -43,8 +52,21 @@ export default function App() {
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
-    loadConfig()
-    void loadModelLibrary()
+    void (async () => {
+      await Promise.all([loadConfig(), loadModelLibrary()])
+      // 首跑引导（docs/REDESIGN 4.9）：没标过完成且清单未就绪 → 首屏落配置清单页；
+      // 全部就绪（老用户）顺手补上完成标记，首屏照常落直播台
+      if (localStorage.getItem(ONBOARDING_DONE_KEY) === '1') return
+      const [personas, programs] = await Promise.all([window.api.persona.list(), window.api.program.list()])
+      const state = useAppStore.getState()
+      const ready =
+        llmReady(state.connections, state.config.director) &&
+        state.ttsConnections.some((connection) => connection.ready) &&
+        personas.length > 0 &&
+        programs.length > 0
+      if (ready) localStorage.setItem(ONBOARDING_DONE_KEY, '1')
+      else state.setOnboardingOpen(true)
+    })()
     const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
     const onTheme = () => syncSystemTheme()
     themeQuery.addEventListener('change', onTheme)
@@ -88,16 +110,14 @@ export default function App() {
       setPool(snapshot)
     })
     void window.api.pool.snapshot().then(setPool)
-    setLoopRunning(true)
     return () => {
       offPcm()
       offEnd()
       offLevel()
       offSnapshot()
       streamPlayer.stop()
-      setLoopRunning(false)
     }
-  }, [setPool, setLevels, setLoopRunning])
+  }, [setPool, setLevels])
 
   // 主播 Agent 状态 + 评论事件 + 推流状态订阅
   useEffect(() => {
@@ -106,10 +126,15 @@ export default function App() {
     const offAgent = window.api.agent.onStatus((status) => {
       const prev = useAppStore.getState().agent.state
       setAgent(status)
+      // 播报暂停态以主进程为准（speakingPaused 随状态广播来，重启后不失真）
+      setLoopRunning(status.speakingPaused !== true)
       // 节目开播会按节目把人设卡切成当前主播，徽章要跟着新的卡走
       if (status.state !== prev) void refreshPersona()
     })
-    void window.api.agent.status().then(setAgent)
+    void window.api.agent.status().then((status) => {
+      setAgent(status)
+      setLoopRunning(status.speakingPaused !== true)
+    })
     void window.api.stream.stats().then(setStream)
     void window.api.connector.status().then(setConnector)
     const offStream = window.api.stream.onStats((stats) => {
@@ -127,13 +152,16 @@ export default function App() {
       offConnector()
       offVoices()
     }
-  }, [setAgent, setStream, setConnector, setVoices, setConnector])
+  }, [setAgent, setStream, setConnector, setVoices, setLoopRunning])
 
   return (
     <TooltipProvider>
       <SidebarProvider className="h-svh min-h-0">
         <AppSidebar />
-        <SidebarInset className="min-h-0 overflow-hidden">
+        <SidebarInset
+          className="min-h-0 overflow-hidden transition-[margin] duration-200"
+          style={agentPanelMode === 'docked' ? { marginRight: agentPanelWidth } : undefined}
+        >
           <DragStrip />
           {/* 五个页面常驻不卸载，只切换显隐（不用会卸载内容的 Tabs 组件） */}
           <div className="flex min-h-0 flex-1 flex-col">
@@ -148,7 +176,10 @@ export default function App() {
           </div>
           <StatusBar />
         </SidebarInset>
+        <AgentPanel />
         <SettingsDialog />
+        {/* 首跑引导：全屏覆盖层（z-40，设置弹窗在它上面） */}
+        {onboardingOpen && <OnboardingPage />}
         {/* Toaster 提到 body 层：否则会被布局树的堆叠上下文困住，弹窗遮罩会盖住提示 */}
         {createPortal(<Toaster />, document.body)}
       </SidebarProvider>

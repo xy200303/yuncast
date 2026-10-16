@@ -22,6 +22,12 @@ export class ScriptService {
    */
   onContentChanged: ((programId: string) => void) | null = null
 
+  /**
+   * 节目配置落库后的回调（saveProgram / 卡司、白名单、互动总闸等都在里面）：
+   * index.ts 接到 AgentService.refreshProgramGate，让播出中改的自动响应白名单/互动总闸立即生效
+   */
+  onProgramsChanged: ((programId: string) => void) | null = null
+
   constructor(private readonly storage: StorageService) {}
 
   // ---------- 剧本 ----------
@@ -81,7 +87,13 @@ export class ScriptService {
       broadcastMode: input.broadcastMode,
       finishMode: input.finishMode,
       allowLiveEvents: input.allowLiveEvents !== false,
-      enabledTriggerIds: [...new Set((input.enabledTriggerIds ?? []).map((t) => t.trim()).filter(Boolean))],
+      // 新节目默认全勾内建（已启用）触发器，用户之后可在开播确认页/节目编辑里减掉（docs/REDESIGN §7）
+      enabledTriggerIds: existing
+        ? [...new Set((input.enabledTriggerIds ?? []).map((t) => t.trim()).filter(Boolean))]
+        : (input.enabledTriggerIds?.length
+            ? [...new Set(input.enabledTriggerIds.map((t) => t.trim()).filter(Boolean))]
+            : this.storage.triggerList().filter((t) => t.enabled).map((t) => t.id)),
+      presenterIds: [...new Set((input.presenterIds ?? []).map((p) => p.trim()).filter(Boolean))],
       audioConfig: { ...DEFAULT_PROGRAM_AUDIO_CONFIG, ...input.audioConfig },
       scriptId: input.scriptId,
       currentSceneIdx: existing?.currentSceneIdx ?? 0,
@@ -90,6 +102,8 @@ export class ScriptService {
       updatedAt: Date.now()
     }
     this.storage.programSave(program)
+    // 播出中也允许改（自动响应白名单 / 互动总闸 / 卡司）：配置一变就刷新引擎侧接线，不必等下播
+    this.onProgramsChanged?.(program.id)
     return program
   }
 
@@ -185,7 +199,7 @@ export class ScriptService {
     return { scene: script.scenes[next], index: next, total: script.scenes.length }
   }
 
-  /** 跳转到指定场景（goto_scene 工具 / 播控台切场景按钮的后端）；越界返回 null */
+  /** 跳转到指定场景（goto_scene 工具 / 直播台切场景按钮的后端）；越界返回 null */
   gotoScene(idx: number): { scene: ScriptScene; index: number; total: number } | null {
     const { program, script } = this.getActive()
     if (!program || !script || script.scenes.length === 0) return null
@@ -203,15 +217,10 @@ export class ScriptService {
 
   /**
    * 写/清某场景的整章预制音频引用（存在 scripts.scenes JSON 内）。
-   * 不动 updatedAt：预制产物更新不是用户编辑剧本，不该触发版本冲突误判。
+   * 走 storage 的专用通道（带 blob 引用钩子）；不动 updatedAt：预制产物更新不是用户编辑剧本，不该触发版本冲突误判。
    */
   setSceneRendered(scriptId: string, sceneId: string, rendered: ScriptScene['rendered'] | null): void {
-    const script = this.getScript(scriptId)
-    if (!script) return
-    const scenes = script.scenes.map((s) =>
-      s.id === sceneId ? { ...s, rendered: rendered ?? undefined } : s
-    )
-    this.storage.scriptSave({ ...script, scenes })
+    this.storage.scriptSetSceneRendered(scriptId, sceneId, rendered ?? null)
   }
 
   // ---------- 主播自编剧本（create_scene/update_scene/remove_scene 工具的后端） ----------
@@ -299,6 +308,9 @@ export class ScriptService {
     const { program, script } = this.ensureProgramScript(programId)
     const i = Math.floor(index) - 1
     if (i < 0 || i >= script.scenes.length) throw new Error(`没有第 ${index} 场（现在共 ${script.scenes.length} 场）`)
+    // 被删场挂着预制音频的，释放 blob 引用（scriptSave 是通用整存，不过钩子，这里显式补）
+    const removedPath = script.scenes[i].rendered?.audioPath
+    if (removedPath) this.storage.onAudioPathChange?.('scene_rendered', script.scenes[i].id, removedPath, null)
     const scenes = script.scenes.filter((_, at) => at !== i)
     // 删到空剧本允许（主播自编可能推倒重来）：saveScript 校验至少要有一场，空序列直接落库
     if (scenes.length === 0) {

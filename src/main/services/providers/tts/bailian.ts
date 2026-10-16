@@ -85,6 +85,7 @@ const models: TtsModelSpec[] = [
     needsWorkspace: true,
     streaming: true,
     instruction: true,
+    inlineTags: true,
     cloneTarget: true,
     params: maasParams(),
     voices: []
@@ -97,6 +98,7 @@ const models: TtsModelSpec[] = [
     needsWorkspace: true,
     streaming: true,
     instruction: true,
+    inlineTags: true,
     cloneTarget: true,
     params: maasParams(),
     voices: []
@@ -109,6 +111,7 @@ const models: TtsModelSpec[] = [
     needsWorkspace: true,
     streaming: true,
     instruction: true,
+    inlineTags: true,
     cloneTarget: true,
     params: maasParams(),
     voices: []
@@ -209,7 +212,7 @@ export const bailianTtsProvider: TtsProviderManifest = {
       label: '业务空间 ID',
       type: 'text',
       placeholder: 'CosyVoice / Qwen-Audio / 声音复刻必须填',
-      help: 'qwen3-tts-flash 不需要；其余模型端点形如 https://{业务空间ID}.cn-beijing.maas.aliyuncs.com',
+      help: 'qwen3-tts-flash 不用填；用 CosyVoice/声音复刻才要——在百炼控制台左上角「工作空间（业务空间）」详情里复制，形如 wks-xxxx',
       wide: true
     },
     {

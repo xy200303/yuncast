@@ -8,7 +8,9 @@ import type {
   ProgramExportOptions,
   ProgramExportPlan,
   ProgramExportProgress,
-  ProgramExportResult
+  ProgramExportResult,
+  SessionExportOptions,
+  SessionExportResult
 } from '../../shared/types'
 import { listAudioUnits, type AudioUnit } from './programUnits'
 import { getFfmpegPath } from './stream/ffmpeg/bin'
@@ -64,8 +66,8 @@ function sanitizeFileName(name: string): string {
 export class ExportService {
   /** 逐单元进度广播（index.ts 接 IPC.programExportEvent） */
   onProgress: ((progress: ProgramExportProgress) => void) | null = null
-  /** 进行中的任务（全局单任务；cancel 杀当前 ffmpeg 子进程） */
-  private running: { cancelled: boolean; proc: ChildProcess | null } | null = null
+  /** 进行中的任务（全局单任务；cancel 杀所有在跑的 ffmpeg 子进程） */
+  private running: { cancelled: boolean; procs: Set<ChildProcess> } | null = null
 
   constructor(
     private readonly storage: StorageService,
@@ -76,7 +78,7 @@ export class ExportService {
   cancel(): boolean {
     if (!this.running) return false
     this.running.cancelled = true
-    this.running.proc?.kill()
+    for (const proc of this.running.procs) proc.kill()
     return true
   }
 
@@ -179,7 +181,7 @@ export class ExportService {
       ])
     )
 
-    const task = { cancelled: false, proc: null as ChildProcess | null }
+    const task = { cancelled: false, procs: new Set<ChildProcess>() }
     this.running = task
     const files: string[] = []
     // 合并导出的临时文件放输出目录下 .export-tmp-*：成功/失败/取消都清理
@@ -191,25 +193,55 @@ export class ExportService {
     try {
       if (tmpDir) await mkdir(tmpDir, { recursive: true })
       const total = units.length
-      for (let i = 0; i < total; i++) {
-        if (task.cancelled) break
-        const unit = units[i]
-        emit({ programId: program.id, status: 'running', current: i + 1, total, title: unit.title })
-        // 导出中途外部音频被移走：逐单元再查一次，不静默跳过
-        if (!existsSync(unit.rendered!.audioPath)) {
-          throw new Error(`「${unit.title}」的音频文件在导出过程中不见了（可能被移动或清理），已中止`)
+      // 2 路并行转码：ffmpeg 是 CPU 活，双 worker 接近翻倍；merged 模式临时文件按序号命名，合并顺序不变
+      const produced: (string | null)[] = new Array<string | null>(total).fill(null)
+      // 分章模式文件名占位登记：两个 worker 同时算 uniquePath 可能撞名（existsSync 之间有空窗）
+      const reserved = new Set<string>()
+      const reservePath = (index: number, unit: AudioUnit): string => {
+        const base =
+          this.applyTemplate(options.fileNameTemplate || DEFAULT_TEMPLATE, program.name, index, unit) +
+          '.' +
+          options.format
+        const ext = extname(base)
+        const stem = basename(base, ext)
+        let candidate = join(outputDir, base)
+        for (let n = 2; existsSync(candidate) || reserved.has(candidate); n++) {
+          candidate = join(outputDir, `${stem}-${n}${ext}`)
         }
-        const dest = tmpDir
-          ? join(tmpDir, `${String(i).padStart(3, '0')}.${options.format}`)
-          : this.uniquePath(
-              outputDir,
-              this.applyTemplate(options.fileNameTemplate || DEFAULT_TEMPLATE, program.name, i, unit) +
-                '.' +
-                options.format
-            )
-        await this.processUnit(task, unit.rendered!.audioPath, dest, options.format, options.loudness)
-        if (!tmpDir) files.push(dest)
+        reserved.add(candidate)
+        return candidate
       }
+      let next = 0
+      let completed = 0
+      let firstError: unknown = null
+      const worker = async (): Promise<void> => {
+        while (!task.cancelled && !firstError) {
+          const i = next
+          next += 1
+          if (i >= total) return
+          const unit = units[i]
+          emit({ programId: program.id, status: 'running', current: completed + 1, total, title: unit.title })
+          // 导出中途外部音频被移走：逐单元再查一次，不静默跳过
+          if (!existsSync(unit.rendered!.audioPath)) {
+            firstError = new Error(`「${unit.title}」的音频文件在导出过程中不见了（可能被移动或清理），已中止`)
+            return
+          }
+          const dest = tmpDir
+            ? join(tmpDir, `${String(i).padStart(3, '0')}.${options.format}`)
+            : reservePath(i, unit)
+          try {
+            await this.processUnit(task, unit.rendered!.audioPath, dest, options.format, options.loudness)
+          } catch (error) {
+            if (!firstError) firstError = error
+            return
+          }
+          produced[i] = dest
+          completed += 1
+        }
+      }
+      await Promise.all([worker(), worker()])
+      if (!tmpDir) for (const file of produced) if (file) files.push(file)
+      if (firstError) throw firstError
       if (task.cancelled) {
         emit({ programId: program.id, status: 'cancelled', current: 0, total, title: '' })
         return {
@@ -264,6 +296,133 @@ export class ExportService {
     }
   }
 
+  /**
+   * 场记导出：一场实际播出的音频按播放顺序导出（与节目导出同一套 ffmpeg 管线）。
+   * 数据源 = speech_items 里 session_id 指向这场、播过（done/interrupted）且音频文件还在的条目；
+   * 流式播报不落文件，跳过并在结果里明示条数；loop 重播的同一份音频按播出次数重复收录（现场事实）。
+   */
+  async exportSession(options: SessionExportOptions): Promise<SessionExportResult> {
+    if (this.running) return { ok: false, error: '已有导出任务在进行，等它完成或先取消' }
+    const session = this.storage.sessionGet(options.sessionId)
+    if (!session) return { ok: false, error: '场次不存在（可能刚被删除）' }
+    const played = this.storage
+      .sessionSpeechItems(session.id)
+      .filter((item) => item.status === 'done' || item.status === 'interrupted')
+    const sources: { path: string; title: string }[] = []
+    for (const item of played) {
+      if (item.audioPath && existsSync(item.audioPath)) {
+        sources.push({ path: item.audioPath, title: item.text.slice(0, 20) })
+      }
+    }
+    const skippedStream = played.length - sources.length
+    if (sources.length === 0) {
+      return { ok: false, error: '这场没有可导出的播出音频（流式播报不落文件，只有合成音频能导出）', skippedStream }
+    }
+
+    const outputDir = options.outputDir.trim()
+    if (!outputDir) return { ok: false, error: '还没选输出目录' }
+    try {
+      await mkdir(outputDir, { recursive: true })
+      const probe = join(outputDir, `.export-probe-${Date.now()}`)
+      await writeFile(probe, '')
+      await rm(probe, { force: true })
+    } catch {
+      return { ok: false, error: `输出目录不可写：${outputDir}（换个目录，或检查磁盘权限）` }
+    }
+
+    // 文件名：{节目名}-{开播日期时间}[-{序号}]；分章模式按播出顺序编号
+    const stamp = new Date(session.startedAt)
+    const pad = (n: number, w = 2) => String(n).padStart(w, '0')
+    const stem =
+      `${sanitizeFileName(session.programName)}-` +
+      `${stamp.getFullYear()}${pad(stamp.getMonth() + 1)}${pad(stamp.getDate())}-${pad(stamp.getHours())}${pad(stamp.getMinutes())}`
+
+    const task = { cancelled: false, procs: new Set<ChildProcess>() }
+    this.running = task
+    const files: string[] = []
+    const tmpDir =
+      options.mode === 'merged'
+        ? join(outputDir, `.export-tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+        : null
+    const emit = (progress: ProgramExportProgress) => this.onProgress?.(progress)
+    try {
+      if (tmpDir) await mkdir(tmpDir, { recursive: true })
+      const total = sources.length
+      const produced: (string | null)[] = new Array<string | null>(total).fill(null)
+      const reserved = new Set<string>()
+      const reservePath = (index: number): string => {
+        const base = `${stem}-${pad(index + 1, 3)}.${options.format}`
+        let candidate = join(outputDir, base)
+        for (let n = 2; existsSync(candidate) || reserved.has(candidate); n++) {
+          candidate = join(outputDir, `${stem}-${pad(index + 1, 3)}-${n}.${options.format}`)
+        }
+        reserved.add(candidate)
+        return candidate
+      }
+      let next = 0
+      let completed = 0
+      let firstError: unknown = null
+      const worker = async (): Promise<void> => {
+        while (!task.cancelled && !firstError) {
+          const i = next
+          next += 1
+          if (i >= total) return
+          const src = sources[i]
+          emit({ programId: session.id, status: 'running', current: completed + 1, total, title: src.title })
+          if (!existsSync(src.path)) {
+            firstError = new Error('播出音频在导出过程中不见了（可能被清理），已中止')
+            return
+          }
+          const dest = tmpDir ? join(tmpDir, `${String(i).padStart(3, '0')}.${options.format}`) : reservePath(i)
+          try {
+            await this.processUnit(task, src.path, dest, options.format, options.loudness)
+          } catch (error) {
+            if (!firstError) firstError = error
+            return
+          }
+          produced[i] = dest
+          completed += 1
+        }
+      }
+      await Promise.all([worker(), worker()])
+      if (!tmpDir) for (const file of produced) if (file) files.push(file)
+      if (firstError) throw firstError
+      if (task.cancelled) {
+        emit({ programId: session.id, status: 'cancelled', current: 0, total, title: '' })
+        return {
+          ok: false,
+          cancelled: true,
+          outputDir,
+          files,
+          skippedStream,
+          error: files.length > 0 ? `已取消：已产出的 ${files.length} 个文件保留在输出目录` : '已取消：还没有产出文件'
+        }
+      }
+      if (tmpDir) {
+        emit({ programId: session.id, status: 'running', current: total, total, title: '合并为一个文件' })
+        const merged = this.uniquePath(outputDir, `${stem}.${options.format}`)
+        await this.concatUnits(task, sources.map((_, i) => join(tmpDir, `${String(i).padStart(3, '0')}.${options.format}`)), merged)
+        files.push(merged)
+      }
+      emit({ programId: session.id, status: 'done', current: total, total, title: '' })
+      return { ok: true, outputDir, files, skippedStream }
+    } catch (error) {
+      const message = task.cancelled ? '已取消' : error instanceof Error ? error.message : String(error)
+      emit({ programId: session.id, status: task.cancelled ? 'cancelled' : 'error', current: 0, total: sources.length, title: '', error: message })
+      return {
+        ok: false,
+        cancelled: task.cancelled || undefined,
+        outputDir,
+        files,
+        skippedStream,
+        error: files.length > 0 ? `${message}（已产出的 ${files.length} 个文件保留）` : message
+      }
+    } finally {
+      this.running = null
+      if (tmpDir) await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined)
+    }
+  }
+
   /** 文件名模板替换：{节目名} {序号}（两位） {章节名}，再过滤非法字符 */
   private applyTemplate(template: string, programName: string, index: number, unit: AudioUnit): string {
     const applied = template
@@ -289,7 +448,7 @@ export class ExportService {
    * （数组参数不用 shell，Windows 空格路径安全）。
    */
   private async processUnit(
-    task: { cancelled: boolean; proc: ChildProcess | null },
+    task: { cancelled: boolean; procs: Set<ChildProcess> },
     src: string,
     dest: string,
     format: ProgramExportFormat,
@@ -310,7 +469,7 @@ export class ExportService {
 
   /** 合并：临时产物已统一成同编码，concat demuxer 流拷贝；拷不动（罕见）时重编码兜底 */
   private async concatUnits(
-    task: { cancelled: boolean; proc: ChildProcess | null },
+    task: { cancelled: boolean; procs: Set<ChildProcess> },
     inputs: string[],
     dest: string
   ): Promise<void> {
@@ -341,13 +500,14 @@ export class ExportService {
 
   /** 跑一次 ffmpeg：记录子进程供 cancel 杀；退出码非 0 或产物缺失 → 抛中文错误（取 stderr 首行） */
   private async runFfmpeg(
-    task: { cancelled: boolean; proc: ChildProcess | null },
+    task: { cancelled: boolean; procs: Set<ChildProcess> },
     args: string[],
     outPath: string
   ): Promise<void> {
+    let proc: ChildProcess | null = null
     const result = await new Promise<{ code: number; stderr: string }>((resolvePromise) => {
-      const proc = spawn(getFfmpegPath(), args, { stdio: ['ignore', 'ignore', 'pipe'] })
-      task.proc = proc
+      proc = spawn(getFfmpegPath(), args, { stdio: ['ignore', 'ignore', 'pipe'] })
+      task.procs.add(proc)
       let stderr = ''
       proc.stderr?.on('data', (chunk: Buffer) => {
         stderr += chunk.toString()
@@ -355,7 +515,7 @@ export class ExportService {
       proc.on('error', (error) => resolvePromise({ code: -1, stderr: String(error) }))
       proc.on('close', (code) => resolvePromise({ code: code ?? -1, stderr }))
     })
-    task.proc = null
+    if (proc) task.procs.delete(proc)
     if (task.cancelled) {
       await rm(outPath, { force: true }).catch(() => undefined)
       throw new Error('已取消')

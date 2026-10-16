@@ -1,8 +1,8 @@
-import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { dirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { app } from 'electron'
 import type { StorageService } from './StorageService'
+import type { BlobStoreService } from './BlobStoreService'
 import {
   findTtsCatalogVoice,
   getTtsProvider,
@@ -13,7 +13,9 @@ import {
   ttsModelSpec
 } from './providers/registry'
 import { synthesizeVolcanoPodcast } from './providers/tts/podcastVolcano'
+import { friendlyError } from './errorTranslate'
 import { validatePodcastRequest } from '../../shared/podcast'
+import { compileSpeechMarkup, hasSpeechMarkup, type SpeechCompileTarget } from '../../shared/speechTags'
 import {
   TTS_PROVIDER_SHORT,
   TTS_MODEL_KIND_LABEL,
@@ -36,7 +38,7 @@ import {
  *   X-Api-Key + X-Api-Resource-Id 鉴权，逐行 JSON 累积 base64 音频后整段落盘（不接流式播出）。
  * - 阿里云百炼：qwen3-tts 系走 DashScope 通用端点，Qwen-Audio / CosyVoice 系走 maas 业务空间端点；
  *   SSE 真流式见 synthesizeBailianStream。
- * 预合成产物写入 userData/audio-cache。
+ * 预合成产物经 BlobStore（userData/blobs，内容寻址 + tts_cache 别名）缓存，同文同参只存一份。
  *
  * 凭据按接入存在 tts_connections（一条 = 一个服务商账号：凭据 + 启用模型 + 实时开关），
  * 没有默认模型 / 默认音色 / 默认接入——用哪条接入的哪个模型完全由音色自己决定。
@@ -112,15 +114,17 @@ function asNumber(value: unknown, fallback: number): number {
   return Number.isFinite(n) ? n : fallback
 }
 
-/** 音频缓存上限（超出按最久未用清理，被话术条目引用的文件不删）；可用 AGENT_ANCHOR_AUDIO_CACHE_MB 覆盖，便于运维与自测 */
-const AUDIO_CACHE_MAX_BYTES = Math.max(0, Number(process.env.AGENT_ANCHOR_AUDIO_CACHE_MB ?? 500)) * 1024 * 1024
-
 export class TtsService {
   /** 内容寻址缓存的命中/未命中计数（诊断用） */
   private cacheHits = 0
   private cacheMisses = 0
+  /** 「稿子带标记但被剥成纯文本」提醒：每路由只警告一次 */
+  private readonly markupStrippedWarned = new Set<string>()
 
-  constructor(private readonly storage: StorageService) {}
+  constructor(
+    private readonly storage: StorageService,
+    private readonly blobs: BlobStoreService
+  ) {}
 
   /**
    * 缓存键：把"会影响音频的一切"（服务商 / 接入 / 模型 / 音色 / 参数 / 文本）哈希成一个短串。
@@ -169,53 +173,18 @@ export class TtsService {
     }
   }
 
-  /**
-   * 缓存清理：按"最久没用"排，超出上限就删；**被话术条目引用的文件一律不删**
-   * （条目可能还没播完/还要重播），另外只清 1 小时前落盘的，避免误删正在合成的。
-   */
-  async sweepAudioCache(maxBytes = AUDIO_CACHE_MAX_BYTES): Promise<{ removed: number; bytes: number }> {
-    /**
-     * 路径统一归一化再比较：库里存过的路径可能是正斜杠（或大小写不同），
-     * 而这里用 join() 得到的是反斜杠——不归一化就会把"还有条目在引用"的文件当孤儿删掉，
-     * 表现就是还没播的音频被清走（"有字无声"那一类事故）。
-     */
-    const normalize = (value: string): string => resolve(value).toLowerCase()
-    const dir = this.audioCacheDir()
-    const referenced = new Set(this.storage.speechReferencedAudioPaths().map(normalize))
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => [])
-    const files: { path: string; size: number; mtime: number }[] = []
-    for (const entry of entries) {
-      if (!entry.isFile()) continue
-      const path = join(dir, entry.name)
-      const info = await stat(path).catch(() => null)
-      if (!info) continue
-      files.push({ path, size: info.size, mtime: info.mtimeMs })
-    }
-    files.sort((a, b) => a.mtime - b.mtime)
-    let total = files.reduce((sum, file) => sum + file.size, 0)
-    let removed = 0
-    let bytes = 0
-    const now = Date.now()
-    for (const file of files) {
-      const keep = referenced.has(normalize(file.path)) || now - file.mtime < 3600_000
-      if (keep) continue
-      if (total <= maxBytes) break
-      await rm(file.path, { force: true }).catch(() => undefined)
-      total -= file.size
-      removed += 1
-      bytes += file.size
-    }
-    if (removed > 0) {
-      console.log(`[TTS] 缓存清理：删除 ${removed} 个文件（${(bytes / 1024 / 1024).toFixed(1)}MB），当前 ${(total / 1024 / 1024).toFixed(1)}MB`)
-    }
-    return { removed, bytes }
+  /** 缓存别名命中 → blob 路径；别名还在但 blob 已被 GC 的顺手清掉 */
+  private cachedPathFor(cacheKey: string): string | null {
+    const hash = this.storage.ttsCacheGet(cacheKey)
+    if (!hash) return null
+    const path = this.blobs.pathOf(hash)
+    if (!path) this.storage.ttsCacheDelete(cacheKey)
+    return path
   }
 
-  /** 合成音频缓存目录：主进程音频管线从这里取文件解码成本机监听/推流用的 PCM */
-  audioCacheDir(): string {
-    const dir = join(app.getPath('userData'), 'audio-cache')
-    void mkdir(dir, { recursive: true }).catch(() => undefined)
-    return dir
+  /** 路径归不归 BlobStore 管（内容寻址缓存）：调用方删「临时」文件前必须先问，桶里的 blob 别处还在引用 */
+  isBlobPath(path: string): boolean {
+    return this.blobs.isBlobPath(path)
   }
 
   /** 该音色会走哪家（流式通道据此选实现；接入没配就抛中文原因） */
@@ -294,7 +263,8 @@ export class TtsService {
     const hits = findTtsCatalogVoice(voice)
     if (hits.length === 0) {
       throw new Error(
-        `音色 ${voice} 不在模型目录里：到主播团选一个带接入与模型的音色（手动输入的音色要写成 接入id::模型id::音色）`
+        `音色「${voice}」合不了声：它不是音色库里的克隆音色，系统音色目录里也查不到（多半是旧数据里手输的裸音色 id）。` +
+          `重新选一次音色即可——手动输入的音色要在选择器里走「手动输入音色 ID」，挂在选好的接入与模型下`
       )
     }
     // 同名音色可能属于多个模型（如 longanyang 同属 v3-plus / v3-flash）：按 manifest 顺序逐家试
@@ -374,16 +344,12 @@ export class TtsService {
   private routeManual(ref: ManualVoiceRef): TtsRoute {
     const connection = this.storage.ttsConnectionGet(ref.connectionId)
     if (!connection) {
-      throw new Error(
-        `手动音色里的接入（${ref.connectionId}）不存在：到主播团重新选一个带接入与模型的音色`
-      )
+      throw new Error('这个手动音色挂的语音接入已经删除了：重新选一次音色（选择器里会只列出还在的接入）')
     }
     const def = getTtsProvider(connection.providerId)
     const spec = ttsModelSpec(connection.providerId, ref.modelId)
     if (!spec) {
-      throw new Error(
-        `手动音色里的模型 ${ref.modelId} 不在${def?.label ?? connection.providerId}目录里：到主播团重新选一个带接入与模型的音色`
-      )
+      throw new Error(`这个手动音色挂的模型 ${ref.modelId} 不在${def?.label ?? connection.providerId}目录里：重新选一次音色`)
     }
     const blocker = ttsModelBlocker(connection, def, ref.modelId)
     if (blocker) {
@@ -450,9 +416,14 @@ export class TtsService {
       if (connection.providerId !== 'volcano') {
         throw new Error(`「${spec.label}」的合成通道还没接入（目前只有火山 PodcastAPI 适配器）`)
       }
-      const invalid = validatePodcastRequest(request, caps)
+      // 播客模型不解析任何演法标记：编译成纯文本再合成（cot 留正文、fx 留拟声词）
+      const cleanRequest = {
+        ...request,
+        turns: request.turns.map((turn) => ({ ...turn, text: compileSpeechMarkup(turn.text, 'plain') }))
+      }
+      const invalid = validatePodcastRequest(cleanRequest, caps)
       if (invalid) throw new Error(invalid)
-      return this.synthesizePodcast(itemId, request, connection, spec, signal, programId)
+      return this.synthesizePodcast(itemId, cleanRequest, connection, spec, signal, programId)
     }
 
     if (caps.input === 'dialogueTurns') {
@@ -513,19 +484,16 @@ export class TtsService {
       }
     }
 
-    // 内容寻址缓存：轮次稿 + 接入 + 模型 + 音乐/语速/格式一起进键
-    const cachePath = join(
-      this.audioCacheDir(),
-      `tts-${createHash('sha1')
-        .update(JSON.stringify({ p: 'podcast', c: connection.id, m: spec.id, f: format, r: speechRate, q: request }))
-        .digest('hex')
-        .slice(0, 20)}.${extension}`
-    )
-    const cached = await stat(cachePath).catch(() => null)
-    if (cached && cached.size > 0) {
+    // 内容寻址缓存：轮次稿 + 接入 + 模型 + 音乐/语速/格式一起进键（别名格式沿用 tts-<sha1-20>）
+    const cacheKey = `tts-${createHash('sha1')
+      .update(JSON.stringify({ p: 'podcast', c: connection.id, m: spec.id, f: format, r: speechRate, q: request }))
+      .digest('hex')
+      .slice(0, 20)}`
+    const cachedPath = this.cachedPathFor(cacheKey)
+    if (cachedPath) {
       this.cacheHits += 1
       console.log(`[TTS] 播客缓存命中（省一次整期合成）：${request.turns.length} 轮`)
-      return { audioPath: cachePath }
+      return { audioPath: cachedPath }
     }
     this.cacheMisses += 1
 
@@ -541,14 +509,11 @@ export class TtsService {
       signal,
       onLog: (message) => console.log(`[TTS] 播客合成：${message}`)
     })
-    const tempPath = join(this.audioCacheDir(), `${itemId}.${extension}`)
+    const tempPath = this.blobs.tmpPath(`${itemId}.${extension}`)
     await mkdir(dirname(tempPath), { recursive: true }).catch(() => undefined)
     await writeFile(tempPath, result.audio)
-    try {
-      await rename(tempPath, cachePath)
-    } catch {
-      await rm(tempPath, { force: true }).catch(() => undefined)
-    }
+    const put = await this.blobs.putFile(tempPath, extension)
+    this.storage.ttsCachePut(cacheKey, put.hash)
     console.log(
       `[TTS] 播客整期合成完成：${request.turns.length} 轮，${(result.audio.length / 1024).toFixed(0)}KB` +
         `${result.fromAudioUrl ? '（服务端整期成品）' : '（逐轮拼接）'}`
@@ -559,7 +524,7 @@ export class TtsService {
       request.turns.reduce((sum, turn) => sum + turn.text.length, 0),
       programId
     )
-    return { audioPath: cachePath, durationMs: result.durationMs }
+    return { audioPath: put.path, durationMs: result.durationMs }
   }
 
   /**
@@ -601,6 +566,52 @@ export class TtsService {
     }
   }
 
+  /**
+   * 稿内演法标记按路由编译成目标模型方言（shared/speechTags，单向）：
+   * cot/fx/pause 是稿子里的唯一标准写法；火山复刻 expressive 编成 cot 方言、百炼 Qwen-Audio 系
+   * 编成方括号标签方言、其余模型全剥留正文。不认识的标记绝不原样发给模型（会照字面念出来）。
+   */
+  private markupFor(route: TtsRoute, text: string): string {
+    const target: SpeechCompileTarget =
+      route.provider === 'volcano' &&
+      route.modelId === 'seed-icl-2.0' &&
+      String(route.params.model ?? '') === 'seed-tts-2.0-expressive'
+        ? 'volcano-cot'
+        : route.provider === 'bailian' && route.model.inlineTags === true
+          ? 'bailian-brackets'
+          : 'plain'
+    // 稿子带了标记但路由不支持 → 标记会被剥掉，首次发生时提醒去开对应的表达能力（不然用户以为功能坏了）
+    if (target === 'plain' && hasSpeechMarkup(text) && !this.markupStrippedWarned.has(this.routeKeyOf(route))) {
+      this.markupStrippedWarned.add(this.routeKeyOf(route))
+      const hint =
+        route.provider === 'volcano' && route.modelId === 'seed-icl-2.0'
+          ? '到接入参数里把 seed-icl-2.0 的 model 选成 expressive（标准版服务端会直接过滤 cot）'
+          : '当前模型不支持局部演法标记'
+      console.warn(`[TTS] 稿子带演法标记但已按纯文本合成：${hint}`)
+    }
+    return compileSpeechMarkup(text, target)
+  }
+
+  private routeKeyOf(route: TtsRoute): string {
+    return `${route.provider}:${route.connection.id}:${route.modelId}:${route.voice}`
+  }
+
+  /**
+   * 合成上下文集（火山 additions.section_id）：同一节目的连续合成请求带同一个 UUID，
+   * 服务端保留对话历史，段与段的语气/韵律衔接更自然（仅 seed-tts-2.0 / seed-icl-2.0 生效）。
+   * 内存 Map 随 app 重启重新生成——服务端对历史有轮数与超时限制，不该跨天复用。
+   * 不进缓存键：内容寻址缓存本来就是为了跨场次复用同一句音频。
+   */
+  private readonly sectionIds = new Map<string, string>()
+  private sectionIdFor(programId: string): string {
+    let id = this.sectionIds.get(programId)
+    if (!id) {
+      id = randomUUID()
+      this.sectionIds.set(programId, id)
+    }
+    return id
+  }
+
   private async synthesizeWithRoute(
     itemId: string,
     text: string,
@@ -610,30 +621,29 @@ export class TtsService {
   ): Promise<string> {
     const format = String(route.params.format ?? 'mp3')
     const extension = format === 'pcm' ? 'pcm' : format === 'wav' ? 'wav' : format === 'ogg_opus' ? 'ogg' : 'mp3'
-    const cachePath = join(this.audioCacheDir(), `${this.cacheKey(text, route)}.${extension}`)
-    const cached = await stat(cachePath).catch(() => null)
-    if (cached && cached.size > 0) {
+    const sendText = this.markupFor(route, text)
+    if (!sendText.trim()) {
+      throw new Error('剥离演法标记后没有可合成的文字：标签要和实际句子一起写，别只发标签')
+    }
+    const cacheKey = this.cacheKey(sendText, route)
+    const cachedPath = this.cachedPathFor(cacheKey)
+    if (cachedPath) {
       this.cacheHits += 1
-      console.log(`[TTS] 缓存命中（省一次合成）：${text.slice(0, 24)}${text.length > 24 ? '…' : ''}`)
-      return cachePath
+      console.log(`[TTS] 缓存命中（省一次合成）：${sendText.slice(0, 24)}${sendText.length > 24 ? '…' : ''}`)
+      return cachedPath
     }
     this.cacheMisses += 1
-    // 先写临时文件（按条目 id 命名，便于排查），成功后再改名到内容寻址路径
-    const tempPath = join(this.audioCacheDir(), `${itemId}.${extension}`)
+    // 先写临时文件（按条目 id 命名，便于排查），成功后入 BlobStore（同内容自动去重）并登记缓存别名
+    const tempPath = this.blobs.tmpPath(`${itemId}.${extension}`)
     if (route.provider === 'bailian') {
-      await this.synthesizeBailian(text, tempPath, route, signal)
+      await this.synthesizeBailian(sendText, tempPath, route, signal)
     } else {
-      await this.synthesizeVolcano(text, tempPath, route, signal)
+      await this.synthesizeVolcano(sendText, tempPath, route, signal, programId)
     }
-    this.recordSynthesis(route, text.length, programId)
-    try {
-      await rename(tempPath, cachePath)
-      return cachePath
-    } catch {
-      // 并发合成同一句时目标已存在（Windows 上 rename 会失败）：保留缓存里那份，丢掉临时文件
-      await rm(tempPath, { force: true }).catch(() => undefined)
-      return cachePath
-    }
+    this.recordSynthesis(route, sendText.length, programId)
+    const put = await this.blobs.putFile(tempPath, extension)
+    this.storage.ttsCachePut(cacheKey, put.hash)
+    return put.path
   }
 
   /**
@@ -641,19 +651,36 @@ export class TtsService {
    * voice 空 → 该模型目录第一个音色；目录为空 → 绑这条接入 + 模型的 ready 克隆音色。
    */
   async test(input: TtsTestInput): Promise<TtsTestResult> {
+    const connection = this.storage.ttsConnectionGet(input.connectionId)
+    if (!connection) return { ok: false, error: '接入不存在（可能已被删除）：刷新设置页重试' }
+    return this.runTest(connection, input.model, input.voice, input.text)
+  }
+
+  /**
+   * 表单直连测试（新建接入还没保存也能测）：调用方把表单当前值拼成临时接入传进来，不查库。
+   * 与 test() 共用同一条合成链；临时接入 id 不在 voices 表里，音色回退到模型目录第一个。
+   */
+  async testConnection(connection: TtsConnection, model: string, text?: string): Promise<TtsTestResult> {
+    return this.runTest(connection, model, undefined, text)
+  }
+
+  private async runTest(
+    connection: TtsConnection,
+    model: string,
+    voiceOverride?: string,
+    textOverride?: string
+  ): Promise<TtsTestResult> {
     try {
-      const connection = this.storage.ttsConnectionGet(input.connectionId)
-      if (!connection) return { ok: false, error: '接入不存在（可能已被删除）：刷新设置页重试' }
       const def = getTtsProvider(connection.providerId)
-      const spec = ttsModelSpec(connection.providerId, input.model)
+      const spec = ttsModelSpec(connection.providerId, model)
       if (!def || !spec) {
-        return { ok: false, error: `模型 ${input.model} 不在${def?.label ?? connection.providerId}目录里` }
+        return { ok: false, error: `模型 ${model} 不在${def?.label ?? connection.providerId}目录里` }
       }
-      const blocker = ttsModelBlocker(connection, def, input.model)
+      const blocker = ttsModelBlocker(connection, def, model)
       if (blocker) {
         return {
           ok: false,
-          error: `接「${connection.name}」的模型 ${input.model} 现在用不了：${blocker}：到设置 → 语音合成处理`
+          error: `接「${connection.name}」的模型 ${model} 现在用不了：${blocker}：到设置 → 语音合成处理`
         }
       }
       const caps = ttsModelCapabilities(spec)
@@ -663,7 +690,7 @@ export class TtsService {
           error: `「${spec.label}」是${TTS_MODEL_KIND_LABEL[caps.kind]}模型，不能用单句文本测试：到预制节目里用「生成节目音频」整期合成`
         }
       }
-      const voice = input.voice?.trim() || this.testVoice(connection, spec)
+      const voice = voiceOverride?.trim() || this.testVoice(connection, spec)
       if (!voice) {
         return {
           ok: false,
@@ -671,7 +698,7 @@ export class TtsService {
             '没有可用音色：该模型没有系统音色目录（需手动输入音色），也没有绑这条接入 + 模型的克隆音色'
         }
       }
-      const text = input.text?.trim() || '你好，欢迎光临直播间，这是一条语音合成测试。'
+      const text = textOverride?.trim() || '你好，欢迎光临直播间，这是一条语音合成测试。'
       const route: TtsRoute = {
         provider: connection.providerId,
         connection,
@@ -687,7 +714,7 @@ export class TtsService {
       this.storage.setConfig({ tts: { lastTestAt: Date.now() } })
       return { ok: true, audioPath, latencyMs: Date.now() - started }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   }
 
@@ -725,7 +752,8 @@ export class TtsService {
     text: string,
     outPath: string,
     route: TtsRoute,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    programId?: string
   ): Promise<void> {
     const apiKey = String(route.connection.params.apiKey ?? '')
     if (!apiKey) {
@@ -740,6 +768,12 @@ export class TtsService {
     const additions: Record<string, unknown> = {}
     if (pitch !== 0) additions.post_process = { pitch }
     if (instruction) additions.context_texts = [instruction]
+    // 复刻 expressive：开 cot 标签解析（<cot text=情绪>句子</cot> 局部演法），官方要求显式开
+    if (String(p.model ?? '') === 'seed-tts-2.0-expressive') additions.use_tag_parser = true
+    // 合成上下文：TTS2.0/ICL2.0 带节目级 section_id，同节目连续合成共享上下文，段间语气衔接更自然
+    if (programId && (route.modelId === 'seed-tts-2.0' || route.modelId === 'seed-icl-2.0')) {
+      additions.section_id = this.sectionIdFor(programId)
+    }
     const reqParams: Record<string, unknown> = {
       text,
       speaker: route.voice,
@@ -822,10 +856,12 @@ export class TtsService {
     programId?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
     const route = this.withPerformance(this.route(voiceId), perf)
+    // 按模型能力透传/剥出演法标记：Qwen-Audio 系吃 [标签]，其余百炼模型全剥
+    const sendText = this.markupFor(route, text)
     const apiKey = String(route.connection.params.apiKey ?? '')
     const sampleRate = asNumber(route.params.sample_rate, 24000)
 
-    const target = this.buildBailianTarget(text, route, { stream: true })
+    const target = this.buildBailianTarget(sendText, route, { stream: true })
     const res = await fetch(target.url, {
       method: 'POST',
       headers: {
@@ -886,7 +922,7 @@ export class TtsService {
       completed = true
     } finally {
       // 用量采集：整段合成正常收尾才记（中断/失败按没合成完处理）；流式通道没有内容寻址缓存，每次都真打接口
-      if (completed) this.recordSynthesis(route, text.length, programId)
+      if (completed) this.recordSynthesis(route, sendText.length, programId)
     }
   }
 

@@ -116,13 +116,13 @@ export class TtsStreamService {
     perf?: SynthPerformance,
     programId?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    let tempFile = ''
+    let audioFile = ''
     try {
       // 一次合成到缓存（将来这里换成服务商流式读取循环，下游不变）
-      tempFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal, perf, programId)
+      audioFile = await this.tts.synthesize(`stream-${Date.now()}`, text, voiceId, signal, perf, programId)
       if (signal.aborted) return
       // 解码成管线口径（48k 单声道），不在这里节流
-      const pcm = await decodeToPcm(tempFile, { channels: 1 })
+      const pcm = await decodeToPcm(audioFile, { channels: 1 })
       for (let offset = 0; offset < pcm.length; offset += CHUNK_BYTES) {
         if (signal.aborted) return
         yield { pcm: pcm.subarray(offset, Math.min(offset + CHUNK_BYTES, pcm.length)), sampleRate: SAMPLE_RATE }
@@ -131,7 +131,8 @@ export class TtsStreamService {
       console.warn('流式合成失败:', error)
       throw error
     } finally {
-      if (tempFile) void rm(tempFile, { force: true }).catch(() => undefined)
+      // synthesize 返回的多是 BlobStore 缓存路径（内容寻址、别处还在引用），删了就是悬空缓存——只认真临时文件
+      if (audioFile && !this.tts.isBlobPath(audioFile)) void rm(audioFile, { force: true }).catch(() => undefined)
     }
   }
 }

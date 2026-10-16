@@ -107,7 +107,7 @@ export class LiveEventInbox {
     this.sweepTimer.unref?.()
   }
 
-  /** 事件流快照（新的在前），给播控台「事件流」选项卡用 */
+  /** 事件流快照（新的在前），给直播台「事件流」选项卡用 */
   snapshot(): LiveInboxEvent[] {
     return [...this.events].sort((a, b) => b.receivedAt - a.receivedAt)
   }

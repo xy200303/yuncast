@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Download, ExternalLink, Globe, Loader2, RefreshCw } from 'lucide-react'
+import { CheckCircle2, Download, ExternalLink, Globe, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import logoUrl from '../../../assets/logo.svg'
 import { BRAND_DISPLAY, BRAND_NAME_ZH } from '../../../../shared/brand'
 import type { AppInfo, UpdateStatus } from '../../../../shared/types'
+import { useAppStore } from '../../stores/useAppStore'
+import { ONBOARDING_DONE_KEY } from '../../lib/onboarding'
 
 /** GitHub 品牌图标（lucide 已移除品牌图标，用官方 mark 的 path） */
 function GithubIcon({ className }: { className?: string }) {
@@ -130,6 +132,29 @@ export function AboutPane() {
             </span>
           </div>
         )}
+      </div>
+
+      {/* 新手指引（首跑引导，docs/REDESIGN 4.9）：清掉完成标记并重开配置清单页 */}
+      <div className="mt-3 rounded-lg border bg-card px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-[13px]">新手指引</p>
+            <p className="text-xs text-muted-foreground">「还差几步就能开播」的配置清单，随时可以再看一遍</p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-8 shrink-0"
+            onClick={() => {
+              localStorage.removeItem(ONBOARDING_DONE_KEY)
+              useAppStore.getState().setSettingsOpen(false)
+              useAppStore.getState().setOnboardingOpen(true)
+            }}
+          >
+            <Sparkles className="size-3.5" />
+            重新打开新手指引
+          </Button>
+        </div>
       </div>
 
       {/* 开源信息 */}

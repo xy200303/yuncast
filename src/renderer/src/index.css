@@ -1,5 +1,10 @@
 @import 'tailwindcss';
+
+/* 富文本渲染（streamdown）的类名与插件类名也要被 Tailwind 扫到（路径相对本文件） */
+@source '../../../node_modules/streamdown/dist/*.js';
+@source '../../../node_modules/@streamdown/cjk/dist/*.js';
 @import 'tw-animate-css';
+@plugin '@tailwindcss/typography';
 @import 'shadcn/tailwind.css';
 
 @custom-variant dark (&:is(.dark *));
@@ -160,4 +165,36 @@
   background-color: var(--background);
   border-color: var(--foreground);
   box-shadow: none;
+}
+
+/* 状态栏音波指示：输出电平时每根竖条起伏（延迟由 JS 按序号给，形成波峰扫过的感觉） */
+@keyframes yuncast-wave {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+/* 富文本（streamdown 渲染的导演回复）用 prose 排版，但颜色接到本应用的主题 token 上：
+   一套变量同时适配明暗，不用维护两份 prose 配色 */
+.prose {
+  --tw-prose-body: var(--foreground);
+  --tw-prose-headings: var(--foreground);
+  --tw-prose-lead: var(--muted-foreground);
+  --tw-prose-links: var(--primary);
+  --tw-prose-bold: var(--foreground);
+  --tw-prose-counters: var(--muted-foreground);
+  --tw-prose-bullets: var(--muted-foreground);
+  --tw-prose-hr: var(--border);
+  --tw-prose-quotes: var(--foreground);
+  --tw-prose-quote-borders: var(--border);
+  --tw-prose-captions: var(--muted-foreground);
+  --tw-prose-code: var(--foreground);
+  --tw-prose-pre-code: var(--foreground);
+  --tw-prose-pre-bg: var(--muted);
+  --tw-prose-th-borders: var(--border);
+  --tw-prose-td-borders: var(--border);
 }

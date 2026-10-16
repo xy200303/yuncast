@@ -142,6 +142,8 @@ export interface TtsModelSpec {
   streaming?: boolean
   /** 该模型支持语气指令（调用级覆盖，不进模型 params）；缺省视为不支持 */
   instruction?: boolean
+  /** 该模型支持文本内嵌 [emotion]/[拟声] 标签（百炼 Qwen-Audio 系；shared/speechTags 有白名单）；缺省视为不支持 */
+  inlineTags?: boolean
   /** 模型级可调参数 */
   params: ParamSpec[]
   /** 系统音色静态目录；空数组 = 官方未给目录，手动输入兜底 */
@@ -244,6 +246,30 @@ export const LLM_PROVIDER_META: Record<LlmProvider, { label: string; defaultMode
 
 // ---------- 供应商接入（一条 = 一个服务商 + 一份凭据 + 一串可用模型） ----------
 
+/**
+ * API 协议（接入级配置，存 params.apiProtocol；服务商只是预设，协议可以自选）：
+ * completions = OpenAI 兼容 Chat Completions（绝大多数服务商）；
+ * responses   = OpenAI 官方 Responses（GPT-5 系思考强度走它）；
+ * anthropic   = Anthropic Messages（Claude 兼容端点，如 Kimi Code 编程端点）。
+ */
+export const LLM_API_PROTOCOLS = ['completions', 'responses', 'anthropic'] as const
+export type LlmApiProtocol = (typeof LLM_API_PROTOCOLS)[number]
+
+export const LLM_API_PROTOCOL_META: Record<LlmApiProtocol, { label: string; hint: string }> = {
+  completions: {
+    label: 'OpenAI 兼容（Chat Completions）',
+    hint: '绝大多数服务商：DeepSeek / Kimi / 千问 / 豆包 / 智谱 / Ollama 等'
+  },
+  responses: {
+    label: 'OpenAI Responses',
+    hint: 'OpenAI 官方新协议：GPT-5 系的思考强度、缓存统计只在它上面完整生效'
+  },
+  anthropic: {
+    label: 'Anthropic Messages',
+    hint: 'Claude 兼容端点：Claude 官方 / Kimi Code 编程端点（k3、kimi-for-coding）'
+  }
+}
+
 /** 思考强度（模型级配置）：off=关闭；low/medium/high 映射 pi 的 ThinkingLevel，思考内容流进对话时间线 */
 export type ThinkingLevelChoice = 'off' | 'low' | 'medium' | 'high'
 
@@ -310,18 +336,18 @@ export interface ModelConnectionInput {
 }
 
 /**
- * 当前主播卡的语言模型是否就绪（状态栏徽章用）：卡上显式选了接入和模型，
+ * 导演大脑是否就绪（状态栏徽章用）：directorConfig 上显式选了接入和模型，
  * 且那条接入的密钥齐备、模型还在列表里——没选模型就等于没配置。
  */
 export function llmReady(
   connections: ModelConnectionSafe[],
-  persona: Persona | null | undefined
+  director: DirectorConfig | null | undefined
 ): boolean {
-  const connection = persona?.modelConnectionId
-    ? connections.find((item) => item.id === persona.modelConnectionId)
+  const connection = director?.modelConnectionId
+    ? connections.find((item) => item.id === director.modelConnectionId)
     : undefined
   if (!connection?.ready) return false
-  return connection.models.includes(persona?.model ?? '')
+  return connection.models.includes(director?.model ?? '')
 }
 
 // ---------- 应用配置 ----------
@@ -335,6 +361,18 @@ export interface TriggerConfig {
 export const DEFAULT_TRIGGER_CONFIG: TriggerConfig = {
   maxLlmPerMinute: 6
 }
+
+/** 导演大脑（AppConfig.director 段）：全局一份，系统唯一 agent（导演）的 LLM 接入与模型 */
+export interface DirectorConfig {
+  /** 导演名字（system prompt 里的恒定身份），默认「小云」 */
+  name: string
+  /** 大脑：供应商接入 id（ModelConnection.id）；要和 model 一起选好 */
+  modelConnectionId: string | null
+  /** 指定用接入里的哪个模型（必选）；不在该接入的模型列表里视同没选 */
+  model: string
+}
+
+export const DEFAULT_DIRECTOR_CONFIG: DirectorConfig = { name: '小云', modelConnectionId: null, model: '' }
 
 /** 当前节目（config.live 段） */
 export interface LiveStateConfig {
@@ -390,6 +428,7 @@ export interface AppConfig {
   stream: StreamConfig
   bgm: BgmConfig
   comment: CommentConfig
+  director: DirectorConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -400,7 +439,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   live: DEFAULT_LIVE_CONFIG,
   stream: DEFAULT_STREAM_CONFIG,
   bgm: DEFAULT_BGM_CONFIG,
-  comment: DEFAULT_COMMENT_CONFIG
+  comment: DEFAULT_COMMENT_CONFIG,
+  director: DEFAULT_DIRECTOR_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -434,6 +474,19 @@ export function parseAppConfig(input: unknown): AppConfig {
         : DEFAULT_TRIGGER_CONFIG.maxLlmPerMinute
   }
   const liveRow = row.live && typeof row.live === 'object' ? (row.live as Record<string, unknown>) : {}
+  const directorRow =
+    row.director && typeof row.director === 'object' ? (row.director as Record<string, unknown>) : {}
+  const director: DirectorConfig = {
+    name:
+      typeof directorRow.name === 'string' && directorRow.name.trim()
+        ? directorRow.name.trim()
+        : DEFAULT_DIRECTOR_CONFIG.name,
+    modelConnectionId:
+      typeof directorRow.modelConnectionId === 'string' && directorRow.modelConnectionId
+        ? directorRow.modelConnectionId
+        : null,
+    model: typeof directorRow.model === 'string' ? directorRow.model : ''
+  }
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     accent: APP_ACCENTS.find((id) => id === row.accent) ?? DEFAULT_CONFIG.accent,
@@ -448,7 +501,8 @@ export function parseAppConfig(input: unknown): AppConfig {
     },
     stream: parseStream(row.stream),
     bgm: parseBgm(row.bgm),
-    comment: parseComment(row.comment)
+    comment: parseComment(row.comment),
+    director
   }
 }
 
@@ -510,7 +564,7 @@ export interface SpeechItem {
   turnId: string
   /** 话轮内顺序 */
   seq: number
-  /** 角色音色（编剧模式），空串 = 用当前主播的音色 */
+  /** 角色音色（写稿时按卡司分派），空串 = 用当前出镜主播的嗓音 */
   voiceId: string
   source: { agentId: string; kind: SpeechSourceKind }
   lane: SpeechLane
@@ -607,7 +661,7 @@ export const POOL_LIMITS = {
 /** 底稿库装载进池的来源 id（限流走 library 档；不占主播自己的发言额度） */
 export const LIBRARY_SOURCE_ID = 'library'
 
-// ---------- 人设卡（Persona，主播 Agent 的人格） ----------
+// ---------- 主播卡（Presenter：纯数据卡，没有人格大脑；想的事全归导演） ----------
 
 export interface Persona {
   id: string
@@ -619,16 +673,10 @@ export interface Persona {
   catchphrases: string
   /** 背景故事 */
   background: string
-  /** 禁区（绝不能说的话题/承诺） */
+  /** 内容红线（写这张卡的台词时绝不能碰的话题/承诺） */
   taboos: string
   /** 音色（火山 voice_type / 百炼 voice，或手动音色的 `接入::模型::音色` 复合串）：必选，没选预检会拦下 */
   voiceId: string
-  /** 大脑：绑定的供应商接入 id（ModelConnection.id）；要和 model 一起选好，开播才确定用哪个模型 */
-  modelConnectionId: string | null
-  /** 指定用接入里的哪个模型（必选）；不在该接入的模型列表里视同没选 */
-  model: string
-  /** 编剧模式角色：主播一个脑子写多个角色的台词，按 voiceId 路由音色 */
-  roles: PersonaRole[]
   updatedAt: number
 }
 
@@ -641,22 +689,8 @@ export const DEFAULT_PERSONA: Omit<Persona, 'id' | 'updatedAt'> = {
     '做了三年直播带货，自诩「直播界一枝笔」，酷爱诗词歌赋，讲商品随手拈来一段押韵，观众都说看她直播像听评书，既能长知识又能捡便宜',
   taboos:
     '不喊「家人们」这类烂大街的称呼（称诸位、各位朋友即可）；诗词点缀自然为主，不硬塞、不拽文到听不懂；不承诺绝对最低价；不贬低其它品牌；不谈论政治和隐私话题；不夸大功效',
-  voiceId: '',
-  modelConnectionId: null,
-  model: '',
-  roles: []
+  voiceId: ''
 }
-
-/**
- * 旧版内置小陶的人设文本（升级迁移用）：库里的卡这三个字段还跟它一字不差，
- * 说明用户没改过人设，启动时自动升级到新版（音色/模型/角色等配置不动）；改过的一律不动。
- */
-export const LEGACY_DEFAULT_PERSONA_FIELDS = {
-  personality: '开朗亲切、节奏明快的带货主播，像邻家姐姐一样和观众聊天',
-  catchphrases: '家人们、真的绝了、闭眼入、给你们安排上',
-  background: '做了三年直播带货，熟悉各种家居好物，对成分和材质很有研究',
-  taboos: '不承诺绝对最低价；不贬低其它品牌；不谈论政治和隐私话题；不夸大功效'
-} as const
 
 // ---------- 主播 Agent 状态 ----------
 
@@ -673,12 +707,16 @@ export interface AgentStatus {
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
   scene?: { title: string; index: number; total: number }
-  /** 会话用途：prep=直播前写稿（播出通道关闭），live=直播中。stopped 时无意义 */
-  purpose?: 'prep' | 'live'
-  /** 会话出生后资产改过（人设/模型/剧本/节目配置）：改动要重启会话才生效（docs/07 §8.5） */
+  /** 会话出生后资产改过（导演大脑/主播卡/剧本/节目配置）：改动要重启会话才生效（docs/07 §8.5） */
   assetsStale?: boolean
   /** 节目开播态（引擎语义）：launch 置真、结束节目置假，与 agent 会话是否活着无关 */
   live?: boolean
+  /** 播报暂停中（统一开播控制的「暂停」）：渲染层的「播报中/已暂停」以此为准，不做本地镜像 */
+  speakingPaused?: boolean
+  /** 引擎侧当前生效的自动响应白名单（节目配置真值；播出中改配置立刻生效） */
+  enabledTriggerIds?: string[]
+  /** 引擎侧当前生效的互动总闸（节目 allowLiveEvents 真值） */
+  allowLiveEvents?: boolean
   /** 正在生成（一轮没跑完）：对话输入框的发送钮据此变停止钮 */
   busy?: boolean
   /** 当前上下文估算（tokens，含 system prompt 与工具表开销）；无会话时无 */
@@ -728,8 +766,25 @@ export interface DirectorMessage {
  * - ask：主播请示（ask_director）的高亮卡片——与文本/工具同一条单通道，切场/重启后照常恢复。
  */
 export type DirectorTimelineEntry =
-  | { type: 'text'; id: string; text: string; final?: boolean; personaId?: string }
-  | { type: 'thinking'; id: string; text: string; done?: boolean; personaId?: string }
+  | {
+      type: 'text'
+      id: string
+      /** append=true 时这里只是**新增片段**（流式增量）；否则是全文 */
+      text: string
+      append?: boolean
+      final?: boolean
+      personaId?: string
+    }
+  | {
+      type: 'thinking'
+      id: string
+      text: string
+      append?: boolean
+      done?: boolean
+      /** 定稿时给：这段思考实际花了多久（渲染层不要拿 ts 反推，见 AgentService 注释） */
+      durationMs?: number
+      personaId?: string
+    }
   | {
       type: 'tool'
       id: string
@@ -755,8 +810,28 @@ export interface DirectorTimelineEvent {
  */
 export type ChatEntry =
   | { type: 'director'; id: string; ts: number; text: string; attachments?: { name: string; path: string }[] }
-  | { type: 'text'; id: string; ts: number; text: string; final: boolean; turnId: string; personaId?: string }
-  | { type: 'thinking'; id: string; ts: number; turnId: string; text: string; done: boolean; personaId?: string }
+  | {
+      type: 'text'
+      id: string
+      ts: number
+      text: string
+      final: boolean
+      /** 仅 IPC 途中为 true：text 是新增片段，渲染层累加后立刻清掉 */
+      append?: boolean
+      turnId: string
+      personaId?: string
+    }
+  | {
+      type: 'thinking'
+      id: string
+      ts: number
+      turnId: string
+      text: string
+      done: boolean
+      append?: boolean
+      durationMs?: number
+      personaId?: string
+    }
   | {
       type: 'tool'
       id: string
@@ -783,7 +858,7 @@ export interface DirectorTimelineReset {
 /** 播报控制（主播工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */
 export type PlaybackControlAction = 'pause' | 'resume' | 'skip'
 
-// ---------- 提示词模板（设置 → 主播手册） ----------
+// ---------- 提示词模板（设置 → 导演手册） ----------
 
 export interface PromptTemplateInfo {
   key: string
@@ -823,12 +898,10 @@ export interface VoiceRecord {
   updatedAt: number
 }
 
-/** 一条音色被谁引用（人设卡音色 / 角色表） */
+/** 一条音色被谁引用（主播卡音色） */
 export interface VoiceUsagePersona {
   id: string
   name: string
-  /** 空 = 用在这张卡的音色上；否则是角色名 */
-  role: string
 }
 
 /** 音色的引用关系（`voice:usage`）：删除前先看谁在用，别删掉正在用的那个 */
@@ -928,15 +1001,6 @@ export interface ViewerProfile {
 }
 
 /** 本场记忆：下播总结 */
-export interface EpisodeSummary {
-  id: string
-  startedAt: number
-  endedAt: number
-  /** 主播自我复盘：亮点 / 翻车 / 高频问题 */
-  summary: string
-  createdAt: number
-}
-
 // ---------- 事件驱动与触发体系（docs/01 §3.5） ----------
 
 export type EventSource = 'pipe' | 'pool' | 'timer' | 'agent' | 'human' | 'system'
@@ -1093,6 +1157,11 @@ export interface ProgramAudioConfig {
   mode: ProgramAudioMode
   ttsConnectionId?: string
   ttsModelId?: string
+  /**
+   * 自定义节目声音（custom）的默认单音色：整期里没在文稿中单独指定音色的段落都用它。
+   * 「跟随当前主播」模式忽略此项；播客模型也不用它（双主持音色走 cast）。
+   */
+  voiceId?: string
   cast?: ProgramCastMember[]
   /** 开场音乐（仅 podcast 模型有意义；缺省 true = 跟服务商默认） */
   useHeadMusic?: boolean
@@ -1114,6 +1183,8 @@ export interface Program {
   allowLiveEvents: boolean
   /** 启用的全局触发器 id（触发器定义在全局触发器库，节目只存启用项） */
   enabledTriggerIds: string[]
+  /** 节目卡司：主播卡 id 数组（告诉导演"你手下有哪些人设可用"）；空数组 = 导演自选 */
+  presenterIds: string[]
   audioConfig: ProgramAudioConfig
   scriptId: string | null
   knowledgeScope: ProgramKnowledgeScope
@@ -1133,12 +1204,13 @@ export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
   finishMode: 'loop',
   allowLiveEvents: true,
   enabledTriggerIds: [],
+  presenterIds: [],
   audioConfig: DEFAULT_PROGRAM_AUDIO_CONFIG,
   scriptId: null,
   knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
 }
 
-// ---------- 直播间动态收件箱（docs/10 §5.3）：播控台「事件流」直接展示这份状态 ----------
+// ---------- 直播间动态收件箱（docs/10 §5.3）：直播台「事件流」直接展示这份状态 ----------
 
 export type LiveEventState = 'new' | 'seen' | 'handled' | 'ignored' | 'expired'
 export type LiveInboxKind = 'comment' | 'gift' | 'follow' | 'entrance' | 'trigger'
@@ -1272,7 +1344,7 @@ export interface LaunchResult {
   ok: boolean
   /** 装载进话术池的条目数 */
   loaded?: number
-  /** 引擎开播成功但智能层没起来（模型挂了等）：照播存量，agent 就位后恢复 */
+  /** 引擎开播成功但导演会话没起来（模型挂了等）：照播存量，会话就位后恢复 */
   warning?: string
   error?: string
   /** 预制节目正式播放门禁结果（broadcastMode=prepared 时带上；未通过时 ok=false 且不静默跳过） */
@@ -1335,13 +1407,38 @@ export interface ProducePlanInfo {
   /** 章数与总段数 */
   scenes?: number
   segments?: number
-  /** 总字数与粗估时长（分钟，按约 4.5 字/秒） */
+  /** 已就绪（本次会跳过）的单元/段数 */
+  readyCount?: number
+  /** 本次实际要合成的段数（不含已就绪跳过的） */
+  pendingSegments?: number
+  /** 待合成总字数与粗估时长（分钟，按约 4.5 字/秒） */
   totalChars?: number
   estMinutes?: number
   /** 将使用的模型与声音快照描述（冻结进产物） */
   modelDesc?: string
   voiceDesc?: string
   notice?: string
+}
+
+/**
+ * 声音选择弹窗（docs/REDESIGN 4.4）里用户显式选定的声音覆盖：
+ * 合成时冻结进产物快照，不改节目 audioConfig 本身。
+ * - voiceId：单音色覆盖，值是完整可路由音色（克隆 voiceType / 目录音色 / 手动复合串「接入::模型::音色」），
+ *   全部段落都用它（弹窗里明示「混音」风险，可勾全部重合成统一）；
+ * - castVoices：播客双主持覆盖（顺序 = 主持人 A/B），两个音色必须路由到同一条接入、同一个播客模型；
+ * - forcePresenter：节目配了自定义声音但本次要跟随当前主播。
+ */
+export interface ProduceVoiceOverride {
+  voiceId?: string
+  castVoices?: [string, string]
+  /** 显式忽略节目的自定义声音配置（本次跟随当前主播） */
+  forcePresenter?: boolean
+  /**
+   * 播客模型的整期配乐（不给就按节目里存的历史值 / 服务商默认）。
+   * 配乐只在「播客双人整期合成」这一条路线上有意义，所以它跟着录入弹窗里选，而不是存在节目上。
+   */
+  useHeadMusic?: boolean
+  useTailMusic?: boolean
 }
 
 // ---------- 节目音频导出（docs/10 §8.3/§11.6/§15.17，P6） ----------
@@ -1400,13 +1497,75 @@ export interface ProgramExportPlan {
   totalBytes?: number
 }
 
-// ---------- 人设卡角色（编剧模式多音色，docs/01 §3.1） ----------
+// ---------- 场记（场次记录）：一次开播的完整留档 ----------
 
-export interface PersonaRole {
+/** 场次结束原因：空串 = 还在播（崩溃恢复时会补 'crash'） */
+export type BroadcastEndReason = '' | 'manual' | 'auto_stop' | 'emergency' | 'app_quit' | 'crash'
+
+export interface BroadcastSessionCastMember {
+  personaId: string
+  personaName: string
+  voiceDesc: string
+}
+
+export interface BroadcastSession {
+  id: string
+  programId: string
+  /** 开播时刻的 snapshot（节目后来改名/删除不影响历史场次显示） */
+  programName: string
+  /** 开播时刻实际使用的导演大脑与卡司快照 */
+  directorModelDesc: string
+  cast: BroadcastSessionCastMember[]
+  startedAt: number
+  /** 0 = 还在播 */
+  endedAt: number
+  endReason: BroadcastEndReason
+  /** 收场时结算：播出条数 / 评论数 / 回复数 */
+  stats: { played: number; comments: number; replies: number }
+  /** 下播复盘摘要（主播自我复盘写在场上）；空 = 这场没复盘 */
+  summary: string
+}
+
+/** 场次内事件：评论与直播事件的时间线镜像（话术播出事实在 speech_items.session_id） */
+export interface BroadcastEvent {
+  id: string
+  sessionId: string
+  ts: number
+  kind: 'comment' | 'event' | 'note'
+  /** comment: {author, content}；event: {type, label, payload 摘要}；note: {text} */
+  payload: Record<string, unknown>
+}
+
+/** 场次内的互动观众：从本场评论按作者聚合；有全局画像（主播长期记忆）的附带过来 */
+export interface SessionViewer {
   name: string
-  voiceId: string
-  /** 口吻提示（写进 system prompt，告诉主播怎么写这个角色的台词） */
-  style: string
+  /** 本场发言数 */
+  count: number
+  /** 本场发言内容（最近最多 5 条） */
+  contents: string[]
+  profile?: ViewerProfile
+}
+
+/** 场次详情：话术播出条目（按实际播出顺序）+ 事件流 + 互动观众，前端交错渲染（摘要在 session.summary） */
+export interface SessionDetail {
+  session: BroadcastSession
+  items: SpeechItem[]
+  events: BroadcastEvent[]
+  viewers: SessionViewer[]
+}
+
+/** 场次音频导出：实际播出的有音频条目按播放顺序导出（流式播报无文件，跳过并明示） */
+export interface SessionExportOptions {
+  sessionId: string
+  mode: ProgramExportMode
+  format: ProgramExportFormat
+  outputDir: string
+  loudness: boolean
+}
+
+export interface SessionExportResult extends ProgramExportResult {
+  /** 跳过的流式播报条数（无音频文件，未包含进导出） */
+  skippedStream?: number
 }
 
 // ---------- 推流（M7，FFmpeg 静态帧 + PCM 混音直推 RTMP / 伴侣模式只出声） ----------
@@ -1577,5 +1736,69 @@ export interface UsageDashboard {
   trend: { day: string; llmTokens: number; ttsChars: number }[]
   /** 按节目分组用量（全部时间；programId null = 未绑定节目） */
   byProgram: { programId: string | null; programName: string; llmTokens: number; ttsChars: number }[]
+}
+
+// ---------- 统计可视化（docs/REDESIGN 4.11）：场次/互动聚合，与用量看板互补 ----------
+
+/** 统计查询参数：时间范围 + 节目筛选（统计页图表与单场图表共用一套口径） */
+export interface StatsQuery {
+  /** 起始时间（毫秒，含）；0/缺省 = 不限 */
+  from?: number
+  /** 结束时间（毫秒，含）；0/缺省 = 到现在 */
+  to?: number
+  /** 只算这个节目；缺省 = 全部节目 */
+  programId?: string
+}
+
+/** 热词（词云用）：词频已降序排好 */
+export interface StatsHotWord {
+  word: string
+  count: number
+}
+
+/** 统计页全局图表一屏数据（stats:global） */
+export interface StatsGlobal {
+  totals: {
+    sessions: number
+    /** 播出总时长（毫秒；还在播的场按当前时刻计） */
+    broadcastMs: number
+    comments: number
+    /** 累计互动观众（评论作者去重） */
+    viewers: number
+    /** 播出话术总字符数（合成量按字符折算时长） */
+    speechChars: number
+    played: number
+  }
+  /** 按天播出趋势（本地时区，缺天补 0；最多 30 天，到 query.to/今天为止） */
+  trend: { day: string; sessions: number; minutes: number }[]
+  /** 按天互动趋势：评论数 / 互动观众数（按天去重） */
+  interactionTrend: { day: string; comments: number; viewers: number }[]
+  /** 节目排行：场次数 / 总时长（分钟）/ 场均评论 */
+  byProgram: { programId: string; programName: string; sessions: number; minutes: number; avgComments: number }[]
+  /** 主播排行：按场次卡司快照的 personaName 归集 */
+  byPresenter: { personaName: string; sessions: number; minutes: number }[]
+  /** 全局评论热词 */
+  commentWords: StatsHotWord[]
+  /** 全局话术热词（实际播出的条目） */
+  speechWords: StatsHotWord[]
+}
+
+/** 单场可视化（stats:session，场次详情「图表」tab） */
+export interface SessionStats {
+  /** 时长（毫秒；还在播的按当前时刻计） */
+  durationMs: number
+  /** 播出段数（done/interrupted） */
+  played: number
+  comments: number
+  /** 互动观众数（评论作者去重） */
+  viewers: number
+  /** 按分钟聚合的互动热度：offsetMin = 距开播分钟数 */
+  heat: { offsetMin: number; comments: number; speech: number }[]
+  /** 本场评论热词 */
+  commentWords: StatsHotWord[]
+  /** 话术来源构成（实际播出条目按 source.kind 归集） */
+  sourceMix: { kind: SpeechSourceKind; count: number }[]
+  /** 互动最多观众 TOP10 */
+  topViewers: { name: string; count: number }[]
 }
 

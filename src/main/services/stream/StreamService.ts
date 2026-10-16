@@ -3,6 +3,7 @@ import {
   type StreamStats
 } from '../../../shared/types'
 import type { StorageService } from '../StorageService'
+import { translateError } from '../errorTranslate'
 import { FFmpegPusher } from './ffmpeg/pusher'
 import { audioMixer } from './ffmpeg/mixer'
 
@@ -58,8 +59,10 @@ export class StreamService {
       }
       // 伴侣模式：无进程要起，AI 声音经系统声音由伴侣采集
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      console.error('[AgentAnchor] 开播失败:', message)
+      const raw = err instanceof Error ? err.message : String(err)
+      // 给用户看的走错误翻译层（FFmpeg 原文翻成「推流断了…」），原文留日志
+      const message = translateError(raw).friendly
+      console.error('[AgentAnchor] 开播失败:', raw)
       this.patch({ state: 'error', error: message })
       return { ok: false, error: message }
     }
@@ -127,7 +130,12 @@ export class StreamService {
     if (this.stopping || code === 0) return
     if (this.stats.state !== 'live') return
     if (this.reconnectAttempt >= MAX_RECONNECT) {
-      this.patch({ streaming: false, reconnecting: false, state: 'error', error: `断流重推 ${MAX_RECONNECT} 次仍失败` })
+      this.patch({
+        streaming: false,
+        reconnecting: false,
+        state: 'error',
+        error: translateError(`断流重推 ${MAX_RECONNECT} 次仍失败`).friendly
+      })
       console.error('[AgentAnchor] 断流重推失败。FFmpeg 输出：', this.pusher.getStderrTail().slice(-300))
       return
     }

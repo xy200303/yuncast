@@ -1,22 +1,24 @@
-import { useState } from 'react'
-import { AudioLines, BookOpen, Brain, Cable, Info, MessageSquareText, Palette } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AudioLines, BookOpen, Brain, Cable, Compass, Info, MessageSquareText, Palette } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import { useAppStore } from '../stores/useAppStore'
+import { useAppStore, type SettingsPaneId } from '../stores/useAppStore'
 import { AboutPane } from './settings/AboutPane'
 import { AppearancePane } from './settings/AppearancePane'
+import { DirectorSection } from './settings/DirectorPane'
 import { LlmSection } from './settings/LlmPane'
 import { PromptsSection } from './settings/PromptsPane'
 import { TtsSection } from './settings/TtsPane'
 import { StreamSection } from './settings/StreamPane'
 import { CommentGatewayCard } from './settings/CommentPane'
 
-type Pane = 'appearance' | 'llm' | 'prompts' | 'tts' | 'stream' | 'comment' | 'about'
+type Pane = SettingsPaneId
 
 const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
+  { id: 'director', label: '导演', icon: Compass },
   { id: 'llm', label: '语言模型', icon: Brain },
-  { id: 'prompts', label: '主播手册', icon: BookOpen },
+  { id: 'prompts', label: '导演手册', icon: BookOpen },
   { id: 'tts', label: '语音合成', icon: AudioLines },
   { id: 'stream', label: '推流', icon: Cable },
   { id: 'comment', label: '连接器', icon: MessageSquareText },
@@ -27,7 +29,14 @@ const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
 export function SettingsDialog() {
   const open = useAppStore((s) => s.settingsOpen)
   const setOpen = useAppStore((s) => s.setSettingsOpen)
-  const [pane, setPane] = useState<Pane>('appearance')
+  const targetPane = useAppStore((s) => s.settingsPane)
+  // 默认落「语言模型」（docs/REDESIGN 4.9：小白最常要修的是导演大脑，不是外观）
+  const [pane, setPane] = useState<Pane>('director')
+
+  // 深链定位（预检「去修复」等）：打开时若指定了栏目就跳过去
+  useEffect(() => {
+    if (open && targetPane) setPane(targetPane)
+  }, [open, targetPane])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -54,8 +63,9 @@ export function SettingsDialog() {
               </button>
             ))}
           </nav>
-          <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto p-5">
             {pane === 'appearance' && <AppearancePane />}
+            {pane === 'director' && <DirectorSection />}
             {pane === 'llm' && <div className="max-w-2xl"><LlmSection /></div>}
             {pane === 'prompts' && <PromptsSection />}
             {pane === 'tts' && <div className="max-w-3xl"><TtsSection /></div>}

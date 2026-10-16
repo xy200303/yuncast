@@ -11,12 +11,13 @@ import type {
   AudioLevelPayload,
   AudioPcmPayload,
   AudioProgressPayload,
+  BroadcastSession,
   ConnectorStatus,
   ChatEntry,
   UsageDashboard,
+  DirectorConfig,
   DirectorTimelineEvent,
   DirectorTimelineReset,
-  EpisodeSummary,
   KnowledgeFile,
   LiveComment,
   LaunchResult,
@@ -32,6 +33,8 @@ import type {
   PoolStatus,
   PreflightItem,
   ProduceAudioResult,
+  ProducePlanInfo,
+  ProduceVoiceOverride,
   Program,
   ProgramAudioProgress,
   ProgramExportOptions,
@@ -44,8 +47,14 @@ import type {
   Script,
   ScriptInput,
   LiveInboxEvent,
+  SessionDetail,
+  SessionExportOptions,
+  SessionExportResult,
+  SessionStats,
   SpeechItem,
   SpeechLane,
+  StatsGlobal,
+  StatsQuery,
   TtsConnectionInput,
   TtsConnectionSafe,
   TtsRecord,
@@ -56,8 +65,7 @@ import type {
   VoiceUsage,
   StreamStats,
   Trigger,
-  TriggerInput,
-  ViewerProfile
+  TriggerInput
 } from '../shared/types'
 import type { LlmProviderManifest, TtsProviderManifest } from '../main/services/providers/registry'
 import type { TtsTestInput, TtsTestResult } from '../main/services/TtsService'
@@ -121,6 +129,9 @@ const api = {
   tts: {
     /** 测试发音：用指定的接入 + 模型合成一小段（voice 空 → 模型目录第一个音色或该接入 + 模型的克隆音色） */
     test: (input: TtsTestInput) => ipcRenderer.invoke(IPC.ttsTest, input) as Promise<TtsTestResult>,
+    /** 表单直连测试：用表单当前未保存的值合成一句并出声（新建接入不必先保存；密钥留空 = 沿用已保存的） */
+    testInput: (input: TtsConnectionInput & { model?: string; text?: string }) =>
+      ipcRenderer.invoke(IPC.ttsTestInput, input) as Promise<TtsTestResult>,
     /**
      * 语音合成的供应商接入（设置 → 语音合成）：一家可多条（不同账号/参数）。
      * 密钥字段的值不出主进程，只有 hasSecret / ready 两个标记。
@@ -156,6 +167,13 @@ const api = {
         ok: boolean
         error?: string
         latencyMs?: number
+      }>,
+    /** 表单直连测试：用表单当前未保存的值测连通（新建接入不必先保存；密钥留空 = 沿用已保存的） */
+    testInput: (input: ModelConnectionInput & { model?: string }) =>
+      ipcRenderer.invoke(IPC.modelTestInput, input) as Promise<{
+        ok: boolean
+        error?: string
+        latencyMs?: number
       }>
   },
   providers: {
@@ -173,11 +191,11 @@ const api = {
     /** 打断当前这一轮生成（会话保留）；对话输入框的停止钮 */
     abort: () => ipcRenderer.invoke(IPC.agentAbort) as Promise<void>,
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
-    /** 原子换主播：abort 当前生成 → 节目历史存回 → 新主播套同一份历史重建会话（直播中可切，不断上下文） */
-    handoff: (personaId: string) =>
-      ipcRenderer.invoke(IPC.agentHandoff, personaId) as Promise<{ ok: boolean; error?: string }>,
+    /** 卡司切换：接下来由另一张主播卡出镜（不换脑不重启会话，未播旧音色话术重合成；直播中可切） */
+    switchPresenter: (personaId: string) =>
+      ipcRenderer.invoke(IPC.agentSwitchPresenter, personaId) as Promise<{ ok: boolean; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
-    /** 编剧模式：派主播给该节目写底稿（跳直播台看过程，随时可插话改口径） */
+    /** 写稿：派导演给该节目写底稿（直播台看过程，随时可插话改口径） */
     draftStart: (programId: string) =>
       ipcRenderer.invoke(IPC.agentDraftStart, programId) as Promise<{ ok: boolean; error?: string }>,
     /** 暂停/恢复主播产出（统一开播控制里的暂停：停播报 + 停生成） */
@@ -191,7 +209,7 @@ const api = {
         ipcRenderer.removeListener(IPC.agentStatusEvent, listener)
       }
     },
-    /** 直播间动态收件箱快照（播控台「事件流」） */
+    /** 直播间动态收件箱快照（直播台「事件流」） */
     inboxList: () => ipcRenderer.invoke(IPC.agentInbox) as Promise<LiveInboxEvent[]>,
     /** 订阅收件箱变更（携带最新快照，主进程 250ms 节流），返回取消订阅函数 */
     onInbox: (cb: (events: LiveInboxEvent[]) => void) => {
@@ -203,6 +221,10 @@ const api = {
     }
   },
   director: {
+    /** 导演大脑配置（全局一份：名字 + 接入 + 模型） */
+    get: () => ipcRenderer.invoke(IPC.directorGet) as Promise<DirectorConfig>,
+    save: (input: DirectorConfig) =>
+      ipcRenderer.invoke(IPC.directorSave, input) as Promise<{ ok: boolean; error?: string; director?: DirectorConfig }>,
     /** 导演指令 → 主播（最高优先级，steer 插队）；localId = 本地回显条目 id，落库恢复不重复。
      * attachments = 随消息附的文件：图片（png/jpg/jpeg/webp/gif）由 main 读成图像内容进会话（模型需开多模态），
      * 其它类型降级成 [附件] 文本说明 */
@@ -221,7 +243,7 @@ const api = {
       }
     }
   },
-  /** 提示词模板（设置 → 主播手册）：主播人格/导演包装/评论注入等全部可编辑 */
+  /** 提示词模板（设置 → 导演手册）：导演身份/指令包装/直播间动态注入等全部可编辑 */
   promptTemplates: {
     list: () => ipcRenderer.invoke(IPC.promptTemplatesList) as Promise<PromptTemplateInfo[]>,
     save: (key: string, content: string) =>
@@ -358,10 +380,6 @@ const api = {
       >,
     deleteFile: (id: string) => ipcRenderer.invoke(IPC.knowledgeFileDelete, id) as Promise<PoolResult>
   },
-  memory: {
-    viewers: () => ipcRenderer.invoke(IPC.memoryViewers) as Promise<ViewerProfile[]>,
-    episodes: () => ipcRenderer.invoke(IPC.memoryEpisodes) as Promise<EpisodeSummary[]>
-  },
   dialog: {
     /** 弹出文件选择框，取消返回 null */
     pickFile: (filtersName: string, extensions: string[]) =>
@@ -383,7 +401,11 @@ const api = {
       ipcRenderer.invoke(IPC.statsUsageRecords, limit, programId) as Promise<UsageRecord[]>,
     /** 最近的 TTS 合成记录（明细表） */
     ttsRecords: (limit?: number, programId?: string) =>
-      ipcRenderer.invoke(IPC.statsTtsRecords, limit, programId) as Promise<TtsRecord[]>
+      ipcRenderer.invoke(IPC.statsTtsRecords, limit, programId) as Promise<TtsRecord[]>,
+    /** 统计页全局图表：KPI + 播出/互动趋势 + 节目/主播排行 + 热词 */
+    global: (query?: StatsQuery) => ipcRenderer.invoke(IPC.statsGlobal, query) as Promise<StatsGlobal>,
+    /** 单场可视化（场次详情「图表」tab）；场次不存在返回 null */
+    session: (sessionId: string) => ipcRenderer.invoke(IPC.statsSession, sessionId) as Promise<SessionStats | null>
   },
   script: {
     list: () => ipcRenderer.invoke(IPC.scriptList) as Promise<Script[]>,
@@ -403,16 +425,12 @@ const api = {
     /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播；opts.allowPartial = 预制节目「仅播放已完成部分」 */
     launch: (id: string, opts?: { allowPartial?: boolean }) =>
       ipcRenderer.invoke(IPC.programLaunch, id, opts) as Promise<LaunchResult>,
-    /** 切场景：跳剧本场景 + 装载该场景话术库 */
-    gotoScene: (programId: string, index: number) =>
-      ipcRenderer.invoke(IPC.programGotoScene, programId, index) as Promise<{
-        ok: boolean
-        loaded: number
-        title?: string
-        error?: string
-      }>,
-    /** 统一音频生产入口：rolling=提前合成全部（立即返回，后台跑）；prepared=生成节目音频（跑完返回汇总，进度走 onAudioEvent / utterance.onEvent） */
-    produceAudio: (id: string) => ipcRenderer.invoke(IPC.programProduceAudio, id) as Promise<ProduceAudioResult>,
+    /** 统一音频生产入口：rolling=提前合成全部（立即返回，后台跑）；prepared=生成节目音频（跑完返回汇总，进度走 onAudioEvent / utterance.onEvent）。
+     *  voiceOverride = 声音选择弹窗里显式选的声音（本次合成冻结它，不改节目配置） */
+    produceAudio: (id: string, voiceOverride?: ProduceVoiceOverride) =>
+      ipcRenderer.invoke(IPC.programProduceAudio, id, voiceOverride) as Promise<ProduceAudioResult>,
+    /** 生产前的合成计划摘要（声音选择弹窗）：段数、就绪/待合成计数、声音描述、粗估时长 */
+    producePlan: (id: string) => ipcRenderer.invoke(IPC.programProducePlan, id) as Promise<ProducePlanInfo>,
     /** 预制节目正式播放门禁：所有单元 ready + 文件存在 + 指纹一致才 ok；未通过时 failures 带原因，不静默跳过 */
     playGate: (id: string) => ipcRenderer.invoke(IPC.programPlayGate, id) as Promise<ProgramGateResult>,
     /** 节目音频进度（单元总数/ready/synthesizing/pending/failed/stale） */
@@ -463,6 +481,9 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke(IPC.utteranceDelete, id) as Promise<PoolResult>,
     clear: (programId: string, sceneId?: string) =>
       ipcRenderer.invoke(IPC.utteranceClear, programId, sceneId) as Promise<PoolResult>,
+    /** 清空已合成音频（文稿保留；滚动段回待合成，预制资产摘除，可重新合成）。返回清掉的段数 */
+    clearAudio: (programId: string) =>
+      ipcRenderer.invoke(IPC.utteranceClearAudio, programId) as Promise<PoolResult<number>>,
     /** 批量预合成（异步启动，进度走 onEvent；id='' 表示批次结束） */
     presynth: (programId: string) => ipcRenderer.invoke(IPC.utterancePresynth, programId) as Promise<{ ok: boolean }>,
     onEvent: (cb: (utterance: Utterance) => void) => {
@@ -472,6 +493,20 @@ const api = {
         ipcRenderer.removeListener(IPC.utteranceEvent, listener)
       }
     }
+  },
+  session: {
+    /** 场次列表（programId 传空串/省略 = 全部节目），新场在前 */
+    list: (programId?: string) => ipcRenderer.invoke(IPC.sessionList, programId) as Promise<BroadcastSession[]>,
+    /** 场次详情：场次行 + 播出话术条目 + 评论/事件时间线；场次不存在返回 null */
+    detail: (id: string) => ipcRenderer.invoke(IPC.sessionDetail, id) as Promise<SessionDetail | null>,
+    /** 删场次（连带播出条目与事件镜像；正在播的场次拒删） */
+    remove: (id: string) => ipcRenderer.invoke(IPC.sessionDelete, id) as Promise<PoolResult>,
+    /** 场次音频导出：实际播出的有音频条目按播放顺序导出；进度走 program.onExportEvent（programId 字段带场次 id） */
+    exportAudio: (options: SessionExportOptions) =>
+      ipcRenderer.invoke(IPC.sessionExport, options) as Promise<SessionExportResult>,
+    /** 逐条试听（aux 槽，本机出声不进推流） */
+    playItem: (itemId: string) =>
+      ipcRenderer.invoke(IPC.sessionPlayItem, itemId) as Promise<{ ok: boolean; error?: string }>
   },
   stream: {
     start: () => ipcRenderer.invoke(IPC.streamStart) as Promise<{ ok: boolean; error?: string }>,

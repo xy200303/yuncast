@@ -5,6 +5,7 @@ import {
   BookOpen,
   Bot,
   Clapperboard,
+  History,
   PanelLeft,
   Radio,
   Settings,
@@ -33,7 +34,8 @@ export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon; section:
   { id: 'anchors', label: '主播团', icon: Bot, section: '资产库' },
   { id: 'knowledge', label: '知识库', icon: BookOpen, section: '资产库' },
   { id: 'voices', label: '音色库', icon: AudioLines, section: '资产库' },
-  { id: 'stats', label: '数据', icon: BarChart3, section: '数据' }
+  { id: 'sessions', label: '场次记录', icon: History, section: '数据' },
+  { id: 'stats', label: '统计', icon: BarChart3, section: '数据' }
 ]
 
 /**

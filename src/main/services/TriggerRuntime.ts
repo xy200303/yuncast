@@ -80,10 +80,14 @@ const BUILTIN_DEFAULT_DISABLED = new Set(['整点带节奏'])
  * 已下线的内建触发器：模板没改过的旧行直接删掉。
  * 开场白下线——开场由底稿 hook 段承担（按 seq 第一个播，预合成零 token），
  * 不再让 agent 例行 say（烧 token、刷对话区、还和底稿重复）
+ * 续写补给下线——低水位续写升级为引擎行为（broadcastPolicy rolling.shouldAutoWrite →
+ * AgentService.notifyLowWater），不再依赖节目勾选触发器；导演要自定义写法直接在对话里说
  */
 const BUILTIN_REMOVED: Record<string, string> = {
   开场白:
-    '直播开始了。用 say 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。'
+    '直播开始了。用 say 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。',
+  续写补给:
+    '话术池只剩 {{payload.remaining}} 段了，撑不了几分钟。list_drafts 看看底稿库：还有没轮到的存货就按节奏播（循环会接上）；存货见底了就现场写一个新桥段直接 say 播出——接着刚才的内容往下讲，返场不返词，别冷场。'
 }
 
 /** 内建触发器模板（首次启动播种，用户可关可改） */
@@ -135,21 +139,9 @@ export function builtinTriggers(): TriggerInput[] {
       throttle: { cooldownMs: 120_000 }
     },
     {
-      name: '续写补给',
-      enabled: true,
-      on: { event: 'pool.low' },
-      target: {
-        agentId: 'anchor',
-        mode: 'steer',
-        promptTemplate:
-          '话术池只剩 {{payload.remaining}} 段了，撑不了几分钟。list_drafts 看看底稿库：还有没轮到的存货就按节奏播（循环会接上）；存货见底了就现场写一个新桥段直接 say 播出——接着刚才的内容往下讲，返场不返词，别冷场。'
-      },
-      throttle: { cooldownMs: 180_000 }
-    },
-    {
       name: '整点带节奏',
       // 默认关：定时叫醒 agent 是「没事也运行」的 token 元凶（两小时白烧十几轮）。
-      // 低水位有「续写补给」、互动有评论攒批，节奏不需要闹钟；想要节拍器再手动开
+      // 低水位有引擎自动续写、互动有评论攒批，节奏不需要闹钟；想要节拍器再手动开
       enabled: false,
       on: { event: 'timer.interval' },
       target: {
@@ -291,9 +283,11 @@ export class TriggerRuntime {
     if (event.type === 'stream.started') this.firedThisSession.clear()
 
     // 节目事件接线总闸：节目关闭直播事件时，评论/进场/礼物/点赞这类动态事件一概不进触发器；
-    // stream.started（开播信号）与 pool.empty/pool.low（自家水位）不是观众动态，照常放行
+    // stream.started（开播信号）与 pool.empty/pool.low（自家水位）不是观众动态，照常放行——
+    // 但预制节目（prepared）例外：它的播完/循环是引擎决策（broadcastPolicy），水位触发器不响
     const gate = this.gateProvider?.()
     if (gate && !gate.allowLiveEvents && LIVE_DYNAMIC_EVENTS.has(event.type)) return
+    if (gate?.broadcastMode === 'prepared' && (event.type === 'pool.empty' || event.type === 'pool.low')) return
 
     for (const trigger of this.triggers) {
       if (!trigger.enabled || trigger.on.event !== event.type) continue

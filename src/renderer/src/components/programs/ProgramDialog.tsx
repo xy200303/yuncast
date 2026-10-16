@@ -13,29 +13,23 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
 import { useAppStore } from '../../stores/useAppStore'
-import { MANUAL_VOICE_SEP } from '../../../../shared/voiceProvider'
 import {
   BROADCAST_MODE_LABELS,
   CONTENT_TYPE_LABELS,
   DEFAULT_PROGRAM_AUDIO_CONFIG,
   DEFAULT_PROGRAM_INPUT,
-  TTS_MODEL_KIND_LABEL,
   type BroadcastMode,
   type ContentType,
   type KnowledgeFile,
   type Persona,
   type Product,
   type Program,
-  type ProgramAudioConfig,
   type ProgramInput,
   type Script,
-  type Trigger,
-  type TtsConnectionSafe
+  type Trigger
 } from '../../../../shared/types'
 
 /** 内容类型的一句话说明（docs/10 §4.1） */
@@ -97,6 +91,7 @@ export function ProgramDialog({
           finishMode: program.finishMode,
           allowLiveEvents: program.allowLiveEvents,
           enabledTriggerIds: program.enabledTriggerIds,
+          presenterIds: program.presenterIds,
           audioConfig: program.audioConfig,
           scriptId: program.scriptId,
           knowledgeScope: program.knowledgeScope
@@ -106,10 +101,14 @@ export function ProgramDialog({
   const [busy, setBusy] = useState(false)
   /** 栏内视图：事件规则不开嵌套弹窗，dialog 内切换（docs/10 §11.4） */
   const [view, setView] = useState<'main' | 'events'>('main')
+  /** 卡司候选（全部主播卡）：打开弹窗时拉一次 */
+  const [personaOptions, setPersonaOptions] = useState<Persona[]>([])
+  useEffect(() => {
+    if (!open || !('api' in window)) return
+    void window.api.persona.list().then(setPersonaOptions)
+  }, [open])
 
   const patch = (part: Partial<ProgramInput>) => setForm((prev) => ({ ...prev, ...part }))
-  const patchAudio = (part: Partial<ProgramAudioConfig>) =>
-    setForm((prev) => ({ ...prev, audioConfig: { ...prev.audioConfig, ...part } }))
 
   const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
     const current = form.knowledgeScope[kind]
@@ -129,33 +128,21 @@ export function ProgramDialog({
     patch({ enabledTriggerIds: next })
   }
 
+  const togglePresenter = (id: string, checked: boolean) => {
+    const next = checked
+      ? [...new Set([...form.presenterIds, id])]
+      : form.presenterIds.filter((x) => x !== id)
+    patch({ presenterIds: next })
+  }
+
   const submit = () => {
     if (!form.name.trim() || busy) return
-    const audioConfig =
-      form.broadcastMode === 'prepared' ? form.audioConfig : DEFAULT_PROGRAM_AUDIO_CONFIG
-    if (audioConfig.mode === 'custom' && !audioConfig.ttsModelId) {
-      toast.warning('自定义节目声音还没选合成模型', { description: '选一个模型，或改回「使用当前主播声音」' })
-      return
-    }
-    // 双人播客模型（§6.4）：恰好两位主持人，保存前就拦下
-    if (audioConfig.mode === 'custom' && audioConfig.ttsConnectionId && audioConfig.ttsModelId) {
-      const { ttsConnections, ttsProviders } = useAppStore.getState()
-      const connection = ttsConnections.find((item) => item.id === audioConfig.ttsConnectionId)
-      const spec = ttsProviders
-        .find((item) => item.id === connection?.providerId)
-        ?.models.find((model) => model.id === audioConfig.ttsModelId)
-      if (spec?.capabilities?.kind === 'podcast') {
-        const hosts = (audioConfig.cast ?? []).filter(
-          (member) => (member.roleId === 'host-a' || member.roleId === 'host-b') && member.voiceId.trim()
-        )
-        if (hosts.length !== 2) {
-          toast.warning('双人播客模型需要配好两位主持人音色', {
-            description: '在声音安排里为主持人 A 和主持人 B 各选一个音色'
-          })
-          return
-        }
-      }
-    }
+    /**
+     * 声音不在节目里配：合成（「合成声音」弹窗）时自会让人选接入/模型/音色，选完冻结进每段产物。
+     * 这里只是把老节目已存的自定义声音配置原样带回去——改个名字不该把存量配置冲掉；
+     * 新建节目用默认（跟随当前主播）。
+     */
+    const audioConfig = program?.audioConfig ?? DEFAULT_PROGRAM_AUDIO_CONFIG
     setBusy(true)
     const input: ProgramInput = {
       ...form,
@@ -253,7 +240,7 @@ export function ProgramDialog({
               <Textarea
                 value={form.theme}
                 onChange={(e) => patch({ theme: e.target.value })}
-                placeholder="这个节目播什么、什么氛围；会写进主播的脑子里"
+                placeholder="这个节目播什么、什么氛围；会作为节目上下文交给导演"
                 className="min-h-16 resize-none"
               />
             </div>
@@ -297,11 +284,6 @@ export function ProgramDialog({
               )}
             </div>
 
-            {/* 声音安排：只有「全部做好再播」需要提前定声音（docs/10 §6.3） */}
-            {form.broadcastMode === 'prepared' && (
-              <AudioSection form={form} patchAudio={patchAudio} />
-            )}
-
             {/* 事件规则：一行摘要，点进栏内页勾选 */}
             <button
               type="button"
@@ -316,6 +298,33 @@ export function ProgramDialog({
                 <ChevronRight className="size-3.5" />
               </span>
             </button>
+
+            {/* 卡司：导演手下有哪些人设可用（空 = 导演自选，全部主播卡都是候选人） */}
+            <div>
+              <Label className="mb-1.5">卡司</Label>
+              <div className="rounded-lg border p-3">
+                {personaOptions.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">还没有主播卡，去「主播团」建一张；不选 = 导演自选</p>
+                ) : (
+                  <div className="grid max-h-28 grid-cols-2 gap-1.5 overflow-y-auto">
+                    {personaOptions.map((p) => (
+                      <label key={p.id} className="flex min-w-0 items-center gap-1.5 text-xs">
+                        <Checkbox
+                          checked={form.presenterIds.includes(p.id)}
+                          onCheckedChange={(v) => togglePresenter(p.id, v === true)}
+                        />
+                        <span className="truncate">{p.name}</span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  {form.presenterIds.length === 0
+                    ? '不选 = 导演自选：全部主播卡都是候选人'
+                    : `已选 ${form.presenterIds.length} 位：导演只在这些卡里挑人出镜`}
+                </p>
+              </div>
+            </div>
 
             {/* 知识范围 */}
             <ScopePicker
@@ -425,7 +434,7 @@ function EventsView({
                 <span className="min-w-0 flex-1">
                   将评论/动态提供给主播
                   <span className="block text-xs text-muted-foreground">
-                    关掉后主播看不到直播间里发生什么，播控台也不再显示直播间动态
+                    关掉后主播看不到直播间里发生什么，直播台也不再显示直播间动态
                   </span>
                 </span>
               </label>
@@ -449,211 +458,6 @@ function EventsView({
       <p className="text-xs text-muted-foreground">
         冷却时间、话术模板等高级参数在全局触发器库调；这里只决定这个节目启用哪几项。
       </p>
-    </div>
-  )
-}
-
-/** 声音安排（仅「全部做好再播」）：跟随当前主播，或自定义合成模型 + 角色音色映射（docs/10 §6.3 最简版） */
-function AudioSection({
-  form,
-  patchAudio
-}: {
-  form: ProgramInput
-  patchAudio: (part: Partial<ProgramAudioConfig>) => void
-}) {
-  const ttsConnections = useAppStore((s) => s.ttsConnections)
-  const ttsProviders = useAppStore((s) => s.ttsProviders)
-  const [persona, setPersona] = useState<Persona | null>(null)
-  const [pickingRole, setPickingRole] = useState<string | null>(null)
-  const audio = form.audioConfig
-
-  // 自定义声音的角色映射以当前主播卡的角色为底（角色在人设卡上维护）
-  useEffect(() => {
-    if (audio.mode !== 'custom') return
-    void window.api.persona.get().then(setPersona)
-  }, [audio.mode])
-
-  const specOf = (connection: TtsConnectionSafe | undefined, modelId: string) =>
-    ttsProviders.find((item) => item.id === connection?.providerId)?.models.find((model) => model.id === modelId)
-
-  const modelValue = audio.ttsConnectionId && audio.ttsModelId ? `${audio.ttsConnectionId}${MANUAL_VOICE_SEP}${audio.ttsModelId}` : ''
-  const modelOptions = ttsConnections.flatMap((connection) =>
-    connection.usableModels.map((model) => {
-      const spec = specOf(connection, model)
-      const kind = spec?.capabilities?.kind ?? 'standard'
-      return {
-        value: `${connection.id}${MANUAL_VOICE_SEP}${model}`,
-        label: `${connection.name} · ${spec?.label ?? model}${kind === 'standard' ? '' : `（${TTS_MODEL_KIND_LABEL[kind]}）`}`
-      }
-    })
-  )
-  const selectedConnection = ttsConnections.find((item) => item.id === audio.ttsConnectionId)
-  const isPodcast = audio.ttsModelId
-    ? specOf(selectedConnection, audio.ttsModelId)?.capabilities?.kind === 'podcast'
-    : false
-
-  const castVoice = (roleId: string) =>
-    audio.cast?.find((member) => member.roleId === roleId)?.voiceId ?? ''
-
-  const setCastVoice = (roleId: string, roleName: string, voiceId: string) => {
-    const rest = (audio.cast ?? []).filter((member) => member.roleId !== roleId)
-    patchAudio({ cast: voiceId ? [...rest, { roleId, roleName, voiceId }] : rest })
-  }
-
-  /** 换了合成模型：podcast 模型把角色表初始化成两个主持人位（沿用已有音色），普通模型不动 */
-  const changeModel = (value: string) => {
-    const index = value.indexOf(MANUAL_VOICE_SEP)
-    const connectionId = value.slice(0, index)
-    const modelId = value.slice(index + MANUAL_VOICE_SEP.length)
-    const kind = specOf(ttsConnections.find((item) => item.id === connectionId), modelId)?.capabilities?.kind
-    if (kind === 'podcast') {
-      const prev = audio.cast ?? []
-      patchAudio({
-        ttsConnectionId: connectionId,
-        ttsModelId: modelId,
-        cast: [
-          {
-            roleId: 'host-a',
-            roleName: '主持人 A',
-            voiceId: prev.find((member) => member.roleId === 'host-a')?.voiceId ?? prev[0]?.voiceId ?? ''
-          },
-          {
-            roleId: 'host-b',
-            roleName: '主持人 B',
-            voiceId: prev.find((member) => member.roleId === 'host-b')?.voiceId ?? prev[1]?.voiceId ?? ''
-          }
-        ]
-      })
-    } else {
-      patchAudio({ ttsConnectionId: connectionId, ttsModelId: modelId })
-    }
-  }
-
-  /** 一行角色音色映射：名称 + 输入框 + 级联选择器（普通模型的角色与播客的主持人共用） */
-  const castRow = (roleId: string, roleName: string) => (
-    <div key={roleId} className="flex flex-col gap-1">
-      <div className="flex items-center gap-2">
-        <span className="w-20 shrink-0 truncate text-xs">{roleName || '未命名'}</span>
-        <Input
-          value={castVoice(roleId)}
-          onChange={(e) => setCastVoice(roleId, roleName, e.target.value)}
-          placeholder="音色 id，或从音色库选"
-          className="h-7 min-w-0 flex-1 text-xs"
-        />
-        <Button
-          variant={pickingRole === roleId ? 'secondary' : 'outline'}
-          size="sm"
-          className="h-7 shrink-0 text-xs"
-          onClick={() => setPickingRole(pickingRole === roleId ? null : roleId)}
-        >
-          {pickingRole === roleId ? '收起' : '选音色'}
-        </Button>
-      </div>
-      {pickingRole === roleId && (
-        <div className="rounded-lg border p-2">
-          <VoiceCascadePicker
-            voiceId={castVoice(roleId)}
-            onPick={(voiceId) => {
-              setCastVoice(roleId, roleName, voiceId)
-              setPickingRole(null)
-            }}
-          />
-        </div>
-      )}
-    </div>
-  )
-
-  return (
-    <div className="rounded-lg border p-3">
-      <p className="mb-2 text-xs font-medium">声音安排</p>
-      <div className="grid grid-cols-2 gap-2">
-        <ChoiceCard
-          selected={audio.mode !== 'custom'}
-          label="使用当前主播声音"
-          desc="谁播就用谁的音色，换主播自动跟着换"
-          onClick={() => patchAudio({ mode: 'follow-presenter' })}
-        />
-        <ChoiceCard
-          selected={audio.mode === 'custom'}
-          label="自定义节目声音"
-          desc="这个节目固定用一套合成模型和角色音色"
-          onClick={() => patchAudio({ mode: 'custom' })}
-        />
-      </div>
-      {audio.mode === 'custom' && (
-        <div className="mt-3 flex flex-col gap-3">
-          <div>
-            <Label className="mb-1 text-xs text-muted-foreground">合成模型</Label>
-            {modelOptions.length === 0 ? (
-              <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                还没有可用的语音合成接入，去「设置 → 语音合成」配一条
-              </p>
-            ) : (
-              <Select
-                value={modelValue || undefined}
-                onValueChange={changeModel}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="选择合成模型" />
-                </SelectTrigger>
-                <SelectContent>
-                  {modelOptions.map((option) => (
-                    <SelectItem key={option.value} value={option.value}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
-          </div>
-          {isPodcast ? (
-            /* 双人播客模型（§6.3）：恰好两个主持人位 + 开场/结尾音乐；单人音色与逐段字段隐藏 */
-            <div>
-              <Label className="mb-1 text-xs text-muted-foreground">主持人音色（恰好两位）</Label>
-              <div className="flex flex-col gap-2">
-                {(
-                  [
-                    { roleId: 'host-a', roleName: '主持人 A' },
-                    { roleId: 'host-b', roleName: '主持人 B' }
-                  ] as const
-                ).map((host) => castRow(host.roleId, host.roleName))}
-              </div>
-              <p className="mt-1.5 text-xs text-muted-foreground">
-                文稿段落标了主持人音色就归对应主持人讲，没标的按 A/B 交替；整期一次合成，不做逐段拼接
-              </p>
-              <div className="mt-2 flex items-center gap-5">
-                <label className="flex items-center gap-1.5 text-xs">
-                  <Switch
-                    checked={audio.useHeadMusic ?? true}
-                    onCheckedChange={(v) => patchAudio({ useHeadMusic: v === true })}
-                    aria-label="开场音乐"
-                  />
-                  开场音乐
-                </label>
-                <label className="flex items-center gap-1.5 text-xs">
-                  <Switch
-                    checked={audio.useTailMusic ?? false}
-                    onCheckedChange={(v) => patchAudio({ useTailMusic: v === true })}
-                    aria-label="结尾音乐"
-                  />
-                  结尾音乐
-                </label>
-              </div>
-            </div>
-          ) : (
-          <div>
-            <Label className="mb-1 text-xs text-muted-foreground">角色音色</Label>
-            {(persona?.roles ?? []).length === 0 ? (
-              <p className="text-xs text-muted-foreground">当前主播卡没有角色，整期都用上面模型的默认音色即可</p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {persona!.roles.map((role) => castRow(role.name, role.name))}
-              </div>
-            )}
-          </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }

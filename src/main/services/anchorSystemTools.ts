@@ -50,8 +50,8 @@ export interface AnchorSystemToolDeps {
   getSessionInfo: () => { programId: string; purpose: 'live' | 'prep' } | null
   /** 当前主播卡 id */
   getActivePersonaId: () => string
-  /** 切换当前主播（走 AgentService.handoff 原子换人机制） */
-  handoffPersona: (personaId: string) => Promise<{ ok: boolean; error?: string }>
+  /** 卡司切换（走 AgentService.switchPresenter：不换脑不重启会话，只换接下来出镜的人） */
+  switchPresenter: (personaId: string) => Promise<{ ok: boolean; error?: string }>
   /** 请示导演确认卡（与 anchorTools 的 ask_director 同一机制） */
   onDirectorAsk?: (ask: {
     text: string
@@ -90,7 +90,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
     getStatus,
     getSessionInfo,
     getActivePersonaId,
-    handoffPersona,
+    switchPresenter,
     onDirectorAsk,
     notifyTimeline,
     warmupProgram,
@@ -228,6 +228,12 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             播完以后: program.broadcastMode === 'improvised' ? '不适用（即兴）' : program.finishMode === 'loop' ? '循环播放' : '播完停止',
             直播间动态提供给主播: program.allowLiveEvents,
             启用触发器: program.enabledTriggerIds.map((id) => ({ id, 名称: triggerLabel(id) })),
+            卡司:
+              program.presenterIds.length > 0
+                ? program.presenterIds.map(
+                    (id) => persona.list().find((p) => p.id === id)?.name ?? `${id}（已不存在）`
+                  )
+                : '（导演自选：全部主播卡都是候选人）',
             声音配置:
               audio.mode === 'follow-presenter'
                 ? '跟随当前主播'
@@ -311,32 +317,27 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
     defineTool({
       name: 'list_personas',
       label: '看主播团',
-      description: '列出全部主播卡：名字、语言模型、音色、角色数、是不是当前主播、版本号。换主播（set_active_persona）或改主播卡（save_persona）前用它拿 id。',
+      description: '列出全部主播卡：名字、音色、是不是当前出镜、版本号。卡司切换（switch_presenter）或改主播卡（save_persona）前用它拿 id。',
       parameters: Type.Object({}),
       execute: async () =>
         guardTool(() => {
           const list = persona.list()
           const activeId = getActivePersonaId()
           return JSON.stringify(
-            list.map((p) => {
-              const conn = p.modelConnectionId ? storage.connectionGet(p.modelConnectionId) : null
-              return {
-                id: p.id,
-                名称: p.name,
-                语言模型: conn ? `${conn.name} · ${p.model || '（未选模型）'}` : '（未配置）',
-                音色: voiceLabel(p.voiceId),
-                角色数: p.roles.length,
-                当前主播: p.id === activeId,
-                版本号: p.updatedAt
-              }
-            })
+            list.map((p) => ({
+              id: p.id,
+              名称: p.name,
+              音色: voiceLabel(p.voiceId),
+              当前出镜: p.id === activeId,
+              版本号: p.updatedAt
+            }))
           )
         })
     }),
     defineTool({
       name: 'get_persona',
       label: '看主播卡详情',
-      description: '看一张主播卡的完整内容：人格/口癖/背景/禁区/语言模型/音色/角色表，附版本号。改主播卡（save_persona）之前先读它。',
+      description: '看一张主播卡的完整内容：人格/口癖/背景/禁区/音色，附版本号。改主播卡（save_persona）之前先读它。',
       parameters: Type.Object({
         personaId: Type.String({ description: '主播卡 id（list_personas 拿）' })
       }),
@@ -344,7 +345,6 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
         guardTool(() => {
           const found = persona.list().find((p) => p.id === params.personaId.trim())
           if (!found) return `主播卡 ${params.personaId} 不存在（用 list_personas 拿正确的 id）`
-          const conn = found.modelConnectionId ? storage.connectionGet(found.modelConnectionId) : null
           return JSON.stringify({
             id: found.id,
             名称: found.name,
@@ -353,10 +353,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             背景: found.background,
             禁区: found.taboos,
             音色: voiceLabel(found.voiceId),
-            语言模型接入: conn ? { id: conn.id, 名称: conn.name, 服务商: conn.providerId } : null,
-            模型: found.model || '（未选）',
-            角色: found.roles.map((r) => ({ 名称: r.name, 音色: voiceLabel(r.voiceId), 口吻: r.style })),
-            当前主播: found.id === getActivePersonaId(),
+            当前出镜: found.id === getActivePersonaId(),
             版本号: found.updatedAt
           })
         })
@@ -399,7 +396,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             失败原因: voice.error || undefined,
             授权时间: voice.authorizedAt ? new Date(voice.authorizedAt).toLocaleString() : '（未记录）',
             引用: {
-              主播卡: usage.personas.map((p) => (p.role ? `${p.name} 的角色「${p.role}」` : p.name)),
+              主播卡: usage.personas.map((p) => p.name),
               节目声音安排: usage.programs.map((p) => p.name),
               底稿条目数: usage.utteranceCount,
               底稿示例: usage.utteranceSamples.map((s) => `「${s.programName}」${s.text.slice(0, 40)}`),
@@ -496,11 +493,11 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           if (!llmConnections.some((c) => c.可用)) {
             suggestions.push('没有可用的语言模型接入：让导演到设置 → 语言模型添加接入并填密钥')
           }
-          if (!current.modelConnectionId || !current.model) {
-            suggestions.push(`当前主播「${current.name}」还没选模型：用 save_persona 给它选接入和模型（接入 id 见上面的语言模型接入列表）`)
+          if (!cfg.director.modelConnectionId || !cfg.director.model) {
+            suggestions.push('导演大脑还没配：让导演到设置 → 语言模型给导演选接入和模型（导演不配上不了工）')
           }
           if (!current.voiceId) {
-            suggestions.push(`当前主播「${current.name}」还没选音色：用 list_voices 挑一个，save_persona 配上`)
+            suggestions.push(`当前出镜主播「${current.name}」还没选音色：用 list_voices 挑一个，save_persona 配上`)
           }
           if (!ttsConnections.some((c) => c.可用)) {
             suggestions.push('没有可用的语音合成接入：让导演到设置 → 语音合成补齐凭据')
@@ -512,17 +509,18 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           if (cfg.stream.mode === 'direct' && (!cfg.stream.serverUrl || !cfg.stream.streamKey)) {
             suggestions.push('直推模式还没配推流地址/密钥：让导演到设置 → 接入 → 推流补齐')
           }
-          if (status.assetsStale) suggestions.push('主播卡/节目配置在会话启动后改过：改动要重开会话才生效（导演重启会话或下次开播）')
+          if (status.assetsStale) suggestions.push('导演大脑/卡司/节目配置在会话启动后改过：改动要重开会话才生效（导演重启会话或下次开播）')
 
           return JSON.stringify({
             节目: {
               当前节目: active ? active.name : null,
               播出中: status.live === true,
-              主播会话: status.state === 'stopped' ? '未启动' : `${status.state}（${status.purpose === 'prep' ? '写稿备播' : '直播'}）`,
+              主播会话: status.state === 'stopped' ? '未启动' : `${status.state}（${status.live ? '直播' : '写稿/待命'}）`,
               未播队列: poolStatus.active,
               正在播: poolStatus.playing?.text ?? null
             },
-            当前主播: { 名称: current.name, 模型: current.model || '（未选）', 音色: voiceLabel(current.voiceId) },
+            导演: { 名称: cfg.director.name, 模型: cfg.director.model || '（未配大脑）' },
+            当前出镜主播: { 名称: current.name, 音色: voiceLabel(current.voiceId) },
             语言模型接入: llmConnections,
             语音合成接入: ttsConnections,
             评论连接器: connector
@@ -550,7 +548,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
       name: 'save_program',
       label: '存节目',
       description:
-        '新建或修改节目配置（名称/主题/内容类型/播出方式/播完策略/事件开关/剧本绑定/知识范围/声音安排）。' +
+        '新建或修改节目配置（名称/主题/内容类型/播出方式/播完策略/事件开关/卡司/剧本绑定/知识范围/声音安排）。' +
         '带 id 是修改（没传的字段保持原样），不带 id 是新建（name 必填）。' +
         '修改时建议带 expectedUpdatedAt（get_program 里的版本号）：期间有人改过了会拒绝并告诉你新版本号，重新读取后再改，不会悄悄覆盖别人的修改。' +
         '改的是当前节目且会话在跑时，配置下次重开会话/开播才生效（返回值会明说）。',
@@ -567,6 +565,9 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
         finishMode: Type.Optional(Type.String({ description: '播完以后：stop=播完停止 / loop=循环播放' })),
         allowLiveEvents: Type.Optional(Type.Boolean({ description: '是否把直播间动态（评论/礼物/进场）提供给主播' })),
         enabledTriggerIds: Type.Optional(Type.Array(Type.String(), { description: '启用的事件触发器 id（全量替换，list_triggers 拿）' })),
+        presenterIds: Type.Optional(
+          Type.Array(Type.String(), { description: '节目卡司：主播卡 id 数组（全量替换，list_personas 拿）；空数组 = 导演自选（全部主播卡可用）' })
+        ),
         scriptId: Type.Optional(Type.String({ description: '绑定的剧本 id（list_scripts 拿）；传空字符串 = 解绑' })),
         knowledgeScope: Type.Optional(
           Type.Object({
@@ -579,6 +580,9 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             mode: Type.Optional(Type.String({ description: 'follow-presenter=跟随当前主播 / custom=自定义节目声音' })),
             ttsConnectionId: Type.Optional(Type.String({ description: '合成接入 id（custom 模式；get_system_status 的语音合成接入列表拿）' })),
             ttsModelId: Type.Optional(Type.String({ description: '合成模型 id' })),
+            voiceId: Type.Optional(
+              Type.String({ description: '默认单音色（custom 模式；段落没单独指定就用它，list_voices 拿）' })
+            ),
             cast: Type.Optional(
               Type.Array(
                 Type.Object({
@@ -626,6 +630,11 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           if (params.audioConfig?.ttsConnectionId?.trim() && !storage.ttsConnectionGet(params.audioConfig.ttsConnectionId.trim())) {
             return `语音合成接入 ${params.audioConfig.ttsConnectionId} 不存在（用 get_system_status 看现有接入）`
           }
+          if (params.presenterIds) {
+            const known = new Set(persona.list().map((p) => p.id))
+            const bad = params.presenterIds.map((id) => id.trim()).filter((id) => id && !known.has(id))
+            if (bad.length > 0) return `卡司里有不存在的主播卡：${bad.join('、')}（用 list_personas 拿正确的 id）`
+          }
 
           const saved = script.saveProgram(
             {
@@ -636,11 +645,13 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
               finishMode: fm.value ?? existing?.finishMode ?? 'loop',
               allowLiveEvents: params.allowLiveEvents ?? existing?.allowLiveEvents ?? true,
               enabledTriggerIds: params.enabledTriggerIds ?? existing?.enabledTriggerIds ?? [],
+              presenterIds: params.presenterIds ?? existing?.presenterIds ?? [],
               audioConfig: params.audioConfig
                 ? {
                     mode: am.value ?? existing?.audioConfig.mode ?? 'follow-presenter',
                     ttsConnectionId: params.audioConfig.ttsConnectionId?.trim() ?? existing?.audioConfig.ttsConnectionId,
                     ttsModelId: params.audioConfig.ttsModelId?.trim() ?? existing?.audioConfig.ttsModelId,
+                    voiceId: params.audioConfig.voiceId?.trim() ?? existing?.audioConfig.voiceId,
                     cast: params.audioConfig.cast ?? existing?.audioConfig.cast
                   }
                 : (existing?.audioConfig ?? { mode: 'follow-presenter' }),
@@ -704,8 +715,8 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
       name: 'save_persona',
       label: '存主播卡',
       description:
-        '新建或修改主播卡（名字/人格/口癖/背景/禁区/语言模型/音色/角色表）。带 id 是修改（没传的字段保持原样），不带 id 是新建（name 必填，新卡会自动成为当前主播）。' +
-        '改的是当前主播且会话在跑时：改模型/接入要重开会话才生效；改音色只影响之后新说出的内容；改人格文本当前会话不自动刷新——返回值会明说属于哪种。' +
+        '新建或修改主播卡（名字/人格/口癖/背景/禁区/音色）。主播卡是纯资料：大脑是导演的，不在这里配。带 id 是修改（没传的字段保持原样），不带 id 是新建（name 必填，新卡不上场，要它出镜用 switch_presenter）。' +
+        '改的是当前出镜主播且会话在跑时：改音色只影响之后新说出的内容；改人格文本当前会话不自动刷新（重开会话生效）——返回值会明说属于哪种。' +
         '修改时建议带 expectedUpdatedAt（get_persona 里的版本号）做并发保护。',
       parameters: Type.Object({
         id: Type.Optional(Type.String({ description: '主播卡 id：修改时必传（list_personas 拿），不传 = 新建' })),
@@ -715,18 +726,6 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
         background: Type.Optional(Type.String({ description: '背景故事' })),
         taboos: Type.Optional(Type.String({ description: '禁区（绝不能说的话题/承诺）' })),
         voiceId: Type.Optional(Type.String({ description: '音色标识（list_voices 拿）；传空字符串 = 清空' })),
-        modelConnectionId: Type.Optional(Type.String({ description: '语言模型接入 id（get_system_status 拿）；传空字符串 = 清空' })),
-        model: Type.Optional(Type.String({ description: '模型 id，必须在接入的模型列表里' })),
-        roles: Type.Optional(
-          Type.Array(
-            Type.Object({
-              name: Type.String({ description: '角色名' }),
-              voiceId: Type.String({ description: '角色音色标识' }),
-              style: Type.String({ description: '口吻提示' })
-            }),
-            { description: '编剧模式角色表（全量替换）' }
-          )
-        ),
         expectedUpdatedAt: Type.Optional(Type.Number({ description: '你读到的版本号（并发保护）' }))
       }),
       execute: async (_id, params) =>
@@ -738,14 +737,6 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             const dup = persona.list().find((p) => p.name === params.name!.trim())
             if (dup) return `已存在同名主播「${dup.name}」（id=${dup.id}）：要改它带 id 调用，别重复建`
           }
-          const modelConnectionId =
-            params.modelConnectionId === undefined ? (existing?.modelConnectionId ?? null) : params.modelConnectionId.trim() || null
-          const model = params.model === undefined ? (existing?.model ?? '') : params.model.trim()
-          const connection = modelConnectionId ? storage.connectionGet(modelConnectionId) : null
-          if (modelConnectionId && !connection) return `语言模型接入 ${modelConnectionId} 不存在（用 get_system_status 看现有接入）`
-          if (model && connection && !connection.models.includes(model)) {
-            return `模型 ${model} 不在接入「${connection.name}」的模型列表里（现有：${connection.models.join('、')}）`
-          }
           const saved = persona.save(
             {
               name: params.name?.trim() ?? existing?.name ?? '',
@@ -753,27 +744,19 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
               catchphrases: params.catchphrases ?? existing?.catchphrases ?? '',
               background: params.background ?? existing?.background ?? '',
               taboos: params.taboos ?? existing?.taboos ?? '',
-              voiceId: params.voiceId === undefined ? (existing?.voiceId ?? '') : params.voiceId.trim(),
-              modelConnectionId,
-              model,
-              roles: (params.roles ?? existing?.roles ?? [])
-                .map((r) => ({ name: r.name.trim(), voiceId: r.voiceId.trim(), style: r.style.trim() }))
-                .filter((r) => r.name)
+              voiceId: params.voiceId === undefined ? (existing?.voiceId ?? '') : params.voiceId.trim()
             },
             existing?.id,
             params.expectedUpdatedAt
           )
           if (!existing) {
-            return `已新建主播「${saved.name}」（id=${saved.id}）并设为当前主播（新卡默认上场）；要换回原来的用 set_active_persona`
+            return `已新建主播「${saved.name}」（id=${saved.id}）；当前出镜不变，要让它上场用 switch_presenter`
           }
-          // 运行态保护提示（docs/10 §10.3.9/§10.4）：改的是当前主播且会话在跑时，明说生效方式
+          // 运行态保护提示（docs/10 §10.3.9/§10.4）：改的是当前出镜主播且会话在跑时，明说生效方式
           if (existing.id !== getActivePersonaId() || getStatus().state === 'stopped') {
-            return `已更新主播卡「${saved.name}」（版本号 ${saved.updatedAt}）——不是当前在场主播，不影响正在跑的会话`
+            return `已更新主播卡「${saved.name}」（版本号 ${saved.updatedAt}）——不是当前出镜主播，不影响正在跑的会话`
           }
           const effects: string[] = []
-          if (existing.modelConnectionId !== saved.modelConnectionId || existing.model !== saved.model) {
-            effects.push('模型/接入变了：需要重开会话才生效（导演重启会话，或下次开播自动生效）')
-          }
           if (existing.voiceId !== saved.voiceId) {
             effects.push('音色变了：只影响之后新说出的内容；未播的旧音色条目按现有规则重合成，已生成/已播音频不动')
           }
@@ -786,7 +769,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             effects.push('人格文本变了：当前会话仍是旧人格，立即应用需重开会话')
           }
           return (
-            `已更新当前主播「${saved.name}」（版本号 ${saved.updatedAt}）` +
+            `已更新当前出镜主播「${saved.name}」（版本号 ${saved.updatedAt}）` +
             (effects.length > 0 ? `。${effects.join('；')}` : '。改动对当前会话立即生效')
           )
         })
@@ -848,10 +831,10 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
         })
     }),
     defineTool({
-      name: 'set_active_persona',
-      label: '换当前主播',
+      name: 'switch_presenter',
+      label: '卡司切换',
       description:
-        '切换当前主播（原子换人：会话上下文和节目历史保留，未播的旧音色话术用新主播嗓音重合成，已播/预制音频不动）。直播中和写稿中都能切。',
+        '卡司切换：接下来由另一张主播卡出镜（她的嗓音和风格）。不换脑不重启会话——你还是你，只是台前换人；未播的旧音色话术用新卡司嗓音重合成，已播/预制音频不动。直播中和写稿中都能切。',
       parameters: Type.Object({
         personaId: Type.String({ description: '主播卡 id（list_personas 拿）' })
       }),
@@ -859,10 +842,10 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
         guardToolAsync(async () => {
           const target = persona.list().find((p) => p.id === params.personaId.trim())
           if (!target) return `主播卡 ${params.personaId} 不存在（用 list_personas 拿正确的 id）`
-          if (target.id === getActivePersonaId()) return `「${target.name}」就是当前主播，不用换`
-          const result = await handoffPersona(target.id)
-          if (!result.ok) return `换主播失败：${result.error}`
-          return `已把当前主播换成「${target.name}」：这场的历史她都接得住，接下来用她的大脑和嗓音继续`
+          if (target.id === getActivePersonaId()) return `「${target.name}」就是当前出镜，不用换`
+          const result = await switchPresenter(target.id)
+          if (!result.ok) return `卡司切换失败：${result.error}`
+          return `已切到「${target.name}」出镜：接下来 say 不传 role 时用她的嗓音和风格，会话照常继续`
         })
     }),
 
@@ -932,7 +915,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           if (!program) return `节目 ${params.programId} 不存在（用 list_programs 拿正确的 id）`
           const status = getStatus()
           if (status.live && activeProgramId() === program.id) {
-            return '删不了：这个节目正在播出。先结束节目（导演在播控台点结束），再删除'
+            return '删不了：这个节目正在播出。先结束节目（导演在直播台点结束），再删除'
           }
           const session = getSessionInfo()
           if (session?.purpose === 'live' && session.programId === program.id) {
@@ -989,7 +972,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
       name: 'delete_persona',
       label: '删主播卡',
       description:
-        '删除一张主播卡（不可恢复；它已生成的音频保留）。当前主播正在会话中时删不了——先用 set_active_persona 换别人上场。' +
+        '删除一张主播卡（不可恢复；它已生成的音频保留）。当前出镜主播正在会话中时删不了——先用 switch_presenter 换别人上场。' +
         '第一次调用不传 confirmed：向导演发确认卡；确认后带 confirmed=true 重调才执行。',
       parameters: Type.Object({
         personaId: Type.String({ description: '主播卡 id（list_personas 拿）' }),
@@ -1001,13 +984,13 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           if (!target) return `主播卡 ${params.personaId} 不存在（用 list_personas 拿正确的 id）`
           const isActive = target.id === getActivePersonaId()
           if (isActive && getStatus().state !== 'stopped') {
-            return `删不了：「${target.name}」是当前主播且会话正在跑。先用 set_active_persona 换别人上场，再删这张卡`
+            return `删不了：「${target.name}」是当前出镜主播且会话正在跑。先用 switch_presenter 换别人上场，再删这张卡`
           }
           if (!params.confirmed) {
             const rest = persona.list().filter((p) => p.id !== target.id)
             return askConfirm(
               `删除主播卡「${target.name}」：\n` +
-                `- 人格/模型/音色配置一并删除\n` +
+                `- 人格/音色配置一并删除\n` +
                 `- ${isActive ? `它是当前主播，删除后自动切到「${rest[0]?.name ?? '无（会自动建默认卡）'}」\n- ` : ''}` +
                 `它已合成的节目音频保留，音色与知识不受影响\n不可恢复`
             )
@@ -1040,7 +1023,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             : 0
           const blockers: string[] = []
           if (usage.personas.length > 0) {
-            blockers.push(`主播卡：${usage.personas.map((p) => (p.role ? `${p.name} 的角色「${p.role}」` : p.name)).join('、')}`)
+            blockers.push(`主播卡：${usage.personas.map((p) => p.name).join('、')}`)
           }
           if (usage.programs.length > 0) blockers.push(`节目声音安排：${usage.programs.map((p) => p.name).join('、')}`)
           if (queueRefs > 0) blockers.push(`未播队列：${queueRefs} 条`)
@@ -1165,7 +1148,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
             return '直推模式还没配推流地址或密钥：让导演到设置 → 接入 → 推流补齐（密钥我只看得到配没配，读不到也改不了内容）'
           }
           if (!params.confirmed) {
-            return askConfirm('启动 RTMP 直推：开始向已配置的推流地址推送音频流。\n对外副作用：观众侧可见。可随时在播控台停止。')
+            return askConfirm('启动 RTMP 直推：开始向已配置的推流地址推送音频流。\n对外副作用：观众侧可见。可随时在直播台停止。')
           }
           const result = await stream.start()
           return result.ok ? 'RTMP 推流已启动（直播中）' : `推流启动失败：${result.error}`
@@ -1191,7 +1174,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
       execute: async (_id, params) =>
         guardToolAsync(async () => {
           const exporter = getExporter?.()
-          if (!exporter) return '导出服务还没接上，让导演在界面用导出弹窗（播控台顶栏/节目卡）'
+          if (!exporter) return '导出服务还没接上，让导演在界面用导出弹窗（直播台顶栏/节目卡）'
           const programId = params.programId?.trim() || activeProgramId()
           if (!programId) return '没有指定节目，也没有当前节目'
           const program = findProgram(programId)
@@ -1251,7 +1234,7 @@ export function buildAnchorSystemTools(deps: AnchorSystemToolDeps): AgentTool[] 
           notifyTimeline?.('—— 主播执行了紧急停止：声音已掐断、播报已暂停、会话已停止。恢复播出请导演确认后重新启动节目 ——')
           return ok('已紧急停止：所有声音掐断、播报暂停、会话停止。已立即执行并通知导演')
         } catch (error) {
-          return ok(`紧急停止执行出错：${error instanceof Error ? error.message : String(error)}（请导演立即在播控台手动停止）`)
+          return ok(`紧急停止执行出错：${error instanceof Error ? error.message : String(error)}（请导演立即在直播台手动停止）`)
         }
       }
     })

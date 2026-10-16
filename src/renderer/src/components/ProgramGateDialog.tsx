@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, AudioWaveform, CircleAlert, Loader2, Play, RefreshCw } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, CircleAlert, Loader2, Play } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -9,7 +9,8 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
-import type { LaunchResult, Program, ProgramGateResult } from '../../../shared/types'
+import { VoicePickDialog } from './VoicePickDialog'
+import type { LaunchResult, ProduceVoiceOverride, Program, ProgramGateResult } from '../../../shared/types'
 import { AUDIO_UNIT_LABEL } from '../lib/audioUnits'
 
 /**
@@ -35,6 +36,8 @@ export function ProgramGateDialog({
   onLaunched: (result: LaunchResult) => void
 }) {
   const [busy, setBusy] = useState<'' | 'produce' | 'partial'>('')
+  /** 「继续生成」先弹声音选择弹窗（docs/REDESIGN 4.4），确认才发起合成 */
+  const [voicePickOpen, setVoicePickOpen] = useState(false)
   const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
 
   const launchNow = async (allowPartial: boolean) => {
@@ -50,11 +53,13 @@ export function ProgramGateDialog({
   }
 
   /** 继续生成 / 重试失败项：统一生产入口只重做未完成与失败项，跑完重新过门禁 */
-  const produce = async () => {
+  const produce = async (voiceOverride?: ProduceVoiceOverride, rebuildAll?: boolean) => {
     if (busy) return
+    setVoicePickOpen(false)
     setBusy('produce')
     try {
-      const result = await window.api.program.produceAudio(program.id)
+      if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+      const result = await window.api.program.produceAudio(program.id, voiceOverride)
       if (!result.ok) {
         toast.error('生成节目音频没能完成', { description: result.error })
         return
@@ -100,9 +105,9 @@ export function ProgramGateDialog({
         </p>
         {gate.failures.length > 0 && (
           <div className="flex max-h-56 flex-col gap-1 overflow-y-auto">
-            {gate.failures.map((failure, index) => (
+            {gate.failures.map((failure) => (
               <div
-                key={`${failure.unitKind}:${failure.unitId}:${index}`}
+                key={`${failure.unitKind}:${failure.unitId}`}
                 className="flex items-start gap-2 rounded-md border px-2.5 py-1.5"
               >
                 {failure.status === 'stale' ? (
@@ -138,21 +143,25 @@ export function ProgramGateDialog({
             {busy === 'partial' ? <Loader2 className="animate-spin" /> : <Play />}
             仅播放已完成部分
           </Button>
+          {/* 一个按钮管到底：缺的、失败的、文稿改过的都会重新合成（原来「重试失败项」跟它是同一个动作，删掉） */}
           <Button
-            variant="outline"
-            disabled={busy !== '' || gate.failed === 0}
-            onClick={() => void produce()}
-            title="只重做失败的单元"
+            disabled={busy !== ''}
+            onClick={() => setVoicePickOpen(true)}
+            title="把还没合成、合成失败、文稿改过的单元都补齐，再正式开播"
           >
-            {busy === 'produce' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            重试失败项
-          </Button>
-          <Button disabled={busy !== ''} onClick={() => void produce()}>
             {busy === 'produce' ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
-            继续生成节目音频
+            继续生成（补齐音频）
           </Button>
         </DialogFooter>
       </DialogContent>
+      {/* 补合成前统一过声音选择弹窗（docs/REDESIGN 4.4）：确认后回到本弹窗继续跑门禁 */}
+      <VoicePickDialog
+        program={program}
+        open={voicePickOpen}
+        onOpenChange={setVoicePickOpen}
+        busy={busy === 'produce'}
+        onConfirm={(override, rebuildAll) => produce(override, rebuildAll)}
+      />
     </Dialog>
   )
 }

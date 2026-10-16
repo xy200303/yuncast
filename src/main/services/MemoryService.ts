@@ -1,10 +1,9 @@
-import { randomUUID } from 'node:crypto'
-import type { EpisodeSummary, ViewerProfile } from '../../shared/types'
+import type { ViewerProfile } from '../../shared/types'
 import type { StorageService } from './StorageService'
 
 /**
  * 记忆服务（docs/01 §3.6）。
- * M4 覆盖两层：长期记忆（老粉画像 viewer_profiles）+ 本场记忆（下播总结 episode_summaries）。
+ * 长期记忆 = 老粉画像 viewer_profiles；下播复盘摘要直接写进场次（broadcast_sessions.summary）。
  * 场内记忆由 pi 会话上下文 + 自动压缩天然覆盖，不用单独做。
  */
 
@@ -43,10 +42,6 @@ export class MemoryService {
     return profile
   }
 
-  listViewers(): ViewerProfile[] {
-    return this.storage.viewerList()
-  }
-
   /** 画像 → 给主播看的一句话摘要（注入评论 prompt 用） */
   describeViewer(profile: ViewerProfile): string {
     const parts = [`互动 ${profile.interactions} 次`]
@@ -56,21 +51,10 @@ export class MemoryService {
     return parts.join('，')
   }
 
-  /** 下播总结落库 */
-  saveEpisodeSummary(startedAt: number, endedAt: number, summary: string): EpisodeSummary {
-    const episode: EpisodeSummary = {
-      id: `ep-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
-      startedAt,
-      endedAt,
-      summary: summary.trim(),
-      createdAt: Date.now()
-    }
-    this.storage.episodeInsert(episode)
-    return episode
-  }
-
-  listEpisodes(): EpisodeSummary[] {
-    return this.storage.episodeList()
+  /** 下播复盘摘要写进场次（场记详情与 session_history 工具都读 broadcast_sessions.summary） */
+  saveSessionSummary(sessionId: string, summary: string): void {
+    const text = summary.trim()
+    if (text) this.storage.sessionSetSummary(sessionId, text)
   }
 
   private ensure(name: string): ViewerProfile {

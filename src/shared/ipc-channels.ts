@@ -32,6 +32,8 @@ export const IPC = {
 
   // TTS
   ttsTest: 'tts:test',
+  /** 用表单里还没保存的值测合成（新建接入不必先保存）：入参是完整表单，主进程不查库 */
+  ttsTestInput: 'tts:test-input',
   /** 语音合成的供应商接入（设置 → 语音合成）：一家可多条，合成时按音色路由到接入 + 模型 */
   ttsConnectionList: 'tts:connection-list',
   ttsConnectionSave: 'tts:connection-save',
@@ -43,6 +45,8 @@ export const IPC = {
   modelRemove: 'model:remove',
   /** 连通性测试：不传模型就用该接入模型列表的第一个发最小请求 */
   modelTest: 'model:test',
+  /** 用表单里还没保存的值测连通（新建接入不必先保存）：入参是完整表单，主进程不查库 */
+  modelTestInput: 'model:test-input',
   /** 服务商能力与配置字段清单（设置页据此动态渲染表单） */
   providersLlmList: 'providers:llm-list',
   /** 语音合成服务商清单（能力位 + 配置字段，设置页与音色选择都用它） */
@@ -55,24 +59,28 @@ export const IPC = {
   agentStop: 'agent:stop',
   agentAbort: 'agent:abort',
   agentRestart: 'agent:restart',
-  agentHandoff: 'agent:handoff',
+  /** 卡司切换（不换脑、不重启会话）：换当前主播卡 + 池里旧音色存货重合成 */
+  agentSwitchPresenter: 'agent:switch-presenter',
   agentStatus: 'agent:status',
-  /** 编剧模式：跳到直播台，派主播给该节目写底稿（过程走对话时间线） */
+  /** 写稿：跳到直播台，派导演给该节目写底稿（过程走对话时间线） */
   agentDraftStart: 'agent:draft-start',
   /** main → renderer：Agent 状态 + 生成中预览 */
   agentStatusEvent: 'agent:status-event',
-  /** renderer → main：拉直播间动态收件箱快照（播控台「事件流」） */
+  /** renderer → main：拉直播间动态收件箱快照（直播台「事件流」） */
   agentInbox: 'agent:inbox',
   /** main → renderer：收件箱变更（携带最新快照，250ms 节流） */
   agentInboxEvent: 'agent:inbox-event',
 
   // 导演对话
   directorSend: 'director:send',
+  /** 导演大脑（全局一份）：读取 / 保存 name + modelConnectionId + model */
+  directorGet: 'director:get',
+  directorSave: 'director:save',
   /** main → renderer：对话时间线条目（文本流式 / 工具调用 / 请示卡片，按 entry.id upsert；也承载 reset 整体替换） */
   directorTimeline: 'director:timeline',
   /** renderer → main：拉某节目持久化的对话时间线（切节目/刷新/重启后恢复） */
   directorTimelineList: 'director:timeline-list',
-  /** 提示词模板（主播手册）：列表 / 保存 / 恢复默认 */
+  /** 提示词模板（导演手册）：列表 / 保存 / 恢复默认 */
   promptTemplatesList: 'prompt-templates:list',
   promptTemplatesSave: 'prompt-templates:save',
   promptTemplatesReset: 'prompt-templates:reset',
@@ -142,10 +150,6 @@ export const IPC = {
   knowledgeFileUpload: 'knowledge:file-upload',
   knowledgeFileDelete: 'knowledge:file-delete',
 
-  // 记忆
-  memoryViewers: 'memory:viewers',
-  memoryEpisodes: 'memory:episodes',
-
   // 触发器
   triggerList: 'trigger:list',
   triggerSave: 'trigger:save',
@@ -156,6 +160,10 @@ export const IPC = {
   statsUsageDashboard: 'stats:usage-dashboard',
   statsUsageRecords: 'stats:usage-records',
   statsTtsRecords: 'stats:tts-records',
+  /** 统计页全局图表（场次/互动/热词），支持时间范围 + 节目筛选 */
+  statsGlobal: 'stats:global',
+  /** 单场可视化（场次详情「图表」tab） */
+  statsSession: 'stats:session',
 
   // 剧本
   scriptList: 'script:list',
@@ -172,9 +180,10 @@ export const IPC = {
   /** 启动节目：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */
   programLaunch: 'program:launch',
   /** 切场景：跳剧本场景 + 装载新场景话术库 */
-  programGotoScene: 'program:goto-scene',
   /** 统一音频生产入口（docs/10 §7.5）：rolling=提前合成全部（后台）；prepared=生成节目音频（同步跑完返回汇总） */
   programProduceAudio: 'program:produce-audio',
+  /** 生产前的合成计划摘要（声音选择弹窗用）：段数、就绪/待合成计数、声音描述、粗估时长 */
+  programProducePlan: 'program:produce-plan',
   /** 预制节目正式播放门禁（docs/10 §7.8）：结构化结果，未通过不静默跳过 */
   programPlayGate: 'program:play-gate',
   /** 节目音频进度（单元总数/ready/synthesizing/failed/stale/pending） */
@@ -196,11 +205,25 @@ export const IPC = {
   /** main → renderer：导出进度（当前第几个/共几个/当前章节名/终态） */
   programExportEvent: 'program:export-event',
 
+  // 场记（场次记录）
+  /** 场次列表（可按节目筛选，新场在前） */
+  sessionList: 'session:list',
+  /** 场次详情：场次行 + 播出话术条目 + 评论/事件时间线 */
+  sessionDetail: 'session:detail',
+  /** 删场次：连带删播出条目（解 blob 引用）与事件镜像 */
+  sessionDelete: 'session:delete',
+  /** 场次音频导出：实际播出的有音频条目按播放顺序导出（进度复用 programExportEvent） */
+  sessionExport: 'session:export',
+  /** 场次详情里逐条试听（aux 槽，不进推流） */
+  sessionPlayItem: 'session:play-item',
+
   // 话术库（节目底稿）
   utteranceList: 'utterance:list',
   utteranceSave: 'utterance:save',
   utteranceDelete: 'utterance:delete',
   utteranceClear: 'utterance:clear',
+  /** 只清已合成音频（文稿保留，回到待合成可重蒸） */
+  utteranceClearAudio: 'utterance:clear-audio',
   /** 批量预合成（异步，进度走 utteranceEvent） */
   utterancePresynth: 'utterance:presynth',
   /** main → renderer：单条话术状态变化（预合成进度） */

@@ -18,3 +18,6 @@ native/**/config.gypi
 # VitePress
 website/.vitepress/dist/
 website/.vitepress/cache/
+
+# 布局核对用的临时截图（agent 工作产物，不入库）
+docs/shots/

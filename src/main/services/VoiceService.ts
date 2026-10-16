@@ -1,10 +1,10 @@
-import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { ensureCloneSample } from './audio/sampleAudio'
 import { existsSync } from 'node:fs'
-import { basename, extname, join } from 'node:path'
-import { app } from 'electron'
+import { dirname, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { StorageService } from './StorageService'
+import type { BlobStoreService } from './BlobStoreService'
 import type { TtsService } from './TtsService'
 import {
   getTtsProvider,
@@ -64,6 +64,7 @@ export class VoiceService {
   constructor(
     private readonly storage: StorageService,
     private readonly tts: TtsService,
+    private readonly blobs: BlobStoreService,
     private readonly onChanged: (voices: VoiceRecord[]) => void,
     /** 试听由主进程直接出声（aux 槽：不打断正在播报的话术） */
     private readonly play: (itemId: string, filePath: string) => Promise<{ ok: boolean; error?: string }>
@@ -73,17 +74,16 @@ export class VoiceService {
     return this.storage.listVoices()
   }
 
-  sampleDir(): string {
-    const dir = join(app.getPath('userData'), 'voices')
-    void mkdir(dir, { recursive: true }).catch(() => undefined)
-    return dir
-  }
-
-  /** 录制/上传的样本落盘（渲染进程传来的音频字节流） */
+  /**
+   * 录制/上传的样本落盘（渲染进程传来的音频字节流）。
+   * 入 BlobStore temp 档（24h）：提交克隆后由 archiveSample 转正 asset；放弃/关窗的暂存由 GC 到期清掉。
+   */
   async saveSample(bytes: Uint8Array, ext = 'webm'): Promise<string> {
-    const file = join(this.sampleDir(), `sample-${Date.now()}-${randomUUID().slice(0, 6)}.${ext}`)
-    await writeFile(file, Buffer.from(bytes))
-    return file
+    const staging = this.blobs.tmpPath(`sample-${Date.now()}-${randomUUID().slice(0, 6)}.${ext}`)
+    await mkdir(dirname(staging), { recursive: true })
+    await writeFile(staging, Buffer.from(bytes))
+    const put = await this.blobs.putFile(staging, ext, { tier: 'temp' })
+    return put.path
   }
 
   /** 提交克隆。authorized 必须为 true（合规底线）；克隆到哪条接入 + 哪个模型由调用方指定。 */
@@ -126,8 +126,8 @@ export class VoiceService {
     if (!input.samplePath || !existsSync(input.samplePath)) {
       return { ok: false, error: '样本文件不存在，请重新上传或录制' }
     }
-    // 录出来的 webm 之类火山/百炼都不收：这里统一转成 mp3 再提交（用户不用管格式）
-    const prepared = await ensureCloneSample(input.samplePath, this.sampleDir())
+    // 录出来的 webm 之类火山/百炼都不收：这里统一转成 mp3 再提交（用户不用管格式）；转码产物落暂存区
+    const prepared = await ensureCloneSample(input.samplePath, this.blobs.stagingDir())
     if (!prepared.ok || !prepared.path) {
       return { ok: false, error: prepared.error ?? '样本处理失败：换个 wav / mp3 / m4a 试试' }
     }
@@ -195,7 +195,11 @@ export class VoiceService {
       status?: number
     }
     if (!res.ok) {
-      throw new Error(volcanoCloneError(data.code, data.message, res.status))
+      // 鉴权类失败要留原始现场：HTTP 状态 + 服务端 code/message + X-Tt-Logid 进日志，
+      // logid 是火山工单定位问题的唯一凭据
+      const logid = res.headers.get('x-tt-logid') ?? ''
+      console.warn(`[音色] 火山复刻提交失败：HTTP ${res.status}，logid=${logid || '（无）'}，响应：${JSON.stringify(data).slice(0, 300)}`)
+      throw new Error(volcanoCloneError(data.code, data.message, res.status, logid))
     }
     // 提交即可能 Success（秒级）；没完成的交给轮询
     const state = parseVolcanoCloneState(data.status)
@@ -369,12 +373,21 @@ export class VoiceService {
 
   // ---------- 通用 ----------
 
-  /** 样本统一复制进音色目录，避免用户原始文件被移动/删除；失败返回空串 */
+  /**
+   * 样本归档进 BlobStore（asset 档，GC 永不自动删）：已是 blob 的（saveSample 的 temp 暂存）直接转正；
+   * 用户原文件/转码产物入库（原文件不动用 copy 语义，暂存区产物直接 move）。失败返回空串。
+   */
   private async archiveSample(source: string): Promise<string> {
-    const target = join(this.sampleDir(), basename(source))
     try {
-      if (source !== target) await copyFile(source, target)
-      return target
+      const existing = this.blobs.hashForPath(source)
+      if (existing) {
+        this.blobs.promote(existing, 'asset')
+        return source
+      }
+      const ext = extname(source).replace(/^\./, '').toLowerCase() || 'mp3'
+      const ours = source.startsWith(this.blobs.stagingDir())
+      const put = await this.blobs.putFile(source, ext, { tier: 'asset', move: ours })
+      return put.path
     } catch {
       return ''
     }
@@ -389,7 +402,12 @@ export class VoiceService {
       this.timers.delete(id)
     }
     this.storage.deleteVoice(id)
-    if (voice.samplePath) await rm(voice.samplePath, { force: true }).catch(() => undefined)
+    if (voice.samplePath) {
+      // blob 样本：引用钩子已随删行解除，没别的音色共用才删文件（asset 档只能显式删）
+      const hash = this.blobs.hashForPath(voice.samplePath)
+      if (hash) await this.blobs.deleteIfUnreferenced(hash)
+      else await rm(voice.samplePath, { force: true }).catch(() => undefined)
+    }
     this.emitChanged()
     return { ok: true }
   }
@@ -412,27 +430,26 @@ export class VoiceService {
     return { ok: true }
   }
 
-  /** 谁在用这个音色：人设卡（音色 / 角色表）、节目（演员表）、话术库条目 */
+  /** 谁在用这个音色：主播卡（音色）、节目（演员表）、话术库条目 */
   usage(id: string): VoiceUsage {
     const empty: VoiceUsage = { personas: [], programs: [], utteranceCount: 0, utteranceSamples: [] }
     const voiceType = this.storage.listVoices().find((v) => v.id === id)?.voiceType.trim() ?? ''
     if (!voiceType) return empty
 
-    const personas = this.storage.personaList().flatMap((persona) => {
-      const refs: VoiceUsage['personas'] = []
-      if (persona.voiceId === voiceType) refs.push({ id: persona.id, name: persona.name, role: '' })
-      for (const role of persona.roles) {
-        if (role.voiceId === voiceType) refs.push({ id: persona.id, name: persona.name, role: role.name })
-      }
-      return refs
-    })
+    const personas = this.storage.personaList()
+      .filter((persona) => persona.voiceId === voiceType)
+      .map((persona) => ({ id: persona.id, name: persona.name }))
 
     const programs: VoiceUsage['programs'] = []
     let utteranceCount = 0
     const utteranceSamples: VoiceUsage['utteranceSamples'] = []
     for (const program of this.storage.programList()) {
-      // 节目的音色引用在音频配置的演员表里（follow-presenter 时空表 = 跟随主播人设卡）
-      if ((program.audioConfig.cast ?? []).some((m) => m.voiceId === voiceType)) {
+      // 节目的音色引用在音频配置里：演员表 + 「自定义节目声音」的默认音色
+      // （follow-presenter 时空表 = 跟随主播人设卡）
+      const referenced =
+        (program.audioConfig.cast ?? []).some((m) => m.voiceId === voiceType) ||
+        (program.audioConfig.voiceId ?? '').trim() === voiceType
+      if (referenced) {
         programs.push({ id: program.id, name: program.name })
       }
       for (const utterance of this.storage.utteranceList(program.id)) {
@@ -489,9 +506,13 @@ function parseVolcanoCloneState(status: number | undefined): 'training' | 'ready
 }
 
 /** V3 复刻常见错误码的中文说法（其余原样透出 code + message） */
-function volcanoCloneError(code: number | undefined, message: string | undefined, httpStatus: number): string {
+function volcanoCloneError(code: number | undefined, message: string | undefined, httpStatus: number, logid = ''): string {
   if (httpStatus === 401 || httpStatus === 403) {
-    return '火山鉴权失败：检查 API Key，或该账号未开通「声音复刻」'
+    // 401=key 无效；403 + volc.megatts.timbre 是账号没开通「音色服务」（官方文档：后付费音色
+    // 需要同时勾选「声音复刻模型2.0」和「音色服务」，并手动开通后付费音色服务——
+    // 控制台显示有复刻权限但音色服务没开，就会报这个）
+    const logidHint = logid ? `（排查凭据 logid=${logid}，可附在火山工单里）` : ''
+    return `火山鉴权失败（HTTP ${httpStatus}）${message ? `：${message}` : ''}。这个错通常是账号只开通了「声音复刻模型2.0」、没开通「音色服务」：到火山新版控制台 → 豆包语音 → 开通管理，确认「音色服务」已开通并开启后付费${logidHint}`
   }
   const known: Record<number, string> = {
     45001104: '声纹校验未通过：换一段更清晰、无伴奏的人声样本',

@@ -3,8 +3,16 @@ import { basename, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import mammoth from 'mammoth'
 import { PDFParse } from 'pdf-parse'
-import type { KnowledgeFile, KnowledgeHit, KnowledgeKind, Product, ProductInput } from '../../shared/types'
+import type {
+  KnowledgeFile,
+  KnowledgeHit,
+  KnowledgeKind,
+  Product,
+  ProductInput,
+  ProgramKnowledgeScope
+} from '../../shared/types'
 import type { StorageService } from './StorageService'
+import type { BlobStoreService } from './BlobStoreService'
 
 /**
  * 知识库（docs/01 §4）：商品资料 + 文件资料包，关键词检索（第一版零依赖可解释）。
@@ -52,7 +60,10 @@ function snippetAround(content: string, terms: Set<string>, width = 120): string
 }
 
 export class KnowledgeService {
-  constructor(private readonly storage: StorageService) {}
+  constructor(
+    private readonly storage: StorageService,
+    private readonly blobs: BlobStoreService
+  ) {}
 
   // ---------- 知识条目（商品/书籍/话题/自定义；商品是价格护栏数据源） ----------
 
@@ -103,12 +114,17 @@ export class KnowledgeService {
       if (!content) throw new Error('文件里没有解析出可用文字（扫描件/加密文件不支持）')
       if (description?.trim()) content = `${description.trim()}\n${content}`
     }
+    // 附件复制进 BlobStore（asset 档，move=false 不动用户原文件）：之后用户移动/删了原文件，重新解析照样能读
+    const put = await this.blobs.putFile(filePath, extname(filePath).replace(/^\./, '').toLowerCase(), {
+      tier: 'asset',
+      move: false
+    })
     const file: KnowledgeFile = {
       id: `kf-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       name: basename(filePath),
       kind,
       content: content.slice(0, 20000),
-      filePath,
+      filePath: put.path,
       createdAt: Date.now()
     }
     this.storage.knowledgeFileInsert(file)
@@ -116,7 +132,11 @@ export class KnowledgeService {
   }
 
   deleteFile(id: string): void {
+    const file = this.storage.knowledgeFileList().find((item) => item.id === id)
     this.storage.knowledgeFileDelete(id)
+    // blob 附件：删行的钩子已解除引用，没别的资料共用同一文件才删（asset 档只能显式删）
+    const hash = file ? this.blobs.hashForPath(file.filePath) : null
+    if (hash) void this.blobs.deleteIfUnreferenced(hash)
   }
 
   private async extractText(filePath: string, kind: KnowledgeKind): Promise<string> {
@@ -136,14 +156,15 @@ export class KnowledgeService {
 
   // ---------- 检索（主播工具的数据源） ----------
 
-  /** 关键词检索商品 + 资料文件，按命中评分排序 */
-  searchKnowledge(query: string, limit = 3): KnowledgeHit[] {
+  /** 关键词检索商品 + 资料文件，按命中评分排序。scope：当前节目的知识范围（'*' = 全库；id 数组 = 只查这些条目/文件） */
+  searchKnowledge(query: string, limit = 3, scope?: ProgramKnowledgeScope): KnowledgeHit[] {
     const terms = tokenize(query)
     if (terms.size === 0) return []
     const normalized = query.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
 
     const scored: { hit: KnowledgeHit; score: number }[] = []
     for (const product of this.storage.productList()) {
+      if (scope && scope.products !== '*' && !scope.products.includes(product.id)) continue
       const haystack = `${product.name}\n${product.sellingPoints}\n${product.faq}`.toLowerCase()
       let score = normalized.includes(product.name.toLowerCase()) ? 100 : 0
       for (const term of terms) if (haystack.includes(term)) score += term.length
@@ -162,6 +183,7 @@ export class KnowledgeService {
       }
     }
     for (const file of this.storage.knowledgeFileList()) {
+      if (scope && scope.files !== '*' && !scope.files.includes(file.id)) continue
       const haystack = `${file.name}\n${file.content}`.toLowerCase()
       let score = normalized.includes(file.name.toLowerCase()) ? 50 : 0
       for (const term of terms) if (haystack.includes(term)) score += term.length
@@ -183,9 +205,11 @@ export class KnowledgeService {
       .map((entry) => entry.hit)
   }
 
-  /** 价格护栏：主播报价只能出自这里（只有「商品」类型的条目参与）。不传名字返回全部商品价格表。 */
-  checkPrice(productName?: string): { name: string; price: number; sellingPoints: string }[] {
-    const products = this.storage.productList().filter((p) => p.kind === 'product')
+  /** 价格护栏：主播报价只能出自这里（只有「商品」类型的条目参与，且限在 scope 范围内）。不传名字返回全部商品价格表。 */
+  checkPrice(productName?: string, scope?: ProgramKnowledgeScope): { name: string; price: number; sellingPoints: string }[] {
+    const products = this.storage
+      .productList()
+      .filter((p) => p.kind === 'product' && (!scope || scope.products === '*' || scope.products.includes(p.id)))
     if (!productName?.trim()) return products.map(({ name, price, sellingPoints }) => ({ name, price, sellingPoints }))
     const keyword = productName.trim().toLowerCase()
     return products

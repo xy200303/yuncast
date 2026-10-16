@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useReducer, useState } from 'react'
 import {
   AudioWaveform,
   BookOpenText,
@@ -28,6 +28,7 @@ import {
   CONTENT_TYPE_LABELS,
   type KnowledgeFile,
   type LaunchResult,
+  type ProduceVoiceOverride,
   type Product,
   type Program,
   type ProgramAudioProgress,
@@ -37,23 +38,57 @@ import {
 import { ProgramDialog } from './programs/ProgramDialog'
 import { UtteranceDialog } from './programs/UtteranceDialog'
 import { ProgramGateDialog } from './ProgramGateDialog'
+import { AssetStaleBanner } from './AssetStaleBanner'
+import { VoicePickDialog } from './VoicePickDialog'
 import { ExportDialog } from './ExportDialog'
 import { AUDIO_UNIT_LABEL } from '../lib/audioUnits'
 import { resumeBroadcast } from '../audio/liveControl'
+
+/** 节目页要显示的数据快照：四份列表与两份统计都由 reload 一次性取回，只更新其中一份就会让卡片自相矛盾，所以整体当一个状态机 */
+type ProgramLibrary = {
+  programs: Program[]
+  scripts: Script[]
+  products: Product[]
+  files: KnowledgeFile[]
+  /** 每个节目的底稿统计（卡片上显示） */
+  utteranceStats: Record<string, { total: number; ready: number }>
+  /** 预制节目的音频进度（卡片摘要与主操作判定用） */
+  audioStats: Record<string, ProgramAudioProgress>
+}
+
+const EMPTY_PROGRAM_LIBRARY: ProgramLibrary = {
+  programs: [],
+  scripts: [],
+  products: [],
+  files: [],
+  utteranceStats: {},
+  audioStats: {}
+}
+
+type ProgramLibraryAction =
+  /** 一次 reload 的结果整体替换：这些数据必须同进同出 */
+  | { type: 'loaded'; library: ProgramLibrary }
+  /** 单个节目的音频进度变化来自事件推送，只动它自己那一格，避免为了它重取整个快照 */
+  | { type: 'audioProgress'; programId: string; progress: ProgramAudioProgress }
+
+function programLibraryReducer(state: ProgramLibrary, action: ProgramLibraryAction): ProgramLibrary {
+  switch (action.type) {
+    case 'loaded':
+      return action.library
+    case 'audioProgress':
+      return { ...state, audioStats: { ...state.audioStats, [action.programId]: action.progress } }
+  }
+}
 
 /** 节目库：一场直播/一期播客/一本有声书都是一个节目（内容 + 播出方式 + 事件规则 + 知识范围）。谁播由当前主播定；预制节目音频全部就绪后卡片上可直接播放（门禁不过进弹窗，不静默跳过）。 */
 export function ProgramsPage() {
   const config = useAppStore((s) => s.config)
   const loadConfig = useAppStore((s) => s.loadConfig)
-  const [programs, setPrograms] = useState<Program[]>([])
-  const [scripts, setScripts] = useState<Script[]>([])
-  const [products, setProducts] = useState<Product[]>([])
-  const [files, setFiles] = useState<KnowledgeFile[]>([])
-  /** 每个节目的底稿统计（卡片上显示） */
-  const [utteranceStats, setUtteranceStats] = useState<Record<string, { total: number; ready: number }>>({})
-  /** 预制节目的音频进度（卡片摘要与主操作判定用） */
-  const [audioStats, setAudioStats] = useState<Record<string, ProgramAudioProgress>>({})
+  const [library, dispatchLibrary] = useReducer(programLibraryReducer, EMPTY_PROGRAM_LIBRARY)
+  const { programs, scripts, products, files, utteranceStats, audioStats } = library
   const [producingId, setProducingId] = useState('')
+  /** 合成前的声音选择弹窗（docs/REDESIGN 4.4）：点「继续合成」先弹这个 */
+  const [voicePicking, setVoicePicking] = useState<Program | null>(null)
   /** 播放预制节目时门禁未过：结构化缺口进弹窗（docs/10 §7.8） */
   const [gateState, setGateState] = useState<{ program: Program; gate: ProgramGateResult } | null>(null)
   const [editing, setEditing] = useState<{ program?: Program } | null>(null)
@@ -71,10 +106,6 @@ export function ProgramsPage() {
       window.api.knowledge.listProducts(),
       window.api.knowledge.listFiles()
     ])
-    setPrograms(p)
-    setScripts(s)
-    setProducts(pr)
-    setFiles(f)
     const stats: Record<string, { total: number; ready: number }> = {}
     const audio: Record<string, ProgramAudioProgress> = {}
     for (const program of p) {
@@ -84,8 +115,11 @@ export function ProgramsPage() {
         audio[program.id] = await window.api.program.audioProgress(program.id)
       }
     }
-    setUtteranceStats(stats)
-    setAudioStats(audio)
+    // 列表与统计一起落地：分几次 setState 的话中间那几帧卡片会缺统计
+    dispatchLibrary({
+      type: 'loaded',
+      library: { programs: p, scripts: s, products: pr, files: f, utteranceStats: stats, audioStats: audio }
+    })
   }, [])
 
   useEffect(() => {
@@ -96,7 +130,7 @@ export function ProgramsPage() {
   useEffect(() => {
     return window.api.program.onAudioEvent((payload) => {
       void window.api.program.audioProgress(payload.programId).then((progress) => {
-        setAudioStats((prev) => ({ ...prev, [payload.programId]: progress }))
+        dispatchLibrary({ type: 'audioProgress', programId: payload.programId, progress })
       })
     })
   }, [])
@@ -117,21 +151,27 @@ export function ProgramsPage() {
   const announceLaunched = (program: Program, result: LaunchResult): void => {
     resumeBroadcast() // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
     if (result.warning) {
-      toast.warning(`节目已启动：${program.name}（智能层未就位）`, { description: result.warning })
+      toast.warning(`节目已启动：${program.name}（主播还没就位）`, { description: result.warning })
     } else {
       toast.success(`节目已启动：${program.name}`, {
-        description: result.loaded ? `已装载 ${result.loaded} 个播出单元，到「播控台」看播出` : undefined
+        description: result.loaded ? `已装载 ${result.loaded} 个播出单元，到「直播台」看播出` : undefined
       })
     }
     useAppStore.getState().setPage('live')
   }
 
-  /** 预制节目主操作「继续合成」：统一生产入口只重做未完成/失败/过期单元，进度走 onAudioEvent */
-  const produceAudio = async (program: Program): Promise<void> => {
+  /** 预制节目主操作「继续合成」：声音选择弹窗确认后才发起；统一生产入口只重做未完成/失败/过期单元，进度走 onAudioEvent */
+  const produceAudio = async (
+    program: Program,
+    voiceOverride?: ProduceVoiceOverride,
+    rebuildAll?: boolean
+  ): Promise<void> => {
     if (producingId) return
+    setVoicePicking(null)
     setProducingId(program.id)
     try {
-      const result = await window.api.program.produceAudio(program.id)
+      if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+      const result = await window.api.program.produceAudio(program.id, voiceOverride)
       if (!result.ok) {
         toast.error('生成节目音频没能完成', { description: result.error })
       } else if (result.failed > 0) {
@@ -165,13 +205,26 @@ export function ProgramsPage() {
     }
   }
 
+  /** 滚动节目「去生成底稿」直达：唤出 AgentPanel 底稿工作台并让导演开写（与直播台 startDraft 同路径） */
+  const goDraft = (program: Program): void => {
+    useAppStore.getState().openAgentPanel({
+      kind: 'draft',
+      label: `底稿工作台 · ${program.name}`,
+      programId: program.id
+    })
+    void window.api.agent.draftStart(program.id).then((result) => {
+      if (!result.ok) toast.error('导演没能开始写稿', { description: result.error })
+    })
+  }
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <AssetStaleBanner />
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Clapperboard className="size-4 text-primary" />
-        <h1 className="text-sm font-medium">节目</h1>
-        <p className="text-xs text-muted-foreground">一场直播、一期播客、一本有声书都是一个节目：内容 + 播出方式 + 事件规则 + 知识范围（谁播由当前主播定）</p>
-        <div className="ml-auto flex items-center gap-2">
+        <Clapperboard className="size-4 shrink-0 text-primary" />
+        <h1 className="shrink-0 text-sm font-medium">节目</h1>
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">一场直播、一期播客、一本有声书都是一个节目：内容 + 播出方式 + 事件规则 + 知识范围（谁播由当前主播定）</p>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           <Button size="sm" onClick={() => setEditing({})}>
             <Plus />
             新建节目
@@ -186,7 +239,7 @@ export function ProgramsPage() {
             <p className="text-sm">还没有节目。建一个节目，把这次要播的内容、剧本、底稿都装进去</p>
           </div>
         ) : (
-          <div className="grid max-w-4xl grid-cols-2 gap-3">
+          <div className="grid max-w-4xl grid-cols-2 gap-3 [&>*]:min-w-0">
             {programs.map((program) => {
               const active = program.id === activeProgramId
               const stats = utteranceStats[program.id]
@@ -216,7 +269,7 @@ export function ProgramsPage() {
                       )}
                     </div>
                     {prepared ? (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                         <AudioWaveform className="size-3.5" />
                         {audio && audio.total > 0 ? (
                           <span>
@@ -230,23 +283,29 @@ export function ProgramsPage() {
                         )}
                       </div>
                     ) : improvised ? (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                         <BookOpenText className="size-3.5" />
                         <span>现场发挥：无底稿，主播临场说</span>
                       </div>
                     ) : (
-                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <div className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
                         <BookOpenText className="size-3.5" />
                         {stats && stats.total > 0 ? (
                           <span>
                             底稿 {stats.total} 段 · 音频就绪 {stats.ready}
                           </span>
                         ) : (
-                          <span>底稿为空（点「底稿库」生成）</span>
+                          <span>底稿为空（点「去生成底稿」让导演开写）</span>
                         )}
                       </div>
                     )}
-                    <div className="mt-1 flex items-center gap-1">
+                    <div className="mt-1 flex flex-wrap items-center gap-1">
+                      {!prepared && !improvised && stats && stats.total === 0 && (
+                        <Button size="sm" onClick={() => goDraft(program)}>
+                          <BookOpenText />
+                          去生成底稿
+                        </Button>
+                      )}
                       {prepared && audio && audio.total === 0 && (
                         <Button size="sm" onClick={() => setReviewing(program)}>
                           <BookOpenText />
@@ -257,7 +316,7 @@ export function ProgramsPage() {
                         <Button
                           size="sm"
                           disabled={producingId !== ''}
-                          onClick={() => void produceAudio(program)}
+                          onClick={() => setVoicePicking(program)}
                         >
                           {producingId === program.id ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
                           {producingId === program.id ? '正在生成…' : '继续合成'}
@@ -302,7 +361,7 @@ export function ProgramsPage() {
       </div>
 
       <ProgramDialog
-        key={editing?.program?.id ?? 'new'}
+        key={editing?.program?.id ?? 'new-program'}
         open={editing !== null}
         program={editing?.program}
         scripts={scripts}
@@ -346,6 +405,18 @@ export function ProgramsPage() {
           onOpenChange={(open) => {
             if (!open) setExporting(null)
           }}
+        />
+      )}
+      {/* 合成前的声音选择弹窗（docs/REDESIGN 4.4）：确认后才走统一生产入口 */}
+      {voicePicking && (
+        <VoicePickDialog
+          program={voicePicking}
+          open
+          onOpenChange={(open) => {
+            if (!open) setVoicePicking(null)
+          }}
+          busy={producingId !== ''}
+          onConfirm={(override, rebuildAll) => produceAudio(voicePicking, override, rebuildAll)}
         />
       )}
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>

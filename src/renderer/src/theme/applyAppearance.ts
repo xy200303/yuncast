@@ -7,9 +7,10 @@ import {
   type AppTheme
 } from '../../../shared/types'
 
-// 旧品牌键做一次读取兜底，老用户换名后配色不丢；写只写新键
-const CACHE_KEY = 'yuncast.appearance'
-const LEGACY_CACHE_KEY = 'agent-anchor.appearance'
+// 键带版本号：日后存的形状变了直接换 v2，旧值读不出来就回落默认值，不会崩
+const CACHE_KEY = 'yuncast.appearance:v1'
+// 旧的无版本键和旧品牌键都做读取兜底，老用户升级/换名后配色不丢；写只写新键
+const LEGACY_CACHE_KEYS = ['yuncast.appearance', 'agent-anchor.appearance']
 
 export type ResolvedAppTheme = 'light' | 'dark'
 
@@ -28,7 +29,10 @@ interface CachedAppearance {
 function readCache(): CachedAppearance {
   const fallback: CachedAppearance = { theme: DEFAULT_CONFIG.theme, accent: DEFAULT_CONFIG.accent }
   try {
-    const raw = localStorage.getItem(CACHE_KEY) ?? localStorage.getItem(LEGACY_CACHE_KEY)
+    const raw =
+      localStorage.getItem(CACHE_KEY) ??
+      LEGACY_CACHE_KEYS.map((key) => localStorage.getItem(key)).find((value) => value !== null) ??
+      null
     if (!raw) return fallback
     const parsed = JSON.parse(raw) as { theme?: unknown; accent?: unknown }
     return {

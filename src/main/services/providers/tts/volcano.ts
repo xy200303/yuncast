@@ -97,8 +97,9 @@ const models: TtsModelSpec[] = [
         default: 'seed-tts-2.0-standard',
         options: [
           { value: 'seed-tts-2.0-standard', label: 'standard（标准）' },
-          { value: 'seed-tts-2.0-expressive', label: 'expressive（表现力）' }
-        ]
+          { value: 'seed-tts-2.0-expressive', label: 'expressive（表现力：支持 cot 局部情绪标签）' }
+        ],
+        help: 'expressive 自动开 cot 标签解析：文案里 <cot text=情绪>句子</cot> 只给该句套情绪（含标签单句 ≤64 字）'
       }
     ]),
     voices: []

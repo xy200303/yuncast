@@ -19,10 +19,12 @@ import type { StorageService } from './StorageService'
 import type { StreamService } from './stream/StreamService'
 import type { TtsService } from './TtsService'
 import type { UtteranceService } from './UtteranceService'
-import { resolveModelForPersona } from './llmModel'
+import { resolveModelForDirector } from './llmModel'
+import { friendlyError } from './errorTranslate'
 import { getLlmProvider } from './providers/registry'
 import { findCloneVoice } from '../../shared/voiceProvider'
 import { audioProgress, evaluateGate, listAudioUnits } from './programUnits'
+import { policyFor } from './broadcastPolicy'
 
 /** 超过这么久没重测发音，预检提醒重测（docs/07 §8.5 语音可用性） */
 const VOICE_TEST_STALE_MS = 24 * 3600_000
@@ -37,11 +39,21 @@ function formatMinutes(minutes: number): string {
 }
 
 /**
- * 节目播出（docs/07 §8.5 + docs/10 §9）：播控台唯一的开播路径。
- * 顺序 = 加载节目配置 → 应用身份（人设） → 应用音色 → 预检 → 装载话术库 → 启动主播。
+ * 节目播出（docs/07 §8.5 + docs/10 §9）：直播台唯一的开播路径。
+ * 顺序 = 加载节目配置 → 应用身份（人设） → 应用音色 → 预检 → 装载话术库 → 让导演会话就位。
  * 预检把缺失项分成阻断/警告；装载只取 ready 条目（未就绪的等合成完由池接管）；失败回滚人设。
  */
 export class ProgramPlaybackService {
+  /** 场记记录器（index.ts 迟接线）：开播成功时建场次，收播由 index.ts 的三个收播点统一 end */
+  recorder: {
+    begin(
+      programId: string,
+      programName: string,
+      snapshot: { directorModelDesc: string; cast: { personaId: string; personaName: string; voiceDesc: string }[] }
+    ): string
+    end(reason: 'crash'): void
+  } | null = null
+
   constructor(
     private readonly storage: StorageService,
     private readonly script: ScriptService,
@@ -62,58 +74,59 @@ export class ProgramPlaybackService {
     const items: PreflightItem[] = []
     const cfg = this.storage.getConfig()
 
-    // ① 主播身份：当前主播（主播团 active 的那张卡；节目不绑人，想换人直接切当前主播）
+    // ① 当前出镜主播（主播团 active 的那张卡；节目卡司是"导演可选的人"，不作为合成嗓音依据）
     const persona = this.persona.get()
-    const personaRoles =
-      persona.roles.length > 0 ? `（角色：${persona.roles.map((r) => r.name).join(' / ')}）` : ''
-    items.push({ level: 'ok', label: `主播：${persona.name}${personaRoles}` })
+    items.push({ level: 'ok', label: `当前出镜：${persona.name}` })
 
-    // ② 大脑的凭据（模型解析和开播时用的完全是同一处逻辑）。
-    // 引擎与 agent 解耦：模型不配只影响智能层（补货/互动），存量的合成音频照播——降级为警告
-    const brain = persona?.modelConnectionId
-      ? this.storage.connectionGet(persona.modelConnectionId)
+    // ② 导演大脑的凭据（模型解析和开播时用的完全是同一处逻辑）。
+    // 引擎与导演解耦：模型不配只影响"要不要写新内容"（补货/互动），存量的合成音频照播——降级为警告
+    const director = cfg.director
+    const brain = director.modelConnectionId
+      ? this.storage.connectionGet(director.modelConnectionId)
       : null
-    if (persona && persona.modelConnectionId && !brain) {
+    if (director.modelConnectionId && !brain) {
       items.push({
         level: 'warn',
-        label: `主播卡「${persona.name}」选的接入已被删除：播照常，没有智能补货/互动`,
-        detail: '到主播团里重选一个接入和模型'
+        code: 'director-brain',
+        label: '导演大脑选的接入已被删除：播照常，没有智能补货/互动',
+        detail: '到设置 → 语言模型给导演重选接入和模型'
       })
-    } else if (persona && !(persona.modelConnectionId && persona.model.trim())) {
+    } else if (!(director.modelConnectionId && director.model.trim())) {
       items.push({
         level: 'warn',
-        label: `主播卡「${persona.name}」还没选模型：播照常，没有智能补货/互动`,
-        detail: '到主播团里选一个'
+        code: 'director-brain',
+        label: '导演大脑还没配：播照常，没有智能补货/互动',
+        detail: '到设置 → 语言模型给导演配大脑'
       })
     } else {
       try {
-        const resolved = resolveModelForPersona(this.storage, persona)
+        const resolved = resolveModelForDirector(this.storage, director)
         const name = resolved.connectionId
           ? (this.storage.connectionGet(resolved.connectionId)?.name ?? resolved.providerId)
           : (getLlmProvider(resolved.providerId)?.label ?? resolved.providerId)
         items.push({
           level: 'ok',
-          label: `语言模型：${name} · ${resolved.model}${persona ? `（来自主播卡「${persona.name}」）` : ''}`
+          label: `导演大脑：${name} · ${resolved.model}`
         })
       } catch (error) {
         items.push({
           level: 'warn',
+          code: 'director-brain',
           label: '没有可用的语言模型：播照常，没有智能补货/互动',
           detail: error instanceof Error ? error.message : String(error)
         })
       }
     }
-    // ②a 语音合成：生效音色（人设卡默认音色）走和运行时完全相同的合成路由。
+    // ②a 语音合成：生效音色（当前出镜主播卡的音色）走和运行时完全相同的合成路由。
     // 没音色 = 新内容合不成，存量音频照播——降级为警告
     const effectiveVoice = (persona?.voiceId || '').trim()
     let ttsReady = false
     if (!effectiveVoice) {
       items.push({
         level: 'warn',
+        code: 'voice-missing',
         label: '还没给主播选音色：存量照播，新内容没法合成',
-        detail: persona
-          ? `到主播团给「${persona.name}」选一个音色，新话术才有声音`
-          : '到主播团选一张人设卡并给它选一个音色'
+        detail: `到主播团给「${persona.name}」选一个音色，新话术才有声音`
       })
     } else {
       try {
@@ -129,6 +142,7 @@ export class ProgramPlaybackService {
       } catch (error) {
         items.push({
           level: 'warn',
+          code: 'tts-broken',
           label: '语音合成不可用：存量照播，新内容没法合成',
           detail: error instanceof Error ? error.message : String(error)
         })
@@ -138,12 +152,13 @@ export class ProgramPlaybackService {
       if (cfg.tts.lastTestAt === 0) {
         items.push({
           level: 'warn',
+          code: 'voice-test',
           label: '还没测过发音',
           detail: '设置 → 语音合成点一次「测试发音」，先确认声音真出得来'
         })
       } else if (Date.now() - cfg.tts.lastTestAt > VOICE_TEST_STALE_MS) {
         const hours = Math.round((Date.now() - cfg.tts.lastTestAt) / 3600_000)
-        items.push({ level: 'warn', label: `上次测试发音在 ${hours} 小时前`, detail: '凭据可能已失效，建议重测' })
+        items.push({ level: 'warn', code: 'voice-test', label: `上次测试发音在 ${hours} 小时前`, detail: '凭据可能已失效，建议重测' })
       } else {
         items.push({ level: 'ok', label: '发音测试通过（24 小时内）' })
       }
@@ -152,14 +167,14 @@ export class ProgramPlaybackService {
     // ③ 剧本
     const script = this.script.getScript(program.scriptId)
     if (!script) {
-      items.push({ level: 'warn', label: '节目没绑定剧本', detail: '主播只能自由发挥，节奏容易散' })
+      items.push({ level: 'warn', code: 'script-missing', label: '节目没绑定剧本', detail: '主播只能自由发挥，节奏容易散' })
     } else if (script.scenes.length === 0) {
-      items.push({ level: 'warn', label: '剧本里没有场景', detail: '剧本至少要有一场' })
+      items.push({ level: 'warn', code: 'script-missing', label: '剧本里没有场景', detail: '剧本至少要有一场' })
     } else {
       items.push({ level: 'ok', label: `剧本：${script.title}（${script.scenes.length} 场）` })
     }
 
-    // ④ 话术库（当前场景能装载多少）；即兴播出不要求底稿（docs/10 §7.1），跳过底稿检查
+    // ④ 话术库（整库装载，不分场景）；即兴播出不要求底稿（docs/10 §7.1），跳过底稿检查
     const library = this.utterances.list(program.id)
     const ready = library.filter((u) => u.status === 'ready')
     if (program.broadcastMode === 'improvised') {
@@ -169,25 +184,23 @@ export class ProgramPlaybackService {
         detail: '主播根据导演指令和直播间动态现场发挥；没动静时允许自然安静'
       })
     } else {
-    const sceneId = script?.scenes[this.sceneIndex(program, script.scenes.length)]?.id ?? ''
-    const sceneReady = ready.filter((u) => u.sceneId === sceneId || u.sceneId === '')
     if (library.length === 0) {
       items.push({
         level: 'warn',
         label: '话术库是空的',
         detail: '节目页让主播预生成整版底稿，开播才有骨架'
       })
-    } else if (sceneReady.length === 0) {
+    } else if (ready.length === 0) {
       items.push({
         level: 'warn',
-        label: `当前场景没有就绪话术（共 ${library.length} 段，就绪 ${ready.length} 段）`,
+        label: `没有就绪话术（共 ${library.length} 段）`,
         detail: '可以先批量预合成，或让主播现场补货'
       })
     } else {
       items.push({
         level: 'ok',
-        label: `话术库：当前场景就绪 ${sceneReady.length} 段`,
-        detail: `全场就绪 ${ready.length}/${library.length} 段，开播直接装载`
+        label: `话术库：就绪 ${ready.length} 段`,
+        detail: `全场 ${library.length} 段，开播整库装载进池、后台滚动合成`
       })
     }
 
@@ -243,7 +256,7 @@ export class ProgramPlaybackService {
     items.push(
       connector.state === 'connected'
         ? { level: 'ok', label: `评论接入已连接（已收 ${connector.receivedCount} 条）` }
-        : { level: 'warn', label: '评论接入未连接', detail: '收不到真实评论、也回不出去，声音照播' }
+        : { level: 'warn', code: 'connector', label: '评论接入未连接', detail: '收不到真实评论、也回不出去，声音照播' }
     )
     const stats = this.stream.getStats()
     items.push(
@@ -251,6 +264,7 @@ export class ProgramPlaybackService {
         ? { level: 'ok', label: '推流中', detail: `码率 ${stats.bitrateKbps} kbps` }
         : {
             level: 'warn',
+            code: 'stream',
             label: stats.mode === 'companion' ? '推流未启动（伴侣模式，正常）' : '推流未启动',
             detail:
               stats.mode === 'companion'
@@ -298,15 +312,23 @@ export class ProgramPlaybackService {
    * 引擎与 agent 解耦：agent 起不来（模型挂了等）只降级——话术池照常装载播报，
    * 智能补货/互动等 agent 就位后自然接上（pool.low 等事件沿总线等着她）。
    *
-   * 播出方式分流（docs/10 §7）：
-   * - improvised：不要求底稿，不装载不预合成，播出队列只装主播现场说的；
-   * - rolling：维持现有装池逻辑 + 后台提前合成；
-   * - prepared：先过正式播放门禁（缺项返回结构化 gate，不静默跳过；
-   *   opts.allowPartial = 用户选了「仅播放已完成部分」），按章/段把 rendered 音频装池。
+   * 播出方式的行为差异全部在 BroadcastPolicy（broadcastPolicy.ts）：
+   * 装载、滚动合成、水位决策、续写都走策略，这里只编排顺序——装载 → 合成 → 开播态 → agent 就位。
+   * 预制节目先过正式播放门禁（缺项返回结构化 gate，不静默跳过；
+   * opts.allowPartial = 用户选了「仅播放已完成部分」）。
    */
   async launch(programId: string, opts?: { allowPartial?: boolean }): Promise<LaunchResult> {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return { ok: false, error: '节目不存在' }
+    // 正在播出别的节目时不许直接开新场：开播态（agent.status().live）是唯一权威，agent 会话对换场早退，
+    // 放过去会造成池/场记是 B、agent 还是 A 的状态撕裂
+    if (this.agent.status().live) {
+      const currentId = this.storage.getConfig().live.activeProgramId
+      if (currentId !== program.id) {
+        const current = this.storage.programList().find((p) => p.id === currentId)
+        return { ok: false, error: `正在播出《${current?.name ?? '另一个节目'}》，先结束当前场次再开播新节目` }
+      }
+    }
     const blocked = this.preflight(programId).filter((item) => item.level === 'block')
     if (blocked.length > 0) {
       return { ok: false, error: `预检未通过：${blocked.map((item) => item.label).join('；')}` }
@@ -328,32 +350,70 @@ export class ProgramPlaybackService {
       }
     }
 
+    let sessionBegan = false
     try {
       this.script.setActiveProgram(program.id)
-      const loaded =
-        program.broadcastMode === 'prepared'
-          ? this.loadPreparedUnits(program, opts?.allowPartial === true)
-          : program.broadcastMode === 'improvised'
-            ? 0
-            : this.loadSceneUtterances(program.id)
+      // 场记：场次先于装载建立——首批装池条目就要带上场次 id（播出事实留档）
+      if (this.recorder) {
+        const cfg = this.storage.getConfig()
+        const allPresenters = this.persona.list()
+        const configuredCast = program.presenterIds
+          .map((id) => allPresenters.find((item) => item.id === id))
+          .filter((item): item is NonNullable<typeof item> => Boolean(item))
+        const actualCast = configuredCast.length > 0 ? configuredCast : [this.persona.get()]
+        const directorModelDesc = cfg.director.modelConnectionId && cfg.director.model
+          ? `${cfg.director.name} · ${cfg.director.model}`
+          : `${cfg.director.name} · 未配置大脑`
+        const sid = this.recorder.begin(program.id, program.name, {
+          directorModelDesc,
+          cast: actualCast.map((item) => ({
+            personaId: item.id,
+            personaName: item.name,
+            voiceDesc: item.voiceId || '未选择音色'
+          }))
+        })
+        this.pool.sessionId = sid
+        // 复盘摘要挂场次：收播可能先 end 再 stop（finishRoundStop 不等复盘），记在 agent 上才丢不了
+        this.agent.broadcastSessionId = sid
+        sessionBegan = true
+      }
+      // 清掉上一场别的节目的存货：不然「播完即停」等不到池空，会接着念别的节目的稿子（错位）
+      const ownUtteranceIds = new Set(this.utterances.list(program.id).map((u) => u.id))
+      const cleared = this.pool.dropForeignOrigins(ownUtteranceIds)
+      if (cleared > 0) console.log(`[AgentAnchor] 开播清池：撤掉 ${cleared} 条别的节目的存货`)
+      const policy = policyFor(program, this)
+      const loaded = policy.load(program, { allowPartial: opts?.allowPartial === true })
       // 滚动节目：有没合成的底稿就后台开蒸（0 就绪也允许开播，边合成边补装）；
       // 预制节目不在开播时自动合成（生产走「生成节目音频」入口），即兴节目没有底稿可蒸
-      if (program.broadcastMode === 'rolling') void this.utterances.kickSynthesis(program.id)
+      policy.kickSynthesis(program)
       // 引擎先行：这场算开播了（播放循环只认话术池，不依赖 agent 会话）
+      // 开播前先把改过的资产应用上：会话还在但卡司/剧本/节目改过 → 现在重开（此刻还没置开播态，
+      // 重开不会触发下播复盘），导演带着本场的卡司与节目上下文中上场；否则她会按上一套写词
+      if (this.agent.status().state !== 'stopped' && this.agent.status().assetsStale) {
+        await this.agent.restart().catch(() => undefined)
+      }
       this.agent.setLiveActive(true)
-      // 智能层尽力就位：起不来不拖垮播报，带警告回去让导演知道
+      // 导演会话尽力就位：起不来不拖垮播报，带警告回去让用户知道
       let warning: string | undefined
       try {
-        // 开播必须是干净的直播会话：写稿会话（prep）还挂着就先停掉，不带写稿上下文上场
-        const status = this.agent.status()
-        if (status.state !== 'stopped' && status.purpose === 'prep') await this.agent.stop()
-        await this.agent.start('live')
+        // 全局单会话：开播不动会话——会话在跑就只刷新事件接线（新节目的 wiring 冻结进来）；
+        // 没在跑就带着存档消息就位（开播不再是换会话的理由）
+        if (this.agent.status().state === 'stopped') {
+          await this.agent.start()
+        } else {
+          this.agent.refreshProgramGate()
+        }
       } catch (error) {
-        warning = `主播智能层没起来（${error instanceof Error ? error.message : String(error)}）：存量的合成音频照播，补货/互动等她就位后恢复`
+        warning = `主播没起来（${friendlyError(error)}）：存量的合成音频照播，补货/互动等她就位后恢复`
       }
       return { ok: true, loaded, warning, gate }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      // 场记已开但开播失败：这场不算数，按崩溃补尾，池场次标记摘掉
+      if (sessionBegan) {
+        this.pool.sessionId = null
+        this.recorder?.end('crash')
+      }
+      return { ok: false, error: friendlyError(error) }
     }
   }
 
@@ -362,8 +422,9 @@ export class ProgramPlaybackService {
    * speech_items 装池，一章/一期一个队列条目（标题用 Scene.title）。
    * 播放引擎只关心标题、audioPath、顺序和状态，不理解有声书语义。
    * allowPartial=true = 「仅播放已完成部分」：只装 ready 且指纹一致、文件在的单元。
+   * 播出策略（broadcastPolicy）在启动装载和循环重装时都走这里。
    */
-  private loadPreparedUnits(program: Program, allowPartial: boolean): number {
+  loadPreparedUnits(program: Program, allowPartial: boolean): number {
     const script = this.script.getScript(program.scriptId)
     const units = listAudioUnits(program, script, this.utterances.list(program.id))
     let loaded = 0
@@ -397,29 +458,50 @@ export class ProgramPlaybackService {
     return loaded
   }
 
+  /** 后台滚动合成委托（播出策略 kickSynthesis 用）：rolling 有欠账就蒸，别的模式策略层不会调到 */
+  kickSynthesis(programId: string): Promise<void> {
+    return this.utterances.kickSynthesis(programId)
+  }
+
+  /** 预制节目循环重装：复用 rendered 音频（只装就绪单元），不重新合成 */
+  reloadPreparedUnits(programId: string): number {
+    const program = this.storage.programList().find((p) => p.id === programId) ?? null
+    if (!program || program.broadcastMode !== 'prepared') return 0
+    return this.loadPreparedUnits(program, true)
+  }
+
+  /** 预制节目还有音频在出（生成中）：pool.empty 的收播决策区分「真播完」和「音频在路上」 */
+  hasIncomingRendered(programId: string): boolean {
+    return this.playGate(programId).synthesizing > 0
+  }
+
   /**
-   * 把当前场景的话术库载入池（docs/07 §8.5 ⑤）：只装 ready 条目，骨架先就位。
-   * 预合成音频在音色没变过时直接复用（开播零延迟），音色变过就让池重新合成。
+   * 把节目的话术库整库载入池：只装 ready 条目，骨架先就位。
+   * 剧本场景只是写稿时的范式约束（句式/结构），不做播放分区——启动场次默认全量装载，
+   * 后台 kickSynthesis 滚动补合成。预合成音频在音色没变过时直接复用（开播零延迟），音色变过就让池重新合成。
    */
-  loadSceneUtterances(programId: string): number {
+  loadProgramUtterances(programId: string): number {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return 0
-    const script = this.script.getScript(program.scriptId)
-    if (!script || script.scenes.length === 0) return 0
-    const sceneIndex = this.sceneIndex(program, script.scenes.length)
-    const sceneId = script.scenes[sceneIndex].id
     // closer（收尾段）不进自动轮播：播到一半来句「下回接着聊」就穿帮了——主播要收尾时自己 say 出去
-    const ready = this.loadableUtterances(programId, sceneId)
-    // 轮播公平 + 叙事顺序：主键「最久没进池」（队尾不饿死，底稿轮得到），
-    // 同轮次内按创作序号 seq——首轮全部 lastLoaded=0，等于严格按写作顺序播，铺垫→展开→落点不乱
+    const ready = this.loadableUtterances(programId)
+    // 叙事顺序：场景在剧本里的先后 → 场景内创作序号 seq（铺垫→展开→落点不乱）；
+    // 轮播公平：主键「最久没进池」（队尾不饿死），首轮全部 lastLoaded=0，等于严格按叙事顺序播
+    const script = this.script.getScript(program.scriptId)
+    const sceneOrder = new Map((script?.scenes ?? []).map((s, i) => [s.id, i]))
+    const orderOf = (sceneId: string): number => sceneOrder.get(sceneId) ?? Number.MAX_SAFE_INTEGER
     const lastLoaded = this.storage.speechLastLoadedByOrigin()
     ready.sort(
-      (a, b) => (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0) || a.seq - b.seq || a.createdAt - b.createdAt
+      (a, b) =>
+        (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0) ||
+        orderOf(a.sceneId) - orderOf(b.sceneId) ||
+        a.seq - b.seq ||
+        a.createdAt - b.createdAt
     )
 
     let loaded = 0
     for (const u of ready) {
-      const voice = this.persona.resolveProgramVoice(undefined, u.voiceId) ?? ''
+      const voice = this.persona.resolveProgramVoice(u.voiceId) ?? ''
       const reusable = Boolean(u.audioPath) && (u.synthVoice ?? '') === voice
       try {
         this.pool.say({
@@ -431,7 +513,7 @@ export class ProgramPlaybackService {
           lane: 'normal',
           sourceKind: 'scene',
           sourceAgentId: LIBRARY_SOURCE_ID,
-          dedupeKey: `ut:${u.id}:s${sceneIndex}`,
+          dedupeKey: `ut:${u.id}`,
           originUtteranceId: u.id,
           audioPath: reusable ? (u.audioPath ?? undefined) : undefined
         })
@@ -444,11 +526,11 @@ export class ProgramPlaybackService {
     return loaded
   }
 
-  /** 场景切换后装载：agent 的 advance_scene 走这里（没在播就跟当前节目走） */
+  /** 补装钩子（就绪补装/场景推进/池见底）：没在播就跟当前节目走；整库已装过时靠池内去重自然落空 */
   loadActiveSceneUtterances(): number {
     const activeProgramId = this.storage.getConfig().live.activeProgramId
     if (!activeProgramId) return 0
-    return this.loadSceneUtterances(activeProgramId)
+    return this.loadProgramUtterances(activeProgramId)
   }
 
   /**
@@ -493,30 +575,25 @@ export class ProgramPlaybackService {
         this.pool.jumpTo(dedupeKey)
       }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
     return { ok: true, title: unit.title }
   }
 
-  /** 当前场景可自动轮播的底稿（就绪 + 非 closer + 本场景或通用） */
-  private loadableUtterances(programId: string, sceneId: string): Utterance[] {
+  /** 节目可自动轮播的底稿（就绪 + 非 closer）：不分场景整库装载——剧本场景只约束写稿范式，不做播放分区 */
+  private loadableUtterances(programId: string): Utterance[] {
     return this.utterances
       .list(programId)
-      .filter((u) => u.status === 'ready' && u.bitType !== 'closer' && (u.sceneId === sceneId || u.sceneId === ''))
+      .filter((u) => u.status === 'ready' && u.bitType !== 'closer')
   }
 
   /**
-   * 当前场景还有没进过池的可播底稿（首轮没播完）：补它叫「接着播」，不是循环。
+   * 还有没进过池的可播底稿（首轮没播完）：补它叫「接着播」，不是循环。
    * 循环闸门用：全进过池了再装就是重播，只有到段数上限才允许
    */
   hasFreshUtterances(programId: string): boolean {
-    const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    if (!program) return false
-    const script = this.script.getScript(program.scriptId)
-    if (!script || script.scenes.length === 0) return false
-    const sceneId = script.scenes[this.sceneIndex(program, script.scenes.length)].id
     const lastLoaded = this.storage.speechLastLoadedByOrigin()
-    return this.loadableUtterances(programId, sceneId).some((u) => !lastLoaded.has(u.id))
+    return this.loadableUtterances(programId).some((u) => !lastLoaded.has(u.id))
   }
 
   /** 底稿是否到段数上限（到顶才允许循环重播；上限是防失控的成本闸，写稿规模由主播自己定） */
@@ -525,39 +602,12 @@ export class ProgramPlaybackService {
   }
 
   /**
-   * 当前场景还有没就绪但正在排队/合成中的可播底稿：池空了先等它们出炉（允许冷场），
+   * 还有没就绪但正在排队/合成中的可播底稿：池空了先等它们出炉（允许冷场），
    * 不算整轮播完——finishMode=stop 的「播完即停」决策用它区分「真播完了」和「内容还在路上」。
    */
   hasIncomingUtterances(programId: string): boolean {
-    const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    if (!program) return false
-    const script = this.script.getScript(program.scriptId)
-    if (!script || script.scenes.length === 0) return false
-    const sceneId = script.scenes[this.sceneIndex(program, script.scenes.length)].id
     return this.utterances
       .list(programId)
-      .some(
-        (u) =>
-          (u.status === 'pending' || u.status === 'synthesizing') &&
-          u.bitType !== 'closer' &&
-          (u.sceneId === sceneId || u.sceneId === '')
-      )
-  }
-
-  /** 切场景（播控台按钮 / goto_scene 工具）：跳过去并把新场景话术库载入池 */
-  gotoScene(programId: string, index: number): { ok: boolean; loaded: number; title?: string; error?: string } {
-    const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    if (!program) return { ok: false, loaded: 0, error: '节目不存在' }
-    if (this.storage.getConfig().live.activeProgramId !== program.id) this.script.setActiveProgram(program.id)
-    const target = this.script.gotoScene(index)
-    if (!target) return { ok: false, loaded: 0, error: '没有这个场景' }
-    this.agent.notifySceneChanged()
-    const loaded = this.loadSceneUtterances(program.id)
-    return { ok: true, loaded, title: target.scene.title }
-  }
-
-  private sceneIndex(program: { currentSceneIdx: number }, totalScenes: number): number {
-    if (totalScenes === 0) return 0
-    return Math.min(Math.max(program.currentSceneIdx, 0), totalScenes - 1)
+      .some((u) => (u.status === 'pending' || u.status === 'synthesizing') && u.bitType !== 'closer')
   }
 }

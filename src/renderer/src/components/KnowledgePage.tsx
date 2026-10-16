@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ENTRY_KINDS, ENTRY_KIND_LABEL } from '../../../shared/types'
 import type { EntryKind, KnowledgeFile, KnowledgeKind, Product, ProductInput, Script, ScriptInput, ScriptScene } from '../../../shared/types'
 import { useAppStore } from '../stores/useAppStore'
+import { AssetStaleBanner } from './AssetStaleBanner'
 
 const KIND_LABEL: Record<KnowledgeKind, string> = {
   text: '文本',
@@ -47,6 +48,8 @@ export function KnowledgePage() {
   const [editingScript, setEditingScript] = useState<{ script?: Script } | null>(null)
   const [deleting, setDeleting] = useState<Product | null>(null)
   const [deletingScript, setDeletingScript] = useState<Script | null>(null)
+  /** 待删的文档/图片（删除走确认弹窗：文档是解析过的知识，删错就得重传重解析） */
+  const [deletingFile, setDeletingFile] = useState<KnowledgeFile | null>(null)
   const [uploading, setUploading] = useState(false)
   const [imageDraft, setImageDraft] = useState<string | null>(null) // 待填描述的图片路径
   const [tab, setTab] = useState<'products' | 'files' | 'scripts'>('products')
@@ -68,6 +71,14 @@ export function KnowledgePage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  // 页面常驻不卸载（App 用显隐切页）：每次回到知识库重新拉一遍。
+  // 别的内容源也会改这份数据——主播的 save_knowledge_entry / connector 同步商品——
+  // 只在挂载时拉一次的话，这些改动要等重启才看得见（实测：API 刚建的文档，页面仍显示 0）
+  const page = useAppStore((s) => s.page)
+  useEffect(() => {
+    if (page === 'knowledge') void reload()
+  }, [page, reload])
 
   const sync = async () => {
     if (syncing) return
@@ -118,12 +129,13 @@ export function KnowledgePage() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <AssetStaleBanner />
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <BookOpen className="size-4 text-primary" />
-        <h1 className="text-sm font-medium">知识库</h1>
-        <p className="text-xs text-muted-foreground">条目资料 · 文件资料包 · 剧本（主播答题的弹药库）</p>
-        <div className="ml-auto flex items-center gap-2">
+        <BookOpen className="size-4 shrink-0 text-primary" />
+        <h1 className="shrink-0 text-sm font-medium">知识库</h1>
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">条目资料 · 文件资料包 · 剧本（主播答题的弹药库）</p>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {tab === 'products' && (
             <Button variant="outline" size="sm" onClick={() => setEditing({})}>
               <Plus />
@@ -156,11 +168,11 @@ export function KnowledgePage() {
 
         <TabsContent value="products" className="overflow-auto p-4">
           <div className="mb-3 flex items-center gap-2">
-            <button className={chipClass(kindFilter === 'all')} onClick={() => setKindFilter('all')}>
+            <button type="button" className={chipClass(kindFilter === 'all')} onClick={() => setKindFilter('all')}>
               全部
             </button>
             {ENTRY_KINDS.map((kind) => (
-              <button key={kind} className={chipClass(kindFilter === kind)} onClick={() => setKindFilter(kind)}>
+              <button key={kind} type="button" className={chipClass(kindFilter === kind)} onClick={() => setKindFilter(kind)}>
                 {ENTRY_KIND_LABEL[kind]}
               </button>
             ))}
@@ -252,14 +264,7 @@ export function KnowledgePage() {
                     size="icon-sm"
                     className="opacity-0 group-hover/row:opacity-100"
                     title="删除"
-                    onClick={() => {
-                      void window.api.knowledge.deleteFile(file.id).then(async (result) => {
-                        if (result.ok) {
-                          toast.success('已删除')
-                          await reload()
-                        } else toast.error('删除失败', { description: result.error })
-                      })
-                    }}
+                    onClick={() => setDeletingFile(file)}
                   >
                     <Trash2 />
                   </Button>
@@ -308,14 +313,14 @@ export function KnowledgePage() {
       </Tabs>
 
       <EntryDialog
-        key={editing?.product?.id ?? 'new'}
+        key={editing?.product?.id ?? 'new-entry'}
         open={editing !== null}
         product={editing?.product}
         onOpenChange={(open) => !open && setEditing(null)}
         onSaved={reload}
       />
       <ScriptDialog
-        key={editingScript?.script?.id ?? 'new'}
+        key={editingScript?.script?.id ?? 'new-script'}
         open={editingScript !== null}
         script={editingScript?.script}
         onOpenChange={(open) => !open && setEditingScript(null)}
@@ -384,7 +389,40 @@ export function KnowledgePage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <Dialog open={deletingFile !== null} onOpenChange={(open) => !open && setDeletingFile(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>删除文档</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            确认删除「{deletingFile?.name}」？解析出来的内容会一起删掉，主播就查不到这份资料了（要回来得重新上传解析）。
+          </p>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setDeletingFile(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const target = deletingFile
+                setDeletingFile(null)
+                if (!target) return
+                void window.api.knowledge.deleteFile(target.id).then(async (result) => {
+                  if (result.ok) {
+                    toast.success('已删除')
+                    await reload()
+                  } else toast.error('删除失败', { description: result.error })
+                })
+              }}
+            >
+              删除
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      {/* 换图片时重挂载，靠状态初始化清空描述草稿（见 ImageDescribeDialog 内注释） */}
       <ImageDescribeDialog
+        key={imageDraft ?? 'none'}
         filePath={imageDraft}
         onOpenChange={(open) => !open && setImageDraft(null)}
         onConfirm={async (description) => {
@@ -587,10 +625,8 @@ function ImageDescribeDialog({
   const [description, setDescription] = useState('')
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    if (filePath) setDescription('')
-  }, [filePath])
-
+  // description 是用户没提交的草稿：换图片时靠父层 key 重挂载把状态初始化成空，
+  // 就不用 effect 抄 prop，父层因别的原因重渲染也不会冲掉用户已经输入的内容。
   return (
     <Dialog open={filePath !== null} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-md">
@@ -624,6 +660,20 @@ function ImageDescribeDialog({
   )
 }
 
+/**
+ * 草稿场景的本地 id：UI 新建的行还没有库里的 id，拿它当 key（稳定且唯一，不用下标）。
+ * 提交前清回空串，落库 id 仍由后端按位置生成，和以前一致。
+ */
+const DRAFT_SCENE_ID_PREFIX = 'draft-scene-'
+let draftSceneSeq = 0
+const blankScene = (title: string): ScriptScene => ({
+  id: `${DRAFT_SCENE_ID_PREFIX}${(draftSceneSeq += 1)}`,
+  title,
+  goal: '',
+  keyPoints: '',
+  estDurationMin: 5
+})
+
 /** 剧本编辑弹窗：剧本名/主题 + 场景序列（上下按钮排序，可增删） */
 function ScriptDialog({
   open,
@@ -638,9 +688,7 @@ function ScriptDialog({
 }) {
   const [title, setTitle] = useState(script?.title ?? '')
   const [theme, setTheme] = useState(script?.theme ?? '')
-  const [scenes, setScenes] = useState<ScriptScene[]>(
-    script?.scenes ?? [{ id: '', title: '开场', goal: '', keyPoints: '', estDurationMin: 5 }]
-  )
+  const [scenes, setScenes] = useState<ScriptScene[]>(() => script?.scenes ?? [blankScene('开场')])
   const [busy, setBusy] = useState(false)
 
   const patchScene = (index: number, part: Partial<ScriptScene>) =>
@@ -659,7 +707,9 @@ function ScriptDialog({
     const input: ScriptInput = {
       title,
       theme,
-      scenes: scenes.filter((s) => s.title.trim())
+      scenes: scenes
+        .filter((s) => s.title.trim())
+        .map((s) => (s.id.startsWith(DRAFT_SCENE_ID_PREFIX) ? { ...s, id: '' } : s))
     }
     setBusy(true)
     void window.api.script
@@ -699,9 +749,7 @@ function ScriptDialog({
               variant="outline"
               size="sm"
               className="h-6 text-xs"
-              onClick={() =>
-                setScenes((prev) => [...prev, { id: '', title: '', goal: '', keyPoints: '', estDurationMin: 5 }])
-              }
+              onClick={() => setScenes((prev) => [...prev, blankScene('')])}
             >
               <Plus className="size-3.5" />
               加一场
@@ -709,7 +757,7 @@ function ScriptDialog({
           </div>
           <div className="flex flex-col gap-2">
             {scenes.map((scene, i) => (
-              <div key={i} className="rounded-lg border bg-card p-2.5">
+              <div key={scene.id} className="rounded-lg border bg-card p-2.5">
                 <div className="flex items-center gap-1.5">
                   <span className="w-5 shrink-0 text-center text-xs text-muted-foreground">{i + 1}</span>
                   <Input

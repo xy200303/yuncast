@@ -1,5 +1,6 @@
 import type { ContentType, Program, RenderedAudioStatus, Script, Utterance } from '../../../shared/types'
 import { sceneFingerprint, utteranceFingerprint } from '../../../shared/fingerprint'
+import { stripSpeechTags } from '../../../shared/speechTags'
 
 /**
  * 预制节目合成单元的渲染层镜像（docs/10 §7.6-§7.7）：
@@ -17,6 +18,8 @@ export interface ProgramAudioUnit {
   id: string
   /** 展示标题：章用场景名，段用文本开头 */
   title: string
+  /** 这一章的完整文稿（章=该场景全部段落按叙事顺序拼接；段=该段文本）：列表里要给人看全文 */
+  text: string
   status: RenderedAudioStatus
   /** 就绪单元的音频时长（毫秒） */
   durationMs?: number
@@ -41,7 +44,8 @@ function narrativeOrder(list: Utterance[]): Utterance[] {
 }
 
 function segmentTitle(text: string): string {
-  return text.length > 20 ? `${text.slice(0, 20)}…` : text
+  const clean = stripSpeechTags(text)
+  return clean.length > 20 ? `${clean.slice(0, 20)}…` : clean
 }
 
 /** 列出节目的全部合成单元，并算出每个单元的当前有效状态 */
@@ -54,6 +58,7 @@ export function listProgramAudioUnits(
     kind: ProgramAudioUnit['kind'],
     id: string,
     title: string,
+    text: string,
     fingerprint: string,
     rendered?: Utterance['rendered']
   ): ProgramAudioUnit => {
@@ -67,6 +72,7 @@ export function listProgramAudioUnits(
       kind,
       id,
       title,
+      text,
       status,
       durationMs: rendered?.durationMs,
       error: rendered?.error,
@@ -76,7 +82,7 @@ export function listProgramAudioUnits(
   }
 
   if (program.contentType === 'solo') {
-    return utterances.map((u) => unitOf('utterance', u.id, segmentTitle(u.text), utteranceFingerprint(u), u.rendered))
+    return utterances.map((u) => unitOf('utterance', u.id, segmentTitle(u.text), u.text, utteranceFingerprint(u), u.rendered))
   }
   const byScene = new Map<string, Utterance[]>()
   for (const u of utterances) {
@@ -88,11 +94,11 @@ export function listProgramAudioUnits(
   for (const scene of script?.scenes ?? []) {
     const list = narrativeOrder(byScene.get(scene.id) ?? [])
     if (list.length === 0) continue // 没有文稿的场景不产生单元（没有要合成的声音）
-    units.push(unitOf('scene', scene.id, scene.title, sceneFingerprint(list), scene.rendered))
+    units.push(unitOf('scene', scene.id, scene.title, list.map((u) => u.text).join('\n'), sceneFingerprint(list), scene.rendered))
   }
   // 全场通用段（没挂场景）：场景类节目里它们是独立的段级单元
   for (const u of narrativeOrder(byScene.get('') ?? [])) {
-    units.push(unitOf('utterance', u.id, segmentTitle(u.text), utteranceFingerprint(u), u.rendered))
+    units.push(unitOf('utterance', u.id, segmentTitle(u.text), u.text, utteranceFingerprint(u), u.rendered))
   }
   return units
 }

@@ -18,12 +18,13 @@ import {
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
+  type Persona,
   type PlaybackControlAction,
   type Program,
   type Script,
   type UsageKind
 } from '../../shared/types'
-import type { StorageService } from './StorageService'
+import { StorageService } from './StorageService'
 import type { SpeechPool } from './SpeechPool'
 import type { ConnectorService } from './ConnectorService'
 import type { PersonaService } from './PersonaService'
@@ -35,7 +36,7 @@ import type { UtteranceService } from './UtteranceService'
 import { buildAnchorTools } from './anchorTools'
 import { buildAnchorSystemTools } from './anchorSystemTools'
 import { LiveEventInbox, type LiveInboxEvent } from './LiveEventInbox'
-import { prepareLlmModel, resolveModelForPersona, streamLlmModel } from './llmModel'
+import { prepareLlmModel, resolveModelForDirector, streamLlmModel } from './llmModel'
 import { clampOversizedMessages, estimateMsgTokens, oneLine, renderMessageForSummary } from './agentText'
 import type { LlmApi, ResolvedModel } from './providers/registry'
 import type { VoiceService } from './VoiceService'
@@ -44,9 +45,10 @@ import type { StreamService } from './stream/StreamService'
 import type { ExportService } from './ExportService'
 
 /**
- * 主播 Agent（docs/01 §3.1 单脑架构）：唯一话术生产者。
+ * 导演 Agent（单脑架构）：唯一话术生产者。恒定导演身份，从不开口——
+ * 卡司（主播卡）只是它手上的资料与嗓音，谁出镜由 say 的 role 决定。
  * - 引擎：pi-agent-core 的 Agent 裸用。会话树/models.json/资源发现都不存在也不需要——
- *   会话按节目自己存 SQLite（线性消息数组），system prompt 就是人设卡 + 节目
+ *   全局唯一会话自己存 SQLite（线性消息数组，key 固定 'director'），system prompt 是导演手册 + 卡司表 + 节目
  * - 只挂主播工具（anchorTools，一切声音走话术池）；core 没有内置工具，不用 allowlist
  * - 模型：手工构造 Model（OpenAI 兼容 completions / OpenAI Responses，由接入协议决定），凭据随 stream options 注入不落盘；我们的 config 里 secretBox 加密
  * - 上下文压缩：transformContext 钩子里自研——估算超阈值就把旧消息发给 LLM 摘要，替换 state.messages
@@ -55,19 +57,22 @@ import type { ExportService } from './ExportService'
  */
 
 /**
- * 节目事件接线（替代旧直播模式的 wiring）：由节目字段决定，会话启动时冻结。
- * allowLiveEvents=false → 评论/礼物/进场不派给 Agent；enabledTriggerIds → TriggerRuntime 只响这些触发器。
+ * 节目事件接线：由节目字段决定，会话启动时冻结、开播装载时刷新（换节目不重启会话）。
+ * allowLiveEvents=false → 评论/礼物/进场不派给 Agent；enabledTriggerIds → TriggerRuntime 只响这些触发器；
+ * broadcastMode → 水位类触发器（pool.empty/pool.low）在预制节目里不放行（播完/循环是引擎决策，不需要主播救场）。
  */
 export interface ProgramGate {
   allowLiveEvents: boolean
   enabledTriggerIds: string[]
+  broadcastMode: Program['broadcastMode'] | null
 }
 
 /** 从节目字段取事件接线（没选节目 = 动态不派、触发器不响） */
 function gateOfProgram(program: Program | null | undefined): ProgramGate {
   return {
     allowLiveEvents: program?.allowLiveEvents ?? false,
-    enabledTriggerIds: program?.enabledTriggerIds ?? []
+    enabledTriggerIds: program?.enabledTriggerIds ?? [],
+    broadcastMode: program?.broadcastMode ?? null
   }
 }
 
@@ -87,28 +92,11 @@ const SUMMARY_TRANSCRIPT_MAX_CHARS = 50_000
 const LLM_TIMEOUT_MS = 60_000
 
 /**
- * 工具按场景裁剪（docs/10 §10 的工具表瘦身）：黑名单命中的工具不进会话——schema 不占上下文、模型也看不到，
- * 减少误调；工具内部的运行时门禁（getPurpose/getSpeakingPaused 等）保留兜底，裁剪只是省 token 不是安全边界。
- * - prep（写稿）会话：播出通道本就关着，播出控制/急停/对外副作用/直播动态标记都不该在备稿时发生；
- *   produce_program_audio 保留——写完稿顺手合成是正常动作
+ * 工具按场景裁剪：黑名单命中的工具不进会话——schema 不占上下文、模型也看不到，
+ * 减少误调；工具内部的运行时门禁（isLiveActive/getSpeakingPaused 等）保留兜底，裁剪只是省 token 不是安全边界。
  * - 即兴节目（现场发挥）：没有底稿概念，底稿族（写稿 + 底稿 CRUD）全裁，挂上去只会引诱模型写稿
- * - live 会话：全量保留
+ * - 其余场景：全量保留。没开播时 say/insert_next 由运行时门禁拦下（播出通道关着）
  */
-const PREP_TOOL_EXCLUDE: ReadonlySet<string> = new Set([
-  // 播出控制类
-  'say',
-  'insert_next',
-  'pause_broadcast',
-  'resume_broadcast',
-  'skip_current',
-  'start_live',
-  'emergency_stop',
-  // 对外副作用类
-  'start_rtmp',
-  'export_program',
-  // 直播动态标记（写稿会话不接评论/触发器，没有可标的东西）
-  'mark_live_events'
-])
 const IMPROVISED_TOOL_EXCLUDE: ReadonlySet<string> = new Set([
   'write_bits',
   'list_drafts',
@@ -121,7 +109,7 @@ const IMPROVISED_TOOL_EXCLUDE: ReadonlySet<string> = new Set([
 /**
  * 工具表 schema 的粗估开销（tokens）：每个工具的 name+label+description+参数 schema 的 JSON 字符数 ÷ 4
  * （与 pi-ai 的上下文估算同口径；中文描述按字符算偏低估，状态栏进度条仅供参考）。
- * 裁剪后按实际进会话的工具算：live 全量 64 个约 8k，prep 裁掉 10 个后更少，不再是固定常数。
+ * 裁剪后按实际进会话的工具算：全量 64 个约 8k，即兴节目裁掉底稿族后更少，不再是固定常数。
  */
 function estimateToolSchemaTokens(tools: readonly AgentTool[]): number {
   let chars = 0
@@ -161,25 +149,19 @@ export class AgentService {
   private busy = false
   /** 正在生成（agent_start → agent_end）：广播给对话输入框，发送钮变停止钮 */
   private generating = false
-  /** 会话用途：一个脑管全场——prep 写稿备播（播出通道关闭），live 直播中 */
-  private sessionPurpose: 'live' | 'prep' = 'live'
-  /** 节目开播态（引擎语义，与 agent 会话解耦）：launch 置真、结束节目置假 */
+  /** 节目开播态（引擎语义，与 agent 会话解耦）：launch 置真、结束节目置假；播出通道/事件派发只看它 */
   private liveActive = false
-  /** 本会话绑定的节目 id（选节目切换时判断要不要换场重开） */
-  private sessionProgramId = ''
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
   private lastComment: LiveComment | null = null
   /** 本场开播时间（下播总结用） */
   private startedAt = 0
   /** 本场发生过几轮对话（没对话就不写总结） */
   private exchanges = 0
-  /** 本场运行态音色（set_voice 工具可热改；空 = 用当前人设卡的音色） */
-  private programVoiceId = ''
   /** 本场运行态段间留白（set_gap 工具可热改；-1 = 跟随系统默认 config.live.bitGapMs） */
   private programGapMs = -1
   /** 播报是否被暂停：暂停时评论/触发器不再派给 LLM，say 也说不出去（统一开播控制里的「暂停」） */
   private speakingPaused = false
-  /** 本场的事件接线（由节目字段决定，会话启动时冻结） */
+  /** 本场的事件接线（由节目字段决定，会话启动时冻结、开播装载时刷新） */
   private programGate: ProgramGate | null = null
   /**
    * 直播间动态收件箱（docs/10 §5.3）：评论/内容类触发器通知统一进箱，
@@ -190,14 +172,14 @@ export class AgentService {
     isAgentBusy: () => this.busy,
     flush: (batchText, events) => this.deliverInboxBatch(batchText, events)
   })
-  /** 收件箱变更广播钩子（index.ts 接上，播控台「事件流」用；节流也在那边做） */
+  /** 收件箱变更广播钩子（index.ts 接上，直播台「事件流」用；节流也在那边做） */
   onInboxChange: (() => void) | null = null
 
   /** 收件箱快照（新的在前），给 IPC `agent:inbox` 用 */
   inboxSnapshot(): LiveInboxEvent[] {
     return this.inbox.snapshot()
   }
-  /** 场景推进后的装载钩子（ProgramPlaybackService 接上：把新场景话术库载入池） */
+  /** 场景推进后的补装钩子（ProgramPlaybackService 接上：整库装载去重兜底，骨架不断档） */
   onSceneAdvanced: ((sceneIndex: number) => void) | null = null
   /** 主播自己开播（start_live 工具）：ProgramPlaybackService 接上，返回给主播看的成败说明 */
   onGoLive: (() => Promise<string>) | null = null
@@ -213,6 +195,8 @@ export class AgentService {
   getExporter: (() => ExportService | null) | null = null
   /** 紧急停止总闸（emergency_stop 工具）：index.ts 接上——掐声音 + 停播放循环 + 停会话 */
   onEmergencyStop: (() => Promise<void>) | null = null
+  /** 当前场次 id（场记；ProgramPlaybackService.launch 开播时写入）：下播复盘摘要挂到这场 */
+  broadcastSessionId: string | null = null
   /** 当前会话的模型是否开了多模态（出生时的模型级配置；没开图像附件不进会话） */
   private visionCapable = false
 
@@ -232,7 +216,10 @@ export class AgentService {
   /** 本轮各消息的文本快照（本轮开始时清空） */
   private texts = new Map<string, TimelineText>()
   /** 思考流快照（thinking_delta 累积，按消息 id upsert 到时间线的「思考过程」条目） */
-  private thinkings = new Map<string, { turnId: string; text: string; sent: string; done: boolean; timer?: NodeJS.Timeout }>()
+  private thinkings = new Map<
+    string,
+    { turnId: string; text: string; sent: string; done: boolean; startedAt: number; timer?: NodeJS.Timeout }
+  >()
   /** 最近一次文本广播时间（全局节流，避免一条满屏 delta） */
   private lastTextEmitAt = 0
   /** 本轮最后一条有正文的 assistant 消息 = 最终回复（装得下工具轮次里的中间文本） */
@@ -245,7 +232,7 @@ export class AgentService {
   private compacting = false
   /** 本会话的上下文窗口（tokens）：状态栏进度条的分母 */
   private contextWindow = 0
-  /** 会话出生时的用量归属（成本采集）：接入/模型/主播在会话期间不变（变更走重开会话） */
+  /** 会话出生时的用量归属（成本采集）：接入/模型在会话期间不变（变更走重开会话） */
   private usageConnectionId = ''
   private usageModel = ''
   /** system prompt + 工具表的固定开销（tokens，会话出生时估一次） */
@@ -256,6 +243,54 @@ export class AgentService {
     messagesLength: -1,
     tokens: 0,
     at: 0
+  }
+
+  /**
+   * 状态里"重字段"的缓存：资产指纹（要 hash 全部提示词模板）、当前场景、卡司名、事件接线
+   * ——这几项都得读库/算 hash，而 status() 会被每个 text_delta 触发。缓存 1 秒：
+   * 黄条/场景/接线这类信息晚 1 秒无所谓，但省掉的同步查库与 hash 是实打实的。
+   */
+  private statusHeavyCache: {
+    at: number
+    assetsStale: boolean
+    personaName: string | undefined
+    scene: AgentStatus['scene']
+    enabledTriggerIds: string[]
+    allowLiveEvents: boolean
+  } | null = null
+
+  /** 状态广播节流：delta 密集时几十次/秒，合并成 ~8 次/秒（UI 看不出差别，主进程与 IPC 省一大截） */
+  private statusTimer: NodeJS.Timeout | null = null
+
+  private heavyStatus(): NonNullable<AgentService['statusHeavyCache']> {
+    const now = Date.now()
+    if (this.statusHeavyCache && now - this.statusHeavyCache.at < 1000) return this.statusHeavyCache
+    const current = this.state === 'stopped' ? null : this.script.currentScene()
+    const gate = this.currentProgramGate()
+    this.statusHeavyCache = {
+      at: now,
+      assetsStale: this.assetsStale(),
+      personaName: this.state === 'stopped' ? undefined : this.persona.get().name,
+      scene: current ? { title: current.scene.title, index: current.index, total: current.total } : undefined,
+      enabledTriggerIds: gate.enabledTriggerIds,
+      allowLiveEvents: gate.allowLiveEvents
+    }
+    return this.statusHeavyCache
+  }
+
+  /** 丢弃重字段缓存（接线/资产/会话状态变了就调，别让 UI 慢一秒才反应过来） */
+  private invalidateStatusHeavy(): void {
+    this.statusHeavyCache = null
+  }
+
+  /** 流式期间的广播入口：合并到 ~120ms 一次（脏了就排一次，不重复排队） */
+  private broadcastStatusThrottled(): void {
+    if (this.statusTimer) return
+    this.statusTimer = setTimeout(() => {
+      this.statusTimer = null
+      this.broadcast(this.status())
+    }, 120)
+    this.statusTimer.unref?.()
   }
 
   constructor(
@@ -273,11 +308,6 @@ export class AgentService {
     this.inbox.onChange = () => this.onInboxChange?.()
   }
 
-  /** 设置本场音色（开播装载时写入节目音色；运行中热切换音色也走这里） */
-  setProgramVoice(voiceId: string): void {
-    this.programVoiceId = voiceId.trim()
-  }
-
   /** 设置本场段间留白（set_gap 工具；0 = 回系统默认） */
   setProgramGap(gapMs: number): void {
     this.programGapMs = gapMs > 0 ? gapMs : -1
@@ -288,9 +318,9 @@ export class AgentService {
     return this.state !== 'stopped' && this.programGapMs > 0 ? this.programGapMs : undefined
   }
 
-  /** 当前在场主播的生效音色（PlaybackLoop/触发器每次取）：运行时换过用换的，没换用人设卡的 */
+  /** 当前出镜主播的嗓音（PlaybackLoop/触发器每次取）：即当前主播卡的音色 */
   currentVoice(): string {
-    return this.programVoiceId || this.persona.get().voiceId
+    return this.persona.get().voiceId
   }
 
   /**
@@ -299,6 +329,8 @@ export class AgentService {
    */
   setSpeakingPaused(paused: boolean): void {
     this.speakingPaused = paused
+    // 暂停态进状态广播：渲染层的「播报中/已暂停」以主进程为准（重启后不失真）
+    this.broadcast(this.status())
   }
 
   /** 开播态开关（ProgramPlaybackService/结束节目用）：「这场在播」归引擎管，不归 agent 会话死活 */
@@ -307,28 +339,29 @@ export class AgentService {
     this.broadcast(this.status())
   }
 
-  /** 开播时冻结的资产指纹：会话出生时读了一次人设/模型/剧本，之后不再读（docs/07 §8.5） */
+  /** 开播时冻结的资产指纹：会话出生时读了一次导演/卡司/剧本，之后不再读（docs/07 §8.5） */
   private sessionFingerprint: string | null = null
 
   status(): AgentStatus {
-    const current = this.state === 'stopped' ? null : this.script.currentScene()
+    // 重字段走 1 秒缓存（这一句把"每个 delta 查库 + hash 模板"变成"每秒一次"）
+    const heavy = this.heavyStatus()
     return {
       state: this.state,
       error: this.error,
       model: this.modelLabel,
-      personaName: this.state === 'stopped' ? undefined : this.persona.get().name,
+      personaName: heavy.personaName,
       draft: this.draft,
-      purpose: this.state === 'stopped' ? undefined : this.sessionPurpose,
-      scene: current
-        ? { title: current.scene.title, index: current.index, total: current.total }
-        : undefined,
-      // 会话还活着时比对资产：改过人设/模型/剧本就得重启会话才生效
-      assetsStale:
-        this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint,
+      scene: heavy.scene,
+      // 会话还活着时比对资产：改过导演/卡司/剧本就得重启会话才生效
+      assetsStale: heavy.assetsStale,
       busy: this.generating,
       contextTokens: this.state === 'stopped' ? undefined : this.currentContextTokens(),
       contextWindow: this.state === 'stopped' ? undefined : this.contextWindow || undefined,
-      live: this.liveActive
+      live: this.liveActive,
+      speakingPaused: this.speakingPaused,
+      // 当前生效的自动响应白名单（引擎侧真值，播出中改节目配置后立刻反映在这里）
+      enabledTriggerIds: heavy.enabledTriggerIds,
+      allowLiveEvents: heavy.allowLiveEvents
     }
   }
 
@@ -362,33 +395,44 @@ export class AgentService {
     this.broadcast(this.status())
   }
 
+  /** 本场卡司：节目定了卡司（presenterIds）就按它，空数组 = 导演自选（全部主播卡都是候选人） */
+  private currentCast(program: Program | null | undefined): { cast: Persona[]; castAuto: boolean } {
+    const all = this.persona.list()
+    const ids = program?.presenterIds ?? []
+    if (ids.length === 0) return { cast: all, castAuto: true }
+    return { cast: all.filter((p) => ids.includes(p.id)), castAuto: false }
+  }
+
+  /**
+   * 会话出生时组装进 system prompt 的资产（导演/卡司/节目/剧本/导演手册）跟现在对不上了：
+   * 得重开会话才生效。写稿、开播这类"必须有准头"的动作会自动重开（见 startDrafting / launch）。
+   */
+  assetsStale(): boolean {
+    return this.sessionFingerprint !== null && this.assetFingerprint() !== this.sessionFingerprint
+  }
+
   /**
    * 资产指纹：凡是「出生时组装进 system prompt 或模型 provider」的东西都算。
    * 不含音色——音色是每条话术现算的（resolveVoice 每次读当前值），改了立刻对后说的生效。
+   * 也不含「当前出镜」指针——switchPresenter 换人不换脑，不需要重启会话（上下文说明会追加进会话）。
    */
   private assetFingerprint(): string {
-    const persona = this.persona.get()
     const { program, script } = this.script.getActive()
-    const connection = persona.modelConnectionId
-      ? this.storage.connectionGet(persona.modelConnectionId)
+    const cfg = this.storage.getConfig()
+    const { cast, castAuto } = this.currentCast(program)
+    const connection = cfg.director.modelConnectionId
+      ? this.storage.connectionGet(cfg.director.modelConnectionId)
       : null
     return fingerprint(
       JSON.stringify({
-        persona: [
-          persona.id,
-          persona.name,
-          persona.personality,
-          persona.catchphrases,
-          persona.background,
-          persona.taboos,
-          persona.roles,
-          persona.modelConnectionId,
-          persona.model
-        ],
+        director: cfg.director,
         // 接入自身的改动（换密钥、改模型列表、调模型窗口）同样要让会话作废
         connection: connection
           ? [connection.providerId, connection.models, connection.params, connection.modelContextWindows]
           : null,
+        // 卡司内容（哪几张卡 + 卡里写了什么）；castAuto=导演自选时是全量名单
+        castAuto,
+        cast: cast.map((p) => [p.id, p.name, p.personality, p.catchphrases, p.background, p.taboos]),
         program: program
           ? [
               program.id,
@@ -401,49 +445,49 @@ export class AgentService {
               program.enabledTriggerIds,
               program.audioConfig,
               program.scriptId,
-              program.knowledgeScope
+              program.knowledgeScope,
+              program.presenterIds
             ]
           : null,
         script: script ? [script.title, script.scenes] : null,
-        // 主播手册（提示词模板）任何一条改过，活着的会话都得重开才生效
+        // 导演手册（提示词模板）任何一条改过，活着的会话都得重开才生效
         prompts: this.prompts.fingerprint()
       })
     )
   }
 
-  /** 启动主播会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。
-   *  restoredMessages：该节目上次存下的会话消息（节目即会话，切回来接着聊）。 */
-  async start(purpose: 'live' | 'prep' = 'live', restoredMessages?: AgentMessage[]): Promise<void> {
+  /** 启动导演会话。解析不出模型时抛清晰中文错误（UI 弹 toast + 引导去设置页）。
+   *  restoredMessages：恢复用的历史消息；不传 = 读全局会话存档（单会话滚动存档，重开接着聊）。 */
+  async start(restoredMessages?: AgentMessage[]): Promise<void> {
     if (this.session) return
-    // 大脑只用这张卡选的接入与模型；没选时只能临时顶旧配置（预检会把这种情况列成阻断项）
-    const resolved = resolveModelForPersona(this.storage, this.persona.get())
+    // 大脑只看导演配置（设置 → 语言模型里那份）；没配好这里抛错，预检也会拦
+    const resolved = resolveModelForDirector(this.storage, this.storage.getConfig().director)
     this.setState('starting')
     try {
-      this.session = await this.createSession(resolved, purpose, restoredMessages)
+      this.session = await this.createSession(resolved, restoredMessages ?? this.restoredMessages())
     } catch (error) {
       this.setState('error', error instanceof Error ? error.message : String(error))
       throw error
     }
-    this.sessionPurpose = purpose
-    this.sessionProgramId = this.script.getActive().program?.id ?? ''
-    // 冻结本场事件接线：由节目字段决定（换节目/改接线要重开会话才生效）
+    // 冻结本场事件接线：由当前节目字段决定（开播装载时刷新；换节目不重启会话）
     this.programGate = gateOfProgram(this.script.getActive().program)
     this.setState('running')
     this.startedAt = Date.now()
     this.exchanges = 0
     // 新一场总是从"能说话"开始（上一场可能是暂停状态停掉的）
     this.speakingPaused = false
-    // 没有开场白触发器：开场由底稿 hook 段承担（按创作序第一个播）；0 就绪开播由「续写补给」现场顶
+    // 没有开场白触发器：开场由底稿 hook 段承担（按创作序第一个播）；0 就绪开播由引擎低水位续写现场顶
   }
 
-  /** 把当前会话的消息存进 DB（节目即会话：stop/切节目/每轮结束时都存，崩溃也丢不了多少）。
-   *  线性消息数组直接 JSON——首位是 system 消息，恢复时剥掉换当前人设卡的。 */
+  /** 把当前会话的消息存进 DB（全局单会话：key 固定 'director'，stop/每轮结束时都存，崩溃也丢不了多少）。
+   *  线性消息数组直接 JSON——首位是 system 消息，恢复时剥掉换当前导演手册的。
+   *  purpose 列只是存档时刻的开播态快照（live/prep），不再决定会话归属。 */
   private persistSession(): void {
-    if (!this.session || !this.sessionProgramId) return
+    if (!this.session) return
     try {
       this.storage.saveProgramSession(
-        this.sessionProgramId,
-        this.sessionPurpose,
+        StorageService.DIRECTOR_SESSION_KEY,
+        this.liveActive ? 'live' : 'prep',
         JSON.stringify(this.session.state.messages)
       )
     } catch (error) {
@@ -451,10 +495,10 @@ export class AgentService {
     }
   }
 
-  /** 该节目上次存下的会话消息（没有 = 全新对话）。
+  /** 全局会话上次存下的消息（没有 = 全新对话）。
    *  兼容旧格式：pi-coding-agent 时代的 FileEntry 树形 entries 一次性转成线性消息（我们从不分叉，文件序即时间序）。 */
-  private restoredMessagesFor(programId: string): AgentMessage[] | undefined {
-    const saved = this.storage.loadProgramSession(programId)
+  private restoredMessages(): AgentMessage[] | undefined {
+    const saved = this.storage.loadProgramSession(StorageService.DIRECTOR_SESSION_KEY)
     if (!saved) return undefined
     try {
       const parsed = JSON.parse(saved.entries) as Record<string, unknown>[]
@@ -464,7 +508,7 @@ export class AgentService {
       let messages = (
         legacy ? parsed.filter((e) => e.type === 'message').map((e) => e.message) : parsed
       ) as AgentMessage[]
-      // 剥掉首部 system 消息：恢复时让当前人设卡的 systemPrompt 重新 prepend（人设改过重开才生效）
+      // 剥掉首部 system 消息：恢复时让当前导演手册重新 prepend（手册/卡司改过重开才生效）
       while (messages.length > 0 && (messages[0] as { role?: string }).role === 'system') {
         messages = messages.slice(1)
       }
@@ -482,14 +526,14 @@ export class AgentService {
     }
   }
 
-  async stop(): Promise<void> {
+  async stop(opts?: { skipSummarize?: boolean }): Promise<void> {
     const session = this.session
     if (session) {
-      // 下播总结：直播会话有过对话就让主播自我复盘，写进场次摘要；写稿会话不复盘
-      if (this.exchanges > 0 && this.state === 'running' && this.sessionPurpose === 'live') {
+      // 下播总结：开播过且有过对话就让导演自我复盘，写进场次摘要；纯写稿的会话不复盘
+      if (!opts?.skipSummarize && this.exchanges > 0 && this.state === 'running' && this.liveActive) {
         await this.summarizeEpisode(session).catch(() => undefined)
       }
-      // 节目即会话：关掉之前把会话存回该节目名下，下次切回来/重启接着聊
+      // 全局单会话：关掉之前把会话存回存档，下次就位/重启接着聊
       this.persistSession()
       try {
         session.abort()
@@ -497,20 +541,26 @@ export class AgentService {
         // 停止时 abort 失败不影响关闭
       }
     }
+    if (this.statusTimer) {
+      clearTimeout(this.statusTimer)
+      this.statusTimer = null
+    }
     this.session = null
     this.sessionFingerprint = null
-    this.sessionProgramId = ''
+    this.invalidateStatusHeavy()
     this.draft = ''
     this.lastComment = null
     this.generating = false
-    // 音色/留白是运行态：下一场从人设默认重新开始
-    this.programVoiceId = ''
+    // 留白是运行态：下一场从系统默认重新开始
     this.programGapMs = -1
     this.programGate = null
     // 攒在收件箱里没送出/没处理的动态随会话一起清掉
     this.inbox.clear()
     // 停了就不再收尾当前这一轮（abort 后可能还有事件飘过来）
     this.clearTextTimers()
+    // 但没封口的思考段落必须封口：渲染端的秒表靠 done 停表，不封口它会一直往上跑
+    // （曾出现「思考过程 · 1018s」——那一轮被中断，entry 永远 done=false，秒表就跑了 17 分钟）
+    this.finalizeThinking()
     this.texts.clear()
     this.currentMessageId = null
     this.lastTextMessageId = null
@@ -522,42 +572,73 @@ export class AgentService {
 
   async restart(): Promise<void> {
     await this.stop()
-    await this.start(this.sessionPurpose)
+    // stop 已把会话落库：start 默认读存档，带着历史重新就位（导演大脑/卡司/剧本按当前值重组装）
+    await this.start()
   }
 
   /**
-   * 原子换主播（直播/写稿中都能切）：abort 当前生成 → 会话存回节目 → 切当前主播 →
-   * 同一份节目历史套新主播的外壳重建会话。池子/播放不动，换人不断上下文；
-   * 卸任主播的本场复盘照常写（那是她的职业记忆）。无会话时只切当前主播，下次就位生效。
+   * /clear：清空全局会话——停掉活着的会话（不复盘、不存回），删掉存的会话记录和
+   * 当前节目的对话时间线，渲染层 reset 清屏。下次说话导演从零就位（system prompt 重新组装，
+   * 卡司/节目/剧本按当前值）。正在直播中不许清：主播还在台上，清了上下文就断片。
    */
-  async handoff(personaId: string): Promise<{ ok: boolean; error?: string }> {
+  async clearConversation(): Promise<{ ok: boolean; error?: string }> {
+    if (this.liveActive) return { ok: false, error: '正在直播中，不能清空会话——先停播再清' }
+    const programId = StorageService.DIRECTOR_SESSION_KEY
+    await this.stop({ skipSummarize: true })
+    try {
+      this.storage.deleteProgramSession(StorageService.DIRECTOR_SESSION_KEY)
+      if (programId) this.storage.timelineClear(programId)
+    } catch (error) {
+      console.error('[AgentAnchor] 清空会话落库失败:', error)
+    }
+    this.onDirectorTimeline?.({ type: 'reset', entries: [] })
+    this.broadcast(this.status())
+    this.emitNote('—— 会话已清空，导演下次说话从零开始 ——')
+    return { ok: true }
+  }
+
+  /**
+   * 卡司切换（直播/写稿中都能切）：不 abort、不重启会话——导演还是那个导演，
+   * 只是接下来出镜的人换了。池里旧音色的未播条目跟着换人重合成（文本不动）；
+   * 会话里追加一条换人说明，让导演知道「当前出镜」换卡了（system prompt 里的
+   * 标记是出生时的快照，靠这条修正）。
+   */
+  async switchPresenter(personaId: string): Promise<{ ok: boolean; error?: string }> {
     const target = this.persona.list().find((p) => p.id === personaId)
     if (!target) return { ok: false, error: '主播卡不存在' }
     if (this.persona.get().id === personaId) return { ok: true }
-    // 池里旧音色的未播条目跟着换人重合成（文本不动），新主播开嗓就是她自己的声音
+    // 池里旧音色的未播条目跟着换人重合成（文本不动），新卡司开嗓就是她自己的声音
     const reVoiced = this.pool.reVoice(target.voiceId)
-    if (!this.session) {
-      this.persona.setActive(personaId)
-      this.broadcast(this.status())
-      return { ok: true }
-    }
-    const purpose = this.sessionPurpose
-    const programId =
-      this.sessionProgramId || this.script.getActive().program?.id || this.storage.getConfig().live.activeProgramId || ''
-    this.stopGeneration()
-    await this.stop()
     this.persona.setActive(personaId)
-    if (programId) this.script.setActiveProgram(programId)
-    const restored = programId ? this.restoredMessagesFor(programId) : undefined
-    try {
-      await this.start(purpose, restored)
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
-    }
+    this.broadcast(this.status())
     this.emitNote(
-      `—— 主播已换成「${target.name}」：这场的历史她都接得住${reVoiced > 0 ? `，${reVoiced} 条旧音色话术正用新嗓音重合成` : ''}，接着播 ——`
+      `—— 卡司切换：接下来以「${target.name}」的风格和嗓音出镜${reVoiced > 0 ? `，${reVoiced} 条旧音色话术正用新嗓音重合成` : ''} ——`
     )
+    if (this.session && (this.state === 'running' || this.state === 'error')) {
+      const note =
+        `[导播通知] 卡司切换：从现在起由「${target.name}」出镜——say 不传 role 时默认是她，` +
+        `她的资料就在你的卡司表里，按她的性格和红线写台词。`
+      if (this.busy) {
+        try {
+          this.session.steer({ role: 'user', content: note, timestamp: Date.now() } as AgentMessage)
+        } catch (error) {
+          console.error('[AgentAnchor] 卡司切换通知 steer 失败:', error)
+        }
+      } else {
+        this.session.state.messages = [
+          ...this.session.state.messages,
+          { role: 'user', content: note, timestamp: Date.now() } as AgentMessage
+        ]
+      }
+      this.persistSession()
+    }
     return { ok: true }
+  }
+
+  /** 刷新事件接线（开播装载时调：换节目不重启会话，接线跟着当前节目重新冻结） */
+  refreshProgramGate(): void {
+    this.programGate = gateOfProgram(this.script.getActive().program)
+    this.invalidateStatusHeavy()
   }
 
   /** 当前生效的节目事件接线（TriggerRuntime 也看它：触发器白名单/直播动态事件总闸）。会话没跑时按当前节目现解 */
@@ -568,8 +649,8 @@ export class AgentService {
   /** 评论入口（连接器）：画像照记、派不派由节目的事件接线决定；派的进直播间动态收件箱，回不回由主播定（docs/10 §5.3） */
   onComment(comment: LiveComment): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
-    // 写稿会话不接评论：没开播，评论不存在也不该打断写稿
-    if (this.sessionPurpose !== 'live') return
+    // 没开播不接评论：评论不存在也不该打断写稿/待命
+    if (!this.liveActive) return
     // 暂停期间评论只进事件队列（EventBus 已记下），不进收件箱不派给 LLM（同 docs/07 §8.5 人工接管的处理）
     if (this.speakingPaused) return
     // 先查画像（老粉识别），再记一次互动——节目关了直播事件也照记：不打扰主播，但观众资产照攒
@@ -596,8 +677,8 @@ export class AgentService {
    */
   pushTriggerEvent(triggerName: string, text: string): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
-    // 写稿会话不接触发器（这些是直播节拍，写稿时别来打扰）
-    if (this.sessionPurpose !== 'live') return
+    // 没开播不接触发器（这些是直播节拍，写稿/待命时别来打扰）
+    if (!this.liveActive) return
     if (this.speakingPaused) return
     this.inbox.push({ kind: 'trigger', author: `触发器·${triggerName}`, content: text })
   }
@@ -608,14 +689,14 @@ export class AgentService {
   }
 
   /**
-   * 收件箱批次送达：窗口期间会话停了/切了写稿/已暂停就整批退回 new（requeue）——
+   * 收件箱批次送达：窗口期间会话停了/下播了/已暂停就整批退回 new（requeue）——
    * 事件不丢，暂停恢复/会话起来后由 notifyIdle 或新事件补排；退回不主动排唤醒，暂停期间不会自旋叫醒。
    */
   private deliverInboxBatch(batchText: string, events: LiveInboxEvent[]): void {
     if (
       !this.session ||
       (this.state !== 'running' && this.state !== 'error') ||
-      this.sessionPurpose !== 'live' ||
+      !this.liveActive ||
       this.speakingPaused
     ) {
       this.inbox.requeue(events)
@@ -640,7 +721,7 @@ export class AgentService {
    */
   notifyProgramFinished(): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
-    if (this.sessionPurpose !== 'live' || this.speakingPaused) return
+    if (!this.liveActive || this.speakingPaused) return
     this.deliver(this.prompts.render('user.program_finish'), 'task')
   }
 
@@ -677,24 +758,16 @@ export class AgentService {
   }
 
   /**
-   * 导演对话入口（直播台输入框）：选中节目就能聊——没会话时先按当前节目
-   * 把主播就位（prep：上下文齐备、播出通道关着），再投递指令。
-   * 已有会话（写稿中/直播中）直接投递，不动它。
+   * 导演对话入口（直播台输入框）：全局单会话——选中节目就能聊，没会话时先把导演
+   * 就位（上下文齐备、播出通道关着）；已有会话直接投递。换节目不重启：
+   * 新任务是同一会话里的下一条指令，资产变更由 assetsStale 提示手动重启。
    */
   async chat(text: string, images?: ImageContent[]): Promise<void> {
-    // 选中节目换了（且不在直播中）：旧会话存回它自己节目名下，切回目标节目原来的对话——
-    // 节目即会话，各节目的记录互不串味，切回来还能接着聊
-    const activeProgramId = this.storage.getConfig().live.activeProgramId
-    if (this.session && this.sessionPurpose === 'prep' && activeProgramId && this.sessionProgramId !== activeProgramId) {
-      const program = this.storage.programList().find((p) => p.id === activeProgramId)
-      await this.stop()
-      this.emitNote(`—— 已切到「${program?.name ?? '新节目'}」，主播带着这场原来的记录就位 ——`)
-    }
-    await this.ensurePrepSession()
+    await this.ensureSession()
     this.directorSay(text, images)
   }
 
-  /** 时间线系统提示（换场重开等）：以一段文本条目上屏，不走 LLM */
+  /** 时间线系统提示（卡司切换等）：以一段文本条目上屏，不走 LLM */
   private emitNote(text: string): void {
     this.emitTimeline({
       turnId: this.turnId,
@@ -703,12 +776,23 @@ export class AgentService {
   }
 
   /**
+   * 引擎低水位自动续写（rolling 专属，index.ts 的 pool.low 策略分支调）：
+   * 水位信号直达主播，不依赖触发器勾选；导演随时可以在对话里人工叫写。
+   * 暂停中不叫——没人听的时候写稿是白烧 token；冷却由调用方管。
+   */
+  notifyLowWater(remaining: number): void {
+    if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
+    if (!this.liveActive || this.speakingPaused) return
+    this.deliver(this.prompts.render('user.low_water', { remaining }), 'task')
+  }
+
+  /**
    * 时间线条目出口：先按节目落库（ChatEntry 形状，切节目/刷新/重启后整段恢复），再广播给渲染层。
    * 落库失败不影响直播。
    */
   private emitTimeline(event: DirectorTimelineEvent): void {
-    const programId = this.sessionProgramId || this.storage.getConfig().live.activeProgramId
-    // 发言人标记：agent 侧条目盖当前主播的戳（换主播后时间线看得出哪段是谁说的）
+    const programId = StorageService.DIRECTOR_SESSION_KEY
+    // 发言人标记：agent 侧条目盖当前主播的戳（卡司切换后时间线看得出哪段是谁出镜）
     const speakerId = this.state === 'stopped' ? undefined : this.persona.get().id
     const stamped = (
       speakerId ? { ...event.entry, personaId: speakerId } : event.entry
@@ -722,7 +806,17 @@ export class AgentService {
         entry.type === 'text'
           ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId, ...speaker }
           : entry.type === 'thinking'
-            ? { type: 'thinking', id: entry.id, ts, turnId: event.turnId, text: entry.text, done: entry.done ?? false, ...speaker }
+            ? {
+                type: 'thinking',
+                id: entry.id,
+                ts,
+                turnId: event.turnId,
+                text: entry.text,
+                done: entry.done ?? false,
+                // 权威时长要落库：恢复出来的条目 ts 是"结束时刻"，拿它反推不出真实思考了多久
+                ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+                ...speaker
+              }
             : entry.type === 'ask'
               ? { type: 'ask', id: entry.id, ts, message: entry.message }
               : {
@@ -737,34 +831,39 @@ export class AgentService {
                 durationMs: entry.durationMs,
                 ...speaker
               }
-      try {
-        this.storage.timelineAppend(programId, entry.id, event.turnId, ts, JSON.stringify(chat))
-      } catch {
-        // 落库失败静默：时间线只是记录，不能反过来影响主播
+      // 流式增量刻度不落库：库里的行必须是全文，等定稿（final/done）那次再写，
+      // 顺带把"每 60ms 一次 UPSERT 整段文本"也去掉（长回复时这是笔不小的写放大）
+      const isDeltaTick = 'append' in entry && entry.append === true
+      if (!isDeltaTick) {
+        try {
+          this.storage.timelineAppend(programId, entry.id, event.turnId, ts, JSON.stringify(chat))
+        } catch {
+          // 落库失败静默：时间线只是记录，不能反过来影响主播
+        }
       }
     }
     this.onDirectorTimeline?.({ turnId: event.turnId, entry: stamped })
   }
 
   /** 选中场次即就位：不等第一句话就建会话（上下文仪表从这一刻就有读数；建会话不调 LLM，零成本） */
-  async warmupPrepSession(): Promise<void> {
-    await this.ensurePrepSession()
+  async warmupSession(): Promise<void> {
+    await this.ensureSession()
   }
 
-  /** 主播就位（无会话时）：当前主播的人格 + 选中节目的上下文，恢复该节目存下的对话（没有就新起） */
-  private async ensurePrepSession(): Promise<void> {
+  /** 导演就位（无会话时）：导演大脑 + 卡司 + 选中节目的上下文，恢复全局会话存下的对话（没有就新起） */
+  private async ensureSession(): Promise<void> {
     if (this.session) return
     const programId = this.storage.getConfig().live.activeProgramId
     const program = programId ? this.storage.programList().find((p) => p.id === programId) : null
-    if (!program) throw new Error('先在上方选一个节目：主播需要知道自己要播哪场，才有上下文')
+    if (!program) throw new Error('先在上方选一个节目：导演需要知道要准备哪场，才有上下文')
     this.script.setActiveProgram(program.id)
-    await this.start('prep', this.restoredMessagesFor(program.id))
+    await this.start(this.restoredMessages())
   }
 
   /**
-   * 编剧模式（直播前写稿）：主播自己写自己的底稿——跟开播用同一个人设/节目/音色，
-   * 区别在于 purpose=prep：say/insert_next 关着，产出只走 write_bits 进底稿库。
-   * 同节目已有写稿会话就复用（多轮续写/改稿），不同节目换场重开；直播中拒绝。
+   * 写稿（直播前）：导演给当前节目写底稿——同一份全局会话，区别只在开播态：
+   * 没开播时播出通道关着，产出只走 write_bits 进底稿库。切到目标节目（没开播，安全），
+   * 没会话就就位，然后派写稿任务书；直播中拒绝。
    */
   async startDrafting(programId: string): Promise<void> {
     const program = this.storage.programList().find((p) => p.id === programId)
@@ -776,18 +875,21 @@ export class AgentService {
     // 没绑剧本不拦：自动建一本空剧本绑到节目（与 create_scene 工具同一套「主播自编」），
     // 场景让主播用 create_scene 自己搭——兑现任务书里「场景不够自己搭」的承诺
     const { script } = this.script.ensureProgramScript(program.id)
-    if (this.session && this.sessionPurpose === 'live') {
+    if (this.liveActive) {
       throw new Error('正在直播：写稿先下播，或者用对话直接改底稿')
     }
-    // 换节目：旧会话存回它自己节目名下，目标节目恢复它原来的对话接着写；同节目复用
-    if (this.session && this.script.getActive().program?.id !== program.id) await this.stop()
-    // 资产切换跟开播装载同一套：节目上下文换场重开（人格/模型/音色都归当前主播，不动）
+    // 切到目标节目：写稿工具的默认目标就是它；事件接线跟着刷新（没开播，换了也没人在播）
     this.script.setActiveProgram(program.id)
-    if (!this.session) await this.start('prep', this.restoredMessagesFor(program.id))
+    this.refreshProgramGate()
+    await this.ensureSession()
+    // 写稿必须有准头：刚换了节目/改过卡司，旧会话的 system prompt 里还是上一套（导演不知道现在手上有哪些主播）
+    // → 先按新资产重开会话（stop 会把历史落库，start 带着历史重组装），再派任务书
+    if (this.assetsStale()) await this.restart()
     this.directorSay(this.composeDraftBrief(script))
   }
 
-  /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走主播手册（user.draft_brief）；写多少由主播自己判断 */
+  /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走导演手册（user.draft_brief）；
+   *  末尾附本场卡司名单——写谁的词要钻进谁的人设，导演得先知道手上有哪些主播 */
   private composeDraftBrief(script: Script): string {
     const scenes =
       script.scenes.length === 0
@@ -799,7 +901,24 @@ export class AgentService {
                 `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
             )
             .join('\n')
-    return this.prompts.render('user.draft_brief', { scenes })
+    return `${this.prompts.render('user.draft_brief', { scenes })}\n\n${this.castBrief()}`
+  }
+
+  /** 任务书末尾的卡司段：节目定了卡司就点名，没定就报可用名单（导演自选） */
+  private castBrief(): string {
+    const program = this.script.getActive().program
+    const all = this.persona.list()
+    const ids = program?.presenterIds ?? []
+    if (all.length === 0) {
+      return '# 本场卡司\n  还没有主播卡——先用 save_persona 立一张（人设/口癖/背景/红线/嗓音），不然写出来的稿没人能出声。'
+    }
+    const describe = (p: (typeof all)[number]): string =>
+      `${p.name}${p.personality.trim() ? `（${p.personality.trim().split('\n')[0].slice(0, 24)}）` : ''}`
+    if (ids.length > 0) {
+      const cast = all.filter((p) => ids.includes(p.id))
+      return `# 本场卡司（节目定的，只用这几位出镜）\n  写谁的词就钻进谁的人设，同一个人说的连续内容用同一个 role；这几位之外不要凭空造人。\n  ${cast.map(describe).join('、')}`
+    }
+    return `# 本场卡司（节目没定，你自己挑）\n  手上可用：${all.map(describe).join('、')}。\n  单人节目就用其中一位当主讲；需要串场/双人对谈时按人设分派 role，别让一个人演两个性格。`
   }
 
   /** 急停（配合 renderer 停播放 + 清池）：停会话即可，池由调用方清 */
@@ -817,9 +936,13 @@ export class AgentService {
     this.emitNote(text)
   }
 
-  /** 会话绑定信息（系统控制工具的删除保护用）：无会话返回 null */
+  /** 会话绑定信息（系统控制工具的删除保护用）：无会话返回 null；purpose 由开播态派生 */
   sessionInfo(): { programId: string; purpose: 'live' | 'prep' } | null {
-    return this.session ? { programId: this.sessionProgramId, purpose: this.sessionPurpose } : null
+    if (!this.session) return null
+    return {
+      programId: this.storage.getConfig().live.activeProgramId,
+      purpose: this.liveActive ? 'live' : 'prep'
+    }
   }
 
   // ---------- 对话时间线（docs/09 §11：照事件流原样渲染，不做二次解释） ----------
@@ -830,6 +953,8 @@ export class AgentService {
    */
   private beginTurn(): void {
     this.clearTextTimers()
+    // 上一轮若有没封口的思考段落，先按 done 封掉再清（清了就再也没机会封口 → 渲染端秒表失控）
+    this.finalizeThinking()
     this.texts.clear()
     this.thinkings.clear()
     this.turnSeq += 1
@@ -884,11 +1009,14 @@ export class AgentService {
       state.timer = undefined
     }
     this.lastTextEmitAt = Date.now()
+    // 增量：中间刻度只发新增片段（渲染层累加），定稿那次发全文兜底对账——
+    // 每 60ms 重发整段的字节数对长回复是平方级，增量后是线性
+    const delta = state.text.slice(state.sent.length)
     state.sent = state.text
     if (final) state.finalSent = true
     this.emitTimeline({
       turnId: state.turnId,
-      entry: { type: 'text', id, text: state.text, ...(final ? { final: true } : {}) }
+      entry: { type: 'text', id, text: final ? state.text : delta, append: !final, ...(final ? { final: true } : {}) }
     })
   }
 
@@ -899,7 +1027,9 @@ export class AgentService {
     const entryId = `th-${id}`
     let state = this.thinkings.get(entryId)
     if (!state) {
-      state = { turnId: this.turnId, text: '', sent: '', done: false }
+      // startedAt：思考真正开始的时刻。渲染层不能拿"落库的 ts"当开始时间——
+      // 增量推送后只有定稿那次落库，库里的 ts 是"结束时刻"，恢复出来当开始用会算出天文数字
+      state = { turnId: this.turnId, text: '', sent: '', done: false, startedAt: Date.now() }
       this.thinkings.set(entryId, state)
     }
     state.text += delta
@@ -928,10 +1058,18 @@ export class AgentService {
       state.timer = undefined
     }
     this.lastTextEmitAt = Date.now()
+    // 与文本同理：中间刻度发增量，定稿（done）那次发全文
+    const delta = state.text.slice(state.sent.length)
     state.sent = state.text
     this.emitTimeline({
-      turnId: state.turnId,
-      entry: { type: 'thinking', id: entryId, text: state.text, ...(state.done ? { done: true } : {}) }
+      turnId: this.turnId,
+      entry: {
+        type: 'thinking',
+        id: entryId,
+        text: state.done ? state.text : delta,
+        append: !state.done,
+        ...(state.done ? { done: true, durationMs: Date.now() - state.startedAt } : {})
+      }
     })
   }
 
@@ -1017,6 +1155,7 @@ export class AgentService {
     this.state = state
     this.error = error
     if (state !== 'running') this.draft = ''
+    this.invalidateStatusHeavy()
     this.broadcast(this.status())
   }
 
@@ -1061,9 +1200,8 @@ export class AgentService {
     }
   }
 
-  /** 下播总结：让主播自我复盘本场亮点/高频问题，写入 episode_summaries。失败静默，不挡下播。 */
+  /** 下播总结：让导演自我复盘本场亮点/高频问题，写进场次的 summary 字段。失败静默，不挡下播。 */
   private async summarizeEpisode(session: Agent): Promise<void> {
-    const endedAt = Date.now()
     await Promise.race([
       (async () => {
         await session.waitForIdle()
@@ -1072,7 +1210,8 @@ export class AgentService {
       new Promise((_, reject) => setTimeout(() => reject(new Error('总结超时')), 30_000))
     ])
     const summary = lastAssistantText(session.state.messages)?.trim()
-    if (summary) this.memory.saveEpisodeSummary(this.startedAt, endedAt, summary)
+    // 场次 id 开播时由 ProgramPlaybackService 写入；没开播过的会话不复盘（stop 入口已按开播态过滤）
+    if (summary && this.broadcastSessionId) this.memory.saveSessionSummary(this.broadcastSessionId, summary)
   }
 
   /** 主播请示（ask_director）：高亮卡片走对话时间线单通道（与文本/工具同路，切场/重启后还在）；不阻塞直播（docs/07 §8.8.6 ④） */
@@ -1129,7 +1268,7 @@ export class AgentService {
       this.storage.usageInsert({
         id: `ur-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
         ts: Date.now(),
-        programId: this.sessionProgramId || this.storage.getConfig().live.activeProgramId || null,
+        programId: this.storage.getConfig().live.activeProgramId || null,
         personaId: this.persona.get().id,
         connectionId: this.usageConnectionId,
         model: this.usageModel,
@@ -1330,8 +1469,8 @@ export class AgentService {
     const id = this.compactionCardId
     this.compactionCardId = null
     if (!id) return
-    const programId = this.sessionProgramId || this.storage.getConfig().live.activeProgramId
-    if (programId) this.storage.timelineClear(programId)
+    const programId = StorageService.DIRECTOR_SESSION_KEY
+    this.storage.timelineClear(programId)
     const card: ChatEntry = {
       type: 'tool',
       id,
@@ -1364,7 +1503,6 @@ export class AgentService {
 
   private async createSession(
     resolved: ResolvedModel,
-    purpose: 'live' | 'prep',
     restoredMessages?: AgentMessage[]
   ): Promise<Agent> {
     const { model, apiKey, modelLabel, contextWindow, thinkingLevel, temperature, vision } =
@@ -1379,8 +1517,17 @@ export class AgentService {
 
     const persona = this.persona.get()
     const { program, script } = this.script.getActive()
-    // 人设卡的音色即主播的嗓子，必选；没选时不留兜底，合成路由会直接报错（预检也会拦下）
-    const systemPrompt = this.persona.buildSystemPrompt(persona, program, script)
+    const director = this.storage.getConfig().director
+    const { cast, castAuto } = this.currentCast(program)
+    // system prompt = 导演手册 + 卡司资料 + 节目上下文，出生组装一次（之后变更靠 assetsStale 提示重启）
+    const systemPrompt = this.prompts.buildSystemPrompt({
+      director,
+      cast,
+      castAuto,
+      activePersona: persona,
+      program,
+      script
+    })
 
     const allTools = [
       ...buildAnchorTools({
@@ -1389,17 +1536,16 @@ export class AgentService {
       memory: this.memory,
       persona: this.persona,
       script: this.script,
+      storage: this.storage,
       utterances: this.utterances,
       getLastComment: () => this.lastComment,
       onSceneChanged: () => this.notifySceneChanged(),
-      getProgramVoice: () => this.programVoiceId,
       onSceneAdvanced: (sceneIndex) => this.onSceneAdvanced?.(sceneIndex),
       onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
-      setProgramVoice: (voiceId) => this.setProgramVoice(voiceId),
       setProgramGap: (ms) => this.setProgramGap(ms),
       onPlaybackControl: (action) => this.onPlaybackControl?.(action),
       getSpeakingPaused: () => this.speakingPaused,
-      getPurpose: () => this.sessionPurpose,
+      isLiveActive: () => this.liveActive,
       markLiveEvents: (ids, state) => this.markLiveEvents(ids, state),
       onGoLive: async () => this.onGoLive?.() ?? '开播通道没接上，让导演从界面点「启动节目」',
       syncProducts: async () =>
@@ -1422,11 +1568,11 @@ export class AgentService {
         getStatus: () => this.status(),
         getSessionInfo: () => this.sessionInfo(),
         getActivePersonaId: () => this.persona.get().id,
-        handoffPersona: (personaId) => this.handoff(personaId),
+        switchPresenter: (personaId) => this.switchPresenter(personaId),
         onDirectorAsk: (ask) => this.handleDirectorAsk(ask),
         notifyTimeline: (text) => this.notifyTimeline(text),
         warmupProgram: (programId) => {
-          if (programId) void this.warmupPrepSession().catch(() => undefined)
+          if (programId) void this.warmupSession().catch(() => undefined)
         },
         onEmergencyStop: () => this.onEmergencyStop?.() ?? Promise.resolve(),
         getConnector: () => this.getConnector?.() ?? null,
@@ -1439,13 +1585,11 @@ export class AgentService {
         describeProducePlan: (programId) => this.utterances.describeProducePlan(programId)
       })
     ]
-    // 工具按场景裁剪（规则见 PREP_TOOL_EXCLUDE / IMPROVISED_TOOL_EXCLUDE 的注释）
+    // 工具按场景裁剪（规则见 IMPROVISED_TOOL_EXCLUDE 的注释）
     const improvised = program?.broadcastMode === 'improvised'
-    const tools = allTools.filter(
-      (tool) =>
-        !(purpose === 'prep' && PREP_TOOL_EXCLUDE.has(tool.name)) &&
-        !(improvised && IMPROVISED_TOOL_EXCLUDE.has(tool.name))
-    )
+    const tools = improvised
+      ? allTools.filter((tool) => !IMPROVISED_TOOL_EXCLUDE.has(tool.name))
+      : allTools
     // 上下文仪表：窗口 + 固定开销（system prompt + 实际进会话的工具表 schema）出生时就位
     this.contextWindow = contextWindow
     this.contextOverhead =
@@ -1464,7 +1608,7 @@ export class AgentService {
         thinkingLevel,
         // 主播工具（说话/写稿/播出控制）+ 系统控制工具（节目/剧本/主播/音色/触发器/全局状态，docs/10 §10.2），按场景裁剪后挂入
         tools,
-        // 节目即会话：恢复时把该节目存下的消息重建进内存会话，上下文原样回来
+        // 全局单会话：恢复时把存档消息重建进内存会话，上下文原样回来
         messages: restoredMessages
       },
       // 凭据/超时随 stream options 注入：httpIdleTimeoutMs → timeoutMs（60s）；重试靠传输层 maxRetries
@@ -1488,7 +1632,8 @@ export class AgentService {
         // 生成中预览：累积 text_delta —— 既给提词器，也是对话时间线里"正在说话"的那一段
         this.draft += assistantEvent.delta
         this.appendText(assistantEvent.delta)
-        this.broadcast(this.status())
+        // 广播合并到 ~120ms 一次：delta 密集时这里原本是几十次/秒的状态风暴
+        this.broadcastStatusThrottled()
       } else if (assistantEvent?.type === 'thinking_delta') {
         // 思考流：模型开了思考强度才有；进时间线的「思考过程」条目（不进提词器、不播报）
         this.appendThinking(assistantEvent.delta)
@@ -1531,14 +1676,14 @@ export class AgentService {
         // 整轮结束：最后一条 assistant 消息的文本 = 最终回复
         this.flushText()
         this.finalizeTurn()
-        // 节目即会话：每轮落一次库，崩溃/强杀也丢不了多少
+        // 全局单会话：每轮落一次库，崩溃/强杀也丢不了多少
         this.persistSession()
         // 一轮跑完：收件箱里忙时攒下的动态补排唤醒（闲时不叫主播，攒着等下一批）
         this.inbox.notifyIdle()
       } else if (event.type === 'message_end') {
         // 用量采集：每条 assistant 消息 = 一次真实 LLM 请求（带工具轮次的一轮里有多条）
         if (event.message.role === 'assistant') {
-          this.recordUsage(this.sessionPurpose === 'prep' ? 'draft' : 'chat', event.message as AssistantMessage)
+          this.recordUsage(this.liveActive ? 'chat' : 'draft', event.message as AssistantMessage)
         }
         // 这条消息说完了：把节流压着的尾巴推出去（还接着调工具时，它仍是中间文本）
         this.flushText()

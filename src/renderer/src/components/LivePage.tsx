@@ -1,57 +1,70 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   AudioWaveform,
   Bot,
   Brain,
   CheckCircle2,
+  CircleAlert,
+  Check,
+  ChevronDown,
   ChevronRight,
+  Copy,
   Clapperboard,
-  Download,
+  Clock,
+  Coffee,
+  Hand,
+  Heart,
   Loader2,
   Megaphone,
+  MessageCircle,
+  MessagesSquare,
+  Mic,
+  MoreHorizontal,
   Paperclip,
-  Pause,
   Play,
   Radio,
-  RadioTower,
   RefreshCw,
   SendHorizontal,
-  SkipForward,
-  SlidersHorizontal,
   Sparkles,
   Square,
-  VolumeX,
+  Volume2,
   Wrench,
   X,
-  XCircle
+  XCircle,
+  Zap
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Label } from '@/components/ui/label'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Slider } from '@/components/ui/slider'
-import { Switch } from '@/components/ui/switch'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
-import { MiniMarkdown } from '@/components/MiniMarkdown'
+import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
+import { Markdown } from '@/components/Markdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
+import { AutoResponsePicker } from './live/AutoResponsePicker'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
-import { ExportDialog } from '@/components/ExportDialog'
 import { ProgramGateDialog } from '@/components/ProgramGateDialog'
-import { useAppStore } from '../stores/useAppStore'
+import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
+import { VoicePickDialog } from '@/components/VoicePickDialog'
+import { useAppStore, type NavPage, type SettingsPaneId } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { CommentList } from './live/CommentList'
 import { EventStream } from './live/EventStream'
 import { ImprovisedPanel } from './live/ImprovisedPanel'
+import { NowPlayingBar } from './live/NowPlayingBar'
 import { PreparedPanel } from './live/PreparedPanel'
 import type {
   ChatEntry,
@@ -59,8 +72,8 @@ import type {
   LiveComment,
   LiveInboxEvent,
   Program,
-  Persona,
   PreflightItem,
+  ProduceVoiceOverride,
   ProgramGateResult,
   Script,
   SpeechItem,
@@ -68,19 +81,14 @@ import type {
   SpeechSourceKind,
   SpeechStatus
 } from '../../../shared/types'
+import { stripSpeechTags } from '../../../shared/speechTags'
+import { ContentItem, ContentList } from './live/ContentItem'
 
 const LANE_LABEL: Record<SpeechLane, string> = {
   interrupt: '打断',
   next: '下一条',
   normal: '常规',
   filler: '垫底'
-}
-
-const LANE_BADGE_VARIANT: Record<SpeechLane, 'destructive' | 'default' | 'secondary' | 'outline'> = {
-  interrupt: 'destructive',
-  next: 'default',
-  normal: 'secondary',
-  filler: 'outline'
 }
 
 const STATUS_LABEL: Record<SpeechStatus, string> = {
@@ -105,31 +113,27 @@ const SOURCE_LABEL: Record<SpeechSourceKind, string> = {
   reaction: '捧场'
 }
 
+/** 预检「去修复」深链：按检查项 code 跳到对应设置栏目或页面（docs/REDESIGN 4.5） */
+const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page?: NavPage }> = {
+  'director-brain': { label: '去配大脑', pane: 'director' },
+  'voice-missing': { label: '去选音色', page: 'anchors' },
+  'tts-broken': { label: '去检查合成', pane: 'tts' },
+  'voice-test': { label: '去测发音', pane: 'tts' },
+  'script-missing': { label: '去绑剧本', page: 'programs' },
+  connector: { label: '去连接', pane: 'comment' },
+  stream: { label: '去推流设置', pane: 'stream' }
+}
+
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
-  const levels = useAppStore((s) => s.levels)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [leftTab, setLeftTab] = useState<'pool' | 'comments' | 'events'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
-  /** 发给主播的直播间动态收件箱（事件流选项卡；主进程 250ms 节流推快照） */
+  /** 发给主播的直播间动态（事件流选项卡；主进程 250ms 节流推快照） */
   const [inboxEvents, setInboxEvents] = useState<LiveInboxEvent[]>([])
-  /** 右栏选项卡：对话是主区（铺满高度），操作切过去才显示 */
-  const [rightTab, setRightTab] = useState<'chat' | 'control'>('chat')
-  /** 对话未读数（切走时有新条目在选项卡上亮红点） */
-  const [chatUnread, setChatUnread] = useState(0)
-  /** 当前节目（播控台中间区按它的 broadcastMode 自动适配布局，docs/10 §11.5；不提供手动切换） */
-  const [activeProgram, setActiveProgram] = useState<Program | null>(null)
-
-  useEffect(() => {
-    if (!('api' in window)) return
-    if (!activeProgramId) {
-      setActiveProgram(null)
-      return
-    }
-    void window.api.program.list().then((list) => {
-      setActiveProgram(list.find((p) => p.id === activeProgramId) ?? null)
-    })
-  }, [activeProgramId])
+  /** 节目控制（选择/启动/暂停/结束 + 预检与门禁弹窗）：activeProgram 也由它给，只有一处真值 */
+  const programControl = useProgramLauncher()
+  const activeProgram = programControl.activeProgram
 
   /** 当前节目是否向主播提供直播间动态：关闭时评论流区域整体隐藏（docs/10 §11.5） */
   const allowLiveEvents = activeProgram?.allowLiveEvents ?? true
@@ -190,160 +194,151 @@ export function LivePage() {
     <div className="flex min-h-0 flex-1">
         {/* 左栏 = 队列 / 评论流。「正在播什么」在右栏对话区底部的常驻状态行（一处就够） */}
         <section className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-            {/* 开播控制贴最右：顶部居中的 toast 不会再盖住「启动/暂停」按钮 */}
-            <div className="ml-auto flex items-center gap-3">
-              <StreamIndicator />
-              {/* 主输出电平 */}
-              <div className="flex items-center gap-1.5" title="输出电平">
-                <div className="h-1.5 w-20 overflow-hidden rounded-full bg-muted">
-                  <div
-                    className="h-full rounded-full bg-primary transition-[width] duration-150"
-                    style={{ width: `${Math.round(levels.master * 100)}%` }}
-                  />
-                </div>
-              </div>
-              {/* 开播主入口：选节目 → 启动节目（docs/07 §8.5）；预制节目就绪后节目卡上也能直接播放 */}
-              <ProgramLauncher />
-            </div>
-          </header>
           {/* 资产改过但本场会话还是旧的：都在这里给「立即应用」 */}
           <AssetStaleBanner />
-          {/* 中间区按 broadcastMode 自动适配（docs/10 §11.5）：prepared=章节+长音频播放器；
-              improvised=正在说/最近说过/直播间动态；rolling（含未选节目）=话术池队列+评论流 */}
-          {broadcastMode === 'prepared' && activeProgram ? (
-            <PreparedPanel program={activeProgram} />
-          ) : broadcastMode === 'improvised' ? (
-            <ImprovisedPanel comments={comments} allowLiveEvents={allowLiveEvents} />
-          ) : (
-          <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
-            <div className="shrink-0 border-b px-4 pt-2">
-              <TabsList variant="line">
-                <TabsTrigger value="pool" className="px-3 text-xs">
-                  话术池队列 · {groups.reduce((n, group) => n + group.items.length, 0)}
-                </TabsTrigger>
-                {allowLiveEvents && (
-                  <TabsTrigger value="comments" className="px-3 text-xs">
-                    评论流 · {comments.length}
-                  </TabsTrigger>
-                )}
-                {allowLiveEvents && (
-                  <TabsTrigger value="events" className="px-3 text-xs" title="发送给主播的直播间动态（收件箱状态）">
-                    事件流 · {inboxEvents.filter((e) => e.state === 'new' || e.state === 'seen').length}
-                  </TabsTrigger>
-                )}
-              </TabsList>
-            </div>
-            <TabsContent value="pool" className="min-h-0 overflow-y-auto p-3">
-              {groups.length === 0 && pool.failed.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                  <Radio className="size-10" strokeWidth={1.25} />
-                  <p className="text-sm">话术池是空的，从右侧操作面板发起人工播报</p>
-                </div>
+          {/* UpNext 统一壳（docs/REDESIGN 4.6）：[接下来][评论流][事件流] 三个 tab，
+              「接下来」内容按 broadcastMode 填充（prepared=章节列表 / improvised=实况 / rolling=话术池队列）。
+              节目关了直播间动态（allowLiveEvents=false）时不出 Tabs，直接放「接下来」内容 */}
+          {(() => {
+            const upNext =
+              broadcastMode === 'prepared' && activeProgram ? (
+                <PreparedPanel program={activeProgram} />
+              ) : broadcastMode === 'improvised' ? (
+                <ImprovisedPanel />
               ) : (
-                <div className="flex flex-col gap-2">
-                  {groups.map((group) => (
-                    <TurnGroup key={group.key} group={group.items} />
-                  ))}
-                  {pool.failed.length > 0 && (
-                    <div className="mt-2 flex flex-col gap-1">
-                      <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
-                      {pool.failed.map((item) => (
-                        <div
-                          key={item.id}
-                          className="flex items-center gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2"
-                        >
-                          <Badge variant="destructive">失败</Badge>
-                          <span className="min-w-0 flex-1 truncate text-[13px]">{item.text}</span>
-                          <span className="shrink-0 text-xs text-muted-foreground" title={item.error}>
-                            {item.error}
-                          </span>
-                        </div>
-                      ))}
+                <ContentList className="group/list p-3">
+                  {groups.length === 0 && pool.failed.length === 0 ? (
+                    <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+                      <Radio className="size-10" strokeWidth={1.25} />
+                      <p className="text-sm">话术池是空的——按 Ctrl+J 唤起导演说点什么，或用底部「⋯」里的人工播报</p>
                     </div>
+                  ) : (
+                    <>
+                      {groups.flatMap((group) => group.items.map((item) => <QueueRow key={item.id} item={item} />))}
+                      {pool.failed.length > 0 && (
+                        <div className="mt-2 flex flex-col gap-1.5">
+                          <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
+                          {pool.failed.map((item) => (
+                            <ContentItem
+                              key={item.id}
+                              status={<CircleAlert className="size-4 shrink-0 text-red-600" />}
+                              header={<span className="truncate text-destructive">合成失败</span>}
+                              meta={item.error ? <span title={item.error}>{item.error}</span> : undefined}
+                              text={item.text}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </>
                   )}
+                </ContentList>
+              )
+            if (!allowLiveEvents) return upNext
+            return (
+              <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
+                <div className="shrink-0 border-b px-4 pt-2">
+                  <TabsList variant="line">
+                    <TabsTrigger value="pool" className="px-3 text-xs">
+                      接下来{broadcastMode === 'rolling' && ` · ${groups.reduce((n, group) => n + group.items.length, 0)}`}
+                    </TabsTrigger>
+                    <TabsTrigger value="comments" className="px-3 text-xs">
+                      评论流 · {comments.length}
+                    </TabsTrigger>
+                    <TabsTrigger value="events" className="px-3 text-xs" title="发给主播的直播间动态（评论、礼物、系统通知）">
+                      事件流 · {inboxEvents.filter((e) => e.state === 'new' || e.state === 'seen').length}
+                    </TabsTrigger>
+                  </TabsList>
                 </div>
-              )}
-            </TabsContent>
-            {allowLiveEvents && (
-              <TabsContent value="comments" className="min-h-0 overflow-y-auto px-4 pb-2">
-                <CommentList comments={comments} />
-              </TabsContent>
-            )}
-            {allowLiveEvents && (
-              <TabsContent value="events" className="min-h-0 overflow-y-auto px-4 pb-2">
-                <EventStream events={inboxEvents} />
-              </TabsContent>
-            )}
-          </Tabs>
-          )}
-        </section>
-
-        {/* 右侧面板：对话（主区，铺满整栏）/ 操作。forceMount 保持挂载——切走不丢消息状态和订阅。
-            「正在播什么」在左栏顶部，这里不再重复一遍。 */}
-        <aside className="flex w-80 shrink-0 flex-col border-l">
-          <Tabs
-            value={rightTab}
-            onValueChange={(v) => {
-              setRightTab(v as typeof rightTab)
-              if (v === 'chat') setChatUnread(0)
+                <TabsContent value="pool" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
+                  {upNext}
+                </TabsContent>
+                {/* 评论流/事件流自己带滚动容器（列表内自动跟到最新）；这里只负责"撑满 + 是活跃页时铺成列" */}
+                <TabsContent value="comments" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
+                  <CommentList comments={comments} />
+                </TabsContent>
+                <TabsContent value="events" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
+                  <EventStream events={inboxEvents} />
+                </TabsContent>
+              </Tabs>
+            )
+          })()}
+          {/* NowPlayingBar 吸底（docs/REDESIGN 4.6）：节目选择在左槽、启动/传输/结束在中槽、急停音量⋯在右槽 */}
+          <NowPlayingBar
+            program={activeProgram}
+            onFocusQueue={() => {
+              setLeftTab('pool')
+              // 等 tab 渲染完再滚：把正在播的那条带到视野中间（音乐播放器的"回到当前曲目"）
+              window.setTimeout(() => {
+                const list = document.getElementById('up-next-list')
+                const target = document.querySelector('[data-playing="true"]')
+                if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+                else list?.scrollTo({ top: 0, behavior: 'smooth' })
+              }, 80)
             }}
-            className="min-h-0 flex-1 gap-0"
-          >
-            <div className="shrink-0 border-b px-3 pt-2">
-              <TabsList variant="line">
-                <TabsTrigger value="chat" className="px-3 text-xs">
-                  对话
-                  {chatUnread > 0 && <Badge className="ml-1 h-4 px-1 text-[10px]">{chatUnread}</Badge>}
-                </TabsTrigger>
-                <TabsTrigger value="control" className="px-3 text-xs">
-                  操作
-                </TabsTrigger>
-              </TabsList>
-            </div>
-            <TabsContent value="chat" forceMount className="flex min-h-0 flex-1 flex-col data-[state=inactive]:hidden">
-              <DirectorConsole active={rightTab === 'chat'} onUnread={() => setChatUnread((n) => n + 1)} />
-            </TabsContent>
-            <TabsContent value="control" forceMount className="min-h-0 flex-1 overflow-y-auto data-[state=inactive]:hidden">
-              <ControlPanel onOpenChat={() => setRightTab('chat')} />
-            </TabsContent>
-          </Tabs>
-        </aside>
+            programPicker={programControl.picker}
+            launchAction={programControl.launchAction}
+            endAction={programControl.endAction}
+            actions={<DeskActions program={activeProgram} onProgramSaved={programControl.patchProgram} />}
+          />
+        </section>
+        {/* 预检 / 开播确认 / 结束确认 / 底稿 / 声音选择 / 预制门禁：都挂在页面根部 */}
+        {programControl.dialogs}
     </div>
   )
 }
 
 /**
- * 节目入口：选节目 + 启动/停止节目（预检 + 预制门禁都在这里过）。
- * 点「启动节目」先跑预检（docs/07 §8.5）：阻断项红、警告项黄，有阻断项不许开；
- * 预制节目门禁未过时 launch 返回结构化 gate，弹 ProgramGateDialog 给三选项，不静默跳过（docs/10 §7.8）。
+ * 节目控制（选择 / 启动 / 暂停 / 结束 + 预检与门禁弹窗）。
+ * 原来是顶栏里的 ProgramLauncher：现在拆成几块塞进吸底播放条——左槽节目选择、中槽启动或用传输控制、
+ * 中槽右侧结束本场；弹窗仍挂在页面根部。状态收在一处，避免多处各存一份。
  */
-function ProgramLauncher() {
+function useProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
-  const loopRunning = useAppStore((s) => s.loopRunning)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const persona = useAppStore((s) => s.persona)
+  const director = useAppStore((s) => s.config.director)
   const [programs, setPrograms] = useState<Program[]>([])
+  const [presenters, setPresenters] = useState<Awaited<ReturnType<typeof window.api.persona.list>>>([])
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
   /** 预制节目门禁未过的结构化结果（不空就不许静默开播，弹窗给三选项） */
   const [gate, setGate] = useState<ProgramGateResult | null>(null)
-  /** 导出弹窗（docs/10 §8.3/§11.6，P6） */
-  const [exportOpen, setExportOpen] = useState(false)
+  const [draftAsk, setDraftAsk] = useState(false)
+  /** 开播预检「提前合成」的声音选择弹窗（docs/REDESIGN 4.4） */
+  const [voicePickOpen, setVoicePickOpen] = useState(false)
+  /** 「结束本场」二次确认：收场是不可逆的重操作，跟「暂停」分开 */
+  const [stopAsk, setStopAsk] = useState(false)
 
-  useEffect(() => {
-    void window.api.program.list().then(setPrograms)
+  /**
+   * 节目列表 + 卡司列表。页面是常驻不卸载的（App 用显隐切页），所以不能只在挂载时拉一次——
+   * 在节目页改了名字/删了节目再回直播台，看到的就是旧清单（曾把已删节目当"当前节目"显示）。
+   */
+  const loadPrograms = useCallback(async (): Promise<Program[]> => {
+    const [programList, personaList] = await Promise.all([window.api.program.list(), window.api.persona.list()])
+    setPrograms(programList)
+    setPresenters(personaList)
+    return programList
   }, [])
 
-  /** 直播中的判定：开播态归引擎（agent.live）——智能层没起来也照播存量，不算没开播 */
+  const page = useAppStore((s) => s.page)
+  useEffect(() => {
+    if (page === 'live') void loadPrograms()
+  }, [page, loadPrograms])
+
+  /** 直播中的判定：开播态归引擎（agent.live）——主播会话没起来也照播存量，不算没开播 */
   const running = agent.live === true
   const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
+  const castNames = activeProgram?.presenterIds.length
+    ? activeProgram.presenterIds.map((id) => presenters.find((item) => item.id === id)?.name).filter(Boolean).join('、')
+    : `导演自选（当前：${persona?.name ?? '未选'}）`
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
   const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
   const presynthShort = (checks ?? []).some((item) => item.code === 'presynth')
-  const [draftAsk, setDraftAsk] = useState(false)
+
+  const patchProgram = (saved: Program): void =>
+    setPrograms((prev) => prev.map((p) => (p.id === saved.id ? saved : p)))
 
   const goGenerate = (): void => {
     if (!activeProgramId) return
@@ -353,25 +348,39 @@ function ProgramLauncher() {
 
   const startPresynth = (): void => {
     if (!activeProgramId) return
+    // 合成入口统一先过声音选择弹窗（docs/REDESIGN 4.4），确认后才发起
+    setVoicePickOpen(true)
+  }
+
+  const confirmPresynth = async (voiceOverride?: ProduceVoiceOverride, rebuildAll?: boolean): Promise<void> => {
+    if (!activeProgramId) return
+    setVoicePickOpen(false)
+    if (rebuildAll) await window.api.utterance.clearAudio(activeProgramId)
     // 滚动节目走统一音频生产入口（produceAudio 的 rolling 分支 = 后台逐段提前合成）
-    void window.api.program.produceAudio(activeProgramId).then((result) => {
-      if (!result.ok) toast.error('提前合成没能开始', { description: result.error })
-      else toast.success('已开始提前合成', { description: '合成在后台跑，完成后点「重新预检」看结果' })
-    })
+    const result = await window.api.program.produceAudio(activeProgramId, voiceOverride)
+    if (!result.ok) toast.error('提前合成没能开始', { description: result.error })
+    else toast.success('已开始提前合成', { description: '合成在后台跑，完成后点「重新预检」看结果' })
   }
 
   const startDraft = (): void => {
-    if (!activeProgramId) return
+    if (!activeProgramId || !activeProgram) return
+    useAppStore.getState().openAgentPanel({ kind: 'draft', label: `底稿工作台 · ${activeProgram.name}`, programId: activeProgramId })
     void window.api.agent.draftStart(activeProgramId).then((result) => {
-      if (!result.ok) toast.error('派写稿任务失败', { description: result.error })
+      if (!result.ok) toast.error('导演没能开始写稿', { description: result.error })
     })
   }
 
   const switchProgram = async (id: string): Promise<void> => {
+    // 切之前重拉一次清单：本地这份可能是旧的（节目刚在节目页被删/改名），
+    // 直接照着旧清单切会"切到一个已经不存在的节目"还弹成功提示
+    const program = (await loadPrograms()).find((p) => p.id === id)
+    if (!program) {
+      toast.error('这个节目已经不在了', { description: '清单已刷新，重新选一个' })
+      return
+    }
     await window.api.program.setActive(id)
     await useAppStore.getState().loadConfig()
-    const program = programs.find((p) => p.id === id)
-    toast.success(`已切换到节目：${program?.name ?? ''}`, {
+    toast.success(`已切换到节目：${program.name}`, {
       description: running ? '结构性变更下次开播生效' : undefined
     })
   }
@@ -384,6 +393,15 @@ function ProgramLauncher() {
     } finally {
       setChecking(false)
     }
+  }
+
+  /** 预检「去修复」：按检查项 code 深链到对应设置栏目/页面 */
+  const goFix = (code: string): void => {
+    const fix = PREFLIGHT_FIX[code]
+    if (!fix) return
+    setChecks(null)
+    if (fix.pane) useAppStore.getState().openSettings(fix.pane)
+    else if (fix.page) useAppStore.getState().setPage(fix.page)
   }
 
   const openPreflight = async (): Promise<void> => {
@@ -404,7 +422,7 @@ function ProgramLauncher() {
         // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
         resumeBroadcast()
         if (result.warning) {
-          toast.warning(`节目已启动：${activeProgram?.name ?? ''}（智能层未就位）`, {
+          toast.warning(`节目已启动：${activeProgram?.name ?? ''}（主播还没就位）`, {
             description: result.warning
           })
         } else {
@@ -429,132 +447,83 @@ function ProgramLauncher() {
   const stop = async (): Promise<void> => {
     if (busy) return
     setBusy(true)
+    setStopAsk(false)
     try {
       useAppStore.getState().setLoopRunning(false)
       await window.api.agent.stop()
-      toast.message('节目已停止', { description: '播报一并停止，池里的存货保留，下次开播接着用' })
+      toast.message('本场已结束', { description: '播报一并停止，池里的存货保留，下次开播接着用' })
     } finally {
       setBusy(false)
     }
   }
 
-  return (
-    <div className="flex items-center gap-2">
-      {activeProgram && !running && (
-        <span className="hidden text-xs text-muted-foreground lg:inline">
-          {activeProgram.theme || '（未设主题）'}
-        </span>
-      )}
-      {/* 通用顶部（docs/10 §11.5）：当前主播 + 节目状态（圆点 + 文字双标） */}
-      <Badge variant="outline" className="shrink-0 gap-1.5 text-xs" title="当前主播 · 节目状态">
-        <span
-          className={cn(
-            'size-1.5 rounded-full',
-            running ? (loopRunning ? 'bg-emerald-500' : 'bg-amber-500') : 'bg-muted-foreground/50'
-          )}
-        />
-        <Bot className="size-3" />
-        {agent.personaName ?? persona?.name ?? '未选主播'}
-        {activeProgram && (
-          <span className="text-muted-foreground">
-            · {running ? (loopRunning ? '播报中' : '已暂停') : '未开播'}
-          </span>
-        )}
-      </Badge>
-      <Select
-        value={activeProgramId || undefined}
-        onValueChange={(v) => void switchProgram(v)}
-        disabled={running}
-      >
-        <SelectTrigger size="sm" className="w-40">
-          <SelectValue placeholder="选择节目" />
-        </SelectTrigger>
-        <SelectContent>
-          {programs.length === 0 && (
-            <SelectItem value="__none" disabled>
-              还没有节目（到「节目」页新建）
-            </SelectItem>
-          )}
-          {programs.map((program) => (
-            <SelectItem key={program.id} value={program.id}>
-              {program.name}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-
-      {/* 统一开播控制：启动 → 暂停/继续 → 结束，一个地方说清"这场现在什么状态" */}
-      {running ? (
-        <>
-          <Button
-            size="sm"
-            variant={loopRunning ? 'default' : 'secondary'}
-            onClick={() => (loopRunning ? pauseBroadcast() : resumeBroadcast())}
-            title={loopRunning ? '暂停：停播报，也让主播先别生成新话术' : '继续播报'}
-          >
-            {loopRunning ? <Pause /> : <Play />}
-            {loopRunning ? '暂停' : '继续'}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => {
-              audioEngine.stopCurrent()
-              toast.message('已跳过当前这条', { description: '接着播队列里的下一条' })
-            }}
-            title="跳过当前这条，播下一条"
-          >
-            <SkipForward />
-            跳过
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => void stop()}
-            title="结束本场：播报停止，池里的存货保留"
-          >
-            {busy ? <Loader2 className="animate-spin" /> : <Square />}
-            结束节目
-          </Button>
-        </>
-      ) : (
-        <Button
-          size="sm"
-          disabled={busy || checking}
-          onClick={() => void openPreflight()}
-          title="预检并启动节目"
+  /** 左槽里的节目选择：纯文字 + 下拉（未开播可换，直播中只读）；不用 Select 的小药丸，窄带上会挤压文字 */
+  const picker = (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={running}>
+        <button
+          type="button"
+          className="flex min-w-0 max-w-full items-center gap-1 text-sm font-medium hover:text-primary disabled:opacity-60 disabled:hover:text-foreground"
+          title={
+            running
+              ? '直播中不能换节目（结构性变更下次开播生效）'
+              : activeProgram
+                ? `${activeProgram.name}${activeProgram.theme ? ` · ${activeProgram.theme}` : ''}（点它换节目）`
+                : '选择节目'
+          }
         >
-          {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
-          启动节目
-        </Button>
-      )}
+          <span className="truncate">{activeProgram?.name ?? '选择节目'}</span>
+          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-60">
+        {programs.length === 0 ? (
+          <DropdownMenuItem disabled>还没有节目（到「节目」页新建）</DropdownMenuItem>
+        ) : (
+          programs.map((item) => (
+            <DropdownMenuItem key={item.id} onSelect={() => void switchProgram(item.id)}>
+              <Check className={cn('size-3.5', item.id === activeProgramId ? 'opacity-100' : 'opacity-0')} />
+              <span className="truncate">{item.name}</span>
+            </DropdownMenuItem>
+          ))
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
 
-      {/* 导出（docs/10 §8.3/§11.6，P6）：全部章节、分章/合并、MP3/WAV、响度归一 */}
+  /** 中槽未开播态：唯一主 CTA（先跑预检 → 开播确认，再出声） */
+  const launchAction = (
+    <Button
+      size="sm"
+      disabled={busy || checking}
+      onClick={() => void openPreflight()}
+      title="预检并启动这一场（先看开播确认，再出声）"
+    >
+      {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
+      启动节目
+    </Button>
+  )
+
+  /** 中槽直播态右侧：结束本场（红字 + 二次确认，与「暂停」明确区分） */
+  const endAction = (
+    <>
+      <span className="mx-1 h-5 w-px bg-border" />
       <Button
         size="sm"
         variant="outline"
-        disabled={!activeProgram}
-        onClick={() => setExportOpen(true)}
-        title={activeProgram ? '导出节目音频' : '先选一个节目'}
+        className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+        disabled={busy}
+        onClick={() => setStopAsk(true)}
+        title="结束本场：播报停止，池里的存货保留（收场，与「暂停」不同）"
       >
-        <Download />
-        导出
+        {busy ? <Loader2 className="animate-spin" /> : <Square />}
+        结束本场
       </Button>
-      {/* 紧急停止声音：立刻掐掉所有 AI 声音（主槽播报与试听都停；主播和话术池不动） */}
-      <Button
-        size="sm"
-        variant="destructive"
-        onClick={() => {
-          audioEngine.stopCurrent()
-          toast.message('已紧急停止声音', { description: '主播和话术池没动，只掐断了声音输出' })
-        }}
-        title="紧急停止声音：立刻掐掉所有 AI 声音（主播和话术池不动）"
-      >
-        <VolumeX />
-        <span className="hidden xl:inline">急停声音</span>
-      </Button>
+    </>
+  )
 
+  const dialogs = (
+    <>
       {/* 开播预检（docs/07 §8.5）：阻断项拦住开播，警告项自己判断 */}
       <Dialog
         open={checks !== null}
@@ -564,11 +533,20 @@ function ProgramLauncher() {
       >
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>开播预检{activeProgram ? ` · ${activeProgram.name}` : ''}</DialogTitle>
+            <DialogTitle>开播确认{activeProgram ? ` · ${activeProgram.name}` : ''}</DialogTitle>
           </DialogHeader>
-          <div className="max-h-80 space-y-2 overflow-y-auto">
-            {(checks ?? []).map((item, index) => (
-              <div key={index} className="flex items-start gap-2 rounded-md border p-2">
+          {activeProgram && (
+            <div className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-2">
+              <div><span className="text-muted-foreground">导演：</span>{director.name} · {director.model || '未配置大脑'}</div>
+              <div><span className="text-muted-foreground">卡司：</span>{castNames || '导演自选'}</div>
+              <div><span className="text-muted-foreground">播出：</span>{activeProgram.broadcastMode === 'prepared' ? '全部做好再播' : activeProgram.broadcastMode === 'rolling' ? '边播边准备' : '现场发挥'}</div>
+              <div><span className="text-muted-foreground">互动：</span>{activeProgram.allowLiveEvents ? '开启' : '关闭'} · {activeProgram.enabledTriggerIds.length} 个自动响应</div>
+            </div>
+          )}
+          {activeProgram && <AutoResponsePicker program={activeProgram} compact onSaved={patchProgram} />}
+          <div className="max-h-72 space-y-2 overflow-y-auto">
+            {(checks ?? []).map((item) => (
+              <div key={item.code ?? item.label} className="flex items-start gap-2 rounded-md border p-2">
                 {item.level === 'ok' ? (
                   <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
                 ) : item.level === 'warn' ? (
@@ -576,16 +554,26 @@ function ProgramLauncher() {
                 ) : (
                   <XCircle className="mt-0.5 size-4 shrink-0 text-red-600" />
                 )}
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <p className="text-sm">{item.label}</p>
                   {item.detail && <p className="text-xs text-muted-foreground">{item.detail}</p>}
                 </div>
+                {item.code && PREFLIGHT_FIX[item.code] && item.level !== 'ok' && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    onClick={() => goFix(item.code!)}
+                  >
+                    {PREFLIGHT_FIX[item.code].label} →
+                  </Button>
+                )}
               </div>
             ))}
           </div>
           {blocked && (
             <p className="text-xs text-red-600">
-              有阻断项：按提示处理完再开播（配置入口在左下角「设置」）。
+              有阻断项：按提示处理完再开播（点右侧「去修复」直达对应设置）。
             </p>
           )}
           <DialogFooter className="gap-2 sm:justify-end">
@@ -610,11 +598,33 @@ function ProgramLauncher() {
             </Button>
             <Button disabled={blocked || busy} onClick={() => void start()}>
               {busy ? <Loader2 className="animate-spin" /> : <Play />}
-              仍然启动
+              确认开播
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* 结束本场二次确认：收场是不可逆的重操作，和「暂停」区分开 */}
+      <Dialog open={stopAsk} onOpenChange={setStopAsk}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>结束本场？</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            播报会停下来，池里的存货保留，下次开播接着用。只想临时安静一下请用「暂停」。
+          </p>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button variant="outline" onClick={() => setStopAsk(false)}>
+              继续播
+            </Button>
+            <Button variant="destructive" disabled={busy} onClick={() => void stop()}>
+              {busy ? <Loader2 className="animate-spin" /> : <Square />}
+              结束本场
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {activeProgram && (
         <DraftMinutesDialog
           program={activeProgram}
@@ -623,9 +633,14 @@ function ProgramLauncher() {
           onConfirm={() => startDraft()}
         />
       )}
-      {/* 导出弹窗（docs/10 §8.3/§11.6，P6） */}
+      {/* 预检「提前合成全部」的声音选择弹窗（docs/REDESIGN 4.4），确认后才发起合成 */}
       {activeProgram && (
-        <ExportDialog program={activeProgram} open={exportOpen} onOpenChange={setExportOpen} />
+        <VoicePickDialog
+          program={activeProgram}
+          open={voicePickOpen}
+          onOpenChange={setVoicePickOpen}
+          onConfirm={(override, rebuildAll) => void confirmPresynth(override, rebuildAll)}
+        />
       )}
       {/* 预制节目门禁未过：继续生成 / 重试失败项 / 仅播放已完成部分，三选项都在这里 */}
       {activeProgram && gate && (
@@ -640,7 +655,7 @@ function ProgramLauncher() {
           onLaunched={(result) => {
             resumeBroadcast()
             if (result.warning) {
-              toast.warning(`节目已启动：${activeProgram.name}（智能层未就位）`, {
+              toast.warning(`节目已启动：${activeProgram.name}（主播还没就位）`, {
                 description: result.warning
               })
             } else {
@@ -651,99 +666,235 @@ function ProgramLauncher() {
           }}
         />
       )}
-    </div>
+    </>
   )
+
+  return { programs, activeProgram, running, picker, launchAction, endAction, dialogs, patchProgram }
 }
 
-/** 一个话轮（同 turnId 的连续条目）在队列里的样子 */
-function TurnGroup({ group }: { group: SpeechItem[] }) {
-  const first = group[0]
-  return (
-    <div className="rounded-lg border bg-card">
-      <div className="flex items-center gap-1.5 border-b px-3 py-1.5">
-        <Badge variant={LANE_BADGE_VARIANT[first.lane]}>{LANE_LABEL[first.lane]}</Badge>
-        <Badge variant="ghost">{SOURCE_LABEL[first.source.kind]}</Badge>
-        {first.replyTo && <Badge variant="outline">回复 @{first.replyTo.author}</Badge>}
-        {first.voiceId && <Badge variant="outline">{first.voiceId}</Badge>}
-        <span className="ml-auto text-xs text-muted-foreground">话轮 {first.turnId.slice(-6)}</span>
-      </div>
-      <div className="flex flex-col">
-        {group.map((item) => (
-          <PoolRow key={item.id} item={item} />
-        ))}
-      </div>
-    </div>
-  )
-}
+/**
+ * 行级 memo：`upsert` 只替换变化的那一条 entry（其余对象引用不变），所以下面这些包装能真正跳过重渲染——
+ * 最后一条流式文本每 60ms 变一次时，历史里的 markdown/思考块/工具卡不再跟着重渲染。
+ */
+const ToolCardMemo = memo(ToolCard)
+const ToolGroupMemo = memo(ToolGroup)
+const ThinkingBlockMemo = memo(ThinkingBlock)
+const AskCardMemo = memo(AskCard, (a: { message: DirectorMessage }, b: { message: DirectorMessage }) => a.message === b.message)
 
-function PoolRow({ item }: { item: SpeechItem }) {
-  const canRevoke = item.status === 'pending' || item.status === 'synthesizing' || item.status === 'ready'
+/** 行首标记（日期分隔 / 每轮时间线）：拆出来是为了它也能被 memo 覆盖 */
+function RowHead({ dayLabel }: { dayLabel?: string }) {
   return (
-    <div className="group/row flex items-center gap-2 px-3 py-2">
-      <Badge
-        variant={
-          item.status === 'playing' ? 'default' : item.status === 'ready' ? 'secondary' : 'outline'
-        }
-      >
-        {STATUS_LABEL[item.status]}
-      </Badge>
-      {item.status === 'synthesizing' ? (
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <Skeleton className="h-4 w-3/4" />
+    <>
+      {dayLabel && (
+        <div className="my-1 flex items-center gap-2 text-[11px] text-muted-foreground">
+          <span className="h-px flex-1 bg-border" />
+          {dayLabel}
+          <span className="h-px flex-1 bg-border" />
         </div>
-      ) : (
-        <span
-          className={cn(
-            'min-w-0 flex-1 truncate text-[13px]',
-            item.status === 'playing' && 'text-primary'
-          )}
-          title={
-            item.speechText && item.speechText !== item.text
-              ? `${item.text}
-
-实际念的是：${item.speechText}`
-              : item.text
-          }
-        >
-          {item.text}
-        </span>
       )}
-      {canRevoke && (
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="opacity-0 group-hover/row:opacity-100"
-          title="撤销这条"
-          onClick={() => {
-            void window.api.pool.revoke(item.id).then((result) => {
-              if (result.ok) toast.success('已撤销')
-              else toast.error('撤销失败', { description: result.error })
-            })
-          }}
-        >
-          <X />
-        </Button>
-      )}
-    </div>
+    </>
   )
 }
 
-/** 推流状态指示（直播台 header）：开播/码率/时长/重连 */
-function StreamIndicator() {
-  const stream = useAppStore((s) => s.stream)
-  if (stream.state === 'idle') return null
-  if (stream.state === 'error') return <Badge variant="destructive">推流出错</Badge>
-  if (stream.state === 'starting') return <Badge variant="outline">推流启动中…</Badge>
-  if (stream.state !== 'live') return null
-  const duration = `${Math.floor(stream.durationSec / 60)}:${String(stream.durationSec % 60).padStart(2, '0')}`
+/**
+ * 时间线的一行（memo）：只有真的变化的那条 entry 才重渲染——
+ * 流式文本每 60ms 变一次时，历史里的 Markdown（streamdown 解析）、思考块、工具卡都不再跟着重跑。
+ * 流式期间只有最后一行拿到 caret（isTail），其余行的 props 全不变。
+ */
+const TimelineLine = memo(function TimelineLine({
+  entry,
+  dayLabel,
+  isTail,
+  running,
+  restored,
+  onAnswer
+}: {
+  entry: ChatEntry
+  dayLabel?: string
+  isTail: boolean
+  running: boolean
+  /** 存档恢复出来的条目（本次会话之前就落库的）：思考条目拿不到可信起点，不给秒表 */
+  restored: boolean
+  onAnswer: (message: DirectorMessage, answer: string) => void
+}) {
+  /** 这一条能不能复制：只有"真的说过的话"（我的消息 / 导演正文 / 请示卡）；
+   *  思考过程与工具卡不给复制入口（它们是过程，不是可引用的产出） */
+  const copyText =
+    entry.type === 'ask'
+      ? entry.message.text
+      : entry.type === 'text' || entry.type === 'director'
+        ? entry.text
+        : ''
+  const copy = (): void => {
+    if (!copyText) return
+    void navigator.clipboard
+      .writeText(copyText)
+      .then(() => toast.success('已复制这条'))
+      .catch(() => toast.error('复制失败'))
+  }
   return (
-    <Badge variant="secondary" title={stream.reconnecting ? `第 ${stream.reconnectAttempt} 次重连中` : undefined}>
-      {stream.reconnecting
-        ? `重连中(${stream.reconnectAttempt})`
-        : stream.mode === 'direct'
-          ? `推流中 · ${stream.bitrateKbps}kbps · ${duration}`
-          : `伴侣模式 · ${duration}`}
-    </Badge>
+    // select-text：应用全局是 user-select:none（桌面应用风格），消息文字要能选中复制
+    <div className="group/line flex select-text flex-col">
+      <RowHead dayLabel={dayLabel} />
+      {entry.type === 'director' ? (
+        // 自己的消息：贴内容宽度，长到 92% 才换行（再宽就跟助手正文分不清了）
+        <div className="flex max-w-[92%] flex-col items-end gap-1 self-end">
+          <div className="rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-[13px] leading-[20px] text-primary-foreground">
+            {entry.text}
+            {entry.attachments?.map((file) => (
+              <div
+                key={file.path}
+                className="mt-1 flex items-center gap-1 rounded-md bg-primary-foreground/15 px-1.5 py-0.5 text-xs"
+                title={file.path}
+              >
+                <Paperclip className="size-3 shrink-0" />
+                <span className="truncate">{file.name}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : entry.type === 'text' && !entry.final ? (
+        // 中间文本：淡色、不套气泡、铺满宽度（流式追加时不会跳成多块）
+        <p className="whitespace-pre-wrap text-[13px] leading-[21px] text-muted-foreground">
+          {entry.text}
+          {running && isTail && (
+            <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
+          )}
+        </p>
+      ) : entry.type === 'text' ? (
+        // 最终回复：富文本（表格/列表/代码），时间在轮分隔线上不再重复
+        <Markdown text={entry.text} />
+      ) : entry.type === 'thinking' ? (
+        <ThinkingBlockMemo entry={entry} restored={restored} isTail={isTail} />
+      ) : entry.type === 'tool' ? (
+        <ToolCardMemo entry={entry} />
+      ) : (
+        <AskCardMemo message={entry.message} onAnswer={onAnswer} />
+      )}
+      {/* 底部一行：时间 + 复制图标（自己的消息靠右，其它靠左）——时间不再挂在消息上方 */}
+      {(copyText || entry.type === 'director') && (
+        <div
+          className={cn(
+            'mt-0.5 flex items-center gap-1.5',
+            entry.type === 'director' && 'justify-end'
+          )}
+        >
+          <span className="font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
+          {copyText && (
+            <button
+              type="button"
+              className="flex size-4 items-center justify-center rounded text-muted-foreground/35 transition-colors hover:bg-accent hover:text-muted-foreground/70"
+              title="复制这条内容"
+              onClick={copy}
+            >
+              <Copy className="size-3" />
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+})
+
+/** 话轮卡片头：图标 + 颜色区分，不放原始 id/hash 这类机器串 */
+const SOURCE_ICON: Record<SpeechSourceKind, typeof Clapperboard> = {
+  scene: Clapperboard,
+  reply: MessageCircle,
+  interact: MessagesSquare,
+  announce: Megaphone,
+  filler: Coffee,
+  manual: Hand,
+  reaction: Heart
+}
+
+/** lane 颜色（常规是默认不露头，减少噪音；其余用色点区分） */
+const LANE_DOT: Partial<Record<SpeechLane, string>> = {
+  interrupt: 'bg-red-500',
+  next: 'bg-blue-500',
+  filler: 'bg-amber-400'
+}
+
+/** 状态图标：文字徽标太吵，队列行改用图标 + 颜色（含义放 title） */
+function StatusIcon({ status }: { status: SpeechStatus }) {
+  switch (status) {
+    case 'playing':
+      return <Volume2 className="size-4 shrink-0 animate-pulse text-primary" />
+    case 'ready':
+      return <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
+    case 'synthesizing':
+      return <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
+    default:
+      return <Clock className="size-4 shrink-0 text-muted-foreground/50" />
+  }
+}
+
+/** 长文本阈值：超过则默认折叠几行，给「展开全文」——段一眼看全，文章不撑爆列表 */
+const LONG_TEXT_CHARS = 160
+
+/** 队列条目（滚动模式）：外观与预制/即兴共用 ContentItem，这里只负责填槽 */
+function QueueRow({ item }: { item: SpeechItem }) {
+  const voices = useAppStore((s) => s.voices)
+  const playing = item.status === 'playing'
+  const canRevoke = item.status === 'pending' || item.status === 'synthesizing' || item.status === 'ready'
+  const SourceIcon = SOURCE_ICON[item.source.kind]
+  // voiceId 是合成路由的内部标识（克隆音色 speaker_id 等），显示成人能读懂的音色名
+  const voiceName = item.voiceId ? (voices.find((v) => v.voiceType === item.voiceId)?.name ?? '角色音色') : ''
+  return (
+    <ContentItem
+      current={playing}
+      status={<StatusIcon status={item.status} />}
+      loading={item.status === 'synthesizing'}
+      header={
+        <>
+          {LANE_DOT[item.lane] && (
+            <span className="flex shrink-0 items-center gap-1 font-medium text-foreground">
+              <span className={cn('size-1.5 rounded-full', LANE_DOT[item.lane])} />
+              {LANE_LABEL[item.lane]}
+            </span>
+          )}
+          <span className="flex shrink-0 items-center gap-1" title={STATUS_LABEL[item.status]}>
+            <SourceIcon className="size-3" />
+            {SOURCE_LABEL[item.source.kind]}
+          </span>
+          {item.replyTo && <span className="truncate">回复 @{item.replyTo.author}</span>}
+        </>
+      }
+      meta={
+        voiceName ? (
+          <span className="flex items-center gap-1">
+            <Mic className="size-3" />
+            {voiceName}
+          </span>
+        ) : undefined
+      }
+      actions={
+        canRevoke ? (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="opacity-0 transition-opacity group-hover/list:opacity-100"
+            title="撤销这条"
+            onClick={() => {
+              void window.api.pool.revoke(item.id).then((result) => {
+                if (result.ok) toast.success('已撤销')
+                else toast.error('撤销失败', { description: result.error })
+              })
+            }}
+          >
+            <X />
+          </Button>
+        ) : undefined
+      }
+      text={item.text}
+      longTextThreshold={LONG_TEXT_CHARS}
+      title={
+        item.speechText && item.speechText !== item.text
+          ? `${stripSpeechTags(item.text)}
+
+实际念的是：${stripSpeechTags(item.speechText)}`
+          : stripSpeechTags(item.text)
+      }
+    />
   )
 }
 
@@ -755,13 +906,18 @@ function clock(ts: number): string {
 /** 请示（ask_director）：带倒计时、默认策略与一键选项的卡片，不阻塞直播（docs/07 §8.8.6 ④） */
 function AskCard({
   message,
-  now,
   onAnswer
 }: {
   message: DirectorMessage
-  now: number
   onAnswer: (message: DirectorMessage, answer: string) => void
 }) {
+  // 倒计时自己走秒：放在父组件会每秒把整条时间线都重渲染
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (message.answered || !message.timeoutSec) return
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [message.answered, message.timeoutSec])
   const remain = message.timeoutSec
     ? Math.max(0, Math.ceil((message.ts + message.timeoutSec * 1000 - now) / 1000))
     : null
@@ -774,7 +930,7 @@ function AskCard({
         dim ? 'border-border bg-muted/60' : 'border-primary/30 bg-primary/5'
       )}
     >
-      <MiniMarkdown text={message.text} />
+      <Markdown text={message.text} />
       {message.defaultAction && (
         <p className="mt-1 text-[12px] text-muted-foreground">没答就按这个走：{message.defaultAction}</p>
       )}
@@ -806,11 +962,27 @@ function AskCard({
   )
 }
 
-/** 连续同名工具并成一行（say ×4 · 65ms），点开看每一条 */
+const TOOL_LABEL: Record<string, string> = {
+  search_knowledge: '查了商品资料',
+  check_price: '核对了商品价格',
+  edit_draft: '修改了底稿',
+  say: '安排了播报',
+  insert_next: '安排了下一条播报',
+  switch_presenter: '切换了出镜主播',
+  save_program: '保存了节目',
+  save_script: '保存了剧本',
+  save_persona: '保存了主播卡',
+  session_history: '查了历史场次'
+}
+
+function toolLabel(name: string): string {
+  return TOOL_LABEL[name] ?? '执行了系统操作'
+}
+
+/** 连续同名工具并成一行，默认说人话；点开才看技术细节 */
 function ToolGroup({ items }: { items: Extract<ChatEntry, { type: 'tool' }>[] }) {
   const [open, setOpen] = useState(false)
   const name = items[0].name
-  const totalMs = items.reduce((sum, item) => sum + (item.durationMs ?? 0), 0)
   const running = items.some((item) => item.status === 'running')
   const failed = items.some((item) => item.status === 'error')
   return (
@@ -821,13 +993,10 @@ function ToolGroup({ items }: { items: Extract<ChatEntry, { type: 'tool' }>[] })
         onClick={() => setOpen((prev) => !prev)}
       >
         <Wrench className="size-3 shrink-0 opacity-60" />
-        <span className="shrink-0 font-mono text-[11px]">{name}</span>
-        <span className="shrink-0 font-mono text-[11px] opacity-60">×{items.length}</span>
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-60">
-          {items[0].args && !NOISY_TOOLS.has(name) ? items[0].args : ''}
-        </span>
+        <span className="shrink-0 text-[11px]">{toolLabel(name)}</span>
+        <span className="shrink-0 text-[11px] opacity-60">×{items.length}</span>
+        <span className="min-w-0 flex-1" />
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          {totalMs > 0 && <span className="font-mono text-[10px] opacity-50">{Math.round(totalMs)}ms</span>}
           {running ? (
             <Loader2 className="size-3 animate-spin opacity-60" />
           ) : failed ? (
@@ -852,13 +1021,7 @@ function ToolGroup({ items }: { items: Extract<ChatEntry, { type: 'tool' }>[] })
   )
 }
 
-/** 播出类工具：一轮里能出现十几条，参数（就是话术原文）没必要塞在行里，展开再看 */
-const NOISY_TOOLS = new Set(['say', 'insert_next'])
-
-/**
- * 工具调用：做成一行"日志行"——浅灰等宽字 + 小图标，不套边框卡片，好让文本穿插其间时读起来连贯。
- * 点一下展开完整参数与结果；播出类工具收起时不显示参数（否则每句台词都糊在时间线上）。
- */
+/** 工具调用默认显示人话，点击后才展开原始参数、结果与技术细节。 */
 function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
   const [open, setOpen] = useState(false)
   return (
@@ -869,15 +1032,9 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
         onClick={() => setOpen((prev) => !prev)}
       >
         <Wrench className="size-3 shrink-0 opacity-60" />
-        <span className="shrink-0 font-mono text-[11px]">{entry.name}</span>
-        {entry.args && !NOISY_TOOLS.has(entry.name) && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] opacity-75">{entry.args}</span>
-        )}
-        {NOISY_TOOLS.has(entry.name) && <span className="min-w-0 flex-1" />}
+        <span className="shrink-0 text-[11px]">{toolLabel(entry.name)}</span>
+        <span className="min-w-0 flex-1" />
         <span className="ml-auto flex shrink-0 items-center gap-1.5">
-          {entry.durationMs !== undefined && (
-            <span className="font-mono text-[10px] opacity-50">{Math.round(entry.durationMs)}ms</span>
-          )}
           {entry.status === 'running' ? (
             <Loader2 className="size-3 animate-spin opacity-60" />
           ) : entry.status === 'ok' ? (
@@ -909,61 +1066,51 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
  * 快速指令（暂停/跳过/恢复）本地解析直接执行，不过 LLM；其余文本 steer 插队给主播。
  * composer 对齐 Codex 桌面版：圆角盒内 附件（回形针）+ 发送；附件以路径形式随指令发给主播。
  */
-function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
+export function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [entries, setEntries] = useState<ChatEntry[]>([])
+  /** 已发出、还没等到导演第一条动静（占位提示用；首条时间线条目落地即清） */
+  const [awaiting, setAwaiting] = useState(false)
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
-  /** 请示倒计时用（有未答且有 timeoutSec 的卡片时每秒走一次） */
-  const [now, setNow] = useState(() => Date.now())
   const listRef = useRef<HTMLDivElement>(null)
+  /** 最新值镜像（给异步回调读）：在 effect 里同步，不在渲染期写 ref——渲染可能被丢弃/重放 */
   const activeRef = useRef(active)
-  activeRef.current = active
   const onUnreadRef = useRef(onUnread)
-  onUnreadRef.current = onUnread
+  useEffect(() => {
+    activeRef.current = active
+    onUnreadRef.current = onUnread
+  })
   /** 见过的条目 id：只有首见的那次算未读（流式更新同一 id 不算新消息） */
   const seenRef = useRef(new Set<string>())
-  /** 在场主播（输入区胶囊）：发言人标记 id → 名字 + 切换逻辑。直播中切换 = 原子换主播，不断上下文 */
-  const [personas, setPersonas] = useState<Persona[]>([])
-  const [activePersona, setActivePersona] = useState<Persona | null>(null)
-  const [personaNames, setPersonaNames] = useState<Record<string, string>>({})
-  useEffect(() => {
-    if (!('api' in window)) return
-    void window.api.persona.list().then((list) => {
-      setPersonas(list)
-      const map: Record<string, string> = {}
-      for (const p of list) map[p.id] = p.name
-      setPersonaNames(map)
-    })
-    void window.api.persona.get().then(setActivePersona)
-  }, [agent.personaName])
-
-  const switchAnchor = async (id: string): Promise<void> => {
-    const target = personas.find((p) => p.id === id)
-    if (!target) return
-    const wasStopped = agent.state === 'stopped'
-    // 两条路都走 handoff：直播中原子换人，没在跑切当前主播 + 池里旧音色重合成
-    const result = await window.api.agent.handoff(id)
-    if (result.ok) {
-      setActivePersona(target)
-      toast.success(wasStopped ? `当前主播：${target.name}` : `已换主播：${target.name}`, {
-        description: wasStopped ? '池里旧音色的话术会换成新嗓音' : '这场的历史和话术池她都接得住，接着播'
-      })
-    } else {
-      toast.error('换主播失败', { description: result.error })
-    }
-  }
+  /** 存档恢复出来的条目 id：它们的 ts 是"落库时刻"，不能当开始时间用（思考秒表会算出天文数字） */
+  const restoredRef = useRef(new Set<string>())
+  /** ?demo 演示模式（仅 dev）：置上之后存档恢复不再合并进来，免得演示条目跟真实历史混在一起 */
+  const demoRef = useRef(false)
 
   /** 时间线顺序追加/按 id 覆盖（text 覆盖全文、tool 更新状态）；时间戳沿用首次那条，避免排序跳动 */
   const upsert = (entry: ChatEntry): void => {
     setEntries((prev) => {
       const index = prev.findIndex((item) => item.id === entry.id)
       if (index < 0) return [...prev.slice(-199), entry]
+      const before = prev[index]
       const next = prev.slice()
+      if ((entry.type === 'text' || entry.type === 'thinking') && entry.append) {
+        // 流式增量：主进程只发新增片段，这里累加（定稿那次是全文，天然对账自愈）
+        const merged = {
+          ...before,
+          ...entry,
+          text: (before.type === entry.type ? before.text : '') + entry.text,
+          ts: before.ts
+        }
+        delete merged.append
+        next[index] = merged as ChatEntry
+        return next
+      }
       // 合并而不是替换：工具结束的更新不带 args，整体替换会把参数/结果冲掉
-      next[index] = { ...prev[index], ...entry, ts: prev[index].ts } as ChatEntry
+      next[index] = { ...before, ...entry, ts: before.ts } as ChatEntry
       return next
     })
   }
@@ -973,24 +1120,29 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     const first = !seenRef.current.has(id)
     seenRef.current.add(id)
     if (first && !activeRef.current) onUnreadRef.current()
+    // 导演有动静了（思考/文本/工具任一条）就把"正在生成回复中"收掉
+    if (first && !id.startsWith('dm-local-')) setAwaiting(false)
   }
 
-  // 节目即会话：切场（或首次挂载/刷新）时整段恢复该节目的聊天记录
   useEffect(() => {
     if (!('api' in window)) return
-    setEntries([])
-    seenRef.current = new Set()
-    if (!activeProgramId) return
     let cancelled = false
-    void window.api.director.timelineList(activeProgramId).then((stored) => {
-      if (cancelled) return
-      for (const entry of stored) seenRef.current.add(entry.id)
-      setEntries(stored)
+    void window.api.director.timelineList('director').then((stored) => {
+      if (cancelled || demoRef.current) return
+      for (const entry of stored) {
+        seenRef.current.add(entry.id)
+        restoredRef.current.add(entry.id)
+      }
+      setEntries((current) => {
+        const merged = new Map(stored.map((entry) => [entry.id, entry]))
+        for (const entry of current) merged.set(entry.id, entry)
+        return [...merged.values()].sort((a, b) => a.ts - b.ts)
+      })
     })
     return () => {
       cancelled = true
     }
-  }, [activeProgramId])
+  }, [])
 
   // 订阅对话时间线（文本流式 + 工具卡片 + 压缩后 reset）与请示卡片
   useEffect(() => {
@@ -1012,6 +1164,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           turnId: event.turnId,
           text: entry.text,
           final: entry.final === true,
+          append: entry.append === true,
           personaId: entry.personaId
         })
       } else if (entry.type === 'thinking') {
@@ -1022,6 +1175,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
           turnId: event.turnId,
           text: entry.text,
           done: entry.done === true,
+          append: entry.append === true,
+          durationMs: entry.durationMs,
           personaId: entry.personaId
         })
       } else if (entry.type === 'ask') {
@@ -1049,19 +1204,11 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
   }, [])
 
   // 请示超时倒计时：到点卡片标过期（主播那边本来就不阻塞，docs/07 §8.8.6 ④）
-  const hasPendingAsk = entries.some(
-    (entry) => entry.type === 'ask' && !entry.message.answered && entry.message.timeoutSec
-  )
-  useEffect(() => {
-    if (!hasPendingAsk) return
-    const timer = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(timer)
-  }, [hasPendingAsk])
-
-  // 开发演示：?demo 时塞一组样例条目看布局（仅 dev，不进生产包行为）
+  // 开发演示：?demo 时塞一组样例条目看布局（仅 dev，不进生产包行为）——纯演示，不与真实历史混排
   useEffect(() => {
     if (!import.meta.env.DEV) return
     if (!new URLSearchParams(window.location.search).has('demo')) return
+    demoRef.current = true
     const t0 = Date.now()
     setEntries([
       {
@@ -1096,13 +1243,51 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     ])
   }, [])
 
-  // 新条目/流式更新：贴底状态时自动滚到底（导演往上翻时不抢滚动条）；初始视为贴底
+  /**
+   * 贴底跟随：**自己维护"贴底模式"**，内容一变就钉到最后一条。
+   * 之前用 Virtuoso 的 followOutput，问题是流式期间"当前不在底部"与"内容刚变高"无法区分：
+   * 定稿那次正文从纯文本换成富文本、高度一变，followOutput 判定成"用户翻上去了"就再也不跟了（实测掉到 329px）。
+   * 现在只有真实用户动作（滚轮向上、拖到上方）才退出贴底模式；回到贴底附近自动恢复。
+   */
   const stickRef = useRef(true)
+  const [atBottom, setAtBottom] = useState(true)
+  const virtuosoRef = useRef<VirtuosoHandle>(null)
+  const scrollerRef = useRef<HTMLElement | null>(null)
+
   useEffect(() => {
-    const el = listRef.current
-    if (!el || !active) return
-    if (stickRef.current) el.scrollTop = el.scrollHeight
-  }, [entries, active])
+    const el = scrollerRef.current
+    if (!el) return
+    const onScroll = (): void => {
+      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      if (dist < 40) stickRef.current = true
+      else if (dist > 200) stickRef.current = false
+      setAtBottom((prev) => (prev === dist < 120 ? prev : dist < 120))
+    }
+    const onWheel = (event: WheelEvent): void => {
+      if (event.deltaY < 0) stickRef.current = false
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    el.addEventListener('wheel', onWheel, { passive: true })
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('wheel', onWheel)
+    }
+  }, [])
+
+  // 历史异步恢复后先定位到底部（挂载时还拿不到行数）
+  const didInitialScroll = useRef(false)
+  useEffect(() => {
+    if (entries.length === 0) return
+    if (!didInitialScroll.current) didInitialScroll.current = true
+    if (!stickRef.current) return
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' })
+  }, [entries])
+
+  const jumpToBottom = (): void => {
+    stickRef.current = true
+    setAtBottom(true)
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' })
+  }
 
   /** 快速指令本地解析（不过 LLM）。命中返回 true。 */
   const runQuickCommand = (text: string): boolean => {
@@ -1138,6 +1323,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     setInput('')
     setAttachments([])
     const id = `dm-local-${Date.now()}`
+    setAwaiting(true)
     upsert({
       type: 'director',
       id,
@@ -1155,7 +1341,10 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
       others.length > 0 ? `${text}\n${others.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
     // 本地回显的 id 一起发给 main：落库用同一 id，切场/重载恢复时不重复
     void window.api.director.send(payload, id, images.length > 0 ? images : undefined).then((result) => {
-      if (!result.ok) toast.error('指令没送达', { description: result.error })
+      if (!result.ok) {
+        setAwaiting(false)
+        toast.error('指令没送达', { description: result.error })
+      }
     })
   }
 
@@ -1163,6 +1352,13 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     upsert({ type: 'ask', id: message.id, ts: message.ts, message: { ...message, answered: answer } })
     send(answer)
   }
+  // 传给行级 memo 的引用要稳：不然每次渲染都是新函数，memo 全被击穿。
+  // 最新值镜像在 effect 里同步（渲染期写 ref 会被 react-doctor 判 no-ref-current-in-render）
+  const answerAskRef = useRef(answerAsk)
+  useEffect(() => {
+    answerAskRef.current = answerAsk
+  })
+  const answerAskStable = useCallback((message: DirectorMessage, answer: string) => answerAskRef.current(message, answer), [])
 
   /** 连续同名工具并成一组（中间夹着文本就断开），避免 say 刷屏 */
   const rows = useMemo(() => {
@@ -1182,127 +1378,106 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
     return list
   }, [entries])
 
+  /** 渲染一条时间线行（Virtuoso 逐条调用；与虚拟化前的 JSX 等价，只把 index 用上算分隔标记） */
+  const renderRow = (
+    row:
+      | { kind: 'entry'; entry: ChatEntry }
+      | { kind: 'tools'; id: string; items: Extract<ChatEntry, { type: 'tool' }>[] },
+    index: number
+  ): React.ReactNode => {
+    const firstEntry = row.kind === 'tools' ? row.items[0] : row.entry
+    const prevRow = index > 0 ? rows[index - 1] : undefined
+    const prevEntry = prevRow?.kind === 'entry' ? prevRow.entry : prevRow?.items?.[0]
+    const dayLabel =
+      prevEntry && new Date(prevEntry.ts).toDateString() !== new Date(firstEntry.ts).toDateString()
+        ? new Date(firstEntry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
+        : undefined
+    const turnId =
+      firstEntry.type === 'text' || firstEntry.type === 'tool' || firstEntry.type === 'thinking'
+        ? firstEntry.turnId
+        : undefined
+    const prevTurnId =
+      prevEntry && (prevEntry.type === 'text' || prevEntry.type === 'tool' || prevEntry.type === 'thinking')
+        ? prevEntry.turnId
+        : undefined
+    const timeLabel = Boolean(turnId) && turnId !== prevTurnId ? clock(firstEntry.ts) : undefined
+    const isTail = index === rows.length - 1
+
+    if (row.kind === 'tools') {
+      return (
+        <>
+          <RowHead dayLabel={dayLabel} />
+          {row.items.length > 1 ? <ToolGroupMemo items={row.items} /> : <ToolCardMemo entry={row.items[0]} />}
+        </>
+      )
+    }
+    return (
+      <TimelineLine
+        entry={row.entry}
+        dayLabel={dayLabel}
+        isTail={isTail}
+        running={agent.state === 'running'}
+        restored={restoredRef.current.has(row.entry.id)}
+        onAnswer={answerAskStable}
+      />
+    )
+  }
+
   const canSend = input.trim().length > 0 || attachments.length > 0
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        ref={listRef}
-        className="flex min-h-0 flex-1 flex-col gap-2.5 overflow-y-auto px-3 py-2"
-        onScroll={(e) => {
-          const el = e.currentTarget
-          stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      {/* 虚拟列表（react-virtuoso）：时间线上限 200 条、每条高度不定，几轮长回复之后 DOM 会很可观；
+          虚拟化只渲染可视区，历史里的 Markdown 也不再参与布局。贴底跟随、空态、生成中占位都走它的组件槽 */}
+      <Virtuoso
+        ref={virtuosoRef}
+        className="min-h-0 flex-1"
+        data={rows}
+        computeItemKey={(_, row) => (row.kind === 'tools' ? row.id : row.entry.id)}
+        // 每行包一层 flex 列容器：导演消息靠 self-end 右对齐（块级容器里 self-end 是无效的，
+        // 那会让自己的消息只在"86% 宽的盒子内"右对齐，长消息就从左边一路铺过来）
+        itemContent={(index, row) => <div className="flex flex-col px-4 pb-3">{renderRow(row, index)}</div>}
+        increaseViewportBy={{ top: 300, bottom: 600 }}
+        atBottomThreshold={120}
+        // 跟随逻辑在组件里自己做（见 stickRef 注释）：Virtuoso 的 followOutput 在流式下会误判
+        scrollerRef={(el) => {
+          scrollerRef.current = el as HTMLElement | null
         }}
-      >
-        {entries.length === 0 ? (
-          <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-            <Bot className="size-8" strokeWidth={1.25} />
-            <p className="px-6 text-center text-xs leading-5">
-              这里能看到主播的想法、工具调用和最终回复。
-              <br />
-              消息只进对话，不会被播出去。
-            </p>
-          </div>
-        ) : (
-          rows.map((row, index) => {
-            // 分组的工具行也要参与"轮"的判断：取它第一条的 turnId
-            const firstEntry = row.kind === 'tools' ? row.items[0] : row.entry
-            const prevRow = index > 0 ? rows[index - 1] : undefined
-            const prevEntry = prevRow?.kind === 'entry' ? prevRow.entry : prevRow?.items?.[0]
-            const dayBreak = prevEntry
-              ? new Date(prevEntry.ts).toDateString() !== new Date(firstEntry.ts).toDateString()
-              : false
-            /** 每轮开头插一条时间分隔线：用时间把一轮对话框起来（不给最终回复贴标签） */
-            const turnId =
-              firstEntry.type === 'text' || firstEntry.type === 'tool' || firstEntry.type === 'thinking' ? firstEntry.turnId : undefined
-            const prevTurnId =
-              prevEntry && (prevEntry.type === 'text' || prevEntry.type === 'tool' || prevEntry.type === 'thinking')
-                ? prevEntry.turnId
-                : undefined
-            const showTurnBreak = Boolean(turnId) && turnId !== prevTurnId
-            /** 发言人切换：条目的主播戳变了就插一条「✦ 主播名」（换人后一眼看出哪段是谁说的） */
-            const speakerId = 'personaId' in firstEntry ? firstEntry.personaId : undefined
-            const prevSpeakerId =
-              prevEntry && 'personaId' in prevEntry ? prevEntry.personaId : undefined
-            const showSpeaker = Boolean(speakerId) && speakerId !== prevSpeakerId
-            const head = (
-              <>
-                {dayBreak && (
-                  <div className="my-1 flex items-center gap-2 text-[11px] text-muted-foreground">
-                    <span className="h-px flex-1 bg-border" />
-                    {new Date(firstEntry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}
-                    <span className="h-px flex-1 bg-border" />
-                  </div>
-                )}
-                {showTurnBreak && (
-                  <div className="mt-1.5 mb-0.5 flex items-center gap-2 font-mono text-[10px] text-muted-foreground/50">
-                    <span className="h-px flex-1 bg-border/60" />
-                    {clock(firstEntry.ts)}
-                    <span className="h-px flex-1 bg-border/60" />
-                  </div>
-                )}
-                {showSpeaker && (
-                  <div className="mt-1 mb-0.5 flex items-center gap-1.5 px-1 text-[10px] font-medium text-primary/70">
-                    <Sparkles className="size-3 shrink-0" />
-                    {personaNames[speakerId!] ?? '主播'}
-                  </div>
-                )}
-              </>
-            )
+        atBottomStateChange={(bottom) => {
+          stickRef.current = bottom
+          setAtBottom((prev) => (prev === bottom ? prev : bottom))
+        }}
+        alignToBottom
+        initialTopMostItemIndex={Math.max(0, rows.length - 1)}
+        components={{
+          EmptyPlaceholder: () => (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
+              <Bot className="size-8" strokeWidth={1.25} />
+              <p className="px-6 text-center text-xs leading-5">
+                这里能看到主播的想法、工具调用和最终回复。
+                <br />
+                消息只进对话，不会被播出去。
+              </p>
+            </div>
+          ),
+          Footer: () =>
+            awaiting || agent.busy ? (
+              <div className="flex items-center gap-1.5 px-3 pb-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                正在生成回复中…
+              </div>
+            ) : null
+        }}
+      />
 
-            if (row.kind === 'tools') {
-              return (
-                <Fragment key={row.id}>
-                  {head}
-                  {row.items.length > 1 ? <ToolGroup items={row.items} /> : <ToolCard entry={row.items[0]} />}
-                </Fragment>
-              )
-            }
-
-            const entry = row.entry
-            return (
-              <Fragment key={entry.id}>
-                {head}
-                {entry.type === 'director' ? (
-                  <div className="flex max-w-[86%] flex-col items-end gap-1 self-end">
-                    <div className="rounded-2xl rounded-tr-sm bg-primary px-3 py-2 text-[13px] leading-[20px] text-primary-foreground">
-                      {entry.text}
-                      {entry.attachments?.map((file) => (
-                        <div
-                          key={file.path}
-                          className="mt-1 flex items-center gap-1 rounded-md bg-primary-foreground/15 px-1.5 py-0.5 text-xs"
-                          title={file.path}
-                        >
-                          <Paperclip className="size-3 shrink-0" />
-                          <span className="truncate">{file.name}</span>
-                        </div>
-                      ))}
-                    </div>
-                    <span className="px-1 font-mono text-[10px] text-muted-foreground/60">{clock(entry.ts)}</span>
-                  </div>
-                ) : entry.type === 'text' && !entry.final ? (
-                  // 中间文本：淡色、不套气泡、铺满宽度（流式追加时不会跳成多块）
-                  <p className="whitespace-pre-wrap text-[13px] leading-[21px] text-muted-foreground">
-                    {entry.text}
-                    {agent.state === 'running' && index === rows.length - 1 && (
-                      <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse rounded-sm bg-foreground/40 align-middle" />
-                    )}
-                  </p>
-                ) : entry.type === 'text' ? (
-                  // 最终回复：正常前景色、铺满宽度（时间在轮分隔线上，这里不再重复）
-                  <MiniMarkdown text={entry.text} />
-                ) : entry.type === 'thinking' ? (
-                  <ThinkingBlock entry={entry} />
-                ) : entry.type === 'tool' ? (
-                  <ToolCard entry={entry} />
-                ) : (
-                  <AskCard message={entry.message} now={now} onAnswer={answerAsk} />
-                )}
-              </Fragment>
-            )
-          })
-        )}
-      </div>
+      {/* 用户往上翻着看历史时，新内容不抢滚动条，给一个回到底部的入口 */}
+      {!atBottom && (
+        <div className="flex shrink-0 px-3 pb-1">
+          <Button variant="secondary" size="sm" className="h-6 px-2 text-xs" onClick={jumpToBottom}>
+            ↓ 回到底部
+          </Button>
+        </div>
+      )}
 
       {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
       <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">
@@ -1343,6 +1518,8 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
                   <button
                     type="button"
                     className="text-muted-foreground hover:text-foreground"
+                    aria-label={`移除附件 ${file.name}`}
+                    title="移除这个附件"
                     onClick={() => setAttachments((prev) => prev.filter((f) => f.path !== file.path))}
                   >
                     <X className="size-3" />
@@ -1355,7 +1532,7 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             value={input}
             onChange={(e) => setInput(e.target.value)}
             rows={2}
-            placeholder={agent.state === 'running' ? '对主播说点什么…' : '对主播说点什么…（选中节目即可开聊，主播会自己就位）'}
+            placeholder={agent.state === 'running' ? '跟导演说点什么…' : '跟导演说点什么…'}
             className="max-h-32 w-full resize-none bg-transparent text-[13px] leading-5 outline-none placeholder:text-muted-foreground"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -1368,25 +1545,6 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
             <Button variant="ghost" size="icon-sm" onClick={() => void pickAttachment()} title="添加附件">
               <Paperclip />
             </Button>
-            {/* 在场主播胶囊：跟谁聊就在手边（agent 相关）；直播中切换 = 原子换主播，不断上下文 */}
-            <Select value={activePersona?.id ?? undefined} onValueChange={(v) => void switchAnchor(v)}>
-              <SelectTrigger
-                size="sm"
-                className="h-7 gap-1.5 rounded-full border-transparent px-2 text-xs hover:bg-muted data-[state=open]:bg-muted"
-                title="在场主播：想换人随时切，这场的历史新主播接得住"
-              >
-                <span className="size-1.5 rounded-full bg-primary/80" />
-                <SelectValue placeholder="选主播" />
-              </SelectTrigger>
-              <SelectContent position="popper" sideOffset={6}>
-                {personas.map((persona) => (
-                  <SelectItem key={persona.id} value={persona.id}>
-                    {persona.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {/* 右移容器：仪表在不在，发送/停止钮都钉在最右；仪表来了就贴着它 */}
             <div className="ml-auto flex items-center gap-1">
               <ContextMeter tokens={agent.contextTokens} window={agent.contextWindow} />
               {agent.busy ? (
@@ -1416,12 +1574,10 @@ function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () =
 }
 
 
-/** 上下文仪表：只显示圆环，悬停浮出具体数字（使用 X / Y tokens（Z%）），涨近上限变色 */
+/** 上下文仪表：只显示圆环，悬停浮出「导演的短期记忆已用 Z%」，涨近上限变色 */
 function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; window?: number }) {
   if (!tokens || !contextWindow) return null
   const ratio = Math.min(1, tokens / contextWindow)
-  const fmt = (n: number) =>
-    n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M` : n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
   const color = ratio > 0.85 ? 'text-red-500' : ratio > 0.65 ? 'text-amber-500' : 'text-emerald-500'
   // 环形进度：r=7 的圆，周长 ≈ 43.98，dasharray 按比例填充
   const r = 7
@@ -1429,7 +1585,7 @@ function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; wind
   return (
     <div className="group relative flex items-center pr-1">
       <div className="pointer-events-none absolute -top-8 right-0 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-[10px] text-background opacity-0 shadow-md transition-opacity group-hover:opacity-100">
-        使用 {fmt(tokens)} / {fmt(contextWindow)} tokens（{Math.round(ratio * 100)}%）· 含 system 与工具表，快涨满时自动压缩
+        导演的短期记忆已用 {Math.round(ratio * 100)}%，快满时会自动整理
       </div>
       <svg viewBox="0 0 18 18" className={`size-4.5 -rotate-90 ${color}`}>
         <circle cx="9" cy="9" r={r} fill="none" stroke="currentColor" strokeOpacity="0.2" strokeWidth="2.5" />
@@ -1449,22 +1605,39 @@ function ContextMeter({ tokens, window: contextWindow }: { tokens?: number; wind
 }
 
 /** 思考过程条目：默认折叠（用户手动展开）；思考中显示「思考中… Ns」计时，写完收成「思考过程 · Ns」 */
-function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking' }> }) {
+function ThinkingBlock({
+  entry,
+  restored,
+  isTail
+}: {
+  entry: Extract<ChatEntry, { type: 'thinking' }>
+  /** 本次会话之前就存在于存档里的（恢复出来的）：它的 ts 不是"开始时刻"，不能拿来跑实时秒表 */
+  restored: boolean
+  /** 只有时间线上最后一行可能在"正在思考"：被别的条目顶下去，说明这段思考早结束了 */
+  isTail: boolean
+}) {
   const [open, setOpen] = useState(false)
   const [now, setNow] = useState(Date.now())
-  /** 写完那一刻冻结秒数（entry.done 翻 true 时记一次） */
+  /** 秒数只在两种情况下定下来：主进程给的 durationMs，或本会话里看着它写完的那一刻 */
   const [frozenSec, setFrozenSec] = useState<number | null>(null)
+  const live = !entry.done && !restored && isTail
   useEffect(() => {
-    if (entry.done) return
+    if (!live) return
     const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
-  }, [entry.done])
+  }, [live])
   useEffect(() => {
-    if (entry.done && frozenSec === null) {
-      setFrozenSec(Math.max(0, Math.round((Date.now() - entry.ts) / 1000)))
+    if (frozenSec !== null) return
+    // 权威时长优先（主进程按 startedAt 算的）
+    if (entry.durationMs !== undefined) {
+      setFrozenSec(Math.max(0, Math.round(entry.durationMs / 1000)))
+      return
     }
-  }, [entry.done, entry.ts, frozenSec])
-  const sec = frozenSec ?? Math.max(0, Math.round((now - entry.ts) / 1000))
+    // 兜底：本会话里看着它写完（ts 是本会话首见时刻，可信）——
+    // 恢复出来的旧条目没有可信起点，就不给数字，只显示「思考过程」
+    if (entry.done && !restored) setFrozenSec(Math.max(0, Math.round((Date.now() - entry.ts) / 1000)))
+  }, [entry.done, entry.durationMs, entry.ts, frozenSec, restored])
+  const sec: number | null = frozenSec ?? (live ? Math.max(0, Math.round((now - entry.ts) / 1000)) : null)
   return (
     <div className="max-w-[92%]">
       <button
@@ -1473,7 +1646,11 @@ function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking'
         className="flex items-center gap-1.5 text-xs text-muted-foreground/80 hover:text-muted-foreground"
       >
         <Brain className="size-3.5" />
-        {entry.done ? `思考过程${sec > 0 ? ` · ${sec}s` : ''}` : `思考中… ${sec}s`}
+        {sec === null
+          ? '思考过程'
+          : entry.done
+            ? `思考过程${sec > 0 ? ` · ${sec}s` : ''}`
+            : `思考中… ${sec}s`}
         <ChevronRight className={cn('size-3 transition-transform', open && 'rotate-90')} />
       </button>
       {open && (
@@ -1488,111 +1665,50 @@ function ThinkingBlock({ entry }: { entry: Extract<ChatEntry, { type: 'thinking'
   )
 }
 
-/** 右侧操作面板：人工控制入口（人工播报 / 切场景 / 场控指令 → 对话 / 调音量）。急停统一在顶栏「急停声音」。 */
-function ControlPanel({ onOpenChat }: { onOpenChat: () => void }) {
+/** 播放条最右的「⋯」动作菜单：人工播报 / 自动响应（白名单 + 互动总闸）。
+ *  这些是播出层操作，原来挂在导演面板的「操作」页里；面板收成纯对话区后挪到这里。 */
+function DeskActions({ program, onProgramSaved }: { program: Program | null; onProgramSaved: (program: Program) => void }) {
   const [broadcastOpen, setBroadcastOpen] = useState(false)
-  const [volumeOpen, setVolumeOpen] = useState(false)
-  const [sceneOpen, setSceneOpen] = useState(false)
+  const [autoOpen, setAutoOpen] = useState(false)
 
   return (
-    <div className="shrink-0 border-t p-3">
-      <p className="mb-2 px-1 text-xs text-muted-foreground">操作面板</p>
-      <div className="grid grid-cols-2 gap-2">
-        <Button variant="outline" size="sm" onClick={() => setBroadcastOpen(true)}>
-          <Megaphone />
-          人工播报
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => setSceneOpen(true)} title="跳到剧本某一场景并装载该场景话术">
-          <Clapperboard />
-          切场景
-        </Button>
-        <Button variant="outline" size="sm" onClick={onOpenChat} title="到对话区直接指挥主播">
-          <RadioTower />
-          场控指令
-        </Button>
-        <Button variant="outline" size="sm" onClick={() => setVolumeOpen(true)}>
-          <SlidersHorizontal />
-          调音量
-        </Button>
-      </div>
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="icon-sm" title="手动操作：人工播报 / 自动响应">
+            <MoreHorizontal />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="w-48">
+          <DropdownMenuItem onSelect={() => setBroadcastOpen(true)}>
+            <Megaphone />
+            人工播报
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={!program}
+            onSelect={() => setAutoOpen(true)}
+            title="自动响应白名单与互动总闸：播出中也能改，改完立刻生效"
+          >
+            <Zap />
+            自动响应{program ? `（${program.enabledTriggerIds.length}）` : ''}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
       <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
-      <VolumeDialog open={volumeOpen} onOpenChange={setVolumeOpen} />
-      <SceneDialog open={sceneOpen} onOpenChange={setSceneOpen} />
-    </div>
+      {program && (
+        <Dialog open={autoOpen} onOpenChange={setAutoOpen}>
+          <DialogContent className="sm:max-w-lg">
+            <DialogHeader>
+              <DialogTitle>自动响应 · {program.name}</DialogTitle>
+            </DialogHeader>
+            <AutoResponsePicker program={program} onSaved={onProgramSaved} />
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
   )
 }
 
-/** 切场景：列当前节目剧本的场景，点一个就跳过去并把该场景话术库载入池 */
-function SceneDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
-  const scene = useAppStore((s) => s.agent.scene)
-  const [program, setProgram] = useState<Program | null>(null)
-  const [scripts, setScripts] = useState<Script[]>([])
-  const [busy, setBusy] = useState(false)
-
-  useEffect(() => {
-    if (!open) return
-    void window.api.program.list().then((list) => setProgram(list.find((p) => p.id === activeProgramId) ?? null))
-    void window.api.script.list().then(setScripts)
-  }, [open, activeProgramId])
-
-  const script = scripts.find((s) => s.id === program?.scriptId) ?? null
-
-  const goto = async (index: number): Promise<void> => {
-    if (busy) return
-    setBusy(true)
-    try {
-      const result = await window.api.program.gotoScene(activeProgramId, index)
-      if (result.ok) {
-        onOpenChange(false)
-        toast.success(`已切到「${result.title ?? ''}」`, {
-          description: result.loaded ? `装载话术 ${result.loaded} 条` : '该场景没有就绪话术，主播现场补'
-        })
-      } else {
-        toast.error('切场景失败', { description: result.error })
-      }
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>切场景{script ? ` · ${script.title}` : ''}</DialogTitle>
-        </DialogHeader>
-        {script ? (
-          <div className="space-y-1.5">
-            {script.scenes.map((item, index) => (
-              <button
-                key={item.id}
-                type="button"
-                disabled={busy}
-                onClick={() => void goto(index)}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors hover:bg-accent disabled:opacity-50',
-                  scene?.index === index && 'border-primary/40 bg-primary/5'
-                )}
-              >
-                <span className="text-xs text-muted-foreground">{index + 1}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">{item.title}</span>
-                  <span className="block truncate text-xs text-muted-foreground">{item.goal}</span>
-                </span>
-                {scene?.index === index && <Badge variant="secondary">当前</Badge>}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            这场没绑剧本（或者还没选节目）——到节目页选一场，或在剧本里加场景。
-          </p>
-        )}
-      </DialogContent>
-    </Dialog>
-  )
-}
 
 /** 人工播报弹窗：输入内容丢进话术池 */
 function ManualBroadcastDialog({
@@ -1651,28 +1767,28 @@ function ManualBroadcastDialog({
             }}
           />
           <div className="flex items-center justify-between gap-3">
-            <Label className="shrink-0 text-xs text-muted-foreground">车道</Label>
+            <Label className="shrink-0 text-xs text-muted-foreground">插播方式</Label>
             <ToggleGroup
               type="single"
               value={lane}
               onValueChange={(v) => v && setLane(v as 'normal' | 'next')}
               className="rounded-lg bg-muted p-0.5"
             >
-              <ToggleGroupItem value="normal" className="h-6 px-2.5 text-xs" title="排进常规队列">
-                排队
+              <ToggleGroupItem value="normal" className="h-6 px-2.5 text-xs" title="排在已排队的内容后面">
+                排队等播
               </ToggleGroupItem>
-              <ToggleGroupItem value="next" className="h-6 px-2.5 text-xs" title="当前播完就播这条">
-                下一条
+              <ToggleGroupItem value="next" className="h-6 px-2.5 text-xs" title="当前这条播完就播它">
+                插为下一条
               </ToggleGroupItem>
             </ToggleGroup>
           </div>
-          <div className="flex items-center justify-between gap-3">
+          <div className="flex flex-col gap-1.5">
             <Label className="shrink-0 text-xs text-muted-foreground">音色</Label>
-            <Input
-              value={voice}
-              onChange={(e) => setVoice(e.target.value)}
+            <UnifiedVoicePicker
+              voiceId={voice}
+              onPick={setVoice}
+              emptyLabel="留空用主播自己的音色"
               placeholder="留空用主播自己的音色"
-              className="h-7 text-xs"
             />
           </div>
           <VoiceProviderHint voiceId={voice} />
@@ -1690,109 +1806,3 @@ function ManualBroadcastDialog({
   )
 }
 
-/** 调音量弹窗：BGM（选择/播放/音量）+ 麦克风接管 + 主音量。BGM 与音量全在主进程判定。 */
-function VolumeDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const config = useAppStore((s) => s.config)
-  const saveConfig = useAppStore((s) => s.saveConfig)
-  const streamMode = useAppStore((s) => s.stream.mode)
-  const [bgmPlaying, setBgmPlaying] = useState(false)
-  const [bgmVolume, setBgmVolume] = useState(Math.round(config.bgm.volume * 100))
-  const [micOn, setMicOn] = useState(audioEngine.micActive)
-  const [masterVolume, setMasterVolume] = useState(Math.round(audioEngine.volume * 100))
-
-  const pickBgm = async () => {
-    const filePath = await window.api.dialog.pickFile('音频文件', ['mp3', 'wav', 'm4a', 'ogg', 'flac'])
-    if (!filePath) return
-    const result = await window.api.audio.setBgm('start', filePath, bgmVolume / 100)
-    if (!result.ok) {
-      toast.error('BGM 放不了', { description: result.error ?? '未知原因' })
-      return
-    }
-    void saveConfig({ bgm: { path: filePath, volume: bgmVolume / 100 } })
-    setBgmPlaying(true)
-    toast.success('BGM 已开始播放', { description: filePath.split(/[\/]/).pop() })
-  }
-
-  const stopBgm = () => {
-    void window.api.audio.setBgm('stop')
-    setBgmPlaying(false)
-  }
-
-  const changeBgmVolume = (value: number) => {
-    setBgmVolume(value)
-    void window.api.audio.setBgm('volume', undefined, value / 100)
-  }
-
-  const toggleMic = async (on: boolean) => {
-    if (on) {
-      try {
-        // 直推模式把 PCM 帧转发进主进程混音器；伴侣模式只进本地总线（伴侣采集系统声音）
-        await audioEngine.startMic('', { autoYield: true, forwardPcm: streamMode === 'direct' })
-        setMicOn(true)
-        toast.success('麦克风已接管', { description: '说话时自动压低 AI 播报' })
-      } catch (e) {
-        toast.error('麦克风打开失败', { description: e instanceof Error ? e.message : String(e) })
-      }
-    } else {
-      audioEngine.stopMic()
-      setMicOn(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>调音量</DialogTitle>
-        </DialogHeader>
-        <div className="flex flex-col gap-4">
-          <div>
-            <div className="mb-1.5 flex items-center justify-between">
-              <Label>BGM</Label>
-              <div className="flex items-center gap-1.5">
-                {bgmPlaying ? (
-                  <Button variant="outline" size="sm" className="h-6 text-xs" onClick={stopBgm}>
-                    停止
-                  </Button>
-                ) : null}
-                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => void pickBgm()}>
-                  {config.bgm.path ? '换一首' : '选择音频文件'}
-                </Button>
-              </div>
-            </div>
-            <p className="mb-1.5 truncate text-xs text-muted-foreground">
-              {config.bgm.path ? config.bgm.path.split(/[\/]/).pop() : '未选择（TTS 播报时自动压低）'}
-            </p>
-            <Slider
-              value={[bgmVolume]}
-              min={0}
-              max={100}
-              step={1}
-              onValueChange={([v]) => changeBgmVolume(v)}
-              onValueCommit={([v]) => void saveConfig({ bgm: { path: config.bgm.path, volume: v / 100 } })}
-            />
-          </div>
-          <div className="flex items-center justify-between rounded-lg border px-3 py-2">
-            <div>
-              <p className="text-[13px]">麦克风接管</p>
-              <p className="text-xs text-muted-foreground">真人说话时自动压低 AI 播报{streamMode === 'direct' ? '，声音进推流' : ''}</p>
-            </div>
-            <Switch checked={micOn} onCheckedChange={(v) => void toggleMic(v)} aria-label="麦克风接管" />
-          </div>
-          <div>
-            <Label className="mb-1.5">主音量</Label>
-            <Slider
-              value={[masterVolume]}
-              min={0}
-              max={100}
-              step={1}
-              onValueChange={([v]) => {
-                setMasterVolume(v)
-                audioEngine.setMasterVolume(v / 100)
-              }}
-            />
-          </div>        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}

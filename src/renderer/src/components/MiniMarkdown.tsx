@@ -15,20 +15,22 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
   const pattern = /(\*\*[^*]+\*\*|`[^`]+`)/g
   let last = 0
   let match: RegExpExecArray | null
-  let index = 0
   while ((match = pattern.exec(text)) !== null) {
     if (match.index > last) out.push(text.slice(last, match.index))
     const token = match[0]
+    // 用 token 在原文中的起始偏移当 key：它由文本本身决定，同一段文本重复渲染时稳定且不会重复，
+    // 比自增计数器更适合承担身份（计数器会随文本增删整体错位，导致后续节点白重建）。
+    const offset = match.index
     if (token.startsWith('**')) {
       out.push(
-        <strong key={`${keyPrefix}-b${index}`} className="font-medium text-foreground">
+        <strong key={`${keyPrefix}-b${offset}`} className="font-medium text-foreground">
           {token.slice(2, -2)}
         </strong>
       )
     } else {
       out.push(
         <code
-          key={`${keyPrefix}-c${index}`}
+          key={`${keyPrefix}-c${offset}`}
           className="rounded bg-background/70 px-1 py-0.5 font-mono text-[12px]"
         >
           {token.slice(1, -1)}
@@ -36,7 +38,6 @@ function inline(text: string, keyPrefix: string): ReactNode[] {
       )
     }
     last = match.index + token.length
-    index += 1
   }
   if (last < text.length) out.push(text.slice(last))
   return out
@@ -51,6 +52,8 @@ export function MiniMarkdown({ text, className }: { text: string; className?: st
   const flushList = (): void => {
     if (!list) return
     const items = list.items.map((item, i) => (
+      // 下标 key 在这里是安全的：这几行是从同一段文本现解析出来的无状态 <li>，
+      // 不持有输入/焦点/动画，重排也只是原地换文字；外层 blocks.length 只是做前缀防撞
       <li key={`li-${blocks.length}-${i}`} className="marker:text-muted-foreground">
         {inline(item, `li-${blocks.length}-${i}`)}
       </li>
@@ -170,6 +173,8 @@ export function MiniMarkdown({ text, className }: { text: string; className?: st
   return (
     <div className={cn('flex flex-col gap-1.5 text-[13px] leading-[21px]', className)}>
       {blocks.map((block, index) => (
+        // 下标 key：blocks 是每次渲染现解析出来的无状态块（纯文本/行内标记），
+        // 内容变了原地换文字就行，不存在"状态跟着错行"的问题
         <Fragment key={index}>{block}</Fragment>
       ))}
     </div>

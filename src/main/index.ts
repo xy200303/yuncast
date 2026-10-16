@@ -50,6 +50,7 @@ import {
   type AudioPcmPayload,
   type AudioProgressPayload,
   type ConnectorStatus,
+  type DirectorConfig,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
@@ -62,17 +63,22 @@ import {
   type ProductInput,
   type ProgramExportOptions,
   type ProgramInput,
+  type ProduceVoiceOverride,
   type ScriptInput,
+  type SessionExportOptions,
   type SpeechItem,
   type SpeechLane,
+  type StatsQuery,
   type StreamStats,
   type TriggerInput,
   type TtsConnectionInput,
+  type TtsProvider,
   type Utterance,
   type UtteranceInput,
   type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
+import { BlobStoreService } from './services/BlobStoreService'
 import { TtsService, type TtsTestInput } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
 import { PersonaService } from './services/PersonaService'
@@ -91,10 +97,13 @@ import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { UtteranceService } from './services/UtteranceService'
 import { ProgramPlaybackService } from './services/ProgramPlaybackService'
+import { SessionRecorder } from './services/SessionRecorder'
+import { policyFor } from './services/broadcastPolicy'
 import { ExportService } from './services/ExportService'
 import { UpdateService } from './services/UpdateService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
-import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders } from './services/providers/registry'
+import { friendlyError } from './services/errorTranslate'
+import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders, secretFieldKeys, ttsSecretFieldKeys } from './services/providers/registry'
 import { AudioPipeline } from './services/audio/AudioPipeline'
 import { PlaybackLoop } from './services/audio/PlaybackLoop'
 
@@ -375,6 +384,7 @@ let ttsStream: TtsStreamService | null = null
 let ttsRealtime: TtsRealtimeService | null = null
 let streamSvc: StreamService | null = null
 let pipeline: AudioPipeline | null = null
+let recorder: SessionRecorder | null = null
 let playback: PlaybackLoop | null = null
 
 /**
@@ -404,12 +414,15 @@ function finishRoundStop(programId: string): void {
   resetStopWrap()
   console.log('[AgentAnchor] finishMode=stop：收尾播完，节目结束')
   agent?.setLiveActive(false)
+  // 场记收播：自动收播（整轮播完不循环）
+  recorder?.end('auto_stop')
+  if (pool) pool.sessionId = null
   bus?.emit('stream.ended', {}, 'system')
   // 会话一并收掉：与手动「结束节目」同口径——live 会话有对话会先让主播自我复盘写进场次摘要
   void agent?.stop()
 }
 
-/** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示 */
+/** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示（error 过错误翻译层，docs/REDESIGN 4.10） */
 function guard<T>(fn: () => T): { ok: true; item: T } | { ok: false; error: string }
 function guard(fn: () => void): PoolResult
 function guard(fn: () => unknown): { ok: true; item?: unknown } | { ok: false; error: string } {
@@ -417,7 +430,7 @@ function guard(fn: () => unknown): { ok: true; item?: unknown } | { ok: false; e
     const result = fn()
     return result !== undefined ? { ok: true, item: result } : { ok: true }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    return { ok: false, error: friendlyError(error) }
   }
 }
 
@@ -429,7 +442,6 @@ function registerIpc(
   persona: PersonaService,
   prompts: PromptTemplateService,
   knowledge: KnowledgeService,
-  memory: MemoryService,
   bus: EventBus,
   triggers: TriggerRuntime,
   script: ScriptService,
@@ -446,6 +458,24 @@ function registerIpc(
   }))
   ipcMain.handle(IPC.configGet, () => storage.getConfig())
   ipcMain.handle(IPC.configSet, (_event, patch: PartialDeep<AppConfig>) => storage.setConfig(patch))
+  // ---------- 导演大脑（全局一份：名字 + 接入 + 模型） ----------
+  ipcMain.handle(IPC.directorGet, () => storage.getConfig().director)
+  ipcMain.handle(IPC.directorSave, (_event, input: DirectorConfig) => {
+    const name = String(input?.name ?? '').trim() || '小云'
+    const modelConnectionId = String(input?.modelConnectionId ?? '').trim() || null
+    const model = String(input?.model ?? '').trim()
+    if (modelConnectionId) {
+      const connection = storage.connectionGet(modelConnectionId)
+      if (!connection) return { ok: false, error: '这条接入不存在（可能刚被删掉）' }
+      if (!model) return { ok: false, error: '选了接入还要选一个模型' }
+      if (!connection.models.includes(model)) {
+        return { ok: false, error: `模型 ${model} 不在接入「${connection.name}」的模型列表里` }
+      }
+    }
+    const director: DirectorConfig = { name, modelConnectionId, model: modelConnectionId ? model : '' }
+    storage.setConfig({ director })
+    return { ok: true, director }
+  })
 
   // ---------- 话术池 ----------
   ipcMain.handle(IPC.poolSay, (_e, input: PoolSayInput) => guard(() => pool.say(input)))
@@ -485,6 +515,53 @@ function registerIpc(
     return { ...result, playing: true }
   })
 
+  // 表单直连测试（新建接入还没保存也能测）：入参是表单当前值拼的完整接入，不查库；
+  // 密钥字段留空时沿用已保存的那条（编辑场景，与保存时「留空 = 不修改」同口径）
+  ipcMain.handle(IPC.ttsTestInput, async (_e, input: TtsConnectionInput & { model?: string; text?: string }) => {
+    try {
+      const providerId = String(input?.providerId ?? '') as TtsProvider
+      const def = getTtsProvider(providerId)
+      if (!def) return { ok: false, error: '服务商不认识：重新选一家' }
+      const existing = input?.id ? storage.ttsConnectionGet(String(input.id)) : null
+      const params: Record<string, string | number | boolean> = { ...(input?.params ?? {}) }
+      for (const key of ttsSecretFieldKeys(providerId)) {
+        if (String(params[key] ?? '') === '') params[key] = existing?.params[key] ?? ''
+      }
+      const models = (input?.models ?? [])
+        .map((model) => ({
+          id: String(model?.id ?? '').trim(),
+          params: model?.params && typeof model.params === 'object' ? model.params : {}
+        }))
+        .filter((model) => model.id)
+      if (models.length === 0) return { ok: false, error: '先在模型列表里勾一个模型再测' }
+      const model = String(input?.model ?? '') || models[0].id
+      const result = await tts.testConnection(
+        {
+          id: existing?.id ?? 'test-unsaved',
+          providerId,
+          name: String(input?.name ?? '') || def.label,
+          params,
+          models,
+          realtime: false,
+          createdAt: existing?.createdAt ?? 0,
+          updatedAt: existing?.updatedAt ?? 0
+        },
+        model,
+        input?.text ? String(input.text).slice(0, 200) : undefined
+      )
+      if (!result.ok || !result.audioPath || !pipeline) return result
+      const request = pipeline.playFile(`tts-test-${Date.now()}`, result.audioPath, { slot: 'aux' })
+      const started = await request.started
+      if (!started.ok) {
+        return { ...result, error: started.error ?? '音频没能放出来（没有可用输出设备或播放被系统拒绝）' }
+      }
+      await request.done
+      return { ...result, playing: true }
+    } catch (error) {
+      return { ok: false, error: friendlyError(error) }
+    }
+  })
+
   // ---------- 语音合成的供应商接入（设置 → 语音合成） ----------
   ipcMain.handle(IPC.ttsConnectionList, () => storage.ttsConnectionListSafe())
   ipcMain.handle(IPC.ttsConnectionSave, (_e, input: TtsConnectionInput) => {
@@ -509,7 +586,7 @@ function registerIpc(
       })
       return { ok: true, connections: storage.ttsConnectionListSafe() }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
   ipcMain.handle(IPC.ttsConnectionRemove, (_e, id: string) => {
@@ -537,7 +614,7 @@ function registerIpc(
       })
       return { ok: true, connections: storage.connectionListSafe() }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
   ipcMain.handle(IPC.modelRemove, (_e, id: string) => {
@@ -549,6 +626,35 @@ function registerIpc(
     if (!connection) return { ok: false, error: '这条接入不存在（可能刚被删掉）' }
     return testModelConnection(connection, model)
   })
+  // 表单直连测试（新建接入还没保存也能测）：入参是表单当前值，不查库；
+  // 密钥字段留空时沿用已保存的那条（编辑场景，与保存时「留空 = 不修改」同口径）
+  ipcMain.handle(IPC.modelTestInput, async (_e, input: ModelConnectionInput & { model?: string }) => {
+    const providerId = String(input?.providerId ?? '')
+    if (!getLlmProvider(providerId)) return { ok: false, error: '服务商不认识：重新选一家' }
+    const existing = input?.id ? storage.connectionGet(String(input.id)) : null
+    const params: Record<string, string | number | boolean> = { ...(input?.params ?? {}) }
+    for (const key of secretFieldKeys(providerId)) {
+      if (String(params[key] ?? '') === '') params[key] = existing?.params[key] ?? ''
+    }
+    const models = (input?.models ?? []).map((model) => String(model ?? '').trim()).filter(Boolean)
+    if (models.length === 0) return { ok: false, error: '先在模型列表里加一个模型再测' }
+    return testModelConnection(
+      {
+        id: existing?.id ?? 'test-unsaved',
+        name: String(input?.name ?? ''),
+        providerId,
+        params,
+        models,
+        modelContextWindows: {},
+        modelThinkingLevels: {},
+        modelParams: {},
+        modelPrices: {},
+        createdAt: existing?.createdAt ?? 0,
+        updatedAt: existing?.updatedAt ?? 0
+      },
+      input?.model ? String(input.model) : undefined
+    )
+  })
   ipcMain.handle(IPC.providersLlmList, () => listLlmProviders())
   ipcMain.handle(IPC.providersTtsList, () => listTtsProviders())
   ipcMain.handle(IPC.providersModels, (_e, providerId: string) => listProviderModels(String(providerId ?? '')))
@@ -556,40 +662,42 @@ function registerIpc(
   // ---------- 主播 Agent ----------
   ipcMain.handle(IPC.agentStart, async () => {
     try {
+      // 会话启停 ≠ 开播：开播事件（stream.started/ended）只走启动/结束节目那两条路
       await agent.start()
-      bus.emit('stream.started', {}, 'human')
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
   ipcMain.handle(IPC.agentStop, async () => {
     const statusBefore = agent.status()
-    const wasRunning = statusBefore.state !== 'stopped'
     resetStopWrap()
     // 结束节目 = 收播：播放循环一起停（掐当前音频、正在播的退回 ready），存货留在池里不播
     playback?.setRunning(false)
     await agent.stop()
     // 结束节目：开播态归引擎——就算 agent 早就没起来，这场也算收了
-    if (statusBefore.live) agent.setLiveActive(false)
-    if (wasRunning || statusBefore.live) bus.emit('stream.ended', {}, 'human')
+    if (statusBefore.live) {
+      agent.setLiveActive(false)
+      // 场记收播：手动「结束节目」
+      recorder?.end('manual')
+      if (pool) pool.sessionId = null
+      bus.emit('stream.ended', {}, 'human')
+    }
   })
   // 打断当前这一轮生成（对话输入框的停止钮）：会话保留，下条指令照常来
   ipcMain.handle(IPC.agentAbort, () => agent.stopGeneration())
   ipcMain.handle(IPC.agentRestart, async () => {
     try {
-      await agent.stop()
-      bus.emit('stream.ended', {}, 'human')
-      await agent.start()
-      bus.emit('stream.started', {}, 'human')
+      // 重启 = 资产重组装（导演大脑/卡司/剧本按当前值），历史从全局存档恢复；与开播态无关
+      await agent.restart()
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
-  ipcMain.handle(IPC.agentHandoff, async (_e, personaId: string) => agent.handoff(personaId))
+  ipcMain.handle(IPC.agentSwitchPresenter, async (_e, personaId: string) => agent.switchPresenter(personaId))
   ipcMain.handle(IPC.agentStatus, () => agent.status())
-  // 直播间动态收件箱（播控台「事件流」）：快照拉取 + 250ms 节流广播
+  // 直播间动态收件箱（直播台「事件流」）：快照拉取 + 250ms 节流广播
   ipcMain.handle(IPC.agentInbox, () => agent.inboxSnapshot())
   {
     let inboxTimer: NodeJS.Timeout | null = null
@@ -636,6 +744,10 @@ function registerIpc(
     IPC.directorSend,
     async (_e, text: string, localId?: string, attachments?: { name: string; path: string }[]) => {
       let content = String(text ?? '').slice(0, 500)
+      // 斜杠命令：/clear 清空当前节目的会话（上下文 + 对话时间线），不进会话也不落库
+      if (!attachments?.length && content.trim().toLowerCase() === '/clear') {
+        return agent.clearConversation()
+      }
       let images: { type: 'image'; data: string; mimeType: string }[] | undefined
       const files = Array.isArray(attachments) ? attachments : []
       const IMAGE_MAX_BYTES = 4 * 1024 * 1024
@@ -668,8 +780,8 @@ function registerIpc(
         lines.push(`[附件] ${name}：${path}`)
       }
       if (lines.length > 0) content = `${content}\n${lines.join('\n')}`.trim()
-      const programId = storage.getConfig().live.activeProgramId
-      if (programId && content) {
+      const programId = StorageService.DIRECTOR_SESSION_KEY
+      if (content) {
         const id = String(localId ?? '').trim() || `dm-${Date.now()}`
         try {
           storage.timelineAppend(
@@ -687,23 +799,23 @@ function registerIpc(
         await agent.chat(content, images)
         return { ok: true }
       } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) }
+        return { ok: false, error: friendlyError(error) }
       }
     }
   )
-  /** 拉某节目的对话时间线（切节目/刷新/重启后整段恢复；载荷已是 ChatEntry JSON） */
-  ipcMain.handle(IPC.directorTimelineList, (_e, programId: string) =>
-    storage.timelineList(String(programId ?? '')).map((row) => JSON.parse(row.payload) as unknown)
+  /** 全局导演的连续对话时间线；与节目、直播状态解耦 */
+  ipcMain.handle(IPC.directorTimelineList, () =>
+    storage.timelineList(StorageService.DIRECTOR_SESSION_KEY).map((row) => JSON.parse(row.payload) as unknown)
   )
 
-  // ---------- 主播手册（提示词模板） ----------
+  // ---------- 导演手册（提示词模板） ----------
   ipcMain.handle(IPC.promptTemplatesList, () => prompts.list())
   ipcMain.handle(IPC.promptTemplatesSave, (_e, key: string, content: string) => {
     try {
       prompts.save(String(key ?? ''), String(content ?? ''))
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
   ipcMain.handle(IPC.promptTemplatesReset, (_e, key: string) => {
@@ -711,7 +823,7 @@ function registerIpc(
       prompts.reset(String(key ?? ''))
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
 
@@ -820,7 +932,7 @@ function registerIpc(
       const result = await knowledge.syncFromConnector(connector)
       return { ok: true, ...result }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
   ipcMain.handle(IPC.knowledgeFileList, () => knowledge.listFiles())
@@ -828,14 +940,10 @@ function registerIpc(
     try {
       return { ok: true, file: await knowledge.uploadFile(String(filePath), description) }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
   ipcMain.handle(IPC.knowledgeFileDelete, (_e, id: string) => guard(() => knowledge.deleteFile(id)))
-
-  // ---------- 记忆 ----------
-  ipcMain.handle(IPC.memoryViewers, () => memory.listViewers())
-  ipcMain.handle(IPC.memoryEpisodes, () => memory.listEpisodes())
 
   // ---------- 触发器 ----------
   ipcMain.handle(IPC.triggerList, () => triggers.list())
@@ -852,7 +960,7 @@ function registerIpc(
     return triggers.list()
   })
 
-  // ---------- 用量看板（数据页；事件时间线已并入播控台「事件流」，event_log 只留档不展示） ----------
+  // ---------- 用量看板（数据页；事件时间线已并入直播台「事件流」，event_log 只留档不展示） ----------
   ipcMain.handle(IPC.statsUsageDashboard, (_e, programId?: string) =>
     storage.usageDashboard(String(programId ?? '') || undefined)
   )
@@ -862,6 +970,16 @@ function registerIpc(
   ipcMain.handle(IPC.statsTtsRecords, (_e, limit?: number, programId?: string) =>
     storage.ttsRecent(Math.max(1, Math.min(Number(limit) || 100, 500)), String(programId ?? '') || undefined)
   )
+
+  // ---------- 统计可视化（docs/REDESIGN 4.11）：全局图表 + 单场图表 ----------
+  ipcMain.handle(IPC.statsGlobal, (_e, query?: StatsQuery) =>
+    storage.statsGlobal({
+      from: Number(query?.from) || 0,
+      to: Number(query?.to) || 0,
+      programId: String(query?.programId ?? '') || undefined
+    })
+  )
+  ipcMain.handle(IPC.statsSession, (_e, sessionId: string) => storage.statsSession(String(sessionId ?? '')))
 
   // ---------- 剧本 ----------
   ipcMain.handle(IPC.scriptList, () => script.listScripts())
@@ -881,33 +999,34 @@ function registerIpc(
   )
   ipcMain.handle(IPC.programSetActive, (_e, id: string) => {
     script.setActiveProgram(String(id ?? ''))
-    // 选中节目主播即就位（建会话不调 LLM，零成本）：上下文仪表从这一刻就有读数，不用等第一句话
-    if (id) void agent.warmupPrepSession().catch(() => undefined)
+    // 选中节目导演即就位（建会话不调 LLM，零成本）：上下文仪表从这一刻就有读数，不用等第一句话
+    if (id) void agent.warmupSession().catch(() => undefined)
     return storage.getConfig().live.activeProgramId
   })
   // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口
   ipcMain.handle(IPC.programPreflight, (_e, id: string) => programPlayback.preflight(String(id ?? '')))
   ipcMain.handle(IPC.programLaunch, async (_e, id: string, opts?: { allowPartial?: boolean }) => {
-    // 「在跑」不等于「已开播」：写稿会话（prep）也在跑，prep→live 必须发开播事件（开播信号触发器靠它）
-    const statusBefore = agent.status()
-    const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
+    // 开播事件只在「没在播 → 开播」时发一次（开播信号触发器靠它）；重复开播/已在播不重复发
+    const wasLive = agent.status().live === true
     const result = await programPlayback.launch(String(id ?? ''), {
       allowPartial: opts?.allowPartial === true
     })
     if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
     // 新一轮开播：上一场可能停在「收尾中」状态，复位
     if (result.ok) resetStopWrap()
-    // 0 就绪开播：底稿还在后台合成，开播空隙叫「续写补给」顶上（agent 现场编一段，不冷场）
+    // 0 就绪开播：底稿还在后台合成，开播空隙由引擎低水位续写顶上（pool.low → 主播现场编一段，不冷场）
     if (result.ok && (result.loaded ?? 0) === 0) bus.emit('pool.low', { remaining: 0 }, 'system')
     return result
   })
   /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
-  ipcMain.handle(IPC.programGotoScene, (_e, programId: string, index: number) =>
-    programPlayback.gotoScene(String(programId ?? ''), Math.floor(Number(index) || 0))
+  // 统一音频生产入口（docs/10 §7.5）：rolling=后台提前合成全部；prepared=同步跑完返回汇总。
+  // voiceOverride = 声音选择弹窗（docs/REDESIGN 4.4）里用户显式选的声音，本次合成冻结它
+  ipcMain.handle(IPC.programProduceAudio, (_e, programId: string, voiceOverride?: ProduceVoiceOverride) =>
+    utterances.produceProgramAudio(String(programId ?? ''), voiceOverride)
   )
-  // 统一音频生产入口（docs/10 §7.5）：rolling=后台提前合成全部；prepared=同步跑完返回汇总
-  ipcMain.handle(IPC.programProduceAudio, (_e, programId: string) =>
-    utterances.produceProgramAudio(String(programId ?? ''))
+  // 生产前的合成计划摘要（声音选择弹窗）：段数、就绪/待合成计数、声音描述、粗估时长
+  ipcMain.handle(IPC.programProducePlan, (_e, programId: string) =>
+    utterances.describeProducePlan(String(programId ?? ''))
   )
   // 预制节目正式播放门禁（docs/10 §7.8）：结构化结果，未通过不静默跳过
   ipcMain.handle(IPC.programPlayGate, (_e, programId: string) =>
@@ -928,7 +1047,7 @@ function registerIpc(
       return result
     }
   )
-  // 导入外部音频（§7.4）：主进程弹文件选择框，拷贝进预制音频目录并挂到指定 Scene/Utterance 的 rendered
+  // 导入外部音频（§7.4）：主进程弹文件选择框，复制入 BlobStore（不动用户原文件）并挂到指定 Scene/Utterance 的 rendered
   ipcMain.handle(
     IPC.programImportAudio,
     async (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
@@ -987,6 +1106,59 @@ function registerIpc(
     shell.openPath(String(dir ?? ''))
   )
 
+  // ---------- 场记（场次记录） ----------
+  ipcMain.handle(IPC.sessionList, (_e, programId?: string) =>
+    storage.sessionList(typeof programId === 'string' && programId ? programId : undefined)
+  )
+  ipcMain.handle(IPC.sessionDetail, (_e, id: string) => {
+    const session = storage.sessionGet(String(id ?? ''))
+    if (!session) return null
+    // 互动观众：本场评论聚合 + 全局画像（主播长期记忆）顺带附上
+    const viewers = storage.sessionViewerAgg(session.id).map((agg) => ({
+      ...agg,
+      profile: storage.viewerGet(agg.name) ?? undefined
+    }))
+    return { session, items: storage.sessionSpeechItems(session.id), events: storage.sessionEvents(session.id), viewers }
+  })
+  ipcMain.handle(IPC.sessionDelete, (_e, id: string) => {
+    const sid = String(id ?? '')
+    if (recorder?.current() === sid) return { ok: false, error: '这场还在播，先收播再删' }
+    storage.sessionDelete(sid)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.sessionExport, async (_e, options: SessionExportOptions) => {
+    let outputDir = String(options?.outputDir ?? '').trim()
+    if (!outputDir) {
+      const win = BrowserWindow.getFocusedWindow() ?? mainWindow
+      if (!win) return { ok: false as const, error: '没有可用窗口' }
+      const picked = await dialog.showOpenDialog(win, {
+        title: '选择导出目录',
+        properties: ['openDirectory', 'createDirectory']
+      })
+      if (picked.canceled || !picked.filePaths[0]) {
+        return { ok: false as const, cancelled: true, error: '已取消选择输出目录' }
+      }
+      outputDir = picked.filePaths[0]
+    }
+    return exporter.exportSession({
+      sessionId: String(options?.sessionId ?? ''),
+      mode: options?.mode === 'separate' ? 'separate' : 'merged',
+      format: options?.format === 'wav' ? 'wav' : 'mp3',
+      outputDir,
+      loudness: options?.loudness === true
+    })
+  })
+  // 逐条试听：走音频管线 aux 槽（本机出声，不进推流），与音色试听同一条通路
+  ipcMain.handle(IPC.sessionPlayItem, async (_e, itemId: string) => {
+    const item = storage.speechGet(String(itemId ?? ''))
+    if (!item?.audioPath) return { ok: false, error: '这条没有音频文件（流式播报或未合成）' }
+    if (!pipeline) return { ok: false, error: '音频管线还没就绪' }
+    const request = pipeline.playFile(item.id, item.audioPath, { slot: 'aux' })
+    const started = await request.started
+    if (started.ok) await request.done
+    return started
+  })
+
   // ---------- 话术库（节目底稿） ----------
   ipcMain.handle(IPC.utteranceList, (_e, programId: string) => utterances.list(String(programId)))
   ipcMain.handle(IPC.utteranceSave, (_e, input: UtteranceInput, id?: string) =>
@@ -996,19 +1168,22 @@ function registerIpc(
   ipcMain.handle(IPC.utteranceClear, (_e, programId: string, sceneId?: string) =>
     guard(() => utterances.clear(String(programId), sceneId))
   )
+  ipcMain.handle(IPC.utteranceClearAudio, (_e, programId: string) =>
+    guard(() => utterances.clearAudio(String(programId)))
+  )
   ipcMain.handle(IPC.utterancePresynth, async (_e, programId: string) => {
     // 批量预合成：异步跑（带节目锁，主播改底稿触发的重合成共用同一条流水线），进度走 utteranceEvent
     void utterances.kickSynthesis(String(programId))
     return { ok: true }
   })
 
-  // ---------- 编剧模式：主播自己写底稿 ----------
+  // ---------- 写稿：导演给当前节目写底稿 ----------
   ipcMain.handle(IPC.agentDraftStart, async (_e, programId: string) => {
     try {
       await agent.startDrafting(String(programId))
       return { ok: true }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
 
@@ -1040,7 +1215,7 @@ function registerIpc(
     try {
       return { ok: true, text: await connector.callTool(String(name), args ?? {}) }
     } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) }
+      return { ok: false, error: friendlyError(error) }
     }
   })
 }
@@ -1064,17 +1239,23 @@ if (!single) {
     watchSystemChrome()
 
     const storage = new StorageService()
-    const tts = new TtsService(storage)
+    const blobs = new BlobStoreService(storage)
+    const tts = new TtsService(storage, blobs)
     ttsRealtime = new TtsRealtimeService(storage, tts)
     pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime, () => agent?.currentVoice() ?? '')
+    pool.onWarmCache = (path) => blobs.warm(path)
     const prompts = new PromptTemplateService(storage)
-    const persona = new PersonaService(storage, prompts)
-    const knowledge = new KnowledgeService(storage)
+    const persona = new PersonaService(storage)
+    const knowledge = new KnowledgeService(storage, blobs)
     const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
     bus = new EventBus(storage)
+    // 场记：场次记录器（开播/收播在 ProgramPlaybackService.launch 与三个收播点挂钩）；
+    // 启动先把上次没来得及收播的场次补尾成 crash
+    recorder = new SessionRecorder(storage, bus)
+    recorder.fixUnfinished()
     // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
-    const utterances = new UtteranceService(storage, tts, persona, script)
+    const utterances = new UtteranceService(storage, tts, persona, script, blobs)
     utterances.onEvent = (u) => broadcastUtterance(u)
     utterances.onBatchDone = (programId) => broadcastUtteranceDone(programId)
     // 预制音频资产变化广播（Scene/Utterance 的 rendered 更新，渲染层刷新节目音频进度）
@@ -1085,6 +1266,8 @@ if (!single) {
     }
     // Agent 改场景（append/update/remove_scene）也触发预制音频的 stale 检测
     script.onContentChanged = (programId) => utterances.refreshRenderedStaleness(programId)
+    // 节目配置落库 → 刷新引擎侧事件接线：播出中改自动响应白名单/互动总闸立即生效
+    script.onProgramsChanged = () => agent?.refreshProgramGate()
     agent = new AgentService(
       storage,
       pool,
@@ -1149,7 +1332,7 @@ if (!single) {
     agent.getConnector = () => connector
 
     // 音色库（M8 声音克隆）：训练状态变化推给渲染进程；试听由主进程合成完直接出声（aux 槽）
-    voiceSvc = new VoiceService(storage, tts, broadcastVoices, async (itemId, filePath) => {
+    voiceSvc = new VoiceService(storage, tts, blobs, broadcastVoices, async (itemId, filePath) => {
       const request = pipeline!.playFile(itemId, filePath, { slot: 'aux' })
       const started = await request.started
       if (started.ok) await request.done
@@ -1159,6 +1342,7 @@ if (!single) {
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
     const programPlayback = new ProgramPlaybackService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
+    programPlayback.recorder = recorder
     // 节目音频导出（docs/10 §8.3，P6）：进度逐单元广播；export_program 工具的确认卡用它出计划摘要
     const exporter = new ExportService(storage, script)
     exporter.onProgress = (progress) => {
@@ -1167,66 +1351,79 @@ if (!single) {
       }
     }
     agent.getExporter = () => exporter
-    // 就绪补装：直播中底稿每就绪一段就把当前场景新就绪的装进池（0 就绪开播不空转——边合成边播，不用等整批）
+    // 就绪补装：直播中底稿每就绪一段就补装进池（播出策略决定接不接：rolling 接，prepared/improvised 不接）
     const broadcastUtteranceOnly = utterances.onEvent
     utterances.onEvent = (u) => {
       broadcastUtteranceOnly?.(u)
       if (u.status !== 'ready' || !u.id) return
       if (storage.getConfig().live.activeProgramId !== u.programId) return
       const status = agent?.status()
-      if (status?.state !== 'running' || status.purpose !== 'live') return
+      if (status?.state !== 'running' || status.live !== true) return
+      const program = storage.programList().find((p) => p.id === u.programId)
+      if (!program || !policyFor(program, programPlayback).autoReloadOnReady) return
       const loaded = programPlayback.loadActiveSceneUtterances()
       if (loaded > 0) console.log(`[AgentAnchor] 新就绪底稿补装 ${loaded} 条`)
     }
-    // 场景推进（advance_scene）后把新场景话术库载入池，骨架不断档
+    // 场景推进（advance_scene）后补装兜底（整库装载，正常早已装好；去重落空）
     agent.onSceneAdvanced = () => {
       const loaded = programPlayback.loadActiveSceneUtterances()
-      if (loaded > 0) console.log(`[AgentAnchor] 新场景装载话术 ${loaded} 条`)
+      if (loaded > 0) console.log(`[AgentAnchor] 场景推进补装话术 ${loaded} 条`)
     }
     // 主播自己开播（start_live 工具）：跟「启动节目」按钮走同一条 ProgramPlaybackService.launch，预检拦截如实回报
     agent.onGoLive = async () => {
       const programId = storage.getConfig().live.activeProgramId
       if (!programId) return '没有选中节目，开不了播'
-      // prep 会话也算「在跑」但没开播：prep→live 必须发开播事件（开播信号触发器靠它）
-      const statusBefore = agent!.status()
-      const wasLive = statusBefore.state !== 'stopped' && statusBefore.purpose === 'live'
+      // 开播事件只在「没在播 → 开播」时发一次（开播信号触发器靠它）
+      const wasLive = agent!.status().live === true
       const result = await programPlayback.launch(programId)
       if (!result.ok) return `开播被预检拦下了：${result.error}`
       if (!wasLive) bus!.emit('stream.started', {}, 'agent')
       // 新一轮开播：上一场可能停在「收尾中」状态，复位
       resetStopWrap()
-      // 0 就绪开播：后台合成还没出活，开播空隙叫「续写补给」顶上
+      // 0 就绪开播：后台合成还没出活，开播空隙由引擎低水位续写顶上
       if ((result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
       return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
     }
-    // 滚动补货（有闸）：池见底时——首轮没播完的底稿随时补（接着播不是循环）；
-    // 全播过了要重播（循环）只在到底稿段数上限时才允许，没到就等主播续写/合成，允许冷场不硬顶
+    // 水位事件统一走播出策略（broadcastPolicy.ts）：引擎只问策略要决策，不写模式分叉。
+    // rolling：低水位引擎直发续写（冷却 180s；导演也可随时在对话里人工叫写）；
+    //          见底时 stop→两阶段收播 / 内容在路上就等（允许冷场）/ 到上限才循环重播。
+    // prepared：见底 stop→收播（音频还在出就等）/ loop→重装 rendered 单元（复用不重新合成）；永不续写。
+    // improvised：无底稿，水位与播出内容无关，忽略。
+    let lastLowWaterAt = 0
     bus.subscribe((event) => {
-      if (event.type !== 'pool.empty') return
+      if (event.type !== 'pool.empty' && event.type !== 'pool.low') return
       const status = agent?.status()
-      if (status?.state !== 'running' || status.purpose !== 'live') return
+      if (status?.state !== 'running' || status.live !== true) return
       const programId = storage.getConfig().live.activeProgramId
       if (!programId) return
       const program = storage.programList().find((p) => p.id === programId) ?? null
-      // 「整轮播完/池见底」决策点读节目 finishMode（docs/10 §7）：stop = 播完即停，不循环重播。
-      // 判定整轮真播完：没有没进过池的（首轮还在播叫「接着播」）、也没有排队/合成中的（内容在路上就等，允许冷场不自旋）。
-      // 即兴（improvised）没有循环概念，天然走不到这（没有底稿可装）。
-      if (
-        program &&
-        program.broadcastMode !== 'improvised' &&
-        program.finishMode === 'stop' &&
-        !programPlayback.hasFreshUtterances(programId) &&
-        !programPlayback.hasIncomingUtterances(programId)
-      ) {
-        finishRoundStop(programId)
+      if (!program) return
+      const policy = policyFor(program, programPlayback)
+
+      if (event.type === 'pool.low') {
+        if (!policy.shouldAutoWrite(program)) return
+        if (Date.now() - lastLowWaterAt < 180_000) return
+        lastLowWaterAt = Date.now()
+        agent?.notifyLowWater(Number(event.payload.remaining ?? 0))
         return
       }
-      if (!programPlayback.hasFreshUtterances(programId) && !programPlayback.atDraftCap(programId)) {
-        console.log('[AgentAnchor] 池空了但未到段数上限：不循环重播，等主播续写/合成（允许冷场）')
-        return
+
+      // pool.empty：整轮播完的「播完即停」决策点也在策略里（stop = 不循环重播，通知主播收尾后收播）
+      switch (policy.poolEmptyAction(program)) {
+        case 'wrap-up':
+          finishRoundStop(programId)
+          return
+        case 'reload': {
+          const loaded = policy.reload(program)
+          if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条继续播出`)
+          return
+        }
+        case 'wait':
+          console.log('[AgentAnchor] 池空了但内容还在路上/等续写：允许冷场，不硬顶')
+          return
+        case 'ignore':
+          return
       }
-      const loaded = programPlayback.loadActiveSceneUtterances()
-      if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条底稿继续轮播`)
     })
     // 主播请示（ask_director）：AgentService 内部直接进对话时间线单通道（高亮卡片，不阻塞直播）
     // 紧急停止总闸（emergency_stop 工具，安全优先直接执行）：掐所有声音 + 停播放循环 + 停会话 + 收开播态
@@ -1239,6 +1436,9 @@ if (!single) {
       await agent?.panic()
       if (wasLive) {
         agent?.setLiveActive(false)
+        // 场记收播：紧急停止
+        recorder?.end('emergency')
+        if (pool) pool.sessionId = null
         bus?.emit('stream.ended', {}, 'system')
       }
     }
@@ -1256,9 +1456,20 @@ if (!single) {
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
 
-    // 音频缓存：启动扫一次、之后每 30 分钟一次（按最久未用+容量上限清理；被话术条目引用的文件不删）
-    void tts.sweepAudioCache()
-    audioCacheSweep = setInterval(() => void tts.sweepAudioCache(), 30 * 60_000)
+    // BlobStore：启动清临时区 → 异步迁移老目录（audio-cache / voices / program-audio / 知识库附件，不阻塞窗口）→ 之后每 30 分钟 GC
+    void blobs.sweepTmp()
+    void (async () => {
+      try {
+        await blobs.migrateLegacyAudioCache()
+        await blobs.migrateVoiceSamples()
+        await blobs.migrateProgramAudio()
+        await blobs.migrateKnowledgeFiles()
+        await blobs.sweep()
+      } catch (error) {
+        console.warn('[BlobStore] 启动迁移失败:', error)
+      }
+    })()
+    audioCacheSweep = setInterval(() => void blobs.sweep(), 30 * 60_000)
     audioCacheSweep.unref?.()
     timerInterval.unref?.()
 
@@ -1266,7 +1477,7 @@ if (!single) {
     storage.onConfigChange((config) => paintAllWindows(config.theme))
     updater = new UpdateService()
     updater.init()
-    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, memory, bus, triggers, script, streamSvc, connector, utterances, programPlayback, exporter)
+    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, bus, triggers, script, streamSvc, connector, utterances, programPlayback, exporter)
     registerUpdateIpc(updater)
     createWindow(storage)
 
@@ -1278,6 +1489,8 @@ if (!single) {
 
 app.on('window-all-closed', () => {
   crashNote('window-all-closed', '')
+  // 场记：应用退出时还有没收的场次，补 app_quit（崩溃没走到这的由下次启动补 crash）
+  recorder?.end('app_quit')
   if (timerInterval) clearInterval(timerInterval)
   connector?.stop()
   // 播放循环先停（它会把正在播的那条退回 ready），再收音频管线（杀掉解码进程、断了推流 BGM）

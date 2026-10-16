@@ -1,64 +1,32 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Bot, Loader2, Play, Plus, Square } from 'lucide-react'
+import { Bot, Plus } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
 import { AssetStaleBanner } from '@/components/AssetStaleBanner'
-import { ProviderIcon } from '@/components/ProviderIcon'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
-import { selectLlmReady, useAppStore } from '../stores/useAppStore'
-import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
-import { MANUAL_VOICE_SEP } from '../../../shared/voiceProvider'
-import { type ModelConnectionSafe, type Persona } from '../../../shared/types'
-
-/** 下拉里「接入 + 模型」两级值：与手动音色的复合串共用同一个分隔符（接入/模型 id 里不会有冒号） */
-function brainValue(connectionId: string, model: string): string {
-  return `${connectionId}${MANUAL_VOICE_SEP}${model}`
-}
-
-function parseBrainValue(value: string): { modelConnectionId: string; model: string } {
-  const index = value.indexOf(MANUAL_VOICE_SEP)
-  if (index < 0) return { modelConnectionId: '', model: '' }
-  return {
-    modelConnectionId: value.slice(0, index),
-    model: value.slice(index + MANUAL_VOICE_SEP.length)
-  }
-}
-
-/** 卡片摘要里的「大脑」：接入名 · 模型；没选或接入已删就明说，不再有「默认（…）」的包装 */
-function brainLabelOf(connections: ModelConnectionSafe[], persona: Persona): string {
-  const bound = persona.modelConnectionId
-    ? connections.find((item) => item.id === persona.modelConnectionId)
-    : undefined
-  if (!bound) return persona.modelConnectionId ? '接入已删除' : '未选（点开这张卡选一个）'
-  return `${bound.name} · ${persona.model || '未选模型'}`
-}
-
-const AGENT_STATE_LABEL: Record<string, string> = {
-  stopped: '未启动',
-  starting: '启动中',
-  running: '运行中',
-  error: '出错'
-}
+import { useAppStore } from '../stores/useAppStore'
+import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
+import { voiceDisplayName, voiceRouteSummary } from '../lib/voice'
+import { ModelBadgeIcons } from './ModelBadgeIcons'
+import { type Persona } from '../../../shared/types'
 
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
-/** 主播团：人设卡 + 主播 Agent 开关。多张卡各自可设为当前主播（开播时由节目带着切换）。触发器归节目管，主播卡不再配。 */
+/** 主播团：只有人设卡（风格 + 嗓音）。大脑归导演（设置 → 导演），启停归播出流程（开播/写稿）。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
-  const connections = useAppStore((s) => s.connections)
-  const persona = useAppStore((s) => s.persona)
   const setPersona = useAppStore((s) => s.setPersona)
-  const llmReady = selectLlmReady(connections, persona)
+  const voices = useAppStore((s) => s.voices)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
+  const ttsConnections = useAppStore((s) => s.ttsConnections)
   const [personas, setPersonas] = useState<Persona[]>([])
   const [activeId, setActiveId] = useState('')
-  const [busy, setBusy] = useState(false)
   /** 编辑器：undefined=关闭；{id?}=编辑某张卡；{}=新建 */
   const [editing, setEditing] = useState<{ persona?: Persona } | null>(null)
 
@@ -78,68 +46,31 @@ export function AnchorsPage() {
 
   const openEditor = (persona?: Persona) => setEditing(persona ? { persona } : {})
 
-  /** 保存后不偷偷重启会话：人设/模型是出生时冻结的，改了靠黄条上的「立即应用」显式生效 */
+  /** 保存后不偷偷重启会话：卡司资料是出生时冻结的，改了靠黄条上的「立即应用」显式生效 */
   const afterSaved = (okText: string) => {
     if (useAppStore.getState().agent.state === 'running') {
-      toast.success(okText, { description: '本场主播用的还是开播时的版本，改动下次开播生效（可点黄条立即应用）' })
+      toast.success(okText, { description: '本场导演用的还是开播时的版本，改动下次开播生效（可点黄条立即应用）' })
     } else {
       toast.success(okText)
     }
   }
 
-  const toggleAgent = async () => {
-    if (busy) return
-    setBusy(true)
-    try {
-      if (agent.state === 'running' || agent.state === 'starting') {
-        await window.api.agent.stop()
-        toast.message('主播已下播', { description: '话术池里的存货会继续播完' })
-      } else {
-        const result = await window.api.agent.start()
-        if (result.ok) toast.success('主播已开播', { description: '开场白正在路上' })
-        else toast.error('主播启动失败', { description: result.error })
-      }
-    } finally {
-      setBusy(false)
-    }
-  }
-
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       <AssetStaleBanner />
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-        <Bot className="size-4 text-primary" />
-        <h1 className="text-sm font-medium">主播团</h1>
-        <p className="text-xs text-muted-foreground">人设卡 · 主播开关</p>
-        <div className="ml-auto flex items-center gap-2">
-          <Badge variant={agent.state === 'running' ? 'secondary' : agent.state === 'error' ? 'destructive' : 'outline'}>
-            {AGENT_STATE_LABEL[agent.state]}
-            {agent.model ? ` · ${agent.model}` : ''}
-          </Badge>
-          <Button
-            variant={agent.state === 'running' || agent.state === 'starting' ? 'secondary' : 'default'}
-            size="sm"
-            disabled={busy}
-            onClick={() => void toggleAgent()}
-            title={llmReady ? undefined : '当前主播卡还没选好大脑：点开卡片选一个接入和模型'}
-          >
-            {busy ? (
-              <Loader2 className="animate-spin" />
-            ) : agent.state === 'running' || agent.state === 'starting' ? (
-              <Square />
-            ) : (
-              <Play />
-            )}
-            {agent.state === 'running' || agent.state === 'starting' ? '停止主播' : '启动主播'}
-          </Button>
-        </div>
+        <Bot className="size-4 shrink-0 text-primary" />
+        <h1 className="shrink-0 text-sm font-medium">主播团</h1>
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          人设卡：风格 + 嗓音（谁上场、什么时候开播由导演与节目决定，不在这页管）
+        </p>
       </header>
 
       <div className="min-h-0 flex-1 overflow-auto p-4">
+          {/* 会话出错只报一句：配脑与启停都在设置/播出流程里，这里不做开关 */}
           {agent.state === 'error' && agent.error && (
             <div className="mb-3 max-w-2xl rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               {agent.error}
-              {!llmReady && ' — 先点开这张人设卡，给它选一个接入和模型'}
             </div>
           )}
 
@@ -169,27 +100,23 @@ export function AnchorsPage() {
                       {item.name.trim().slice(0, 1) || '主'}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.name}</span>
-                    {active && <Badge variant="secondary" className="shrink-0">当前主播</Badge>}
+                    {active && <Badge variant="secondary" className="shrink-0">当前出镜</Badge>}
                   </div>
                   <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
                     {item.personality || '（还没写性格）'}
                   </p>
-                  <p className="truncate text-[13px] text-muted-foreground">
-                    大脑：{brainLabelOf(connections, item)} · 嗓子：{item.voiceId || '还没选（必选）'}
-                  </p>
-                  <VoiceProviderHint voiceId={item.voiceId} />
-                  <div className="flex flex-wrap gap-1">
-                    {item.roles.slice(0, 2).map((role) => (
-                      <Badge key={role.name} variant="outline" className="text-[11px]">
-                        角色 · {role.name || '未命名'}
-                      </Badge>
-                    ))}
+                  <div className="flex min-w-0 items-center gap-2 text-[13px] text-muted-foreground">
+                    <span className="truncate">
+                      嗓子：{item.voiceId ? voiceDisplayName(voices, ttsProviders, item.voiceId) : '还没选（必选）'}
+                    </span>
+                    {/* 这把嗓子能干什么：跟选择器同一套能力图标（lib/modelBadges） */}
                     {item.voiceId && (
-                      <Badge variant="outline" className="text-[11px]">
-                        音色 {item.voiceId.slice(0, 10)}
-                      </Badge>
+                      <ModelBadgeIcons
+                        spec={voiceRouteSummary(voices, ttsProviders, ttsConnections, item.voiceId).modelSpec ?? undefined}
+                      />
                     )}
                   </div>
+                  <VoiceProviderHint voiceId={item.voiceId} />
                 </button>
               )
             })}
@@ -197,7 +124,7 @@ export function AnchorsPage() {
       </div>
       {/* 人设卡编辑器 */}
       <PersonaEditorDialog
-        key={editing?.persona?.id ?? 'new'}
+        key={editing?.persona?.id ?? 'new-persona'}
         editing={editing}
         isActive={editing?.persona?.id === activeId}
         onOpenChange={(open) => !open && setEditing(null)}
@@ -215,7 +142,7 @@ export function AnchorsPage() {
   )
 }
 
-/** 人设卡编辑器：点击卡片弹出，含设为当前主播与删除 */
+/** 人设卡编辑器：点击卡片弹出，含设为当前出镜与删除 */
 function PersonaEditorDialog({
   editing,
   isActive,
@@ -231,28 +158,16 @@ function PersonaEditorDialog({
 }) {
   const open = editing !== null
   const source = editing?.persona
-  const connections = useAppStore((s) => s.connections)
   const [form, setForm] = useState<PersonaForm>(() => ({
     name: source?.name ?? '',
     personality: source?.personality ?? '',
     catchphrases: source?.catchphrases ?? '',
     background: source?.background ?? '',
     taboos: source?.taboos ?? '',
-    voiceId: source?.voiceId ?? '',
-    modelConnectionId: source?.modelConnectionId ?? null,
-    model: source?.model ?? '',
-    roles: source?.roles ?? []
+    voiceId: source?.voiceId ?? ''
   }))
   const [busy, setBusy] = useState(false)
-  const [voicePickerOpen, setVoicePickerOpen] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
-
-  // 绑定的接入可能已被删掉：那时按「没选」显示，让用户重新挑一条
-  const boundConnection = form.modelConnectionId
-    ? connections.find((item) => item.id === form.modelConnectionId)
-    : undefined
-  const selectedBrain =
-    boundConnection && form.model ? brainValue(boundConnection.id, form.model) : ''
 
   const patch = (part: Partial<PersonaForm>) => setForm((prev) => ({ ...prev, ...part }))
 
@@ -262,10 +177,6 @@ function PersonaEditorDialog({
       toast.warning('请填写主播名字')
       return
     }
-    if (!boundConnection || !form.model.trim()) {
-      toast.warning('给这张卡选个大脑：选一个接入和模型')
-      return
-    }
     if (!form.voiceId.trim()) {
       toast.warning('给这张卡选个音色', { description: '没选音色主播没声音' })
       return
@@ -273,8 +184,9 @@ function PersonaEditorDialog({
     setBusy(true)
     try {
       const saved = await window.api.persona.save(form, source?.id)
-      if (alsoActivate) await window.api.persona.setActive(saved.id)
-      await onSaved(alsoActivate ? '已保存并设为当前主播' : '人设已保存')
+      // 新建卡默认上场：主进程不再自动激活（防 agent 建卡偷换当前主播），人的新建由这里显式激活
+      if (alsoActivate || !source) await window.api.persona.setActive(saved.id)
+      await onSaved(alsoActivate ? '已保存并设为当前出镜' : '人设已保存')
     } finally {
       setBusy(false)
     }
@@ -294,84 +206,19 @@ function PersonaEditorDialog({
               <Input value={form.name} onChange={(e) => patch({ name: e.target.value })} placeholder="如：小陶 / 小助理" />
             </div>
             <div>
-              <div className="mb-1 flex items-center justify-between">
-                <Label>
-                  音色<span className="ml-0.5 text-destructive">*</span>
-                </Label>
-                <Button
-                  variant={voicePickerOpen ? 'secondary' : 'outline'}
-                  size="sm"
-                  className="h-6 text-xs"
-                  onClick={() => setVoicePickerOpen((v) => !v)}
-                >
-                  {voicePickerOpen ? '收起音色库' : '选择音色'}
-                </Button>
-              </div>
-              <Input
-                value={form.voiceId}
-                onChange={(e) => patch({ voiceId: e.target.value })}
-                placeholder="音色 id，或 接入::模型::音色"
+              <Label className="mb-1">
+                音色<span className="ml-0.5 text-destructive">*</span>
+              </Label>
+              <UnifiedVoicePicker
+                voiceId={form.voiceId}
+                onPick={(voiceType) => patch({ voiceId: voiceType })}
               />
-              {/* 音色库内嵌展开（不再开嵌套弹窗——级联菜单在弹窗套弹窗里会定位错乱/指针互掐） */}
-              {voicePickerOpen && (
-                <div className="mt-2 rounded-lg border p-2">
-                  <VoiceCascadePicker
-                    voiceId={form.voiceId}
-                    onPick={(voiceType) => {
-                      patch({ voiceId: voiceType })
-                      setVoicePickerOpen(false)
-                      toast.success('已填入音色标识', { description: '保存后生效' })
-                    }}
-                  />
-                </div>
-              )}
               {form.voiceId.trim() ? (
                 <VoiceProviderHint voiceId={form.voiceId} />
               ) : (
                 <p className="mt-1 text-xs text-destructive">必选：没选音色主播没声音</p>
               )}
             </div>
-          </div>
-
-          <div>
-            <Label className="mb-1">
-              大脑（模型）<span className="ml-0.5 text-destructive">*</span>
-            </Label>
-            {connections.length === 0 ? (
-              <p className="rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
-                还没有供应商接入，去「设置 → 语言模型」加一条（选服务商、填一次密钥、把那家能用的模型放进列表）。
-              </p>
-            ) : (
-              <Select value={selectedBrain} onValueChange={(value) => patch(parseBrainValue(value))}>
-                <SelectTrigger className="w-full">
-                  <SelectValue placeholder="选择一个模型" />
-                </SelectTrigger>
-                <SelectContent>
-                  {connections.map((item) => (
-                    <SelectGroup key={item.id}>
-                      <SelectLabel className="flex items-center gap-2">
-                        <ProviderIcon providerId={item.providerId} size="sm" />
-                        <span className="truncate">
-                          {item.name}
-                          {item.ready ? '' : '（未配齐）'}
-                        </span>
-                      </SelectLabel>
-                      {item.models.length === 0 ? (
-                        <SelectItem value={brainValue(item.id, '')} disabled>
-                          （这条接入还没有模型）
-                        </SelectItem>
-                      ) : (
-                        item.models.map((model) => (
-                          <SelectItem key={model} value={brainValue(item.id, model)}>
-                            <span className="truncate">{model}</span>
-                          </SelectItem>
-                        ))
-                      )}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
           </div>
 
           <div>
@@ -403,69 +250,8 @@ function PersonaEditorDialog({
             />
           </div>
 
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <Label>角色（编剧模式多音色）</Label>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-6 text-xs"
-                onClick={() => patch({ roles: [...form.roles, { name: '', voiceId: '', style: '' }] })}
-              >
-                加一个角色
-              </Button>
-            </div>
-            {form.roles.length === 0 ? (
-              <p className="text-xs text-muted-foreground">
-                没有角色时主播一个人说。加了角色（比如「小助理」），主播可以用 say 的 role 参数写它的台词，按角色音色播出。
-              </p>
-            ) : (
-              <div className="flex flex-col gap-2">
-                {form.roles.map((role, i) => (
-                  <div key={i} className="flex flex-col gap-1">
-                    <div className="flex items-center gap-1.5">
-                      <Input
-                        value={role.name}
-                        onChange={(e) =>
-                          patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, name: e.target.value } : r)) })
-                        }
-                        placeholder="角色名"
-                        className="h-7 w-28 shrink-0 text-xs"
-                      />
-                      <Input
-                        value={role.voiceId}
-                        onChange={(e) =>
-                          patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, voiceId: e.target.value } : r)) })
-                        }
-                        placeholder="音色 voiceId"
-                        className="h-7 w-40 shrink-0 text-xs"
-                      />
-                      <Input
-                        value={role.style}
-                        onChange={(e) =>
-                          patch({ roles: form.roles.map((r, j) => (j === i ? { ...r, style: e.target.value } : r)) })
-                        }
-                        placeholder="口吻提示，例如：活泼的捧哏小助理"
-                        className="h-7 min-w-0 flex-1 text-xs"
-                      />
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        title="删除角色"
-                        onClick={() => patch({ roles: form.roles.filter((_, j) => j !== i) })}
-                      >
-                        ×
-                      </Button>
-                    </div>
-                    <VoiceProviderHint voiceId={role.voiceId} />
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
           <p className="text-xs text-muted-foreground">
-            保存后作为 system prompt 注入；她在场时顶部会出「立即应用」横幅，点了重启会话生效（想换主播走对话区胶囊，不断上下文）。
+            主播卡是纯资料（大脑是导演的，在「设置 → 导演」里配）。保存后写进导演的工作手册；会话在跑时顶部会出「立即应用」横幅，点了重启会话生效（换人出镜由导演按卡司调度，不换脑不打断思路）。
           </p>
         </div>
 
@@ -498,7 +284,7 @@ function PersonaEditorDialog({
               <DialogTitle>删除人设卡</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
-              确认删除「{source?.name}」？删掉当前主播时会自动切到剩余的第一张卡。
+              确认删除「{source?.name}」？删掉当前出镜的卡时会自动切到剩余的第一张卡。
             </p>
             <DialogFooter>
               <Button variant="ghost" onClick={() => setConfirmDelete(false)}>

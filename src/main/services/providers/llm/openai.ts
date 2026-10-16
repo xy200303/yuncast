@@ -28,9 +28,10 @@ export const openAiProvider: LlmProviderDef = {
   id: 'openai',
   label: 'OpenAI',
   icon: 'openai',
-  note: '官方 Responses 协议 · GPT-4o / GPT-5 系',
+  note: '官方 API · GPT-4o / GPT-5 系（默认 Responses 协议，可在下方切换）',
   // 目录里最老的 GPT-4o 也有 128k，兜底按它填；具体型号以 modelContextWindows 预填为准
   capabilities: { tools: true, streaming: true, contextWindow: 128_000 },
+  defaultApi: 'responses',
   configFields: [
     {
       key: 'apiKey',
@@ -45,17 +46,6 @@ export const openAiProvider: LlmProviderDef = {
       label: '自定义 API 地址（留空走官方地址）',
       type: 'text',
       placeholder: DEFAULT_BASE_URL
-    },
-    {
-      key: 'apiProtocol',
-      label: 'API 协议',
-      type: 'select',
-      default: 'responses',
-      options: [
-        { value: 'responses', label: 'Responses（推荐：GPT-5 系与思考强度走它）' },
-        { value: 'completions', label: 'Chat Completions（旧模型或兼容网关）' }
-      ],
-      help: 'Responses 是 OpenAI 新协议：思考强度（reasoning effort）、缓存命中统计都更完整'
     }
   ],
   defaultModel: 'gpt-4o-mini',
@@ -65,8 +55,7 @@ export const openAiProvider: LlmProviderDef = {
     return {
       baseUrl: String(params.baseUrl ?? '').trim() || DEFAULT_BASE_URL,
       apiKey: String(params.apiKey ?? ''),
-      model: model.trim() || 'gpt-4o-mini',
-      api: String(params.apiProtocol ?? '') === 'completions' ? 'openai-completions' : 'openai-responses'
+      model: model.trim() || 'gpt-4o-mini'
     }
   }
 }

@@ -12,6 +12,7 @@ import { useAppStore } from '../stores/useAppStore'
  */
 export function AssetStaleBanner() {
   const stale = useAppStore((s) => s.agent.assetsStale)
+  const live = useAppStore((s) => s.agent.live === true)
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
 
@@ -38,7 +39,9 @@ export function AssetStaleBanner() {
       <div className="flex shrink-0 items-center gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400">
         <AlertTriangle className="size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 truncate">
-          本场主播用的还是开播时的版本（人设 / 模型 / 剧本改过了），改动下次开播生效
+          {live
+            ? '本场主播用的还是开播时的版本（人设 / 模型 / 剧本改过了），改动下次开播生效'
+            : '当前主播会话用的还是启动时的版本（人设 / 模型 / 剧本改过了），重开会话才生效'}
         </span>
         <Button
           variant="outline"

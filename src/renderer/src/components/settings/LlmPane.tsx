@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowLeft, ChevronRight, Eye, EyeOff, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
+import { ArrowLeft, ChevronDown, ChevronRight, Eye, EyeOff, Plus, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -15,7 +15,7 @@ import {
   type LlmProviderManifest,
   type ProviderFieldSpec
 } from '../../stores/useAppStore'
-import { type ModelAdvancedParams, type ModelConnectionSafe, type ThinkingLevelChoice } from '../../../../shared/types'
+import { type ModelAdvancedParams, type ModelConnectionSafe, type ThinkingLevelChoice, LLM_API_PROTOCOLS, LLM_API_PROTOCOL_META, type LlmApiProtocol } from '../../../../shared/types'
 import { LLM_LINKS } from './shared'
 
 /** 跳转外链（主进程 setWindowOpenHandler 会交给系统浏览器打开） */
@@ -23,8 +23,13 @@ function openExternal(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer')
 }
 
+/** 模型行的身份：模型 id 可空、可重名，边打字边变，当 React key 会让输入框丢焦点、删除时错位；
+ * 新建行时按顺序发号，同一行跨渲染不变（不用随机数/uid，否则每渲染都换 key 等于没起作用） */
+let modelRowSeq = 0
+const nextModelRowKey = (): string => `model-row-${++modelRowSeq}`
+
 /**
- * 语言模型：供应商接入库（设置 = 库，用哪条由主播卡决定）。
+ * 语言模型：供应商接入库（设置 = 库，用哪条由「导演」栏决定）。
  * 一条接入 = 一个服务商 + 一份凭据（只填一次）+ 一串这家能用的模型；
  * 字段由 provider 的 configFields 动态渲染，加一家服务商不用改这里。
  * 密钥字段只在落盘时加密，渲染层只看得到「填没填过」。
@@ -36,13 +41,13 @@ export function LlmSection() {
   const refreshPersona = useAppStore((s) => s.refreshPersona)
   const [editing, setEditing] = useState<{ connection?: ModelConnectionSafe } | null>(null)
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
-  /** 待删接入被几张主播卡引用（删除前查一次，用于提示） */
+  /** 待删接入是不是导演大脑在用的那条（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
   const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
 
   const askDelete = async (connection: ModelConnectionSafe) => {
-    const personas = await window.api.persona.list()
-    setUsedBy(personas.filter((item) => item.modelConnectionId === connection.id).length)
+    const director = await window.api.director.get()
+    setUsedBy(director.modelConnectionId === connection.id ? 1 : 0)
     setDeleting(connection)
   }
 
@@ -61,7 +66,7 @@ export function LlmSection() {
     <div className="rounded-xl border bg-card px-5 py-4">
       {editing ? (
         <ConnectionEditorView
-          key={editing.connection?.id ?? 'new'}
+          key={editing.connection?.id ?? 'new-llm-connection'}
           connection={editing.connection}
           providers={providers}
           onClose={() => setEditing(null)}
@@ -80,7 +85,7 @@ export function LlmSection() {
             <div>
               <p className="text-base font-semibold">语言模型</p>
               <p className="mt-1 text-sm text-muted-foreground">
-                主播的大脑：一条接入 = 一家服务商 + 一份凭据 + 一组模型
+                接入库（家底）：一条接入 = 一家服务商 + 一份凭据 + 一组模型；给导演用哪条在左边「导演」栏选
               </p>
             </div>
             <Button className="shrink-0" onClick={() => setEditing({})}>
@@ -139,7 +144,7 @@ export function LlmSection() {
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
             {usedBy > 0
-              ? `「${deleting?.name}」正被 ${usedBy} 张主播卡使用，删掉后这些卡得重新选一个接入和模型。`
+              ? `「${deleting?.name}」正是导演大脑在用的接入：删掉导演就没脑了，删除前先在上方「导演大脑」换一条。`
               : `确认删除「${deleting?.name}」？`}
           </p>
           <DialogFooter>
@@ -156,6 +161,7 @@ export function LlmSection() {
   )
 }
 
+/** 导演大脑（全局一份）：导演的名字 + 用哪条接入的哪个模型思考。主播卡只是人设与嗓音，不再各自配脑 */
 /**
  * 连通性测试弹窗：列出这条接入的全部模型，逐个测（也能一次全测）。
  * 同一家的模型可用性常常不一致，所以不挑一个代表来测，得能单独验。
@@ -207,7 +213,7 @@ function TestConnectionDialog({
           </DialogTitle>
         </DialogHeader>
         <p className="text-xs text-muted-foreground">
-          对每个模型发一次最小请求（max_tokens=1），验「地址 + 密钥 + 模型名」一整套
+          给每个模型发一句最小请求，验「地址 + 密钥 + 模型名」一整套
         </p>
         <div className="flex flex-col gap-2">
           {connection.models.map((model) => {
@@ -277,11 +283,12 @@ function ConnectionEditorView({
   const [name, setName] = useState(
     connection?.name ?? providers.find((item) => item.id === initialProviderId)?.label ?? ''
   )
-  /** 模型行：id + 上下文窗口（tokens，空 = 按服务商默认；manifest 目录里有官方窗口的型号会预填）
-   *  + 思考强度 + 高级参数（多模态/温度/回复上限）。
-   * 窗口是模型级属性——同一家不同型号窗口可能差好几倍 */
+  /** 模型行：id 行内直填，其余（上下文窗口/思考强度/高级参数——多模态/温度/回复上限）收进每行的扳手弹窗。
+   * 窗口是模型级属性——同一家不同型号窗口可能差好几倍；manifest 目录里有官方窗口的型号会预填 */
   const [models, setModels] = useState<
     {
+      /** 行身份，见 nextModelRowKey：与模型 id 分开，id 改了也不影响 React 认行 */
+      rowKey: string
       id: string
       window: string
       thinking: ThinkingLevelChoice
@@ -295,6 +302,7 @@ function ConnectionEditorView({
     (connection?.models ?? []).map((id) => {
       const adv = connection?.modelParams?.[id]
       return {
+        rowKey: nextModelRowKey(),
         id,
         window: connection?.modelContextWindows?.[id] ? String(connection.modelContextWindows[id]) : '',
         thinking: connection?.modelThinkingLevels?.[id] ?? 'off',
@@ -307,6 +315,12 @@ function ConnectionEditorView({
   )
   const [busy, setBusy] = useState(false)
   const [pickerOpen, setPickerOpen] = useState(false)
+  /** 「高级：API 协议」折叠条（默认收着，一般不用动） */
+  const [protocolOpen, setProtocolOpen] = useState(false)
+  /** 表单直连测试（不必先保存）：idle/running/ok/error + 一行结果 */
+  const [formTest, setFormTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'error'; detail?: string }>({
+    state: 'idle'
+  })
   /** 「+ 添加模型」就地插入的空行下标，用来给它的模型 ID 输入框自动聚焦 */
   const [focusIndex, setFocusIndex] = useState<number | null>(null)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
@@ -323,7 +337,7 @@ function ConnectionEditorView({
   const patch = (part: { key: string; value: string | number | boolean }) =>
     setParams((prev) => ({ ...prev, [part.key]: part.value }))
 
-  /** 换服务商：按新服务商的字段重排参数，同名字段（apiKey / baseUrl）保留已填的值 */
+  /** 换服务商：按新服务商的字段重排参数，同名字段（apiKey / baseUrl）保留已填的值；协议回到新服务商的预设 */
   const changeProvider = (next: string) => {
     setProviderId(next)
     const nextDef = providers.find((item) => item.id === next)
@@ -334,6 +348,7 @@ function ConnectionEditorView({
       const current = params[field.key]
       nextParams[field.key] = current !== undefined ? current : (field.default ?? '')
     }
+    nextParams.apiProtocol = nextDef?.defaultApi ?? 'completions'
     setParams(nextParams)
   }
 
@@ -378,6 +393,7 @@ function ConnectionEditorView({
         // manifest 目录里有官方窗口的型号预填窗口（可改可清空）
         const presetWindow = def?.modelContextWindows?.[value]
         next.push({
+          rowKey: nextModelRowKey(),
           id: value,
           window: presetWindow ? String(presetWindow) : '',
           thinking: 'off',
@@ -394,7 +410,7 @@ function ConnectionEditorView({
   /** 就地加一行空白模型行（id 空 = 手打），新行的 ID 输入框挂载时自动聚焦 */
   const addModelRow = () => {
     setFocusIndex(models.length)
-    setModels([...models, { id: '', window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', advancedOpen: false }])
+    setModels([...models, { rowKey: nextModelRowKey(), id: '', window: '', thinking: 'off', vision: false, temperature: '', maxTokens: '', advancedOpen: false }])
   }
 
   const save = async () => {
@@ -453,6 +469,34 @@ function ConnectionEditorView({
       onClose()
     } finally {
       setBusy(false)
+    }
+  }
+
+  /** 测试连通：用表单当前（未保存）的值测第一个模型；密钥留空 = 沿用已保存的（主进程合并） */
+  const runFormTest = async () => {
+    if (formTest.state === 'running') return
+    const ids = [...new Set(models.map((row) => row.id.trim()).filter(Boolean))]
+    if (ids.length === 0) {
+      toast.warning('先在模型列表里加一个模型再测')
+      return
+    }
+    setFormTest({ state: 'running' })
+    try {
+      const result = await window.api.model.testInput({
+        id: connection?.id,
+        name,
+        providerId,
+        params,
+        models: ids,
+        model: ids[0]
+      })
+      setFormTest(
+        result.ok
+          ? { state: 'ok', detail: `${ids[0]} 连通${result.latencyMs ? ` · ${result.latencyMs} ms` : ''}` }
+          : { state: 'error', detail: result.error }
+      )
+    } catch (error) {
+      setFormTest({ state: 'error', detail: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -521,6 +565,40 @@ function ConnectionEditorView({
             </div>
           ))}
 
+          {/* API 协议折叠进「高级」（docs/REDESIGN C-6）：按服务商预设就够用，改协议是少数人的事 */}
+          <div>
+            <button
+              type="button"
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+              onClick={() => setProtocolOpen((prev) => !prev)}
+            >
+              {protocolOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+              高级：API 协议（{LLM_API_PROTOCOL_META[(String(params.apiProtocol ?? '') || def?.defaultApi || 'completions') as LlmApiProtocol]?.label ?? '默认'}）
+            </button>
+            {protocolOpen && (
+              <div className="mt-2">
+                <p className="mb-1.5 text-xs text-muted-foreground">
+                  一般不用动：每家服务商都填好了预设，只有接特殊端点（如 Claude 兼容、本地网关）才需要换
+                </p>
+                <Select
+                  value={String(params.apiProtocol ?? '') || (def?.defaultApi ?? 'completions')}
+                  onValueChange={(v) => patch({ key: 'apiProtocol', value: v as LlmApiProtocol })}
+                >
+                  <SelectTrigger className="h-10 w-full text-sm">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent position="popper" sideOffset={6}>
+                    {LLM_API_PROTOCOLS.map((p) => (
+                      <SelectItem key={p} value={p}>
+                        {LLM_API_PROTOCOL_META[p].label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+          </div>
+
           <div>
             <div className="mb-1.5 flex items-center justify-between">
               <Label>模型列表（{models.length} 个）</Label>
@@ -546,7 +624,7 @@ function ConnectionEditorView({
             ) : (
               <div className="flex flex-col gap-2">
                 {models.map((row, index) => (
-                  <div key={index} className="flex flex-col gap-1.5">
+                  <div key={row.rowKey} className="flex flex-col gap-1.5">
                     <div className="flex items-center gap-2">
                       <Input
                         value={row.id}
@@ -558,29 +636,10 @@ function ConnectionEditorView({
                         placeholder="模型 id，如 deepseek-chat"
                         className="h-9 flex-1 text-sm"
                       />
-                      <Input
-                        value={row.window}
-                        onChange={(e) => setWindowAt(index, e.target.value.replace(/[^\d]/g, ''))}
-                        placeholder="窗口自动"
-                        title="上下文窗口（tokens）：留空按服务商默认（DeepSeek/Kimi/千问/豆包/智谱均按 128k）。对话快涨满窗口时自动压缩旧消息（预留 16k 给回复）——不同型号窗口不一样，填准了压缩更平滑"
-                        inputMode="numeric"
-                        className="h-9 w-28 shrink-0 text-sm"
-                      />
-                      <Select value={row.thinking} onValueChange={(v) => setThinkingAt(index, v as ThinkingLevelChoice)}>
-                        <SelectTrigger className="h-9 w-24 shrink-0 text-sm" title="思考强度：模型支持时（如 DeepSeek reasoner / Kimi K2.6 thinking / GPT-5）思考过程会显示在对话时间线">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent position="popper" sideOffset={6}>
-                          <SelectItem value="off">不思考</SelectItem>
-                          <SelectItem value="low">低</SelectItem>
-                          <SelectItem value="medium">中</SelectItem>
-                          <SelectItem value="high">高</SelectItem>
-                        </SelectContent>
-                      </Select>
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        title="高级参数：多模态 / 温度 / 回复上限"
+                        title="高级参数：上下文窗口 / 思考强度 / 多模态 / 温度 / 回复上限"
                         className={row.advancedOpen ? 'text-primary' : 'text-muted-foreground'}
                         onClick={() => patchAdvancedAt(index, { advancedOpen: !row.advancedOpen })}
                       >
@@ -601,6 +660,36 @@ function ConnectionEditorView({
                           <DialogTitle>高级参数 · {row.id.trim() || '未命名模型'}</DialogTitle>
                         </DialogHeader>
                         <div className="flex flex-col gap-4">
+                          <label className="flex flex-col gap-1.5 text-sm">
+                            上下文窗口
+                            <span className="text-xs text-muted-foreground">
+                              模型一次能记住的对话量（tokens），留空按服务商默认（目录里的型号会预填官方窗口）。对话快涨满窗口时会自动压缩旧消息，填准了压缩更平滑
+                            </span>
+                            <Input
+                              value={row.window}
+                              onChange={(e) => setWindowAt(index, e.target.value.replace(/[^\d]/g, ''))}
+                              placeholder="默认"
+                              inputMode="numeric"
+                              className="h-9 w-full text-sm"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1.5 text-sm">
+                            思考强度
+                            <span className="text-xs text-muted-foreground">
+                              模型支持时（如 DeepSeek reasoner / Kimi K2.6 thinking）思考过程会显示在对话时间线；不支持时保持「不思考」即可
+                            </span>
+                            <Select value={row.thinking} onValueChange={(v) => setThinkingAt(index, v as ThinkingLevelChoice)}>
+                              <SelectTrigger className="h-9 w-full text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent position="popper" sideOffset={6}>
+                                <SelectItem value="off">不思考</SelectItem>
+                                <SelectItem value="low">低</SelectItem>
+                                <SelectItem value="medium">中</SelectItem>
+                                <SelectItem value="high">高</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </label>
                           <label className="flex items-start justify-between gap-3 text-sm">
                             <span>
                               多模态（识图）
@@ -650,9 +739,25 @@ function ConnectionEditorView({
                   </div>
                 ))}
                 <p className="text-xs text-muted-foreground">
-                  第二列是上下文窗口（tokens），留空按服务商默认（目录里的型号会预填官方窗口）；第三列是思考强度，思考过程会显示在对话时间线；每行末尾的扳手是多模态/温度/回复上限
+                  模型 id 一行一个（手打或「从目录选」挑）；每行末尾的扳手是高级参数——上下文窗口、思考强度、多模态/温度/回复上限，一般不用动
                 </p>
               </div>
+            )}
+          </div>
+
+          {/* 测试连通：用表单当前值直接测（不必先保存）；编辑时密钥留空 = 沿用已保存的 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled={formTest.state === 'running'} onClick={() => void runFormTest()}>
+              {formTest.state === 'running' ? '测试中…' : '测试连通'}
+            </Button>
+            {formTest.state === 'ok' && <span className="text-xs text-emerald-600">{formTest.detail}</span>}
+            {formTest.state === 'error' && (
+              <span className="max-w-md truncate text-xs text-destructive" title={formTest.detail}>
+                {formTest.detail}
+              </span>
+            )}
+            {formTest.state === 'idle' && (
+              <span className="text-xs text-muted-foreground">用上面填好的值测，不用先保存</span>
             )}
           </div>
 

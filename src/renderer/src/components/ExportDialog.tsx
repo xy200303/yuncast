@@ -39,7 +39,7 @@ type Phase =
  * 节目音频导出弹窗（docs/10 §8.3/§11.6，P6）：全部章节、分章/合并、MP3/WAV、响度归一。
  * 缺音频不静默跳过（§15.5）：默认禁用开始并列出缺失章节，勾选「仅导出已完成部分」才放行。
  * 导出中禁关弹窗（要停就点「取消导出」），完成后显示产出清单与「打开目录」。
- * 播控台顶栏「导出」与节目卡导出入口共用这一个弹窗。
+ * 入口在节目页的节目卡上；直播现场（滚动/即兴）的音频走「场次记录」的整场导出。
  */
 export function ExportDialog({
   program,
@@ -89,11 +89,9 @@ export function ExportDialog({
   }, [program.id, program.broadcastMode])
 
   useEffect(() => {
-    if (open) {
-      setPhase({ kind: 'config' })
-      setOnlyReady(false)
-      void refreshGate()
-    }
+    // 只拉数据，不同步草稿态：父层是「打开才挂载」（ProgramsPage 用 exporting && <ExportDialog open />），
+    // 重新打开等价于重新挂载，phase/onlyReady 的初始值本就对；不这样写，用户改到一半的勾选/进度会被无关渲染冲掉
+    if (open) void refreshGate()
   }, [open, refreshGate])
 
   /** 进度事件只认本节目的（别处可能也在导出/弹窗实例共存） */
@@ -188,8 +186,9 @@ export function ExportDialog({
                     还有 {missing.length} {unitLabel}缺音频
                   </p>
                   <div className="flex max-h-28 flex-col gap-1 overflow-y-auto">
-                    {missing.map((item, index) => (
-                      <p key={`${item.unitKind}:${item.unitId}:${index}`} className="text-xs text-muted-foreground">
+                    {/* 每条失败记录对应一个音频单元，unitKind+unitId 是它的天然主键（同一单元只会出现一次），比下标稳定 */}
+                    {missing.map((item) => (
+                      <p key={`${item.unitKind}:${item.unitId}`} className="text-xs text-muted-foreground">
                         {item.title || '（无标题）'}：{item.reason}
                       </p>
                     ))}
@@ -243,8 +242,8 @@ export function ExportDialog({
             </div>
 
             <label className="flex items-center justify-between gap-2">
-              <span className="text-muted-foreground">响度归一（loudnorm，一遍法）</span>
-              <Switch checked={loudness} onCheckedChange={(v) => setLoudness(v === true)} disabled={running} aria-label="响度归一" />
+              <span className="text-muted-foreground">统一音量（各段响度拉齐，不会忽大忽小）</span>
+              <Switch checked={loudness} onCheckedChange={(v) => setLoudness(v === true)} disabled={running} aria-label="统一音量" />
             </label>
 
             <div className="flex items-center justify-between gap-2">

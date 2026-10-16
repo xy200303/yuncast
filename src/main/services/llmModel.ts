@@ -1,24 +1,19 @@
 import type { Model, SimpleStreamOptions, TranscriptContext } from '@earendil-works/pi-ai'
 import { streamSimple as streamCompletions } from '@earendil-works/pi-ai/api/openai-completions'
 import { streamSimple as streamResponses } from '@earendil-works/pi-ai/api/openai-responses'
-import { type ModelConnection, type Persona, type ThinkingLevelChoice } from '../../shared/types'
+import { streamSimple as streamAnthropic } from '@earendil-works/pi-ai/api/anthropic-messages'
+import { type DirectorConfig, type ModelConnection, type ThinkingLevelChoice } from '../../shared/types'
 import {
   connectionFirstModel,
   getLlmProvider,
   isModelConnectionReady,
+  resolveLlmApi,
   type LlmApi,
   type ResolvedModel
 } from './providers/registry'
 import type { StorageService } from './StorageService'
 
-const MODEL_MISSING_HINT = '还没有可用的语言模型：到主播团里给主播卡选一个接入和模型'
-
-/** 人设卡没给可用模型时的报错（开播与底稿生成共用同一句，用户照着去主播团选） */
-function missingBrainHint(personaName: string): string {
-  return personaName
-    ? `主播卡「${personaName}」还没选模型：到主播团里给它选一个接入和模型`
-    : MODEL_MISSING_HINT
-}
+const MODEL_MISSING_HINT = '还没给导演配大脑：到设置 → 语言模型，给导演选一个接入和模型'
 
 /** 连通性测试的超时（本地服务拉不起来时不要让 UI 一直转） */
 const TEST_TIMEOUT_MS = 10_000
@@ -32,50 +27,23 @@ export async function listProviderModels(providerId: string): Promise<string[]> 
 }
 
 /**
- * 解析一个人设卡该用哪个模型（开播与底稿生成共用）：
- * 卡上选的接入 + 模型，接入要可用、模型要在接入列表里——没选齐就抛中文错误，
- * 调用方把 message 给 UI（预检会列成阻断项）。没有兜底：用哪个大脑必须明确。
+ * 解析导演大脑该用哪个模型（开播与会话启动共用）：
+ * directorConfig 上选的接入 + 模型，接入要可用、模型要在接入列表里——没选齐就抛中文错误，
+ * 调用方把 message 给 UI。没有兜底：用哪个大脑必须明确。
  */
-export function resolveModelForPersona(
+export function resolveModelForDirector(
   storage: StorageService,
-  persona: Persona | null | undefined
+  director: DirectorConfig
 ): ResolvedModel {
-  const bound = boundConnectionOf(storage, persona)
-  if (!bound) {
-    if (!persona) throw new Error('场次还没绑主播卡：先给它选一张卡，卡上要有接入和模型')
-    throw new Error(missingBrainHint(persona.name))
-  }
+  const bound = director.modelConnectionId ? storage.connectionGet(director.modelConnectionId) : null
+  if (!bound) throw new Error(MODEL_MISSING_HINT)
   if (!isModelConnectionReady(bound, getLlmProvider(bound.providerId))) {
     throw new Error(
-      `主播卡「${persona?.name ?? ''}」选的接入「${bound.name}」还没配齐：到设置 → 语言模型补齐密钥和模型列表`
+      `导演大脑选的接入「${bound.name}」还没配齐：到设置 → 语言模型补齐密钥和模型列表`
     )
   }
-  const selected = selectedModelOf(bound, persona)
-  if (!selected) throw new Error(missingBrainHint(persona?.name ?? ''))
-  return selected
-}
-
-function boundConnectionOf(
-  storage: StorageService,
-  persona: Persona | null | undefined
-): ModelConnection | null {
-  return persona?.modelConnectionId ? storage.connectionGet(persona.modelConnectionId) : null
-}
-
-/**
- * 卡上接入与模型都选好、接入可用、且选的模型还在接入列表里时的结果；否则 null
- * （交给调用方决定是旧配置兜底还是报错）。没有「接入的默认模型」这一档：
- * 指定的模型不在列表里就等于没选，不做任何替换。
- */
-function selectedModelOf(
-  bound: ModelConnection | null,
-  persona: Persona | null | undefined
-): ResolvedModel | null {
-  if (!bound) return null
-  const requested = (persona?.model ?? '').trim()
-  if (!requested) return null
-  if (!isModelConnectionReady(bound, getLlmProvider(bound.providerId))) return null
-  if (!bound.models.includes(requested)) return null
+  const requested = director.model.trim()
+  if (!requested || !bound.models.includes(requested)) throw new Error(MODEL_MISSING_HINT)
   return {
     connectionId: bound.id,
     providerId: bound.providerId,
@@ -100,7 +68,7 @@ export interface PreparedLlm {
   modelLabel: string
   /** 自动压缩的标尺：接入上配的模型级窗口 > 服务商声明 > 128k 兜底 */
   contextWindow: number
-  /** 思考强度（接入的模型级配置）：off = 不思考；responses 协议映射 reasoning effort，completions 协议解析 reasoning_content */
+  /** 思考强度（接入的模型级配置）：off = 不思考；responses 映射 reasoning effort，completions 解析 reasoning_content，anthropic 映射 thinking budget */
   thinkingLevel: ThinkingLevelChoice
   /** 温度（接入的模型级高级参数）：undefined = 服务商默认 */
   temperature?: number
@@ -109,30 +77,36 @@ export interface PreparedLlm {
 }
 
 /**
- * 按模型的 api 协议分发到对应的 pi-ai 流实现（openai-completions / openai-responses）。
- * options.reasoning（pi-agent-core 从 thinkingLevel 映射来）两个实现都认：
- * completions 解析 reasoning_content，responses 映射成 reasoning.effort。
+ * 按模型的 api 协议分发到对应的 pi-ai 流实现（openai-completions / openai-responses / anthropic-messages）。
+ * options.reasoning（pi-agent-core 从 thinkingLevel 映射来）三个实现都认：
+ * completions 解析 reasoning_content，responses 映射 reasoning.effort，anthropic 映射 thinking budget。
  */
 export function streamLlmModel(
   model: Model<LlmApi>,
   context: TranscriptContext,
   options?: SimpleStreamOptions
 ) {
-  return model.api === 'openai-responses'
-    ? streamResponses(model as Model<'openai-responses'>, context, options)
-    : streamCompletions(model as Model<'openai-completions'>, context, options)
+  if (model.api === 'openai-responses') {
+    return streamResponses(model as Model<'openai-responses'>, context, options)
+  }
+  if (model.api === 'anthropic-messages') {
+    return streamAnthropic(model as Model<'anthropic-messages'>, context, options)
+  }
+  return streamCompletions(model as Model<'openai-completions'>, context, options)
 }
 
 /**
- * LLM 会话准备（主播会话用，直播/写稿同一条装配线）：
- * 接入配置 → 手工构造 Model 对象。协议由 manifest 的 toModelConfig 给出（地址/密钥/模型名/api）。
+ * LLM 会话准备（导演会话用，直播/写稿同一条装配线）：
+ * 接入配置 → 手工构造 Model 对象。地址/密钥/模型名由 manifest 的 toModelConfig 给出，
+ * 协议由接入级配置 params.apiProtocol 决定（缺省走服务商预设 defaultApi）。
  */
 export async function prepareLlmModel(resolved: ResolvedModel): Promise<PreparedLlm> {
   const def = getLlmProvider(resolved.providerId)
   if (!def) throw new Error(`不认识的服务商：${resolved.providerId}（到设置 → 语言模型里重新选一个）`)
 
-  const { baseUrl, apiKey, model: modelId, api } = def.toModelConfig(resolved.params, resolved.model)
+  const { baseUrl, apiKey, model: modelId } = def.toModelConfig(resolved.params, resolved.model)
   if (!modelId) throw new Error(`还没选模型：${def.label}（设置 → 语言模型里给它加一个模型）`)
+  const api = resolveLlmApi(def, resolved.params)
 
   const contextWindow = resolved.contextWindow ?? def.capabilities.contextWindow ?? FALLBACK_CONTEXT_WINDOW
   const thinkingLevel: ThinkingLevelChoice = resolved.thinkingLevel ?? 'off'
@@ -163,7 +137,8 @@ export async function prepareLlmModel(resolved: ResolvedModel): Promise<Prepared
 }
 
 /**
- * 接入连通性测试：按接入协议打一个最小请求（completions → /chat/completions，responses → /responses）。
+ * 接入连通性测试：按接入协议打一个最小请求
+ * （completions → /chat/completions，responses → /responses，anthropic → /v1/messages）。
  * 调用方一般逐个模型测（界面就是这么做的）；没指定就用列表第一个。
  * 不走 pi（那里没有「测试」入口），错误翻成中文给 UI。
  */
@@ -187,21 +162,34 @@ export async function testModelConnection(
   const target = (model ?? '').trim() || connectionFirstModel(connection, def)
   const cfg = def.toModelConfig(connection.params, target)
   if (!cfg.model) return { ok: false, error: `还没有模型（${def.label}）：先加一个模型再测` }
+  const api = resolveLlmApi(def, connection.params)
 
   const base = cfg.baseUrl.replace(/\/+$/, '')
   // Responses 协议要求 max_output_tokens ≥ 16（GPT-5 系思考模型更低会直接 400）
-  const url = cfg.api === 'openai-responses' ? `${base}/responses` : `${base}/chat/completions`
+  const url =
+    api === 'openai-responses'
+      ? `${base}/responses`
+      : api === 'anthropic-messages'
+        ? `${base}/v1/messages`
+        : `${base}/chat/completions`
   const body =
-    cfg.api === 'openai-responses'
+    api === 'openai-responses'
       ? { model: cfg.model, input: 'ping', max_output_tokens: 16 }
-      : { model: cfg.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }
+      : api === 'anthropic-messages'
+        ? { model: cfg.model, max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }
+        : { model: cfg.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }
   const startedAt = Date.now()
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {})
+        // anthropic 协议走 x-api-key + 版本头（与 Claude Code 接第三方端点同一套）；其余走 Bearer
+        ...(api === 'anthropic-messages'
+          ? { 'x-api-key': cfg.apiKey, 'anthropic-version': '2023-06-01' }
+          : cfg.apiKey
+            ? { Authorization: `Bearer ${cfg.apiKey}` }
+            : {})
       },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(TEST_TIMEOUT_MS)

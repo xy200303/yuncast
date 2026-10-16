@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useReducer, useState } from 'react'
 import { ArrowLeft, ChevronRight, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -9,9 +9,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { VoiceCascadePicker } from '@/components/VoiceCascadePicker'
+import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { ProviderIcon } from '@/components/ProviderIcon'
 import { useAppStore, type ProviderFieldSpec, type TtsProviderManifest } from '../../stores/useAppStore'
+import { ttsModelBadges } from '../../lib/modelBadges'
+import { cn } from '@/lib/utils'
 import { TTS_MODEL_KIND_LABEL, type ParamSpec, type TtsConnectionSafe, type TtsProvider } from '../../../../shared/types'
 
 /**
@@ -47,7 +49,7 @@ export function TtsSection() {
     <div className="flex flex-col gap-4">
       {editing ? (
         <TtsConnectionEditor
-          key={editing.connection?.id ?? 'new'}
+          key={editing.connection?.id ?? 'new-tts-connection'}
           initialProviderId={editing.providerId}
           connection={editing.connection}
           onClose={() => setEditing(null)}
@@ -331,11 +333,12 @@ function TtsTestDialog({
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
           <div>
             <Label className="mb-1.5 text-sm font-medium">模型与音色</Label>
-            <VoiceCascadePicker
+            <UnifiedVoicePicker
               voiceId={voice}
               onPick={setVoice}
               onModelChange={setModelId}
               connections={[connection]}
+              emptyLabel="（用这个模型的默认音色）"
             />
           </div>
           <div>
@@ -367,6 +370,103 @@ function TtsTestDialog({
   )
 }
 
+/**
+ * 编辑器表单是一份草稿：换服务商时模型勾选、每个模型的参数、实时开关、展开项要整批重置，
+ * 属于同一次状态迁移，所以并进一个 reducer；保存/测试的请求状态（busy、formTest）与草稿无关，各自 useState。
+ */
+type TtsDraft = {
+  providerId: TtsProvider
+  name: string
+  params: Record<string, string | number | boolean>
+  enabled: string[]
+  modelParams: Record<string, Record<string, string | number | boolean>>
+  realtime: boolean
+  expanded: string
+}
+
+type TtsDraftAction =
+  | { type: 'name'; name: string }
+  | { type: 'param'; key: string; value: string | number | boolean }
+  | { type: 'toggleModel'; id: string; on: boolean }
+  | { type: 'modelParam'; id: string; key: string; value: string | number | boolean }
+  | { type: 'realtime'; realtime: boolean }
+  | { type: 'toggleExpanded'; id: string }
+  | {
+      type: 'provider'
+      providerId: TtsProvider
+      name: string
+      params: Record<string, string | number | boolean>
+      enabled: string[]
+      realtime: boolean
+    }
+
+function ttsDraftReducer(state: TtsDraft, action: TtsDraftAction): TtsDraft {
+  switch (action.type) {
+    case 'name':
+      return { ...state, name: action.name }
+    case 'param':
+      return { ...state, params: { ...state.params, [action.key]: action.value } }
+    case 'toggleModel':
+      return {
+        ...state,
+        enabled: action.on
+          ? [...state.enabled, action.id]
+          : state.enabled.filter((item) => item !== action.id)
+      }
+    case 'modelParam': {
+      const current = { ...(state.modelParams[action.id] ?? {}) }
+      // 清空 = 回到官方默认：键直接去掉，别把空值落盘
+      if (action.value === '') delete current[action.key]
+      else current[action.key] = action.value
+      return { ...state, modelParams: { ...state.modelParams, [action.id]: current } }
+    }
+    case 'realtime':
+      return { ...state, realtime: action.realtime }
+    case 'toggleExpanded':
+      return { ...state, expanded: state.expanded === action.id ? '' : action.id }
+    case 'provider':
+      return {
+        providerId: action.providerId,
+        name: action.name,
+        params: action.params,
+        enabled: action.enabled,
+        modelParams: {},
+        realtime: action.realtime,
+        expanded: ''
+      }
+  }
+}
+
+/** 初始草稿：编辑已有接入就用它落盘的值，新建就按服务商 manifest 给默认值 */
+function initTtsDraft({
+  connection,
+  providerId,
+  providers
+}: {
+  connection?: TtsConnectionSafe
+  providerId: TtsProvider
+  providers: TtsProviderManifest[]
+}): TtsDraft {
+  const def = providers.find((item) => item.id === providerId)
+  const params: Record<string, string | number | boolean> = { ...(connection?.params ?? {}) }
+  for (const field of def?.configFields ?? []) {
+    if (params[field.key] === undefined && field.default !== undefined) params[field.key] = field.default
+  }
+  const specs = (def?.models ?? []).filter((spec) => spec.kind !== 'realtime')
+  const firstTts = specs.find((spec) => spec.kind === 'tts')?.id ?? specs[0]?.id ?? ''
+  return {
+    providerId,
+    name: connection?.name ?? def?.label ?? '',
+    params,
+    enabled: connection?.models.map((item) => item.id) ?? (firstTts ? [firstTts] : []),
+    modelParams: Object.fromEntries(
+      (connection?.models ?? []).map((item) => [item.id, { ...item.params }])
+    ),
+    realtime: connection?.realtime ?? false,
+    expanded: ''
+  }
+}
+
 /** 新建/编辑语音合成接入：接入名 + 凭据 + 模型（勾选 + 每个模型的参数）+ 实时合成。栏内切换视图，不是弹窗 */
 function TtsConnectionEditor({
   initialProviderId,
@@ -383,62 +483,49 @@ function TtsConnectionEditor({
 }) {
   const providers = useAppStore((s) => s.ttsProviders)
   const setConnections = useAppStore((s) => s.setTtsConnections)
-  const [providerId, setProviderId] = useState(initialProviderId)
+  const [draft, dispatch] = useReducer(
+    ttsDraftReducer,
+    { connection, providerId: initialProviderId, providers },
+    initTtsDraft
+  )
+  const { providerId, name, params, enabled, modelParams, realtime, expanded } = draft
   const def = providers.find((item) => item.id === providerId)
   const specs = (def?.models ?? []).filter((spec) => spec.kind !== 'realtime')
   const fields = def?.configFields ?? []
-  const firstTts = specs.find((spec) => spec.kind === 'tts')?.id ?? specs[0]?.id ?? ''
-  const [name, setName] = useState(connection?.name ?? def?.label ?? '')
-  const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
-    const initial: Record<string, string | number | boolean> = { ...(connection?.params ?? {}) }
-    for (const field of def?.configFields ?? []) {
-      if (initial[field.key] === undefined && field.default !== undefined) initial[field.key] = field.default
-    }
-    return initial
-  })
-  const [enabled, setEnabled] = useState<string[]>(
-    () => connection?.models.map((item) => item.id) ?? (firstTts ? [firstTts] : [])
-  )
-  const [modelParams, setModelParams] = useState<Record<string, Record<string, string | number | boolean>>>(
-    () => Object.fromEntries((connection?.models ?? []).map((item) => [item.id, { ...item.params }]))
-  )
-  const [realtime, setRealtime] = useState(connection?.realtime ?? false)
-  const [expanded, setExpanded] = useState('')
   const [busy, setBusy] = useState(false)
+  /** 表单直连测试（不必先保存）：idle/running/ok/error + 一行结果 */
+  const [formTest, setFormTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'error'; detail?: string }>({
+    state: 'idle'
+  })
 
   /** 新建时换服务商：凭据按新服务商的字段重置，模型勾选回到新家的第一个 TTS 模型 */
   const changeProvider = (next: TtsProvider) => {
     if (connection || next === providerId) return
     const nextDef = providers.find((item) => item.id === next)
     if (!nextDef) return
-    // 名字还没改过（仍是上一家的 label）就跟着换，省得手填
-    if (!name.trim() || name === def?.label) setName(nextDef.label)
     const nextParams: Record<string, string | number | boolean> = {}
     for (const field of nextDef.configFields) {
       if (field.default !== undefined) nextParams[field.key] = field.default
     }
     const nextSpecs = nextDef.models.filter((spec) => spec.kind !== 'realtime')
     const nextFirst = nextSpecs.find((spec) => spec.kind === 'tts')?.id ?? nextSpecs[0]?.id ?? ''
-    setProviderId(next)
-    setParams(nextParams)
-    setEnabled(nextFirst ? [nextFirst] : [])
-    setModelParams({})
-    setRealtime(false)
-    setExpanded('')
+    dispatch({
+      type: 'provider',
+      providerId: next,
+      // 名字还没改过（仍是上一家的 label）就跟着换，省得手填
+      name: !name.trim() || name === def?.label ? nextDef.label : name,
+      params: nextParams,
+      enabled: nextFirst ? [nextFirst] : [],
+      realtime: false
+    })
   }
 
   const toggleModel = (id: string, on: boolean) => {
-    setEnabled(on ? [...enabled, id] : enabled.filter((item) => item !== id))
+    dispatch({ type: 'toggleModel', id, on })
   }
 
   const patchModelParam = (id: string, key: string, value: string | number | boolean) =>
-    setModelParams((prev) => {
-      const current = { ...(prev[id] ?? {}) }
-      // 清空 = 回到官方默认：键直接去掉，别把空值落盘
-      if (value === '') delete current[key]
-      else current[key] = value
-      return { ...prev, [id]: current }
-    })
+    dispatch({ type: 'modelParam', id, key, value })
 
   const restreamable = specs.some((spec) => enabled.includes(spec.id) && spec.streaming)
 
@@ -471,6 +558,39 @@ function TtsConnectionEditor({
       onClose()
     } finally {
       setBusy(false)
+    }
+  }
+
+  /**
+   * 测试连通：用表单当前（未保存）的值合成一句并出声；密钥留空 = 沿用已保存的（主进程合并）。
+   * 挑勾选里第一个普通合成模型（长文/双人播客模型吃不了单句文本）。
+   */
+  const runFormTest = async () => {
+    if (formTest.state === 'running') return
+    if (enabled.length === 0) {
+      toast.warning('先在模型列表里勾一个模型再测')
+      return
+    }
+    const model =
+      specs.find((spec) => enabled.includes(spec.id) && (spec.capabilities?.kind ?? 'standard') === 'standard')
+        ?.id ?? enabled[0]
+    setFormTest({ state: 'running' })
+    try {
+      const result = await window.api.tts.testInput({
+        id: connection?.id,
+        providerId,
+        name,
+        params,
+        models: enabled.map((id) => ({ id, params: modelParams[id] ?? {} })),
+        model
+      })
+      setFormTest(
+        result.ok
+          ? { state: 'ok', detail: `合成成功${result.latencyMs ? ` · ${result.latencyMs} ms` : ''}${result.playing ? ' · 已出声' : ''}` }
+          : { state: 'error', detail: result.error }
+      )
+    } catch (error) {
+      setFormTest({ state: 'error', detail: error instanceof Error ? error.message : String(error) })
     }
   }
 
@@ -538,7 +658,7 @@ function TtsConnectionEditor({
             <Input
               className="h-10 text-sm"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => dispatch({ type: 'name', name: e.target.value })}
               placeholder={`如：${def.label} 主号 / 备用账号`}
             />
           </div>
@@ -550,7 +670,7 @@ function TtsConnectionEditor({
                 field={field}
                 value={params[field.key] ?? ''}
                 secretSaved={Boolean(connection?.hasSecret && field.secret)}
-                onChange={(value) => setParams((prev) => ({ ...prev, [field.key]: value }))}
+                onChange={(value) => dispatch({ type: 'param', key: field.key, value })}
               />
               {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
             </div>
@@ -585,6 +705,18 @@ function TtsConnectionEditor({
                               {TTS_MODEL_KIND_LABEL[spec.capabilities?.kind ?? 'standard']}
                             </Badge>
                           )}
+                          {/* 能力标识：彩色图标 + 文字（与音色选择器同口径，lib/modelBadges） */}
+                          {ttsModelBadges(spec).map((badge) => (
+                            <Badge
+                              key={badge.label}
+                              variant="secondary"
+                              className="gap-1 text-xs"
+                              title={badge.title}
+                            >
+                              <badge.icon className={cn('size-3', badge.className)} />
+                              {badge.label}
+                            </Badge>
+                          ))}
                           {missingWorkspace && (
                             <Badge variant="outline" className="text-xs text-amber-600">
                               需业务空间 ID
@@ -600,7 +732,7 @@ function TtsConnectionEditor({
                           variant="outline"
                           size="sm"
                           disabled={!on}
-                          onClick={() => setExpanded(expanded === spec.id ? '' : spec.id)}
+                          onClick={() => dispatch({ type: 'toggleExpanded', id: spec.id })}
                         >
                           参数{paramCount > 0 ? `（${paramCount}）` : ''}
                         </Button>
@@ -634,7 +766,7 @@ function TtsConnectionEditor({
             <Switch
               checked={realtime && restreamable}
               disabled={!restreamable}
-              onCheckedChange={setRealtime}
+              onCheckedChange={(value) => dispatch({ type: 'realtime', realtime: value })}
               aria-label="实时合成开关"
             />
           </div>
@@ -656,7 +788,23 @@ function TtsConnectionEditor({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t pt-4">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 测试连通：用表单当前值直接测（不必先保存），会真合成一句并出声 */}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={formTest.state === 'running' || enabled.length === 0}
+              title="用上面填好的值合成一句试播，不用先保存"
+              onClick={() => void runFormTest()}
+            >
+              {formTest.state === 'running' ? '合成中…' : '测试连通'}
+            </Button>
+            {formTest.state === 'ok' && <span className="text-xs text-emerald-600">{formTest.detail}</span>}
+            {formTest.state === 'error' && (
+              <span className="max-w-md truncate text-xs text-destructive" title={formTest.detail}>
+                {formTest.detail}
+              </span>
+            )}
             {connection && (
               <>
                 <Button

@@ -38,7 +38,7 @@ export function CommentGatewayCard() {
         <div>
           <p className="text-[13px] font-medium">平台连接器</p>
           <p className="text-xs text-muted-foreground">
-            主应用不内置平台 SDK：连接器是独立 MCP server，事件经 notifications/live_event 推进来，出站动作走同一连接
+            连接器是单独的小软件（抖音「直播数据助手」）：装好并打开它，评论、礼物、进场这些直播消息就会流进这里
           </p>
         </div>
         <Badge
@@ -50,16 +50,16 @@ export function CommentGatewayCard() {
       </div>
       <div className="mt-3 grid grid-cols-[1fr_auto_auto] items-end gap-2">
         <div className="w-28">
-          <Label className="mb-1">MCP 端口</Label>
+          <Label className="mb-1">端口</Label>
           <Input value={port} onChange={(e) => setPort(e.target.value)} placeholder="8102" />
         </div>
         <div className="col-span-3">
-          <Label className="mb-1">Bearer Token（连接器「设置 → 智能体接口」里复制）</Label>
+          <Label className="mb-1">连接令牌</Label>
           <Input
             type="password"
             value={token}
             onChange={(e) => setToken(e.target.value)}
-            placeholder="连接器的 MCP Token"
+            placeholder="连接器「设置 → 智能体接口」里复制"
           />
         </div>
         <div className="col-span-3 flex gap-2">
@@ -77,7 +77,7 @@ export function CommentGatewayCard() {
         </div>
       </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        连接器没开时会自动退避重试；开发调试可单独运行连接器的独立模式（内置演示数据，走同一条事件总线）。
+        端口和令牌在哪：打开连接器的「设置 → 智能体接口」，把上面的端口和令牌抄过来。连接器没开时会自动重试，打开它就自己连上了。
       </p>
     </div>
   )

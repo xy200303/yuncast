@@ -10,6 +10,7 @@ import {
   type AppConfig,
   type AppTheme,
   type ConnectorStatus,
+  type DirectorConfig,
   type ModelConnectionSafe,
   type PartialDeep,
   type Persona,
@@ -27,8 +28,16 @@ import {
 } from '../theme/applyAppearance'
 
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'programs', 'anchors', 'knowledge', 'voices', 'stats'] as const
+export const NAV_PAGES = ['live', 'programs', 'anchors', 'knowledge', 'voices', 'sessions', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
+export type AgentPanelMode = 'floating' | 'docked' | 'minimized'
+export type SettingsPaneId = 'appearance' | 'director' | 'llm' | 'prompts' | 'tts' | 'stream' | 'comment' | 'about'
+
+export interface AgentPanelContext {
+  kind: 'draft' | 'live' | 'general'
+  label: string
+  programId?: string
+}
 
 /** 服务商清单的纯数据形态：类型从 preload 暴露的 API 反推，渲染层不 import 主进程模块 */
 export type LlmProviderManifest = Awaited<ReturnType<typeof window.api.providers.llmList>>[number]
@@ -47,7 +56,22 @@ interface AppState {
 
   /** 设置弹窗开关（设置不是页面，是全局弹窗，对齐 TermPilot） */
   settingsOpen: boolean
+  /** 打开时要定位到的栏目（预检「去修复」等深链用；null = 维持上次） */
+  settingsPane: SettingsPaneId | null
   setSettingsOpen: (open: boolean) => void
+  openSettings: (pane?: SettingsPaneId) => void
+
+  /** 首跑引导页（docs/REDESIGN 4.9）：全屏覆盖层，完成标记在 localStorage（lib/onboarding） */
+  onboardingOpen: boolean
+  setOnboardingOpen: (open: boolean) => void
+
+  agentPanelMode: AgentPanelMode
+  agentPanelContext: AgentPanelContext | null
+  agentPanelWidth: number
+  setAgentPanelMode: (mode: AgentPanelMode) => void
+  openAgentPanel: (context?: AgentPanelContext) => void
+  setAgentPanelContext: (context: AgentPanelContext | null) => void
+  setAgentPanelWidth: (width: number) => void
 
   theme: AppTheme
   accent: AppAccent
@@ -64,7 +88,7 @@ interface AppState {
   pool: PoolSnapshot
   setPool: (snapshot: PoolSnapshot) => void
 
-  /** 播放循环开关（主进程持有循环，这里只是界面镜像：暂停/继续时同步） */
+  /** 播报循环开关镜像（真值在主进程：agent 状态广播的 speakingPaused 同步来；暂停/继续时先本地乐观更新） */
   loopRunning: boolean
   setLoopRunning: (running: boolean) => void
 
@@ -110,7 +134,23 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setPage: (page) => set({ page }),
 
   settingsOpen: false,
+  settingsPane: null,
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  openSettings: (pane) => set({ settingsOpen: true, settingsPane: pane ?? null }),
+
+  onboardingOpen: false,
+  setOnboardingOpen: (onboardingOpen) => set({ onboardingOpen }),
+
+  agentPanelMode: 'minimized',
+  agentPanelContext: null,
+  agentPanelWidth: 400,
+  setAgentPanelMode: (agentPanelMode) => set({ agentPanelMode }),
+  openAgentPanel: (agentPanelContext) => set({
+    agentPanelMode: get().page === 'live' ? 'docked' : 'floating',
+    ...(agentPanelContext ? { agentPanelContext } : {})
+  }),
+  setAgentPanelContext: (agentPanelContext) => set({ agentPanelContext }),
+  setAgentPanelWidth: (agentPanelWidth) => set({ agentPanelWidth: Math.max(320, Math.min(window.innerWidth / 2, agentPanelWidth)) }),
 
   theme: bootTheme,
   accent: bootAccent,
@@ -216,12 +256,12 @@ export function selectTtsReady(connections: TtsConnectionSafe[]): boolean {
   return connections.some((connection) => connection.ready)
 }
 
-/** 当前主播卡的语言模型是否就绪（状态栏徽章用）：卡上选的接入与模型都可用才算 */
+/** 导演大脑是否就绪（状态栏徽章用）：导演配置里选的接入与模型都可用才算 */
 export function selectLlmReady(
   connections: ModelConnectionSafe[],
-  persona: Persona | null | undefined
+  director: DirectorConfig | null | undefined
 ): boolean {
-  return llmReady(connections, persona)
+  return llmReady(connections, director)
 }
 
 /** 服务商显示名（拿不到 manifest 就退回 id） */

@@ -1,6 +1,6 @@
 import type { AgentTool } from '@earendil-works/pi-agent-core'
 import { Type, type TSchema } from 'typebox'
-import type { EntryKind, LiveComment, Persona, PlaybackControlAction, Script, UtteranceSource } from '../../shared/types'
+import type { EntryKind, LiveComment, PlaybackControlAction, Script, UtteranceSource } from '../../shared/types'
 import { ENTRY_KINDS, UTTERANCE_STATUS_LABEL } from '../../shared/types'
 import type { SpeechPool } from './SpeechPool'
 import type { ConnectorService } from './ConnectorService'
@@ -8,6 +8,7 @@ import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
+import type { StorageService } from './StorageService'
 import type { UtteranceService } from './UtteranceService'
 import { fetchUrlGuarded, webSearchGuarded } from './fetchUrl'
 
@@ -31,20 +32,29 @@ export const AGENT_SOURCE_ID = 'anchor'
  */
 export const DRAFT_HARD_CAP = 200
 
-/** 编剧模式：role 名 → 角色音色。音色优先级（docs/07 §8.5）：显式 voice > 本场运行态音色 > 角色音色 > 人设卡音色。都没有返回 undefined（合成路由会因此报错，不兜底） */
+/**
+ * 稿内演法标记的工具参数提示（say/write_bits/add_draft/edit_draft 的 text 参数共用）：
+ * 模型写稿时最常读的是工具 schema——分工写在这比写在手册里管用。
+ * 完整教学在 system prompt 的「局部演法」段（PromptTemplateService.markupSection）。
+ */
+const MARKUP_HINT =
+  '正文里用演法标记做单句级表演：<cot text=情绪>句子</cot> 给关键句套情绪（桥段至少挑一处：报价/悬念/反转句）、<fx>笑声</fx> 插音效、<pause>600</pause> 停顿；delivery 只整段语气，两者都要写。不支持的音色合成时自动剥掉标记，放心写'
+
+/**
+ * 音色优先级：显式 voice > role 指定的卡司嗓音 > 当前出镜主播卡音色。
+ * role 是卡司表里的主播卡名（say 的 role 参数：这句由谁出镜）。都没有返回 undefined（合成路由会因此报错，不兜底）
+ */
 export function resolveVoice(
-  persona: Persona,
+  persona: PersonaService,
   role?: string,
-  voice?: string,
-  programVoice?: string
+  voice?: string
 ): string | undefined {
   if (voice?.trim()) return voice.trim()
-  if (programVoice?.trim()) return programVoice.trim()
   if (role?.trim()) {
-    const found = persona.roles.find((r) => r.name === role.trim())
+    const found = persona.list().find((p) => p.name === role.trim())
     if (found?.voiceId) return found.voiceId
   }
-  return persona.voiceId || undefined
+  return persona.get().voiceId || undefined
 }
 
 export interface AnchorToolDeps {
@@ -53,14 +63,14 @@ export interface AnchorToolDeps {
   memory: MemoryService
   persona: PersonaService
   script: ScriptService
+  /** 场记查询（session_history 工具）：场次列表/单场详情都从这读 */
+  storage: StorageService
   /** 节目底稿库（list/edit/add/remove_draft：导演口径调整落到底稿，长期生效） */
   utterances: UtteranceService
   /** insert_next 挂 replyTo 用的最近评论 */
   getLastComment: () => LiveComment | null
   /** 场景推进后通知 AgentService 广播状态（提词器刷新） */
   onSceneChanged: () => void
-  /** 本场运行态音色（节目加载时写入；热切换 set_voice 也改它） */
-  getProgramVoice?: () => string
   /** 场景切换后装载新场景话术库（AgentService 转发给 ProgramPlaybackService） */
   onSceneAdvanced?: (sceneIndex: number) => void
   /** 请示导演（ask_director）：进对话面板高亮卡片，不阻塞直播（docs/07 §8.8.6 ④） */
@@ -70,16 +80,14 @@ export interface AnchorToolDeps {
     timeoutSec: number
     defaultAction?: string
   }) => void
-  /** 运行态换音色（set_voice） */
-  setProgramVoice?: (voiceId: string) => void
   /** 运行态调段间留白（set_gap）：0 = 回系统默认 */
   setProgramGap?: (gapMs: number) => void
   /** 播报控制（pause/resume/skip）：广播到渲染进程执行 */
   onPlaybackControl?: (action: PlaybackControlAction) => void
   /** 播报是否被暂停：暂停期间 say / insert_next 直接拒（说出去的话收不回） */
   getSpeakingPaused?: () => boolean
-  /** 会话用途：prep=写稿备播（say/insert_next 关闭，产出只走 write_drafts），live=直播中 */
-  getPurpose?: () => 'prep' | 'live'
+  /** 节目开播态：没开播时播出通道关着（say/insert_next 拒，产出只走 write_bits 入库） */
+  isLiveActive?: () => boolean
   /** 标记直播间动态批次的处理结果（mark_live_events）：handled=回过 / ignored=不理 */
   markLiveEvents?: (ids: string[], state: 'handled' | 'ignored') => string
   /** 正式启动当前节目开播（start_live）：返回开播结果或预检拦截原因 */
@@ -97,17 +105,16 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
     memory,
     persona,
     script,
+    storage,
     utterances,
     getLastComment,
     onSceneChanged,
-    getProgramVoice,
     onSceneAdvanced,
     onDirectorAsk,
-    setProgramVoice,
     setProgramGap,
     onPlaybackControl,
     getSpeakingPaused,
-    getPurpose,
+    isLiveActive,
     markLiveEvents,
     onGoLive,
     syncProducts,
@@ -133,6 +140,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
   // ---------- 底稿工具共用 ----------
   const DRAFT_STATUS = UTTERANCE_STATUS_LABEL
   const activeProgramId = (): string | null => script.getActive().program?.id ?? null
+  /** 当前节目的知识范围（search_knowledge/check_price 只查节目配置的条目/文件；无节目 = 全库） */
+  const knowledgeScope = () => script.getActive().program?.knowledgeScope
   const currentSceneId = (): string => script.currentScene()?.scene.id ?? ''
   const sceneTitleOf = (sceneId: string): string => {
     if (sceneId === '') return '全场通用'
@@ -170,21 +179,21 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       description:
         '说内容给观众听，排进话术池队列等待播出。现场短句（回评论/过渡/互动）一次说一句完整口语；' +
         '要播一个完整桥段（故事/讲解/包袱，多句 150~350 字）就把整段一次传进来——整段合成语气连贯，别拆成单句多次调。' +
-        'role 参数用于编剧模式：以某个角色的口吻写台词。' +
+        'role 填卡司表里的主播卡名：这句由她出镜（她的嗓音和风格）；不传 = 当前出镜的主播。' +
         'delivery 写这句话的表演指示（情绪/语气，一句话，如「压低声音像说悄悄话」）——会真的拿去控制合成语气，模型支持语气指令才生效。',
       parameters: Type.Object({
-        text: Type.String({ description: '要说的话：一句短评，或一整段桥段' }),
-        voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
-        role: Type.Optional(Type.String({ description: '角色名（编剧模式），台词按该角色音色播出' })),
+        text: Type.String({ description: `要说的话：一句短评，或一整段桥段。${MARKUP_HINT}` }),
+        voice: Type.Optional(Type.String({ description: '音色 id，不传就按 role/当前出镜主播的音色' })),
+        role: Type.Optional(Type.String({ description: '卡司表里的主播卡名：这句由她出镜（她的嗓音）' })),
         delivery: Type.Optional(Type.String({ description: '表演指示（情绪/语气，一句话），随这次合成发给模型' })),
         rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3）：催单加快、讲故事放慢' })),
         pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守）：激动拔高、悄悄话压低' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_bits 入库'
+          if (!isLiveActive?.()) return '还没开播：播出通道关着，底稿用 write_bits 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
-          const voiceId = resolveVoice(persona.get(), params.role, params.voice, getProgramVoice?.())
+          const voiceId = resolveVoice(persona, params.role, params.voice)
           pool.say({
             text: params.text,
             voiceId,
@@ -194,7 +203,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'scene'
           })
-          return `已排进队列：「${params.text}」${params.role ? `（角色：${params.role}）` : ''}`
+          return `已排进队列：「${params.text}」${params.role ? `（出镜：${params.role}）` : ''}`
         })
     }),
     defineTool({
@@ -204,18 +213,18 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         '插播一句话：当前正在播的这条（桥段是整段原子单位）播完后播这条。只在回复观众评论或紧急情况使用。',
       parameters: Type.Object({
         text: Type.String({ description: '要插播的话，一句' }),
-        voice: Type.Optional(Type.String({ description: '音色 id，不传就用当前主播的音色' })),
-        role: Type.Optional(Type.String({ description: '角色名（编剧模式）' }))
+        voice: Type.Optional(Type.String({ description: '音色 id，不传就按 role/当前出镜主播的音色' })),
+        role: Type.Optional(Type.String({ description: '卡司表里的主播卡名：这句由她出镜' }))
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          if (getPurpose?.() === 'prep') return '写稿模式：播出通道关着，底稿用 write_bits 入库'
+          if (!isLiveActive?.()) return '还没开播：播出通道关着，底稿用 write_bits 入库'
           if (getSpeakingPaused?.()) return '播报已暂停：插播也播不出去，等导演恢复'
           const comment = getLastComment()
           const replyTo = comment ? { commentId: comment.id, author: comment.author } : undefined
           pool.insertNext({
             text: params.text,
-            voiceId: resolveVoice(persona.get(), params.role, params.voice, getProgramVoice?.()),
+            voiceId: resolveVoice(persona, params.role, params.voice),
             sourceAgentId: AGENT_SOURCE_ID,
             sourceKind: 'reply' as const,
             replyTo
@@ -263,6 +272,65 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const played = pool.getRecentPlayed(params.n ?? 5)
           if (played.length === 0) return '还没有播过任何话术'
           return played.map((item, i) => `${i + 1}. ${item.text}`).join('\n')
+        })
+    }),
+    defineTool({
+      name: 'session_history',
+      label: '查场次记录',
+      description:
+        '查历史场次的场记：每场播了什么、观众怎么互动、下播复盘摘要。不传 sessionId 返回最近场次列表（id/节目/时间/统计）；' +
+        '传 sessionId 返回那场的详情（复盘摘要、统计、互动观众、评论与播出话术抽样）。复盘/写新稿想参考哪场，自己决定。',
+      parameters: Type.Object({
+        sessionId: Type.Optional(Type.String({ description: '场次 id；不传 = 列最近场次' })),
+        limit: Type.Optional(Type.Number({ description: '列表条数，默认 10', default: 10 }))
+      }),
+      execute: async (_id, params) =>
+        guardTool(() => {
+          const fmtTime = (ts: number) =>
+            new Date(ts).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+          if (!params.sessionId) {
+            const sessions = storage.sessionList().slice(0, params.limit ?? 10)
+            if (sessions.length === 0) return '还没有任何场次记录'
+            return sessions
+              .map(
+                (s) =>
+                  `${s.id}｜${s.programName}｜${fmtTime(s.startedAt)}｜播出 ${s.stats.played} · 评论 ${s.stats.comments} · 回复 ${s.stats.replies}` +
+                  (s.summary ? '｜有复盘' : '')
+              )
+              .join('\n')
+          }
+          const session = storage.sessionGet(params.sessionId)
+          if (!session) return `没有找到场次 ${params.sessionId}`
+          const lines: string[] = [
+            `场次 ${session.id}｜${session.programName}｜${fmtTime(session.startedAt)} 开播` +
+              (session.endedAt ? `，播了 ${Math.max(1, Math.round((session.endedAt - session.startedAt) / 60000))} 分钟` : '，进行中'),
+            `统计：播出 ${session.stats.played} 条 · 评论 ${session.stats.comments} 条 · 回复 ${session.stats.replies} 条`
+          ]
+          if (session.summary) lines.push(`复盘摘要：${session.summary}`)
+          const viewers = storage.sessionViewerAgg(session.id)
+          if (viewers.length > 0) {
+            lines.push(
+              '互动观众：' +
+                viewers.slice(0, 10).map((v) => `${v.name}（${v.count} 条）`).join('、')
+            )
+          }
+          const comments = storage
+            .sessionEvents(session.id)
+            .filter((e) => e.kind === 'comment')
+            .slice(-20)
+          if (comments.length > 0) {
+            lines.push('评论抽样（最近 20 条）：')
+            for (const c of comments) lines.push(`- ${String(c.payload.author ?? '匿名')}：${String(c.payload.content ?? '')}`)
+          }
+          const played = storage
+            .sessionSpeechItems(session.id)
+            .filter((item) => item.status === 'done' || item.status === 'interrupted')
+            .slice(0, 15)
+          if (played.length > 0) {
+            lines.push('播出话术抽样（前 15 条）：')
+            for (const item of played) lines.push(`- ${item.text.slice(0, 60)}${item.text.length > 60 ? '…' : ''}`)
+          }
+          return lines.join('\n')
         })
     }),
     defineTool({
@@ -329,7 +397,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         '改一条底稿（长期生效）：文本、类型、表演指示都能改（导演口径调整/价格修正/说法优化）。改完旧音频作废、后台自动重新合成；已经在池里没播的副本不受影响，要改用 revise_item。',
       parameters: Type.Object({
         id: Type.String({ description: '底稿条目 id（list_drafts 拿）' }),
-        text: Type.String({ description: '新文本（桥段就传整段，单句就传一句）' }),
+        text: Type.String({ description: `新文本（桥段就传整段，单句就传一句）。${MARKUP_HINT}` }),
         type: Type.Optional(Type.String({ description: '桥段类型（不改不传）' })),
         delivery: Type.Optional(Type.String({ description: '表演指示（不改不传）' })),
         rate: Type.Optional(Type.Number({ description: '语速倍率（不改不传）' })),
@@ -368,7 +436,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       description:
         '把一段新内容记进底稿库（默认记到当前场景），合成完进入轮播。现场临时编的好桥段值得记；想现在就播直接用 say，别用它。',
       parameters: Type.Object({
-        text: Type.String({ description: '底稿文本（桥段就整段，单句就一句）' }),
+        text: Type.String({ description: `底稿文本（桥段就整段，单句就一句）。${MARKUP_HINT}` }),
         type: Type.Optional(Type.String({ description: '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/closer/general；closer=收尾段，不进自动轮播）' })),
         delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
         rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
@@ -447,7 +515,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       name: 'write_bits',
       label: '写桥段',
       description:
-        '编剧模式批量入库：把为某个场景写好的桥段存进底稿库（一次 1~4 段，写稿任务书里有各场景的 sceneId）。' +
+        '写稿入库：把为某个场景写好的桥段存进底稿库（一次 1~4 段，写稿任务书里有各场景的 sceneId）。' +
         '桥段 = 一段 30~90 秒的连续讲述（多句、150~350 字），是合成和播放的最小单元——写成一个有起承转合的整体，别拆成单句。' +
         'type 标内容形态：hook 开场钩 / story 故事 / scene 场景化 / math 算账 / compare 对比 / punchline 包袱（歇后语、顺口溜、段子）/ interact 互动 / cta 催单 / transition 转场 / closer 收尾（不进自动轮播，收尾时你自己 say 出去）/ general 通用。' +
         'delivery 写表演指示（一句话：情绪、语速、哪里停顿，比如「压低声音像说悄悄话，报价格前停一拍」）。' +
@@ -457,7 +525,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         items: Type.Array(
           Type.Object({
             type: Type.String({ description: '桥段类型（见工具描述），自定义类型也行' }),
-            text: Type.String({ description: '桥段全文：多句连续口语，150~350 字，有铺垫有落点' }),
+            text: Type.String({ description: `桥段全文：多句连续口语，150~350 字，有铺垫有落点。${MARKUP_HINT}` }),
             delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
             rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
             pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
@@ -516,7 +584,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
           const next = script.advanceScene()
           if (!next) return '已经是最后一场了（或没有绑定剧本），收尾还是从头循环由你判断'
           onSceneChanged()
-          // 新场景的话术库自动装载进池（骨架接上，不用等补货）
+          // 补装兜底：装池是整库的，正常早已装好；这里有新就绪的顺带进池（去重落空）
           onSceneAdvanced?.(next.index)
           return `进入第 ${next.index + 1}/${next.total} 场「${next.scene.title}」\n目标：${next.scene.goal}\n要点：${next.scene.keyPoints}`
         })
@@ -531,8 +599,8 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const hits = knowledge.searchKnowledge(params.query, params.limit ?? 3)
-          if (hits.length === 0) return '知识库里没有相关内容，别编，含糊带过或引导观众看小黄车'
+          const hits = knowledge.searchKnowledge(params.query, params.limit ?? 3, knowledgeScope())
+          if (hits.length === 0) return '知识库里没有相关内容（限本节目的知识范围），别编，含糊带过或引导观众看小黄车'
           return hits
             .map(
               (hit, i) =>
@@ -680,7 +748,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       }),
       execute: async (_id, params) =>
         guardTool(() => {
-          const rows = knowledge.checkPrice(params.product)
+          const rows = knowledge.checkPrice(params.product, knowledgeScope())
           if (rows.length === 0) return '没查到这个商品，价格不确定，不要在直播里报价'
           return rows.map((row) => `${row.name}：¥${row.price}`).join('\n')
         })
@@ -832,24 +900,6 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
         })
     }),
     defineTool({
-      name: 'set_voice',
-      label: '换音色',
-      description:
-        '把本场音色换成另一个（voiceId 从音色库来；传空字符串回到人设卡音色）。换完之后新说出的每一句都用新音色，池里还没播的旧音色音频会自动用新嗓音重合成（正在播和已播完的不受影响）。',
-      parameters: Type.Object({
-        voiceId: Type.String({ description: '音色 id，留空 = 回到人设卡音色' })
-      }),
-      execute: async (_id, params) =>
-        guardTool(() => {
-          const voiceId = String(params.voiceId ?? '').trim()
-          setProgramVoice?.(voiceId)
-          const effective = voiceId || persona.get().voiceId
-          const reVoiced = pool.reVoice(effective)
-          const tail = reVoiced > 0 ? `，${reVoiced} 条未播的旧音色话术已加入重合成` : ''
-          return voiceId ? `本场音色已换成 ${voiceId}，后面新说的都用它${tail}` : `已清掉本场音色，回到人设卡的音色${tail}`
-        })
-    }),
-    defineTool({
       name: 'set_gap',
       label: '调段间留白',
       description:
@@ -921,7 +971,7 @@ export function buildAnchorTools(deps: AnchorToolDeps): AgentTool[] {
       parameters: Type.Object({}),
       execute: async () => {
         try {
-          if (getPurpose?.() === 'live') return ok('已经在直播了，不用重复开播')
+          if (isLiveActive?.()) return ok('已经在直播了，不用重复开播')
           if (!onGoLive) return ok('开播通道没接上，让导演从界面点「启动节目」')
           return ok(await onGoLive())
         } catch (error) {

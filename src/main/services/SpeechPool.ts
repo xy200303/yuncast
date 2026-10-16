@@ -13,6 +13,7 @@ import {
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
 import { toSpeechText } from './speechText'
+import { friendlyError } from './errorTranslate'
 
 /**
  * 话术池（docs/01 §3.2/3.3）：任何声音进直播间的唯一入口。
@@ -22,7 +23,7 @@ import { toSpeechText } from './speechText'
  * - DB 是唯一事实来源，每次变更落库并广播快照
  */
 
-/** M2 还没有场次系统，先归到一个固定会话 */
+/** 场记：没开播时条目归到这个占位会话（开播后由 SessionRecorder 给出真实场次 id） */
 const DEFAULT_SESSION_ID = 'default'
 
 const LANE_RANK: Record<SpeechLane, number> = {
@@ -50,8 +51,9 @@ function orderedForPlay(items: SpeechItem[]): SpeechItem[] {
   return anchored.flatMap((entry) => entry.group)
 }
 
+/** 失败条目给 UI 看的原因（过错误翻译层：技术原文翻成人话，人话原样放行） */
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return friendlyError(error)
 }
 
 /**
@@ -72,6 +74,12 @@ export class SpeechPool {
   /** 最近一次实时通道降级原因（诊断用） */
   private lastRealtimeFallback = '' 
   private sweepTimer: ReturnType<typeof setInterval> | null = null
+
+  /** 音频就绪预热钩子（index.ts 接 BlobStore.warm：开播装池/合成完成时把文件读进 OS 页面缓存） */
+  onWarmCache: ((path: string) => void) | null = null
+
+  /** 场记：当前场次 id（index.ts 在开播/收播时设置）；null = 没开播，条目归占位会话 */
+  sessionId: string | null = null
 
   constructor(
     private readonly storage: StorageService,
@@ -145,7 +153,7 @@ export class SpeechPool {
 
     const item: SpeechItem = {
       id: `sp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
-      sessionId: DEFAULT_SESSION_ID,
+      sessionId: this.sessionId ?? DEFAULT_SESSION_ID,
       text,
       turnId: input.turnId?.trim() || `turn-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       seq: input.seq ?? 0,
@@ -167,6 +175,7 @@ export class SpeechPool {
       createdAt: Date.now()
     }
     this.storage.speechInsert(item)
+    if (item.audioPath) this.onWarmCache?.(item.audioPath)
     this.refresh()
     return item
   }
@@ -218,6 +227,25 @@ export class SpeechPool {
       if (active.has(id)) this.storage.speechUpdate(id, { sortOrder: index + 1 })
     })
     this.refresh()
+  }
+
+  /**
+   * 开播前清"别的节目的存货"：条目来自某段底稿（originUtteranceId），而那段底稿不属于本节目 → 撤掉。
+   * 不清的话，预制/单篇节目的「播完即停」永远等不到池空（池里还压着上一场的词），
+   * 播完自己的内容会接着念别的节目的稿子——最难看的一种错位。没来源的现场话术（人工播报/导演 say）不动。
+   */
+  dropForeignOrigins(allowedUtteranceIds: Set<string>): number {
+    let n = 0
+    for (const item of this.storage.speechActive()) {
+      const origin = item.originUtteranceId
+      if (!origin || allowedUtteranceIds.has(origin)) continue
+      if (item.status === 'playing') continue
+      this.cancelSynth(item.id)
+      this.storage.speechUpdate(item.id, { status: 'skipped' })
+      n++
+    }
+    if (n > 0) this.refresh()
+    return n
   }
 
   /** 清空某条车道上的未播条目（不动正在播的） */
@@ -462,6 +490,7 @@ export class SpeechPool {
         return
       }
       this.storage.speechUpdate(item.id, { status: 'ready', audioPath, stream: false })
+      this.onWarmCache?.(audioPath)
     } catch (error) {
       if (controller.signal.aborted) {
         // 被挤出窗口：回 pending 等下次进窗口再合成

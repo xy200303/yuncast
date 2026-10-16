@@ -20,11 +20,13 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import {
+  type ProduceVoiceOverride,
   type Program,
   type ProgramGateFailure,
   type ProgramGateResult,
   type Script
 } from '../../../../shared/types'
+import { VoicePickDialog } from '@/components/VoicePickDialog'
 import {
   AUDIO_UNIT_LABEL,
   formatDurationMs,
@@ -51,6 +53,7 @@ export function ProgramAudioPanel({
   const [producing, setProducing] = useState(false)
   const [previewingId, setPreviewingId] = useState('')
   const [importOpen, setImportOpen] = useState(false)
+  const [voicePickOpen, setVoicePickOpen] = useState(false)
 
   const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
 
@@ -94,11 +97,14 @@ export function ProgramAudioPanel({
   const failureOf = (unit: ProgramAudioUnit): ProgramGateFailure | undefined =>
     gate?.failures.find((f) => f.unitId === unit.id && f.unitKind === unit.kind)
 
-  const produce = async () => {
+  /** 声音选择弹窗确认后才合成：显式声音覆盖透传给主进程冻结；勾了「全部重合成统一」先清旧音频 */
+  const produce = async (voiceOverride?: ProduceVoiceOverride, rebuildAll?: boolean) => {
     if (producing) return
+    setVoicePickOpen(false)
     setProducing(true)
     try {
-      const result = await window.api.program.produceAudio(program.id)
+      if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+      const result = await window.api.program.produceAudio(program.id, voiceOverride)
       if (!result.ok) {
         toast.error('生成节目音频没能完成', { description: result.error })
       } else if (result.failed > 0) {
@@ -118,9 +124,9 @@ export function ProgramAudioPanel({
     }
   }
 
-  /** 重试失败项 / 重新合成过期项：统一入口会只重做失败、过期与未合成的单元，已就绪且文稿未改的自动跳过 */
+  /** 重试失败项 / 重新合成过期项：同样先过声音选择弹窗（已就绪且文稿未改的自动跳过） */
   const redo = async () => {
-    await produce()
+    setVoicePickOpen(true)
   }
 
   const stopPreview = () => {
@@ -181,7 +187,7 @@ export function ProgramAudioPanel({
             <FileAudio />
             导入外部音频
           </Button>
-          <Button size="sm" disabled={producing || counts.total === 0} onClick={() => void produce()}>
+          <Button size="sm" disabled={producing || counts.total === 0} onClick={() => setVoicePickOpen(true)}>
             {producing ? <Loader2 className="animate-spin" /> : <AudioWaveform />}
             {producing ? '正在生成…' : counts.ready > 0 ? '继续生成节目音频' : '生成节目音频'}
           </Button>
@@ -233,6 +239,14 @@ export function ProgramAudioPanel({
           </div>
         </DialogContent>
       </Dialog>
+      {/* 合成前的声音选择弹窗（docs/REDESIGN 4.4）：所有合成入口统一先弹这个 */}
+      <VoicePickDialog
+        program={program}
+        open={voicePickOpen}
+        onOpenChange={setVoicePickOpen}
+        busy={producing}
+        onConfirm={(override, rebuildAll) => produce(override, rebuildAll)}
+      />
     </div>
   )
 }

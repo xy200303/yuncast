@@ -243,10 +243,30 @@ const faqs = [
   }
 ]
 
+/** 跑马灯词带：能力关键词，滚动一遍不重复 */
+const marquee = [
+  '写稿',
+  '声音克隆',
+  '四档话术池',
+  '评论去重',
+  '直播台',
+  '场次留档',
+  '用量统计',
+  '有声书导出',
+  '播客双人',
+  '导入外部音频',
+  '知识库核价',
+  '虚拟声卡'
+]
+
 /* ---------- 动效：滚入 / 数字滚动 / 指示器 / 平滑滚动 ---------- */
 const heroEl = ref<HTMLElement | null>(null)
 const shotEl = ref<HTMLElement | null>(null)
 const tabsEl = ref<HTMLElement | null>(null)
+const progressEl = ref<HTMLElement | null>(null)
+const panelEl = ref<HTMLElement | null>(null)
+const finalEl = ref<HTMLElement | null>(null)
+const spotEl = ref<HTMLElement | null>(null)
 let stopScroll: (() => void) | null = null
 const teardowns: (() => void)[] = []
 
@@ -376,6 +396,29 @@ onMounted(async () => {
     }
   }
 
+  /* 收尾深色带：柔和光斑跟随指针，移出淡出（用极淡的品牌蓝，不是装饰渐变） */
+  const fin = finalEl.value
+  const spot = spotEl.value
+  if (fin && spot && !reduced && hasFinePointer()) {
+    const to = (x: number, y: number, opacity: number, stiffness: number) => {
+      ctrlSpot?.stop()
+      ctrlSpot = animate(spot, { x, y, opacity }, { type: 'spring', stiffness, damping: 26 })
+    }
+    let ctrlSpot: { stop: () => void } | null = null
+    const onMove = (e: PointerEvent) => {
+      const r = fin.getBoundingClientRect()
+      to(e.clientX - r.left, e.clientY - r.top, 1, 130)
+    }
+    const onLeave = () => to(0, 0, 0, 90)
+    fin.addEventListener('pointermove', onMove, { passive: true })
+    fin.addEventListener('pointerleave', onLeave)
+    teardowns.push(() => {
+      ctrlSpot?.stop()
+      fin.removeEventListener('pointermove', onMove)
+      fin.removeEventListener('pointerleave', onLeave)
+    })
+  }
+
   /* 三条主线的下划线指示器：位置与宽度用弹簧滑过去，而不是跟着 class 跳 */
   const tabs = tabsEl.value
   if (tabs && !reduced) {
@@ -392,11 +435,24 @@ onMounted(async () => {
         else Object.assign(barNow.style, { transform: `translateX(${x}px)`, width: `${b.width}px` })
       }
       place(false)
-      const stopW = watch(track, () => nextTick(() => place(true)))
+      const stopW = watch(track, () =>
+        nextTick(() => {
+          place(true)
+          /* 面板内容交叉淡入：切主线时不再硬切 */
+          const panel = panelEl.value
+          if (panel) animate(panel, { opacity: [0, 1], y: [8, 0] }, { duration: 0.34, easing: EASE })
+        })
+      )
       const onResize = () => place(false)
       window.addEventListener('resize', onResize)
       teardowns.push(stopW, () => window.removeEventListener('resize', onResize))
     }
+  }
+
+  /* 阅读进度条：整页滚动进度直接驱动一条 2px 细线 */
+  const bar = progressEl.value
+  if (bar && !reduced) {
+    teardowns.push(scroll(animate(bar, { scaleX: [0, 1] }, { ease: 'linear' })))
   }
 
   /* 首屏点阵随滚动缓慢上移：做出前后景的深度差 */
@@ -496,6 +552,8 @@ onUnmounted(() => {
 
 <template>
   <div class="landing">
+    <!-- 阅读进度：一条细线，随滚动增长 -->
+    <div ref="progressEl" class="progress" aria-hidden="true" />
     <!-- ============ Hero ============ -->
     <section ref="heroEl" class="hero">
       <DotField class="hero-field" :gap="22" :radius="140" :push="34" />
@@ -533,7 +591,10 @@ onUnmounted(() => {
           直播带货、商品宣讲、有声书、播客，同一套流程。
         </p>
         <div class="hero-cta reveal d2">
-          <a v-press class="btn primary" :href="withBase('/download')">下载安装包</a>
+          <a v-press class="btn primary" :href="withBase('/download')">
+            下载安装包
+            <span class="arw" v-html="ICONS.arrow" />
+          </a>
           <button v-press class="btn ghost" type="button" @click="openVideo">
             <span class="btn-ico" v-html="ICONS.play" />
             看演示（3 分 07 秒）
@@ -582,6 +643,15 @@ onUnmounted(() => {
       </div>
     </section>
 
+    <!-- ============ 能力跑马灯：一条会走的词带，给版面带节奏 ============ -->
+    <div class="marquee" aria-hidden="true">
+      <div class="marquee-track">
+        <span v-for="(w, i) in [...marquee, ...marquee]" :key="i" class="marquee-word">
+          {{ w }}<i>·</i>
+        </span>
+      </div>
+    </div>
+
     <!-- ============ 三条主线：写稿 / 播出 / 互动 ============ -->
     <section class="section tracks-section">
       <div class="inner">
@@ -603,7 +673,7 @@ onUnmounted(() => {
           </button>
           <span class="tab-bar" aria-hidden="true" />
         </div>
-        <div class="track-panel reveal d3">
+        <div ref="panelEl" class="track-panel reveal d3">
           <template v-for="t in tracks" :key="t.id">
             <div v-if="track === t.id" class="track-body">
               <p class="track-lead">{{ t.lead }}</p>
@@ -875,14 +945,18 @@ $ npm run dev</code></pre>
     </section>
 
     <!-- ============ 收尾 ============ -->
-    <section class="final">
+    <section ref="finalEl" class="final">
+      <div ref="spotEl" class="spot" aria-hidden="true" />
       <div class="final-inner reveal">
         <h2 class="display">下载，配好两把钥匙，<span>开一场试试</span></h2>
         <p class="final-sub">
           语言模型负责写与想，语音合成负责出声。两个 Key 填完就能开播，剩下的都在界面里。
         </p>
         <div class="hero-cta center">
-          <a v-press class="btn primary big" href="https://github.com/xy200303/yuncast/releases/latest" target="_blank" rel="noreferrer">下载最新版</a>
+          <a v-press class="btn primary big" href="https://github.com/xy200303/yuncast/releases/latest" target="_blank" rel="noreferrer">
+            下载最新版
+            <span class="arw" v-html="ICONS.arrow" />
+          </a>
           <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">四步上手</a>
           <a v-press class="btn ghost" href="https://github.com/xy200303/yuncast" target="_blank" rel="noreferrer">GitHub</a>
         </div>
@@ -979,6 +1053,51 @@ $ npm run dev</code></pre>
   text-wrap: pretty;
 }
 .more { text-align: center; color: var(--vp-c-text-3); font-size: 13.5px; margin-top: 30px; }
+
+/* ---------- 阅读进度条 ---------- */
+.progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  z-index: 60;
+  background: var(--yc-accent);
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+  pointer-events: none;
+}
+
+/* ---------- 能力跑马灯 ---------- */
+.marquee {
+  overflow: hidden;
+  padding: 20px 0;
+  background: #fff;
+  border-top: 1px solid var(--yc-line-soft);
+  border-bottom: 1px solid var(--yc-line-soft);
+  mask-image: linear-gradient(90deg, transparent, #000 7%, #000 93%, transparent);
+}
+.marquee-track {
+  display: flex;
+  width: max-content;
+  animation: yc-marquee 52s linear infinite;
+}
+.marquee:hover .marquee-track { animation-play-state: paused; }
+.marquee-word {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 16px;
+  font-size: 14px;
+  color: var(--vp-c-text-2);
+  white-space: nowrap;
+}
+.marquee-word i { font-style: normal; color: var(--yc-blue-300); }
+@keyframes yc-marquee {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
 
 /* ---------- 顶部公告条（迭代可见性） ---------- */
 .notice {
@@ -1301,29 +1420,58 @@ $ npm run dev</code></pre>
   animation-delay: 0.74s;
 }
 .hero-cta.center { margin-top: 26px; animation: none; }
+/* ---------- 按钮：固定高度档位 + 内高光，光学居中对齐（不靠 padding 撑高） ---------- */
 .btn {
+  --btn-h: 42px;
+  --btn-px: 20px;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 8px;
-  padding: 11px 20px;
+  height: var(--btn-h);
+  padding: 0 var(--btn-px);
   border-radius: 8px;
+  font-family: var(--font-display);
   font-size: 14.5px;
   font-weight: 500;
+  letter-spacing: -0.003em;
+  line-height: 1;
   cursor: pointer;
   border: 1px solid transparent;
-  transition: background 0.18s, border-color 0.18s, color 0.18s;
+  transition: background 0.18s, border-color 0.18s, color 0.18s, box-shadow 0.18s;
 }
-.btn.primary { color: #fff; background: var(--yc-btn); }
-.btn.primary:hover { background: #000; }
+.btn.sm { --btn-h: 34px; --btn-px: 14px; font-size: 13.5px; }
+.btn.big { --btn-h: 48px; --btn-px: 26px; font-size: 15.5px; }
+/* 主按钮：内高光让它在浅底上像"成型的实体"而不是一块纯色 */
+.btn.primary {
+  color: #fff;
+  background: var(--yc-btn);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16), 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+.btn.primary:hover {
+  background: #000;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 2px 6px rgba(0, 0, 0, 0.2);
+}
 .btn.ghost {
   color: var(--vp-c-text-1);
   background: #fff;
   border-color: var(--yc-line);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 1px 2px rgba(9, 9, 11, 0.04);
 }
-.btn.ghost:hover { background: #f9f9f8; border-color: var(--yc-line-strong); }
-.btn.big { padding: 13px 26px; font-size: 15.5px; }
+.btn.ghost:hover { background: var(--yc-gray-50); border-color: var(--yc-line-strong); }
+/* 三级：只有文字，hover 给一层浅底 */
+.btn.quiet { background: transparent; color: var(--vp-c-text-2); --btn-px: 12px; }
+.btn.quiet:hover { background: var(--yc-gray-100); color: var(--vp-c-text-1); }
+/* 尾部箭头随 hover 右移 */
+.btn .arw {
+  display: inline-flex;
+  width: 15px;
+  height: 15px;
+  transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.btn:hover .arw { transform: translateX(3px); }
 .btn-ico { display: inline-flex; width: 15px; height: 15px; }
-.btn-ico :deep(svg), .hero-facts :deep(svg), .card-icon :deep(svg), .pipe-icon :deep(svg), .dev-list :deep(svg) {
+.btn-ico :deep(svg), .btn .arw :deep(svg), .hero-facts :deep(svg), .card-icon :deep(svg), .pipe-icon :deep(svg), .dev-list :deep(svg) {
   width: 100%;
   height: 100%;
   stroke-width: 1.8;
@@ -1685,10 +1833,24 @@ table.specs tr:last-child th, table.specs tr:last-child td { border-bottom: none
 /* ---------- 收尾：一条深色带，给长页面一个落点 ---------- */
 .final {
   position: relative;
+  overflow: hidden;
   padding: 108px 24px 96px;
   text-align: center;
   background: #151513;
   color: #fff;
+}
+/* 跟随指针的柔和光斑（极淡品牌蓝，不是装饰渐变） */
+.spot {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 640px;
+  height: 640px;
+  margin: -320px 0 0 -320px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(147, 176, 255, 0.18), rgba(147, 176, 255, 0) 62%);
+  opacity: 0;
+  pointer-events: none;
 }
 .final .display { color: #fff; }
 .final .display > span { color: #9db4ff; }
@@ -1737,5 +1899,17 @@ table.specs tr:last-child th, table.specs tr:last-child td { border-bottom: none
   .stat strong { font-size: 21px; }
   .tabs { gap: 22px; }
   table.specs th { width: auto; }
+  /* 窄屏不放细线标注：窗口本身已经装不下了 */
+  .call { display: none; }
+}
+/* 减少动效：跑马灯与首屏逐字动画都停，内容保持完整 */
+@media (prefers-reduced-motion: reduce) {
+  .marquee-track { animation: none; }
+  .hero-title .ch,
+  .hero-sub,
+  .hero-cta,
+  .hero-facts,
+  .hero-shot,
+  .call { animation: none; opacity: 1; transform: none; }
 }
 </style>

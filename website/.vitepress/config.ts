@@ -51,6 +51,8 @@ export default defineConfig({
     // 正文与标题同一套字：拉丁走 Inter（主题自带），中文走 Noto Sans SC
     // （SIL OFL，自托管、按 unicode-range 切片，浏览器只取用到的那几片；可变字重 300–800）
     ['link', { rel: 'stylesheet', href: '/fonts/noto/noto-sans-sc.css' }],
+    // 等宽：编号、版本号、代码块用它，跨平台一致（latin 切片，84KB）
+    ['link', { rel: 'stylesheet', href: '/fonts/mono/jetbrains-mono.css' }],
     ['meta', { name: 'keywords', content: 'AI直播,AI主播,无人直播,直播带货,商品宣讲,声音克隆,TTS语音合成,有声书制作,播客制作,评论自动回复,虚拟主播,直播软件,小云播客坊,YunCast' }],
     ['meta', { name: 'author', content: '小云 (xy200303)' }],
     ['meta', { name: 'robots', content: 'index, follow, max-image-preview:large, max-snippet:-1' }],

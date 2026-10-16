@@ -393,10 +393,10 @@ onMounted(async () => {
     )
   }
 
-  /* 界面截图：从 1.045 收到 1，做出"截图浮上来"的层次
-     （父级 .shot 的淡入仍由 .reveal 负责，所以不会出现先亮后淡的跳变） */
+  /* 界面截图与演示影片：从 1.045 收到 1，做出"浮上来"的层次
+     （父级 .shot / .reveal 的淡入仍由 .reveal 负责，所以不会出现先亮后淡的跳变） */
   if (!reduced) {
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.shot .window'))) {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.shot .window, .video-wrap'))) {
       teardowns.push(
         inView(
           el,
@@ -761,6 +761,7 @@ onUnmounted(() => {
             v-for="(p, i) in pipeline"
             :key="p.title"
             v-lift="3"
+            v-spot
             class="pipe reveal"
             :style="{ transitionDelay: (i % 5) * 70 + 'ms' }"
           >
@@ -784,6 +785,7 @@ onUnmounted(() => {
             v-for="(l, i) in localFirst"
             :key="l.t"
             v-lift="4"
+            v-spot
             class="card reveal"
             :style="{ transitionDelay: i * 60 + 'ms' }"
           >
@@ -812,6 +814,7 @@ onUnmounted(() => {
             v-for="(m, i) in modes"
             :key="m.name"
             v-lift="4"
+            v-spot
             class="mode reveal"
             :style="{ transitionDelay: i * 80 + 'ms' }"
           >
@@ -963,6 +966,7 @@ $ npm run dev</code></pre>
             v-for="(r, i) in changelog"
             :key="r.v"
             v-lift="3"
+            v-spot
             class="rel reveal"
             :style="{ transitionDelay: i * 70 + 'ms' }"
           >
@@ -1334,6 +1338,36 @@ $ npm run dev</code></pre>
   font-family: var(--vp-font-family-mono);
   font-size: 11.5px;
   color: var(--vp-c-text-3);
+}
+
+/* ---------- 卡片内的指针跟随高光 ----------
+   指针位置由 v-spot 指令写进元素的 --mx / --my，CSS 只负责画一层极淡的品牌色光。 */
+.card,
+.pipe,
+.mode,
+.rel { position: relative; }
+.card::after,
+.pipe::after,
+.mode::after,
+.rel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: radial-gradient(
+    220px circle at var(--mx, 50%) var(--my, 0%),
+    rgba(29, 78, 216, 0.07),
+    transparent 68%
+  );
+  opacity: 0;
+  transition: opacity 0.24s;
+  pointer-events: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .card:hover::after,
+  .pipe:hover::after,
+  .mode:hover::after,
+  .rel:hover::after { opacity: 1; }
 }
 
 /* ---------- 更新日志 ---------- */

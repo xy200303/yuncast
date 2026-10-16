@@ -43,6 +43,32 @@ export const vPress: Directive<HTMLElement> = {
   }
 }
 
+/** v-spot：把指针位置写进元素上的 --mx / --my，供 CSS 画卡片内的跟随高光。
+    只做一次 rAF 节流的坐标写入，不做布局读取以外的计算。 */
+export const vSpot: Directive<HTMLElement> = {
+  mounted(el) {
+    let raf = 0
+    const move = (e: PointerEvent) => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        const r = el.getBoundingClientRect()
+        el.style.setProperty('--mx', `${e.clientX - r.left}px`)
+        el.style.setProperty('--my', `${e.clientY - r.top}px`)
+      })
+    }
+    el.addEventListener('pointermove', move, { passive: true })
+    teardowns.set(el, () => {
+      if (raf) cancelAnimationFrame(raf)
+      el.removeEventListener('pointermove', move)
+    })
+  },
+  unmounted(el) {
+    teardowns.get(el)?.()
+    teardowns.delete(el)
+  }
+}
+
 /** v-lift：指针进入时弹簧抬起，离开落回（阴影交给 CSS :hover，互不打架） */
 export const vLift: Directive<HTMLElement, number | undefined> = {
   mounted(el, binding) {

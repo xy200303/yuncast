@@ -264,6 +264,7 @@ const heroEl = ref<HTMLElement | null>(null)
 const shotEl = ref<HTMLElement | null>(null)
 const tabsEl = ref<HTMLElement | null>(null)
 const progressEl = ref<HTMLElement | null>(null)
+const railEl = ref<HTMLElement | null>(null)
 const panelEl = ref<HTMLElement | null>(null)
 const finalEl = ref<HTMLElement | null>(null)
 const spotEl = ref<HTMLElement | null>(null)
@@ -367,6 +368,59 @@ onMounted(async () => {
       window.removeEventListener('scroll', onScroll)
       window.removeEventListener('resize', onScroll)
     })
+  }
+
+  /* 流水线导轨：线从左画出来，五个节点依次点亮。
+     初始态只在「确实要播这段动画」时才设（这里在视口下方），
+     避免脚本没跑起来时元素停在隐藏态 */
+  const rail = railEl.value
+  if (rail && !reduced && rail.getBoundingClientRect().top > window.innerHeight * 0.92) {
+    const line = rail.querySelector<HTMLElement>('.rail-line')
+    const dots = Array.from(rail.querySelectorAll<HTMLElement>('.rail-dot'))
+    if (line) line.style.transform = 'scaleX(0)'
+    for (const d of dots) d.style.transform = 'scale(0)'
+    teardowns.push(
+      inView(
+        rail,
+        () => {
+          if (line) animate(line, { scaleX: [0, 1] }, { duration: 0.95, easing: EASE })
+          dots.forEach((d, i) =>
+            animate(d, { scale: [0, 1] }, { type: 'spring', stiffness: 430, damping: 22, delay: 0.1 + i * 0.13 })
+          )
+        },
+        { amount: 0.6 }
+      )
+    )
+  }
+
+  /* 界面截图：从 1.045 收到 1，做出"截图浮上来"的层次
+     （父级 .shot 的淡入仍由 .reveal 负责，所以不会出现先亮后淡的跳变） */
+  if (!reduced) {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.shot .window'))) {
+      teardowns.push(
+        inView(
+          el,
+          () => animate(el, { scale: [1.045, 1], opacity: [0, 1] }, { duration: 0.72, easing: EASE }),
+          { amount: 0.2 }
+        )
+      )
+    }
+  }
+
+  /* 对比表：逐行滑入，"以前 / 现在"两列的差别靠行序自己讲 */
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('table.compare tbody tr'))
+  if (rows.length && !reduced) {
+    teardowns.push(
+      inView(
+        'table.compare',
+        () => {
+          rows.forEach((r, i) =>
+            animate(r, { opacity: [0, 1], y: [10, 0] }, { duration: 0.5, delay: i * 0.07, easing: EASE })
+          )
+        },
+        { amount: 0.25 }
+      )
+    )
   }
 
   /* 数字条：进入视口时从 0 滚到目标值（等宽数字，滚动过程中不跳位） */
@@ -698,6 +752,10 @@ onUnmounted(() => {
         <span class="eyebrow reveal"><i>02</i>一条流水线</span>
         <h2 class="display reveal">一条流水线，<span>从写稿到复盘</span></h2>
         <p class="lead reveal d1">每一步都有对应的界面，改哪一步都不会动到已经做好的部分。</p>
+        <div ref="railEl" class="pipe-rail" aria-hidden="true">
+          <span class="rail-line" />
+          <span v-for="n in 5" :key="n" class="rail-dot" />
+        </div>
         <ol class="pipeline">
           <li
             v-for="(p, i) in pipeline"
@@ -1598,6 +1656,30 @@ $ npm run dev</code></pre>
 .hero-facts li span { display: inline-flex; width: 14px; height: 14px; color: var(--yc-accent); }
 
 /* ---------- 流水线：一条五格的流程带，靠竖 hairline 分隔 ---------- */
+/* 上方导轨：进入视口时线从左画出来，五个节点依次点亮（由动效引擎驱动） */
+.pipe-rail {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0 0 20px;
+}
+.rail-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--yc-line);
+  transform-origin: 0 50%;
+}
+.rail-dot {
+  justify-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--yc-accent);
+  box-shadow: 0 0 0 4px #fff;
+}
 .pipeline {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

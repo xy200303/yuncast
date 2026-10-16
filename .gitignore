@@ -21,3 +21,9 @@ website/.vitepress/cache/
 
 # 布局核对用的临时截图（agent 工作产物，不入库）
 docs/shots/
+
+# 演示视频的中间帧（重编码用，不入库）
+docs/demo/frames/
+docs/demo/seq/
+docs/demo/frames.json
+docs/demo/*.mp4

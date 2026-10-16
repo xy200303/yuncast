@@ -1,0 +1,44 @@
+[
+  {
+    "at": 3.5,
+    "text": "小云播客坊 YunCast，一个桌面工作台，把写稿、配音、播出、控场、互动串成一条流水线。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\9f\\9f1ca0e3e6c56d4cf3838589fa48291fc6331ac16b9a483a85fa7a270ad50d2b.mp3",
+    "ms": 2262
+  },
+  {
+    "at": 20.0,
+    "text": "左边是直播间：评论、礼物、进场先进事件流，去重之后按批喂给主播。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\21\\21df1b2847294f4ec4dcf48f9e7d3db9adcdf4627679675bf2cb685c2fe5d5d3.mp3",
+    "ms": 2261
+  },
+  {
+    "at": 36.0,
+    "text": "右下角唤起导演。它按你绑的剧本和知识库写稿，也会汇报它查了什么、改了什么。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\75\\7534dfbdd7b5f60908ac5fdceb7747b732e410d12f49d06818ad281e9bdbac7e.mp3",
+    "ms": 1886
+  },
+  {
+    "at": 52.0,
+    "text": "这是它写好的话术：316 不锈钢内胆，十二小时保温，早上倒的水，晚上还是温的。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\e3\\e3e2a854fd1c4934f16b7323d219744aaabcf890d9acbf5e4adc2578a507c4be.mp3",
+    "ms": 2112
+  },
+  {
+    "at": 68.0,
+    "text": "声音在合成那一刻选：接入、模型、音色三级；播客还能选两位主持人，选完冻结进每一段音频。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\50\\50787983b89bd54de0033da42529e73abb8c25ea227017771be6957614a58622.mp3",
+    "ms": 2496
+  },
+  {
+    "at": 88.0,
+    "text": "每一场都会留档：逐条话术、评论、事件和观众画像；用量按节目归组统计。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\2e\\2e50454a4c0b4459b655ea579bc65017df208d6319a796fd082b1ef9eb69d351.mp3",
+    "ms": 2141
+  },
+  {
+    "at": 104.0,
+    "text": "软件开源免费，模型和语音用你自己的 Key，其余数据都留在本机。感谢观看。",
+    "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\58\\58a9f4f41040068504ecf800dccc72e8549398d618128d84dea426f144e8814a.mp3",
+    "ms": 2242
+  }
+]

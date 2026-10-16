@@ -451,8 +451,8 @@ onUnmounted(() => {
           />
         </div>
         <ul class="video-notes reveal d3">
-          <li>演示里的对话与节目是样例数据，用来展示界面布局</li>
-          <li>视频无声：画面来自应用渲染层录制，配音需要在应用内真实合成</li>
+          <li>配音由应用内的语音合成生成（用的是演示主播的嗓音），画面为真实操作录制</li>
+          <li>演示里的对话、节目与数据都是样例，用来展示界面布局与交互</li>
           <li>想看每一步的细节说明，翻 <a :href="withBase('/guide/interface')">界面一览</a></li>
         </ul>
       </div>
@@ -578,7 +578,7 @@ $ npm run dev</code></pre>
         <header>
           <div>
             <strong>小云播客坊 · 功能演示</strong>
-            <span>1 分 52 秒 · 无声</span>
+            <span>1 分 52 秒 · 含配音</span>
           </div>
           <button type="button" class="modal-close" aria-label="关闭" @click="closeVideo">✕</button>
         </header>

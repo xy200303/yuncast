@@ -6,6 +6,7 @@ import shotPrograms from '../../guide/screenshots/programs.png'
 import shotAnchors from '../../guide/screenshots/anchors.png'
 import shotVoices from '../../guide/screenshots/voices.png'
 import shotStats from '../../guide/screenshots/stats.png'
+import shotSessions from '../../guide/screenshots/sessions.png'
 
 /* lucide 风格线性图标（stroke, 24x24 viewBox），v-html 注入 svg 内部 */
 const svg = (inner: string) => inner
@@ -21,12 +22,12 @@ const ICONS = {
 }
 
 const features = [
-  { icon: ICONS.mic, title: '智能主播 Agent', desc: '人设卡 + 编剧模式，主播自己写稿自己播。评论回不回、怎么回，它像真人一样看着办。' },
+  { icon: ICONS.mic, title: '智能主播 Agent', desc: '人设卡定性格与嗓音，主播自己查资料、自己写稿。评论回不回、怎么回，它像真人一样看着办。' },
   { icon: ICONS.layers, title: '四种节目形态', desc: '一个人讲、多人聊天、照着稿子读、分角色表演——直播带货、有声书、播客、FM 全覆盖。' },
   { icon: ICONS.shuffle, title: '三种播出方式', desc: '现场发挥、边播边准备、全部做好再播。预制节目有门禁：音频不齐，不开播。' },
   { icon: ICONS.waveform, title: '克隆店家的声音', desc: '火山引擎 / 阿里云百炼 / 播客专用大模型多 TTS 适配，一段录音克隆音色。' },
-  { icon: ICONS.message, title: '像真人一样看评论', desc: '评论先进收件箱：去重、归组、自适应聚合。洪峰一批批看，冷清一条不漏。' },
-  { icon: ICONS.sliders, title: '导演级播出控制', desc: '话术池车道、BGM ducking、麦克风真人接管、一键急停。人在场控，随时抢过话筒。' },
+  { icon: ICONS.message, title: '像真人一样看评论', desc: '评论先进事件流：去重、归组、自适应聚合。洪峰一批批看，冷清一条不漏。' },
+  { icon: ICONS.sliders, title: '导演级播出控制', desc: '四档话术池（打断 / 下一条 / 常规 / 垫底）、BGM ducking、真人接管话筒、一键急停。' },
   { icon: ICONS.download, title: '音频导出', desc: '整场导出 MP3/WAV，分章或合并、响度归一，直接上传喜马拉雅、小宇宙。' },
   { icon: ICONS.chart, title: '用量看板', desc: 'LLM tokens 与 TTS 字符按节目归组，30 天趋势可视化，花多少心里有数。' }
 ]
@@ -35,14 +36,15 @@ const showcase = [
   { src: shotPrograms, title: '节目', desc: '形态 × 播出方式 × 播完策略' },
   { src: shotAnchors, title: '主播团', desc: '人设卡点击弹窗配置' },
   { src: shotVoices, title: '音色库', desc: '云端音色 + 声音克隆' },
-  { src: shotStats, title: '数据', desc: '画像 · 摘要 · 用量看板' }
+  { src: shotSessions, title: '场次记录', desc: '每场留档 · 逐条试听 · 整场导出' },
+  { src: shotStats, title: '统计', desc: '用量 · 排行 · 热词' }
 ]
 
 /* GEO：可见 FAQ 与 FAQPage JSON-LD 保持一致，供搜索引擎与 AI 答案引擎引用 */
 const faqs = [
   { q: '小云播客坊 YunCast 是什么？', a: '一款开源免费（MIT）的 AI 直播工作台桌面软件：AI 主播自己写稿、用克隆的声音播报、看到评论自己决定怎么回。商品宣讲、直播带货、有声书、播客节目，一个工作台全包。' },
   { q: '小云播客坊收费吗？', a: '软件本身完全免费且开源（MIT 协议）。运行时需自配 LLM 和 TTS 云服务的 API Key，用量费用按服务商计价，应用内的用量看板可以看到每笔消耗。' },
-  { q: '不会写直播稿能用吗？', a: '可以，这正是它的主业。主播 Agent 有人设卡和编剧模式：说一句「给这场写稿」，它自己查资料、写稿、合成、排进播出队列，全程不用你动笔。' },
+  { q: '不会写直播稿能用吗？', a: '可以，这正是它的主业。主播 Agent 有人设卡和知识库：说一句「给这场写稿」，它自己查资料、写稿、合成、排进播出队列，全程不用你动笔。' },
   { q: '能克隆店家自己的声音吗？', a: '能。在音色库上传一段 10 秒以上的干净录音即可克隆音色，支持火山引擎、阿里云百炼和播客专用大模型等多家 TTS 服务。' },
   { q: '支持哪些直播平台和场景？', a: '软件本身平台无关：合成声音经虚拟声卡/OBS 推流到任意直播平台，评论通过平台连接器接入。除直播带货外，还支持有声书、播客、FM 等预制节目，可整场导出 MP3/WAV 上传喜马拉雅、小宇宙。' },
   { q: '数据会上传到云端吗？', a: '不会。除调用你自配的 LLM/TTS 云 API 外，所有数据（剧本、音频、评论记录、用量）都存在你自己电脑上，软件无服务端。' }
@@ -160,7 +162,7 @@ onUnmounted(() => {
       <div class="hero-dots" aria-hidden="true" />
       <canvas ref="waveCanvas" class="hero-waves" aria-hidden="true" />
       <div class="hero-inner">
-        <div class="badge reveal">v0.1.2 · Windows / macOS / Linux 同步发布</div>
+        <div class="badge reveal">v0.1.3 · Windows / macOS / Linux 同步发布</div>
         <h1 class="hero-title">
           <span class="line"><span class="word">专为</span> <span class="word">不会</span> <span class="word">直播的</span></span>
           <span class="line"><span class="word grad">商家</span> <span class="word grad">和</span> <span class="word grad">企业</span> <span class="word grad">而生。</span></span>
@@ -179,7 +181,7 @@ onUnmounted(() => {
             <div class="window-bar"><i /><i /><i /></div>
             <img :src="shotLive" alt="直播台" />
           </div>
-          <p class="caption">直播台：话术池队列 + 评论流 + 事件流，右侧直接和主播对话</p>
+          <p class="caption">直播台：接下来 / 评论流 / 事件流，右下角唤起导演直接对话</p>
         </div>
       </div>
     </section>

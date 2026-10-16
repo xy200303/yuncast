@@ -90,22 +90,13 @@ body:has(.landing) .VPLocalNav { display: none; }
 /* 数字对齐（Inter 支持等宽数字）：读数、版本号、用量都用它 */
 .tnum { font-variant-numeric: tabular-nums; }
 
-/* 滚动入场：默认可见，只有「在视口下方」的元素才被 JS 加上 .reveal-pre 先藏起来动画进来
-   —— 这样 JS 失效（水合失败、禁用脚本）时页面依然完整可读，不会白屏 */
+/* 滚动入场：初始隐藏态由 JS 只加在「视口下方」的元素上（首屏不受影响，也不会闪）；
+   之后的动画交给动效引擎，所以这里不写 transition，避免两边抢同一组属性 */
 .reveal { opacity: 1; }
 .reveal-pre {
   opacity: 0;
-  transform: translate3d(0, 14px, 0);
-  transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), transform 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  transform: translate3d(0, 16px, 0);
 }
-.reveal-pre.in {
-  opacity: 1;
-  transform: none;
-}
-.reveal.d1, .reveal-pre.d1 { transition-delay: 0.07s; }
-.reveal.d2, .reveal-pre.d2 { transition-delay: 0.14s; }
-.reveal.d3, .reveal-pre.d3 { transition-delay: 0.21s; }
-.reveal.d4, .reveal-pre.d4 { transition-delay: 0.28s; }
 
 @media (prefers-reduced-motion: reduce) {
   .reveal, .reveal-pre { opacity: 1; transform: none; transition: none; }

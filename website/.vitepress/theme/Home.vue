@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { withBase } from 'vitepress'
+import DotField from './components/DotField.vue'
+import SignalStrip from './components/SignalStrip.vue'
+import { EASE, initSmoothScroll, loadMotion, prefersReduced } from './motion/engine'
 import shotLive from '../../guide/screenshots/live.png'
 import shotPrograms from '../../guide/screenshots/programs.png'
 import shotAnchors from '../../guide/screenshots/anchors.png'
@@ -234,11 +237,20 @@ const faqs = [
   }
 ]
 
-/* ---------- 滚入动画 ---------- */
-let observer: IntersectionObserver | null = null
+/* ---------- 动效：滚入 / 数字滚动 / 指示器 / 平滑滚动 ---------- */
+const heroEl = ref<HTMLElement | null>(null)
+const tabsEl = ref<HTMLElement | null>(null)
+let stopScroll: (() => void) | null = null
+const teardowns: (() => void)[] = []
 
-onMounted(() => {
-  /* JSON-LD（FAQPage）与页面上的 FAQ 同步 */
+/* 首屏大标题按字拆开做错峰上浮。
+   在模板里拆（每字一个 span），不做 DOM 变异——否则 Vue 重渲染时会和拆出来的节点打架。
+   进场动画走纯 CSS（见 .hero-title .ch），所以脚本没加载完也不会留白。 */
+const heroLines = ['不会直播，', '也能自己开一场。']
+const heroOffset = heroLines[0].length
+
+onMounted(async () => {
+  /* JSON-LD（FAQPage）与页面上的 FAQ 同步。放在任何 await 之前，尽早注入。 */
   const faqLd = document.createElement('script')
   faqLd.id = 'faq-jsonld'
   faqLd.type = 'application/ld+json'
@@ -253,32 +265,168 @@ onMounted(() => {
   })
   document.head.appendChild(faqLd)
 
-  /* 滚动入场：只把「视口下方」的元素先藏起来（.reveal-pre），其余直接可见。
-     这样脚本挂了页面也是完整的，不会白屏。 */
-  const revealTargets = Array.from(document.querySelectorAll('.reveal'))
-  const belowFold = (el: Element) => el.getBoundingClientRect().top > window.innerHeight * 0.92
-  if (!('IntersectionObserver' in window)) {
-    /* 不支持观察器：什么都不做，全部保持可见 */
-  } else {
-    for (const el of revealTargets) if (belowFold(el)) el.classList.add('reveal-pre')
-    observer = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) {
-            e.target.classList.add('in')
-            observer?.unobserve(e.target)
-          }
+  const reduced = prefersReduced()
+  if (!reduced) stopScroll = await initSmoothScroll()
+
+  let M: typeof import('motion')
+  try {
+    M = await loadMotion()
+  } catch {
+    /* 动效引擎没加载成功（离线 / 被拦）：把所有可能被藏起来的元素放出来，页面保持完整 */
+    for (const el of document.querySelectorAll('.reveal-pre')) el.classList.remove('reveal-pre')
+    return
+  }
+  const { animate, inView, scroll } = M
+
+  /* 滚动入场：先把「视口下方」的元素藏起来，滚到时用弹簧放出来。
+     首屏内容不参与（首屏进场由 CSS 动画负责，不依赖 JS 也不会闪）。 */
+  /* 错峰时间有两个来源：单个元素用 d1–d4 档位，网格用行内 transitionDelay（每格递增） */
+  const STAGGER: Record<string, number> = { d1: 0.07, d2: 0.14, d3: 0.21, d4: 0.28 }
+  const staggerOf = (el: HTMLElement) => {
+    for (const k in STAGGER) if (el.classList.contains(k)) return STAGGER[k]
+    return (parseFloat(el.style.transitionDelay) || 0) / 1000
+  }
+  if (!reduced && 'IntersectionObserver' in window) {
+    const targets = Array.from(document.querySelectorAll<HTMLElement>('.reveal'))
+    for (const el of targets) {
+      if (el.getBoundingClientRect().top > window.innerHeight * 0.92) el.classList.add('reveal-pre')
+    }
+    for (const el of targets) {
+      if (!el.classList.contains('reveal-pre')) continue
+      /* 行内 transitionDelay 读完就清掉，不留死样式 */
+      const delay = staggerOf(el)
+      el.style.transitionDelay = ''
+      teardowns.push(
+        inView(
+          el,
+          () => {
+            el.classList.remove('reveal-pre')
+            animate(el, { opacity: [0, 1], y: [16, 0] }, { duration: 0.66, delay, easing: EASE })
+          },
+          { amount: 0.12, margin: '0px 0px -6% 0px' }
+        )
+      )
+    }
+    /* 兜底：2.5s 后只要在视口附近的，一律显示（防观察器在某些环境下不触发） */
+    const t = window.setTimeout(() => {
+      for (const el of document.querySelectorAll<HTMLElement>('.reveal-pre')) {
+        if (el.getBoundingClientRect().top < window.innerHeight * 1.2) {
+          el.classList.remove('reveal-pre')
+          animate(el, { opacity: [0, 1], y: [16, 0] }, { duration: 0.5, easing: EASE })
         }
-      },
-      { rootMargin: '0px 0px -8% 0px', threshold: 0.05 }
-    )
-    for (const el of revealTargets) if (el.classList.contains('reveal-pre')) observer.observe(el)
-    /* 兜底：2.5s 后只要在视口附近的，一律显示 */
-    window.setTimeout(() => {
-      for (const el of document.querySelectorAll('.reveal-pre:not(.in)')) {
-        if (el.getBoundingClientRect().top < window.innerHeight * 1.2) el.classList.add('in')
       }
     }, 2500)
+    teardowns.push(() => clearTimeout(t))
+
+    /* 兜底：拖滚动条、按 End、深链跳转时，IntersectionObserver 不会为「被跳过」的中间元素回调，
+       这些元素会一直停在隐藏态。所以每次滚动后再按位置扫一遍：顶端已进视口就必须显示。 */
+    const sweep = () => {
+      sweepRaf = 0
+      for (const el of document.querySelectorAll<HTMLElement>('.reveal-pre')) {
+        if (el.getBoundingClientRect().top < window.innerHeight * 0.98) {
+          el.classList.remove('reveal-pre')
+          animate(el, { opacity: [0, 1], y: [16, 0] }, { duration: 0.5, easing: EASE })
+        }
+      }
+    }
+    let sweepRaf = 0
+    const onScroll = () => {
+      if (!sweepRaf) sweepRaf = requestAnimationFrame(sweep)
+    }
+    window.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', onScroll)
+    teardowns.push(() => {
+      cancelAnimationFrame(sweepRaf)
+      window.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', onScroll)
+    })
+  }
+
+  /* 数字条：进入视口时从 0 滚到目标值（等宽数字，滚动过程中不跳位） */
+  if (!reduced) {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>('.stat strong'))) {
+      const m = (el.textContent ?? '').trim().match(/^(\d+(?:\.\d+)?)(.*)$/)
+      if (!m) continue
+      const target = Number(m[1])
+      const suffix = m[2]
+      const dec = (m[1].split('.')[1] ?? '').length
+      el.textContent = (0).toFixed(dec) + suffix
+      teardowns.push(
+        inView(
+          el,
+          () => {
+            animate(0, target, {
+              duration: 1.15,
+              easing: EASE,
+              onUpdate: (v: number) => {
+                el.textContent = v.toFixed(dec) + suffix
+              }
+            })
+          },
+          { amount: 'all' }
+        )
+      )
+    }
+  }
+
+  /* 三条主线的下划线指示器：位置与宽度用弹簧滑过去，而不是跟着 class 跳 */
+  const tabs = tabsEl.value
+  if (tabs && !reduced) {
+    const bar = tabs.querySelector<HTMLElement>('.tab-bar')
+    const barNow = bar
+    if (barNow) {
+      const place = (animated: boolean) => {
+        const on = tabs.querySelector<HTMLElement>('.tab.on')
+        if (!on) return
+        const a = tabs.getBoundingClientRect()
+        const b = on.getBoundingClientRect()
+        const x = b.left - a.left
+        if (animated) animate(barNow, { x, width: b.width }, { type: 'spring', stiffness: 430, damping: 34 })
+        else Object.assign(barNow.style, { transform: `translateX(${x}px)`, width: `${b.width}px` })
+      }
+      place(false)
+      const stopW = watch(track, () => nextTick(() => place(true)))
+      const onResize = () => place(false)
+      window.addEventListener('resize', onResize)
+      teardowns.push(stopW, () => window.removeEventListener('resize', onResize))
+    }
+  }
+
+  /* 首屏点阵随滚动缓慢上移：做出前后景的深度差 */
+  const hero = heroEl.value
+  const field = hero?.querySelector<HTMLElement>('.dot-field')
+  if (hero && field && !reduced) {
+    teardowns.push(scroll(animate(field, { y: [0, -64] }, { ease: 'linear' }), { target: hero, offset: ['start start', 'end start'] }))
+  }
+
+  /* FAQ：把 <details> 的原生瞬开改成高度 + 透明度过渡 */
+  if (!reduced) {
+    const items = Array.from(document.querySelectorAll<HTMLDetailsElement>('.faq-item'))
+    for (const d of items) {
+      const body = d.querySelector<HTMLElement>('p')
+      if (!body) continue
+      const onClick = (e: MouseEvent) => {
+        if (!(e.target as Element).closest('summary')) return
+        e.preventDefault()
+        body.style.overflow = 'hidden'
+        if (d.open) {
+          animate(body, { height: [`${body.offsetHeight}px`, '0px'], opacity: [1, 0] }, { duration: 0.24, easing: EASE }).then(() => {
+            d.open = false
+            body.style.overflow = ''
+            body.style.height = ''
+            body.style.opacity = ''
+          })
+        } else {
+          d.open = true
+          animate(body, { height: ['0px', `${body.offsetHeight}px`], opacity: [0, 1] }, { duration: 0.3, easing: EASE }).then(() => {
+            body.style.overflow = ''
+            body.style.height = ''
+          })
+        }
+      }
+      d.addEventListener('click', onClick)
+      teardowns.push(() => d.removeEventListener('click', onClick))
+    }
   }
 })
 
@@ -307,7 +455,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.getElementById('faq-jsonld')?.remove()
-  observer?.disconnect()
+  for (const off of teardowns) off()
+  stopScroll?.()
   if (onKey) window.removeEventListener('keydown', onKey)
 })
 </script>
@@ -315,7 +464,8 @@ onUnmounted(() => {
 <template>
   <div class="landing">
     <!-- ============ Hero ============ -->
-    <section class="hero">
+    <section ref="heroEl" class="hero">
+      <DotField class="hero-field" :gap="22" :radius="140" :push="34" />
       <a
         class="notice reveal"
         href="https://github.com/xy200303/yuncast/releases/latest"
@@ -334,8 +484,15 @@ onUnmounted(() => {
           v0.1.3 · Windows / macOS（Apple 芯片）/ Linux
         </div>
         <h1 class="hero-title">
-          <span class="line"><span class="word">不会直播，</span></span>
-          <span class="line"><span class="word">也能自己开一场。</span></span>
+          <span v-for="(line, li) in heroLines" :key="li" class="line">
+            <span
+              v-for="(ch, ci) in [...line]"
+              :key="ci"
+              class="ch"
+              :style="{ '--ci': (li ? heroOffset : 0) + ci }"
+              >{{ ch }}</span
+            >
+          </span>
         </h1>
         <p class="hero-sub reveal d1">
           写稿、配音、播出、控场、互动，一条流水线都在一个桌面工作台里。<br />
@@ -343,19 +500,19 @@ onUnmounted(() => {
           直播带货、商品宣讲、有声书、播客，同一套流程。
         </p>
         <div class="hero-cta reveal d2">
-          <a class="btn primary" :href="withBase('/download')">下载安装包</a>
-          <button class="btn ghost" type="button" @click="openVideo">
+          <a v-press class="btn primary" :href="withBase('/download')">下载安装包</a>
+          <button v-press class="btn ghost" type="button" @click="openVideo">
             <span class="btn-ico" v-html="ICONS.play" />
             看演示（3 分 07 秒）
           </button>
-          <a class="btn ghost" :href="withBase('/guide/quickstart')">使用文档</a>
+          <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">使用文档</a>
         </div>
 
-        <div class="hero-shot reveal d3">
+        <div class="hero-shot">
           <div class="window">
             <div class="window-bar"><i /><i /><i /><span class="window-url">小云播客坊 YunCast</span></div>
             <video class="hero-video" src="/demo-loop.mp4" poster="/demo-poster.jpg" autoplay muted loop playsinline />
-            <button class="play-hint" type="button" @click="openVideo" aria-label="播放完整演示">
+            <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放完整演示">
               <span v-html="ICONS.play" />
             </button>
           </div>
@@ -364,12 +521,13 @@ onUnmounted(() => {
           </p>
         </div>
 
-        <ul class="hero-facts reveal d4">
+        <ul class="hero-facts">
           <li><span v-html="ICONS.check" />MIT 开源，无账号、无服务端</li>
           <li><span v-html="ICONS.check" />LLM 与 TTS 直连你自配的云 API</li>
           <li><span v-html="ICONS.check" />数据全部存在本机</li>
         </ul>
       </div>
+      <SignalStrip class="hero-signal" :height="72" :lines="3" />
     </section>
 
     <!-- ============ 数字条（只放实测值） ============ -->
@@ -390,10 +548,11 @@ onUnmounted(() => {
       <div class="inner">
         <h2 class="display reveal">写稿 · 播出 · 互动，<span>三件事各有一套界面</span></h2>
         <p class="lead reveal d1">点开看每条主线具体能做什么。</p>
-        <div class="tabs reveal d2" role="tablist">
+        <div ref="tabsEl" class="tabs reveal d2" role="tablist">
           <button
             v-for="t in tracks"
             :key="t.id"
+            v-press
             type="button"
             role="tab"
             :aria-selected="track === t.id"
@@ -402,6 +561,7 @@ onUnmounted(() => {
           >
             {{ t.name }}
           </button>
+          <span class="tab-bar" aria-hidden="true" />
         </div>
         <div class="track-panel reveal d3">
           <template v-for="t in tracks" :key="t.id">
@@ -428,7 +588,13 @@ onUnmounted(() => {
         <h2 class="display reveal">一条流水线，<span>从写稿到复盘</span></h2>
         <p class="lead reveal d1">每一步都有对应的界面，改哪一步都不会动到已经做好的部分。</p>
         <ol class="pipeline">
-          <li v-for="(p, i) in pipeline" :key="p.title" class="pipe reveal" :style="{ transitionDelay: (i % 5) * 70 + 'ms' }">
+          <li
+            v-for="(p, i) in pipeline"
+            :key="p.title"
+            v-lift="3"
+            class="pipe reveal"
+            :style="{ transitionDelay: (i % 5) * 70 + 'ms' }"
+          >
             <span class="pipe-step">{{ String(i + 1).padStart(2, '0') }}</span>
             <div class="pipe-icon" v-html="p.icon" />
             <h3>{{ p.title }}</h3>
@@ -444,7 +610,13 @@ onUnmounted(() => {
         <h2 class="display reveal">免费、开源、<span>数据在本机</span></h2>
         <p class="lead reveal d1">软件本身 MIT 免费，运行成本只有你自配的语言模型与语音合成，用量在应用里可查。</p>
         <div class="grid two">
-          <article v-for="(l, i) in localFirst" :key="l.t" class="card reveal" :style="{ transitionDelay: (i % 2) * 70 + 'ms' }">
+          <article
+            v-for="(l, i) in localFirst"
+            :key="l.t"
+            v-lift="4"
+            class="card reveal"
+            :style="{ transitionDelay: (i % 2) * 70 + 'ms' }"
+          >
             <div class="card-icon" v-html="l.icon" />
             <h3>{{ l.t }}</h3>
             <p>{{ l.d }}</p>
@@ -462,7 +634,13 @@ onUnmounted(() => {
         <h2 class="display reveal">三种播出方式，<span>先想清楚再开播</span></h2>
         <p class="lead reveal d1">节目上选一次，之后合成与播放都按它来。</p>
         <div class="modes">
-          <article v-for="(m, i) in modes" :key="m.name" class="mode reveal" :style="{ transitionDelay: i * 80 + 'ms' }">
+          <article
+            v-for="(m, i) in modes"
+            :key="m.name"
+            v-lift="4"
+            class="mode reveal"
+            :style="{ transitionDelay: i * 80 + 'ms' }"
+          >
             <header>
               <h3>{{ m.name }}</h3>
               <span class="chip">{{ m.tag }}</span>
@@ -601,7 +779,13 @@ $ npm run dev</code></pre>
           每个版本都发布三端安装包与更新说明，应用内「设置 → 关于」可以直接检查更新。
         </p>
         <ol class="releases">
-          <li v-for="(r, i) in changelog" :key="r.v" class="rel reveal" :style="{ transitionDelay: i * 70 + 'ms' }">
+          <li
+            v-for="(r, i) in changelog"
+            :key="r.v"
+            v-lift="3"
+            class="rel reveal"
+            :style="{ transitionDelay: i * 70 + 'ms' }"
+          >
             <div class="rel-head">
               <span class="rel-v">{{ r.v }}</span>
               <span class="rel-when">{{ r.when }}</span>
@@ -645,9 +829,9 @@ $ npm run dev</code></pre>
           语言模型负责写与想，语音合成负责出声。两个 Key 填完就能开播，剩下的都在界面里。
         </p>
         <div class="hero-cta center">
-          <a class="btn primary big" href="https://github.com/xy200303/yuncast/releases/latest" target="_blank" rel="noreferrer">下载最新版</a>
-          <a class="btn ghost" :href="withBase('/guide/quickstart')">四步上手</a>
-          <a class="btn ghost" href="https://github.com/xy200303/yuncast" target="_blank" rel="noreferrer">GitHub</a>
+          <a v-press class="btn primary big" href="https://github.com/xy200303/yuncast/releases/latest" target="_blank" rel="noreferrer">下载最新版</a>
+          <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">四步上手</a>
+          <a v-press class="btn ghost" href="https://github.com/xy200303/yuncast" target="_blank" rel="noreferrer">GitHub</a>
         </div>
         <p class="footnote">MIT License · © 2026 小云播客坊 YunCast · 安装包未做代码签名，安装提示按文档处理</p>
       </div>
@@ -793,6 +977,7 @@ $ npm run dev</code></pre>
 /* ---------- 三条主线：下划线 tab（不是胶囊切换器） ---------- */
 .tracks-section { padding: var(--yc-section-y) 0 84px; }
 .tabs {
+  position: relative;
   display: flex;
   gap: 32px;
   width: fit-content;
@@ -812,14 +997,15 @@ $ npm run dev</code></pre>
 }
 .tab:hover { color: var(--vp-c-text-1); }
 .tab.on { color: var(--vp-c-text-1); }
-.tab.on::after {
-  content: '';
+/* 下划线指示器由动效引擎驱动（位置与宽度弹簧滑动），初始位置在 JS 里落位 */
+.tab-bar {
   position: absolute;
   left: 0;
-  right: 0;
   bottom: -1px;
   height: 2px;
+  width: 0;
   background: var(--yc-ink);
+  border-radius: 1px;
 }
 .track-panel {
   padding: 30px 32px 28px;
@@ -914,13 +1100,20 @@ $ npm run dev</code></pre>
 }
 
 /* ---------- Hero ---------- */
-/* 版面靠留白和字号跨度撑，不靠背景光效 */
+/* 版面靠留白和字号跨度撑；背景是一层可交互的点阵（DotField），不是光效 */
 .hero {
   position: relative;
+  overflow: hidden;
   padding: 96px 24px 0;
   background: #fbfbfa;
 }
+.hero-field {
+  /* 只在上半屏露面，往下淡出，避免和正文抢注意力 */
+  mask-image: linear-gradient(#000 0 42%, transparent 88%);
+}
 .hero-inner { position: relative; max-width: 1020px; margin: 0 auto; text-align: center; }
+/* 首屏信号带：出血到两侧，做 hero 的收口 */
+.hero-signal { margin: 34px -24px 0; width: calc(100% + 48px); }
 
 .badge {
   display: inline-flex;
@@ -948,12 +1141,31 @@ $ npm run dev</code></pre>
   font-weight: 540;
   line-height: 1.2;
   letter-spacing: -0.01em;
-  text-wrap: balance;
   margin: 30px 0 0;
 }
-.hero-title .line { display: block; }
+/* 每行一个裁切盒：字从下方升上来，被行盒切住 */
+.hero-title .line {
+  display: block;
+  overflow: hidden;
+  padding-bottom: 0.14em;
+  margin-bottom: -0.14em;
+}
+.hero-title .ch {
+  display: inline-block;
+  animation: yc-rise 0.92s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: calc(var(--ci, 0) * 45ms + 0.12s);
+  will-change: transform;
+}
 /* 第一行铺垫、第二行主张：主张那句用品牌色点出来 */
-.hero-title .line:last-child .word { color: var(--yc-accent); }
+.hero-title .line:last-child .ch { color: var(--yc-accent); }
+@keyframes yc-rise {
+  from {
+    transform: translate3d(0, 108%, 0);
+  }
+  to {
+    transform: translate3d(0, 0, 0);
+  }
+}
 .hero-sub {
   margin: 24px auto 0;
   max-width: 620px;
@@ -961,10 +1173,30 @@ $ npm run dev</code></pre>
   line-height: 1.8;
   color: var(--vp-c-text-2);
   text-wrap: pretty;
+  animation: yc-fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.62s;
+}
+@keyframes yc-fade-up {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
-.hero-cta { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 34px; }
-.hero-cta.center { margin-top: 26px; }
+.hero-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 34px;
+  animation: yc-fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.74s;
+}
+.hero-cta.center { margin-top: 26px; animation: none; }
 .btn {
   display: inline-flex;
   align-items: center;
@@ -994,7 +1226,22 @@ $ npm run dev</code></pre>
 }
 
 /* 窗口 / 截图框：细边 + 收紧的投影，像真的应用窗口 */
-.hero-shot { position: relative; margin-top: 56px; }
+.hero-shot {
+  position: relative;
+  margin-top: 56px;
+  animation: yc-window-in 1s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 0.86s;
+}
+@keyframes yc-window-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 26px, 0) scale(0.986);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 .window {
   position: relative;
   border-radius: var(--yc-radius-lg);
@@ -1044,10 +1291,12 @@ $ npm run dev</code></pre>
   gap: 10px 26px;
   justify-content: center;
   margin: 30px 0 0;
-  padding: 0 0 68px;
+  padding: 0 0 28px;
   list-style: none;
   font-size: 13.5px;
   color: var(--vp-c-text-2);
+  animation: yc-fade-up 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: 1s;
 }
 .hero-facts li { display: inline-flex; align-items: center; gap: 6px; }
 .hero-facts li span { display: inline-flex; width: 14px; height: 14px; color: var(--yc-accent); }

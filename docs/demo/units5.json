@@ -1,0 +1,110 @@
+[
+ {
+  "seq": 1,
+  "id": "ut-825ebfd31fa6",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\25\\256fab835d514732663f6ccf7e0606813dacf712adc635f48ed7b77ba3b390fb.mp3",
+  "text": "不用会直播，也能开一场。",
+  "dur": 2.0
+ },
+ {
+  "seq": 2,
+  "id": "ut-e0a65b986faa",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\0c\\0cd39852576147a726dca059324fabe8d16aee0c6b012318d63d4f10edb5d6cd.mp3",
+  "text": "接下来这一分钟，产品自己介绍自己。",
+  "dur": 3.12
+ },
+ {
+  "seq": 3,
+  "id": "ut-64d5236982dd",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\66\\66224f211c5a59d66b36c8d9e579a4f5a7861942f5364392b9c05562b4754b3b.mp3",
+  "text": "稿子、配音、播放、控场、回评论，本来散在四五个软件里。",
+  "dur": 6.32
+ },
+ {
+  "seq": 4,
+  "id": "ut-9047dde3066e",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\98\\9895b7f7c74f12f0847bf0babfa2b736b8da9c7f326f46498df22169396ab551.mp3",
+  "text": "现在在同一个窗口：左边干活，右边跟导演说话。",
+  "dur": 3.84
+ },
+ {
+  "seq": 5,
+  "id": "ut-5ac4bf1cc6df",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\fd\\fd4ac696f58244b16b0f380b99ebb33cae215b6b526181978ed3675456247094.mp3",
+  "text": "稿子是导演写的。你说一句写三条开场，它自己查资料、按场景写。",
+  "dur": 6.08
+ },
+ {
+  "seq": 6,
+  "id": "ut-563f104139a7",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\ea\\ea1f10296379d02864a4b6f945b7da1608428323285241e563ecd4187b377864.mp3",
+  "text": "写完进底稿库。每条都能改、能重合成，改哪条都不动已经做好的音",
+  "dur": 8.96
+ },
+ {
+  "seq": 7,
+  "id": "ut-ac8976c82072",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\d4\\d43ae48a640e81828e7e53e883868bb32870b8c3caeaf91f0673535244c34643.mp3",
+  "text": "声音用你的样本克隆，或者挑一个现成的。合成那一刻定死，改稿不",
+  "dur": 7.04
+ },
+ {
+  "seq": 8,
+  "id": "ut-5cf424cd9d4a",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\3f\\3fb7decb59e2e02427fb132c89c490c1ad8caae1095305256573bf8871766984.mp3",
+  "text": "播的时候话术池分四档：打断、插播、常规、垫底。",
+  "dur": 5.2
+ },
+ {
+  "seq": 9,
+  "id": "ut-df5a4031eb9a",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\2b\\2b1233756f161d34c2286a38d2d47633672944a141e48e2d1f7393bc25307654.mp3",
+  "text": "评论进来先按人、按内容去重，再喂给我。",
+  "dur": 4.88
+ },
+ {
+  "seq": 10,
+  "id": "ut-ce7c50804ba3",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\3a\\3a5a4fd8f69751540c77340340a9d0d8949a095787493719b8bd43c20c8e5859.mp3",
+  "text": "停顿、重音、语速，稿子里能标。说错了随时掐。",
+  "dur": 6.88
+ },
+ {
+  "seq": 11,
+  "id": "ut-babd973ae7d7",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\c2\\c26bc9068650ccb5c531148b188fd749a07037974a9da4f5250d5301f084e646.mp3",
+  "text": "播完留档：逐条话术、评论、事件，用量按节目算。",
+  "dur": 6.64
+ },
+ {
+  "seq": 12,
+  "id": "ut-9e1f79a3bd4d",
+  "status": "ready",
+  "rate": 1.12,
+  "path": "C:\\Users\\34834\\AppData\\Roaming\\YunCast\\blobs\\2a\\2a73bc8267a1eeeb3e33cb48b2c0a5cfd9db0819639fbca7aa5c6a7d4f65e045.mp3",
+  "text": "开源免费，模型和语音用你自己的 Key，数据都在这台机器上。",
+  "dur": 5.2
+ }
+]

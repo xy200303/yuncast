@@ -642,7 +642,7 @@ onUnmounted(() => {
           </a>
           <button v-press class="btn ghost" type="button" @click="openVideo">
             <span class="btn-ico" v-html="ICONS.play" />
-            看演示（3 分 07 秒）
+            看演示（1 分 44 秒）
           </button>
           <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">使用文档</a>
         </div>
@@ -652,7 +652,7 @@ onUnmounted(() => {
             <div class="window">
               <div class="window-bar"><i /><i /><i /><span class="window-url">小云播客坊 YunCast</span></div>
               <video class="hero-video" src="/demo-loop.mp4" poster="/demo-poster.jpg" autoplay muted loop playsinline />
-              <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放完整演示">
+              <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放产品自述">
                 <span v-html="ICONS.play" />
               </button>
             </div>
@@ -823,10 +823,11 @@ onUnmounted(() => {
     <!-- ============ 演示视频 ============ -->
     <section id="demo" class="section alt video-section">
       <div class="inner">
-        <span class="eyebrow reveal"><i>05</i>完整演示</span>
-        <h2 class="display reveal">完整演示</h2>
+        <span class="eyebrow reveal"><i>05</i>产品自述</span>
+        <h2 class="display reveal">产品自述</h2>
         <p class="lead reveal d1">
-          3 分 07 秒，全程真实操作：让导演写稿、底稿库与合成声音、人工播报真实合成，最后真的开播出声。
+          1 分 44 秒，这一场没有第三方解说：稿子存在底稿库，声音由应用自己合成，
+          开播后按章节顺序念出来——听到的就是屏幕上写着的那 12 条。
         </p>
         <div class="video-wrap reveal d2">
           <video
@@ -840,8 +841,9 @@ onUnmounted(() => {
           />
         </div>
         <ul class="video-notes reveal d3">
-          <li>旁白与播出音频都来自应用内的语音合成（演示主播的嗓音），界面为真实操作录制</li>
-          <li>最后一段是真实开播：池子里的内容按四档优先级依次播出，播完手动作收</li>
+          <li>节目是自己建的：内容类型「单人」、播出方式「全部做好再播」、播完即停</li>
+          <li>12 条底稿先整体合成，再开播；播到哪一条，画面上就高亮哪一条</li>
+          <li>声音来自应用内的语音合成（出镜主播「小陶」，苏瑶音色，语速 1.12）</li>
           <li>演示里的底稿、节目与评论是样例数据，用来展示流程</li>
           <li>想看每一步的细节说明，翻 <a :href="withBase('/guide/interface')">界面一览</a></li>
         </ul>
@@ -1014,7 +1016,7 @@ $ npm run dev</code></pre>
         <header>
           <div>
             <strong>小云播客坊 · 功能演示</strong>
-            <span>3 分 07 秒 · 含配音</span>
+            <span>1 分 44 秒 · 产品自述</span>
           </div>
           <button type="button" class="modal-close" aria-label="关闭" @click="closeVideo">✕</button>
         </header>

@@ -33,3 +33,10 @@ docs/demo/frame-t0.json
 docs/demo/marks.json
 docs/demo/utterances-before.json
 docs/demo/utterances-new.json
+# 后续几轮录制/装配的中间产物（同上）
+docs/demo/frames[3-9]/
+docs/demo/seq[3-9]/
+docs/demo/marks[3-9].json
+docs/demo/audolog*.json
+docs/demo/pool6.json
+docs/demo/product-silent.mp4

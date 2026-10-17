@@ -7,8 +7,8 @@ import {
   type PoolSayInput,
   type PoolSnapshot,
   type PoolStatus,
-  type SpeechItem,
-  type SpeechLane
+  type PoolItem,
+  type PoolLane
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
@@ -26,7 +26,7 @@ import { friendlyError } from './errorTranslate'
 /** 场记：没开播时条目归到这个占位会话（开播后由 SessionRecorder 给出真实场次 id） */
 const DEFAULT_SESSION_ID = 'default'
 
-const LANE_RANK: Record<SpeechLane, number> = {
+const LANE_RANK: Record<PoolLane, number> = {
   interrupt: 0,
   next: 1,
   normal: 2,
@@ -34,15 +34,15 @@ const LANE_RANK: Record<SpeechLane, number> = {
 }
 
 /** 播放顺序：lane → 话轮锚点（组内最早条目）→ 话轮内 seq */
-function orderedForPlay(items: SpeechItem[]): SpeechItem[] {
-  const groups = new Map<string, SpeechItem[]>()
+function orderedForPlay(items: PoolItem[]): PoolItem[] {
+  const groups = new Map<string, PoolItem[]>()
   for (const item of items) {
     const key = `${item.lane}:${item.turnId}`
     const group = groups.get(key)
     if (group) group.push(item)
     else groups.set(key, [item])
   }
-  const keyOf = (item: SpeechItem) => item.sortOrder ?? item.createdAt
+  const keyOf = (item: PoolItem) => item.sortOrder ?? item.createdAt
   const anchored = [...groups.values()].map((group) => {
     group.sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt)
     return { lane: group[0].lane, anchor: Math.min(...group.map(keyOf)), group }
@@ -66,7 +66,7 @@ export interface RealtimeChannelProbe {
   unavailableReason(voiceId?: string): string
 }
 
-const PRE_SYNTH_KINDS: SpeechItem['source']['kind'][] = ['scene', 'filler']
+const PRE_SYNTH_KINDS: PoolItem['source']['kind'][] = ['scene', 'filler']
 
 export class SpeechPool {
   /** 预合成任务的取消令牌（被挤出窗口时 abort） */
@@ -75,8 +75,23 @@ export class SpeechPool {
   private lastRealtimeFallback = '' 
   private sweepTimer: ReturnType<typeof setInterval> | null = null
 
+  /** 429/5xx/网络类临时错误：退避自动重试（3 次仍失败才停播） */
+  private static RETRYABLE = /429|throttl|rate.?quota|5\d\d|fetch failed|econn(reset|refused|aborted)|enotfound|etimedout|eai_again|socket hang up|超时|timed?\s*out/i
+  /** 401/403 鉴权/欠费类：重试无意义，直接失败停播（人去修密钥） */
+  private static FATAL = /401|403|unauthorized|forbidden|invalid[_ ]api[_ ]?key/i
+  private static BACKOFF_MS = [2_000, 8_000, 30_000]
+  /** 每条已失败次数 */
+  private synthAttempts = new Map<string, number>()
+  /** 退避中的条目：到这个时间点之前不进合成窗口 */
+  private retryAt = new Map<string, number>()
+  private retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  /** 彻底失败（停播）的条目：点「继续」时由 retryFailed 重新触发合成 */
+  private haltedIds = new Set<string>()
+
   /** 音频就绪预热钩子（index.ts 接 BlobStore.warm：开播装池/合成完成时把文件读进 OS 页面缓存） */
   onWarmCache: ((path: string) => void) | null = null
+  /** 合成彻底失败的钩子（index.ts 接统一暂停 + 事件流）：一条合不出来就停播，等人处理 */
+  onSynthHalt: ((item: PoolItem, error: string) => void) | null = null
 
   /** 场记：当前场次 id（index.ts 在开播/收播时设置）；null = 没开播，条目归占位会话 */
   sessionId: string | null = null
@@ -89,13 +104,11 @@ export class SpeechPool {
     private readonly realtime: RealtimeChannelProbe = {
       available: () => false,
       unavailableReason: () => '实时通道未接入'
-    },
-    /** 当前在场主播的生效音色（index.ts 接 agent.currentVoice）：播放取件的音色匹配用 */
-    private readonly voiceProvider: () => string = () => ''
+    }
   ) {
     // 重启后上次留下的未播完条目全部作废——音频可能还在但播放上下文没了
-    for (const item of this.storage.speechActive()) {
-      this.storage.speechUpdate(item.id, { status: 'skipped', error: '应用重启，队列重置' })
+    for (const item of this.storage.poolItemActive()) {
+      this.storage.poolItemUpdate(item.id, { status: 'skipped', error: '应用重启，队列重置' })
     }
     // 时效清扫兜底（正常路径在每次 refresh 里做）
     this.sweepTimer = setInterval(() => this.refresh(), 5000)
@@ -104,13 +117,15 @@ export class SpeechPool {
 
   dispose(): void {
     if (this.sweepTimer) clearInterval(this.sweepTimer)
+    for (const timer of this.retryTimers.values()) clearTimeout(timer)
+    this.retryTimers.clear()
     for (const controller of this.synthJobs.values()) controller.abort()
     this.synthJobs.clear()
   }
 
   // ---------- 入池 ----------
 
-  say(input: PoolSayInput): SpeechItem {
+  say(input: PoolSayInput): PoolItem {
     // 显示稿与语音稿分离：display 带 @昵称，送 TTS 的转成自然称呼（见 speechText.ts）
     const speechText = toSpeechText(input.text)
     const text = input.text.trim()
@@ -129,29 +144,29 @@ export class SpeechPool {
       sourceAgentId === LIBRARY_SOURCE_ID
         ? POOL_LIMITS.libraryPerSourcePerMinute
         : POOL_LIMITS.perSourcePerMinute
-    const recent = this.storage.speechCountBySourceSince(sourceAgentId, sourceKind, Date.now() - 60_000)
+    const recent = this.storage.poolItemCountBySourceSince(sourceAgentId, sourceKind, Date.now() - 60_000)
     if (recent >= limit) {
       throw new Error(`该来源发言过于频繁（每分钟最多 ${limit} 条），稍后再试`)
     }
 
     // 去重：dedupeKey 命中未播条目直接合并（pending 可更新文本，合成中/就绪保持原样）
     if (input.dedupeKey) {
-      const existing = this.storage.speechFindActiveByDedupeKey(input.dedupeKey)
+      const existing = this.storage.poolItemFindActiveByDedupeKey(input.dedupeKey)
       if (existing) {
         if (existing.status === 'pending' && existing.text !== text) {
-          this.storage.speechUpdate(existing.id, { text, expiresAt: input.expiresAt ?? existing.expiresAt })
+          this.storage.poolItemUpdate(existing.id, { text, expiresAt: input.expiresAt ?? existing.expiresAt })
           this.refresh()
         }
-        return this.storage.speechGet(existing.id) ?? existing
+        return this.storage.poolItemGet(existing.id) ?? existing
       }
     }
 
     // 容量上限
-    if (this.storage.speechActive().length >= POOL_LIMITS.capacity) {
+    if (this.storage.poolItemActive().length >= POOL_LIMITS.capacity) {
       throw new Error(`话术池已满（${POOL_LIMITS.capacity} 条），等播出一部分再丢`)
     }
 
-    const item: SpeechItem = {
+    const item: PoolItem = {
       id: `sp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       sessionId: this.sessionId ?? DEFAULT_SESSION_ID,
       text,
@@ -167,28 +182,32 @@ export class SpeechPool {
       delivery: input.delivery?.trim() || undefined,
       rate: input.rate,
       pitch: input.pitch,
-      originUtteranceId: input.originUtteranceId,
+      emotion: input.emotion?.trim() || undefined,
+      emotionScale: input.emotionScale,
+      languageType: input.languageType?.trim() || undefined,
+      pauseAfterMs: input.pauseAfterMs,
+      originDraftUnitId: input.originDraftUnitId,
       sortOrder: input.sortOrder,
       // 场次装载：库里的预合成音频直接复用，开播零延迟（未预合成才进合成窗口）
       audioPath: input.audioPath?.trim() || undefined,
       status: input.audioPath?.trim() ? 'ready' : 'pending',
       createdAt: Date.now()
     }
-    this.storage.speechInsert(item)
+    this.storage.poolItemInsert(item)
     if (item.audioPath) this.onWarmCache?.(item.audioPath)
     this.refresh()
     return item
   }
 
   /** insert_next：评论回复走 next 道，当前播完即播 */
-  insertNext(input: Omit<PoolSayInput, 'lane'>): SpeechItem {
+  insertNext(input: Omit<PoolSayInput, 'lane'>): PoolItem {
     return this.say({ ...input, lane: 'next' })
   }
 
   // ---------- 池管理 ----------
 
   /** 修订未播条目：作废旧音频重合成。playing/done 不可改——说出去的话泼出去的水。 */
-  revise(id: string, newText: string): SpeechItem {
+  revise(id: string, newText: string, extra?: { pauseAfterMs?: number }): PoolItem {
     const item = this.mustGet(id)
     const text = newText.trim()
     if (!text) throw new Error('话术内容为空')
@@ -196,13 +215,16 @@ export class SpeechPool {
       throw new Error('这条已经在播或播完了，不能改')
     }
     this.cancelSynth(id)
+    this.clearRetry(id)
+    this.haltedIds.delete(id)
     const isStreamItem = item.stream && !item.audioPath
-    this.storage.speechUpdate(id, {
+    this.storage.poolItemUpdate(id, {
       text,
       speechText: toSpeechText(text),
       status: isStreamItem ? 'ready' : 'pending',
       audioPath: undefined,
-      error: undefined
+      error: undefined,
+      ...(extra?.pauseAfterMs !== undefined ? { pauseAfterMs: extra.pauseAfterMs } : {})
     })
     // 流式条目文本即声音，改完就是新的；预合成条目回 pending，由合成窗口重新合成
     this.refresh()
@@ -216,32 +238,32 @@ export class SpeechPool {
       throw new Error('这条已经在播或播完了，不能撤销')
     }
     this.cancelSynth(id)
-    this.storage.speechUpdate(id, { status: 'skipped' })
+    this.storage.poolItemUpdate(id, { status: 'skipped' })
     this.refresh()
   }
 
   /** 手动排序：给出的 id 顺序即新的播出顺序（只对未播条目生效） */
   reorder(ids: string[]): void {
-    const active = new Set(this.storage.speechActive().map((item) => item.id))
+    const active = new Set(this.storage.poolItemActive().map((item) => item.id))
     ids.forEach((id, index) => {
-      if (active.has(id)) this.storage.speechUpdate(id, { sortOrder: index + 1 })
+      if (active.has(id)) this.storage.poolItemUpdate(id, { sortOrder: index + 1 })
     })
     this.refresh()
   }
 
   /**
-   * 开播前清"别的节目的存货"：条目来自某段底稿（originUtteranceId），而那段底稿不属于本节目 → 撤掉。
+   * 开播前清"别的节目的存货"：条目来自某段底稿（originDraftUnitId），而那段底稿不属于本节目 → 撤掉。
    * 不清的话，预制/单篇节目的「播完即停」永远等不到池空（池里还压着上一场的词），
    * 播完自己的内容会接着念别的节目的稿子——最难看的一种错位。没来源的现场话术（人工播报/导演 say）不动。
    */
   dropForeignOrigins(allowedUtteranceIds: Set<string>): number {
     let n = 0
-    for (const item of this.storage.speechActive()) {
-      const origin = item.originUtteranceId
+    for (const item of this.storage.poolItemActive()) {
+      const origin = item.originDraftUnitId
       if (!origin || allowedUtteranceIds.has(origin)) continue
       if (item.status === 'playing') continue
       this.cancelSynth(item.id)
-      this.storage.speechUpdate(item.id, { status: 'skipped' })
+      this.storage.poolItemUpdate(item.id, { status: 'skipped' })
       n++
     }
     if (n > 0) this.refresh()
@@ -249,83 +271,83 @@ export class SpeechPool {
   }
 
   /** 清空某条车道上的未播条目（不动正在播的） */
-  clearLane(lane: SpeechLane): void {
+  clearLane(lane: PoolLane): void {
     if (!SPEECH_LANES.includes(lane)) throw new Error('未知车道')
-    for (const item of this.storage.speechActive()) {
+    for (const item of this.storage.poolItemActive()) {
       if (item.lane !== lane || item.status === 'playing') continue
       this.cancelSynth(item.id)
-      this.storage.speechUpdate(item.id, { status: 'skipped' })
+      this.storage.poolItemUpdate(item.id, { status: 'skipped' })
     }
     this.refresh()
   }
 
   /**
-   * 换主播/换音色后的重嗓音（docs/07 §8.5）：未播条目里音色不匹配的作废音频、
-   * 换新嗓音重合成（文本不动）。通配条目（voiceId=''）和已匹配的不动；
-   * 正在播的收不回（说出去的话泼出去的水），播完的不管。返回重置条数。
+   * 收播清场：池里所有条目一律作废（含正在播的），合成任务取消，退避/停播重试状态清空。
+   * 结束节目时调用——换节目再也不会接着念上一场的存货（含人工插播、导演现场 say 这类无来源话术）。
    */
-  reVoice(voice: string): number {
-    const target = voice.trim()
-    if (!target) return 0
-    let n = 0
-    for (const item of this.storage.speechActive()) {
-      if (item.voiceId === '' || item.voiceId === target) continue
-      if (item.status === 'playing' || item.status === 'done') continue
+  clearAll(reason = '节目已结束'): number {
+    let count = 0
+    for (const item of this.storage.poolItemActive()) {
       this.cancelSynth(item.id)
-      this.storage.speechUpdate(item.id, { status: 'pending', audioPath: undefined, stream: false, voiceId: target })
-      n++
+      this.clearRetry(item.id)
+      this.storage.poolItemUpdate(item.id, { status: 'skipped', error: reason })
+      count++
     }
-    if (n > 0) this.refresh()
-    return n
+    this.haltedIds.clear()
+    if (count > 0) this.refresh()
+    return count
   }
+
 
   // ---------- 播放出口 ----------
 
   /** 看一眼播出顺序上的第一个 ready 条目（不取走）：播放循环用它判断下一条急不急，决定要不要留白 */
-  peek(): SpeechItem | null {
+  peek(): PoolItem | null {
     this.sweepExpired()
     return (
-      orderedForPlay(this.storage.speechActive()).find(
-        (entry) => entry.status === 'ready' && this.playable(entry)
-      ) ?? null
+      orderedForPlay(this.storage.poolItemActive()).find((entry) => entry.status === 'ready') ?? null
     )
   }
 
-  /** 取播出顺序上第一个 ready 条目并置 playing；没有就返回 null（调用方等待重试） */
-  next(): SpeechItem | null {
+  /** 播出顺序上的下一个条目（不管合成是否就绪）：段后停顿的等待决策用——下一条还在合成不能成为不停顿的理由 */
+  peekUpcoming(): PoolItem | null {
     this.sweepExpired()
-    const ordered = orderedForPlay(this.storage.speechActive())
-    let item = ordered.find((entry) => entry.status === 'ready' && this.playable(entry))
-    if (!item) {
-      // 有就绪但音色全不匹配（改人设卡音色后重启之类）：自愈重嗓音，别干躺着等死
-      const ready = ordered.filter((entry) => entry.status === 'ready')
-      const voice = this.voiceProvider()
-      if (ready.length > 0 && voice && ready.every((entry) => !this.playable(entry))) {
-        this.reVoice(voice)
-        item = orderedForPlay(this.storage.speechActive()).find(
-          (entry) => entry.status === 'ready' && this.playable(entry)
-        )
-      }
-    }
-    if (!item) return null
-    this.storage.speechUpdate(item.id, { status: 'playing' })
-    this.refresh()
-    return this.storage.speechGet(item.id)
+    return orderedForPlay(this.storage.poolItemActive()).find((entry) => entry.status !== 'playing') ?? null
   }
 
-  /** 音色匹配：条目没标音色（通配）或当前无生效音色都照播；标了且不匹配的取不走（等 reVoice 重合成） */
-  private playable(item: SpeechItem): boolean {
-    const voice = this.voiceProvider()
-    if (!item.voiceId || !voice) return true
-    return item.voiceId === voice
+  /** 取播出顺序上第一个 ready 条目并置 playing；没有就返回 null（调用方等待重试） */
+  next(): PoolItem | null {
+    this.sweepExpired()
+    const ordered = orderedForPlay(this.storage.poolItemActive())
+    const item = ordered.find((entry) => entry.status === 'ready')
+    if (!item) return null
+    this.storage.poolItemUpdate(item.id, { status: 'playing' })
+    this.refresh()
+    return this.storage.poolItemGet(item.id)
   }
+
 
   /** 播放中断（暂停/急停/退出）：正在播的条目退回 ready，等恢复从头重播 */
   requeue(id: string): void {
-    const item = this.storage.speechGet(id)
+    const item = this.storage.poolItemGet(id)
     if (!item || item.status !== 'playing') return
-    this.storage.speechUpdate(id, { status: 'ready' })
+    this.storage.poolItemUpdate(id, { status: 'ready' })
     this.refresh()
+  }
+
+  /** 点「继续」恢复播出前调用：把彻底失败的条目重新放回合成队列（重新触发合成），返回复活的条数 */
+  retryFailed(): number {
+    let count = 0
+    for (const id of this.haltedIds) {
+      const item = this.storage.poolItemGet(id)
+      if (!item || item.status !== 'failed') continue
+      this.clearRetry(id)
+      this.storage.poolItemUpdate(id, { status: 'pending', error: '' })
+      count++
+    }
+    this.haltedIds.clear()
+    if (count) this.refresh()
+    return count
   }
 
   /**
@@ -333,30 +355,30 @@ export class SpeechPool {
    * 返回 false = 池里没有这条（调用方负责重新装载后再提）。
    */
   jumpTo(dedupeKey: string): boolean {
-    const item = this.storage.speechFindActiveByDedupeKey(dedupeKey)
+    const item = this.storage.poolItemFindActiveByDedupeKey(dedupeKey)
     if (!item || item.status === 'playing') return false
-    const active = this.storage.speechActive()
+    const active = this.storage.poolItemActive()
     const minAnchor = Math.min(...active.map((entry) => entry.sortOrder ?? entry.createdAt))
-    this.storage.speechUpdate(item.id, { sortOrder: minAnchor - 1 })
+    this.storage.poolItemUpdate(item.id, { sortOrder: minAnchor - 1 })
     this.refresh()
     return true
   }
 
   /** 播报完成回报 */
   markDone(id: string): void {
-    const item = this.storage.speechGet(id)
+    const item = this.storage.poolItemGet(id)
     if (!item) return
-    this.storage.speechUpdate(id, { status: 'done', playedAt: Date.now() })
-    this.storage.speechPrune()
+    this.storage.poolItemUpdate(id, { status: 'done', playedAt: Date.now() })
+    this.storage.poolItemPrune()
     this.refresh()
   }
 
   /** 播放/合成失败：记下具体原因，条目置 failed（快照广播出去，界面照实提示，不当成播出成功） */
   markFailed(id: string, error: string): void {
-    const item = this.storage.speechGet(id)
+    const item = this.storage.poolItemGet(id)
     if (!item || item.status === 'done' || item.status === 'failed') return
     console.error(`[AgentAnchor] 播报失败（${id}）: ${error}`)
-    this.storage.speechUpdate(id, { status: 'failed', error })
+    this.storage.poolItemUpdate(id, { status: 'failed', error })
     this.refresh()
   }
 
@@ -364,8 +386,8 @@ export class SpeechPool {
 
   getStatus(): PoolStatus {
     this.sweepExpired()
-    const active = this.storage.speechActive()
-    const byLane: Record<SpeechLane, number> = { interrupt: 0, next: 0, normal: 0, filler: 0 }
+    const active = this.storage.poolItemActive()
+    const byLane: Record<PoolLane, number> = { interrupt: 0, next: 0, normal: 0, filler: 0 }
     for (const item of active) byLane[item.lane] += 1
     return {
       active: active.length,
@@ -374,22 +396,22 @@ export class SpeechPool {
     }
   }
 
-  getRecentPlayed(n: number): SpeechItem[] {
-    return this.storage.speechRecentPlayed(Math.max(1, Math.min(n, 50)))
+  getRecentPlayed(n: number): PoolItem[] {
+    return this.storage.poolItemRecentPlayed(Math.max(1, Math.min(n, 50)))
   }
 
   snapshot(): PoolSnapshot {
-    const active = this.storage.speechActive()
+    const active = this.storage.poolItemActive()
     return {
       items: orderedForPlay(active),
-      failed: this.storage.speechFailedSince(Date.now() - 5 * 60_000)
+      failed: this.storage.poolItemFailedSince(Date.now() - 5 * 60_000)
     }
   }
 
   // ---------- 内部 ----------
 
-  private mustGet(id: string): SpeechItem {
-    const item = this.storage.speechGet(id)
+  private mustGet(id: string): PoolItem {
+    const item = this.storage.poolItemGet(id)
     if (!item) throw new Error('条目不存在')
     return item
   }
@@ -402,13 +424,24 @@ export class SpeechPool {
     }
   }
 
+  /** 清掉一条目的重试状态（成功/修订/手动重试时归零重来） */
+  private clearRetry(id: string): void {
+    this.synthAttempts.delete(id)
+    this.retryAt.delete(id)
+    const timer = this.retryTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      this.retryTimers.delete(id)
+    }
+  }
+
   /** 过期条目置 expired（不播），并取消它们的合成任务 */
   private sweepExpired(): void {
     const now = Date.now()
-    for (const item of this.storage.speechActive()) {
+    for (const item of this.storage.poolItemActive()) {
       if (item.expiresAt && item.expiresAt <= now && item.status !== 'playing') {
         this.cancelSynth(item.id)
-        this.storage.speechUpdate(item.id, { status: 'expired' })
+        this.storage.poolItemUpdate(item.id, { status: 'expired' })
       }
     }
   }
@@ -422,7 +455,7 @@ export class SpeechPool {
 
   /** 预合成窗口：前 5 条 pending 自动送 TTS；被挤出窗口的合成中条目取消回 pending */
   private refreshSynthWindow(): void {
-    const queued = orderedForPlay(this.storage.speechActive()).filter((item) =>
+    const queued = orderedForPlay(this.storage.poolItemActive()).filter((item) =>
       ['pending', 'synthesizing', 'ready'].includes(item.status)
     )
     const windowIds = new Set(queued.slice(0, POOL_LIMITS.synthWindow).map((item) => item.id))
@@ -431,16 +464,20 @@ export class SpeechPool {
       if (!windowIds.has(id)) {
         controller.abort()
         this.synthJobs.delete(id)
-        this.storage.speechUpdate(id, { status: 'pending' })
+        this.storage.poolItemUpdate(id, { status: 'pending' })
       }
     }
 
+    const now = Date.now()
     for (const item of queued.slice(0, POOL_LIMITS.synthWindow)) {
-      if (item.status === 'pending' && !this.synthJobs.has(item.id)) void this.synthesize(item)
+      // 退避中的条目到点再合成（retryAt 的定时器到点会 refresh 一次）
+      if (item.status === 'pending' && !this.synthJobs.has(item.id) && (this.retryAt.get(item.id) ?? 0) <= now) {
+        void this.synthesize(item)
+      }
     }
   }
 
-  private async synthesize(item: SpeechItem): Promise<void> {
+  private async synthesize(item: PoolItem): Promise<void> {
     // 通道按内容挑（用户在接入上只开了「实时合成」这一个开关，不是选通道）：
     // - 文本已知的剧情/暖场话术 → 照常预合成成文件（提前备好，播出零延迟）
     // - 文本动态的回复/互动/播报 → 标 ready+stream，播出时边走边合成（首包延迟最低）
@@ -461,7 +498,9 @@ export class SpeechPool {
     }
     if (streamable) {
       // 修订后的条目同样走这里：无需合成，只要文本已是新的（revise 已改），标 ready 即可
-      this.storage.speechUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
+      this.clearRetry(item.id)
+      this.haltedIds.delete(item.id)
+      this.storage.poolItemUpdate(item.id, { status: 'ready', stream: true, audioPath: undefined })
       this.broadcast(this.snapshot())
       return
     }
@@ -469,7 +508,7 @@ export class SpeechPool {
     this.synthJobs.set(item.id, controller)
     // 合成期间的文本版本：完成时若已被 revise 改动，这份音频作废重来
     const textAtStart = item.text
-    this.storage.speechUpdate(item.id, { status: 'synthesizing' })
+    this.storage.poolItemUpdate(item.id, { status: 'synthesizing' })
     this.broadcast(this.snapshot())
     try {
       const audioPath = await this.tts.synthesize(
@@ -477,28 +516,53 @@ export class SpeechPool {
         item.speechText || textAtStart,
         item.voiceId || undefined,
         controller.signal,
-        { instruction: item.delivery, rate: item.rate, pitch: item.pitch },
+        { instruction: item.delivery, rate: item.rate, pitch: item.pitch, emotion: item.emotion, emotionScale: item.emotionScale, languageType: item.languageType },
         // 用量归属当前节目（用量看板按节目分摊）
         this.storage.getConfig().live.activeProgramId || undefined
       )
       if (controller.signal.aborted) return
-      const current = this.storage.speechGet(item.id)
+      const current = this.storage.poolItemGet(item.id)
       if (!current || current.text !== textAtStart) {
         // 文本在合成期间被修订：丢弃旧音频，回 pending 让窗口重合成
-        this.storage.speechUpdate(item.id, { status: 'pending', audioPath: undefined, stream: false })
+        this.storage.poolItemUpdate(item.id, { status: 'pending', audioPath: undefined, stream: false })
         this.refresh()
         return
       }
-      this.storage.speechUpdate(item.id, { status: 'ready', audioPath, stream: false })
+      this.clearRetry(item.id)
+      this.haltedIds.delete(item.id)
+      this.storage.poolItemUpdate(item.id, { status: 'ready', audioPath, stream: false })
       this.onWarmCache?.(audioPath)
     } catch (error) {
       if (controller.signal.aborted) {
         // 被挤出窗口：回 pending 等下次进窗口再合成
-        this.storage.speechUpdate(item.id, { status: 'pending' })
+        this.storage.poolItemUpdate(item.id, { status: 'pending' })
       } else {
-        // 合成失败不阻塞池：条目置 failed，错误随快照广播出去
-        console.error(`[AgentAnchor] TTS 合成失败（${item.id}）:`, error)
-        this.storage.speechUpdate(item.id, { status: 'failed', error: errorMessage(error) })
+        const raw = error instanceof Error ? error.message : String(error)
+        const message = errorMessage(error)
+        const attempts = (this.synthAttempts.get(item.id) ?? 0) + 1
+        this.synthAttempts.set(item.id, attempts)
+        // 429/5xx/网络类临时错误退避重试（2s→8s）；401/403 鉴权欠费类重试无意义，直接失败
+        // 分类要看技术原文（raw），不能看翻译后的人话（message）
+        const retryable = !SpeechPool.FATAL.test(raw) && SpeechPool.RETRYABLE.test(raw)
+        if (retryable && attempts < 3) {
+          const delay = SpeechPool.BACKOFF_MS[Math.min(attempts - 1, SpeechPool.BACKOFF_MS.length - 1)]
+          console.warn(`[AgentAnchor] TTS 合成失败（${item.id}，第 ${attempts} 次），${delay / 1000}s 后重试: ${message}`)
+          this.storage.poolItemUpdate(item.id, { status: 'pending' })
+          this.retryAt.set(item.id, Date.now() + delay)
+          const timer = setTimeout(() => {
+            this.retryTimers.delete(item.id)
+            this.refresh()
+          }, delay)
+          timer.unref?.()
+          this.retryTimers.set(item.id, timer)
+        } else {
+          // 重试耗尽或不可重试：条目置 failed 并停播（onSynthHalt 接统一暂停），点「继续」时 retryFailed 重新合成
+          console.error(`[AgentAnchor] TTS 合成失败（${item.id}，第 ${attempts} 次，不再重试）:`, error)
+          this.clearRetry(item.id)
+          this.haltedIds.add(item.id)
+          this.storage.poolItemUpdate(item.id, { status: 'failed', error: message })
+          this.onSynthHalt?.(item, message)
+        }
       }
     } finally {
       this.synthJobs.delete(item.id)

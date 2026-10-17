@@ -31,7 +31,17 @@ import {
 export const NAV_PAGES = ['live', 'programs', 'anchors', 'knowledge', 'voices', 'sessions', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 export type AgentPanelMode = 'floating' | 'docked' | 'minimized'
-export type SettingsPaneId = 'appearance' | 'director' | 'llm' | 'prompts' | 'tts' | 'stream' | 'comment' | 'about'
+export type SettingsPaneId =
+  | 'appearance'
+  | 'director'
+  | 'llm'
+  | 'prompts'
+  | 'tts'
+  | 'audioStyle'
+  | 'stream'
+  | 'comment'
+  | 'mcp'
+  | 'about'
 
 export interface AgentPanelContext {
   kind: 'draft' | 'live' | 'general'
@@ -119,14 +129,11 @@ interface AppState {
   ttsProviders: TtsProviderManifest[]
   /** 语音合成的供应商接入（一家一条）：音色提示、筛选标记都按「这条接入在不在」判断 */
   ttsConnections: TtsConnectionSafe[]
-  /** 当前主播卡（状态栏的 LLM 徽章按它选的接入与模型判定） */
-  persona: Persona | null
+  /** 默认主播卡（展示用：状态栏的 LLM 徽章参考它选的接入与模型） */
   loadModelLibrary: () => Promise<void>
-  /** 接入库变了就调它：当前主播卡引用的接入可能已失效，徽章要跟着变 */
-  refreshPersona: () => Promise<void>
+  /** 接入库变了就调它：主播卡引用的接入可能已失效，徽章要跟着变 */
   setConnections: (connections: ModelConnectionSafe[]) => void
   setTtsConnections: (connections: TtsConnectionSafe[]) => void
-  setPersona: (persona: Persona | null) => void
 }
 
 export const useAppStore = create<AppState>()((set, get) => ({
@@ -230,25 +237,19 @@ export const useAppStore = create<AppState>()((set, get) => ({
   llmProviders: [],
   ttsProviders: [],
   ttsConnections: [],
-  persona: null,
   loadModelLibrary: async () => {
     if (!('api' in window)) return
-    const [connections, llmProviders, ttsProviders, ttsConnections, persona] = await Promise.all([
+    const [connections, llmProviders, ttsProviders, ttsConnections] = await Promise.all([
       window.api.model.list(),
       window.api.providers.llmList(),
       window.api.providers.ttsList(),
-      window.api.tts.connections(),
-      window.api.persona.get()
+      window.api.tts.connections()
     ])
-    set({ connections, llmProviders, ttsProviders, ttsConnections, persona })
+    set({ connections, llmProviders, ttsProviders, ttsConnections })
   },
-  refreshPersona: async () => {
-    if (!('api' in window)) return
-    set({ persona: await window.api.persona.get() })
-  },
+
   setConnections: (connections) => set({ connections }),
   setTtsConnections: (ttsConnections) => set({ ttsConnections }),
-  setPersona: (persona) => set({ persona })
 }))
 
 /** TTS 是否已配置（状态栏徽章用）：存在任一可用接入（凭据齐全 + 至少一个模型能用）就算 */

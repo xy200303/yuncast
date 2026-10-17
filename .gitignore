@@ -40,3 +40,8 @@ docs/demo/marks[3-9].json
 docs/demo/audolog*.json
 docs/demo/pool6.json
 docs/demo/product-silent.mp4
+
+# 现场录制中间产物
+docs/demo/live-marks-*.json
+docs/demo/live-audiolog-*.json
+cli/dist/

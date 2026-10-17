@@ -18,8 +18,11 @@ import { StatsPage } from './components/StatsPage'
 import { SettingsDialog } from './components/SettingsDialog'
 import { AgentPanel } from './components/AgentPanel'
 import { OnboardingPage } from './components/OnboardingPage'
+import { AuditionBar } from './components/AuditionBar'
 import { useAppStore, type NavPage } from './stores/useAppStore'
 import { audioEngine } from './audio/engine'
+import { initScreenRecorder } from './audio/screenRecorder'
+import { initVirtualCursor } from './overlay/virtualCursor'
 import { streamPlayer } from './audio/streamPlayer'
 import { ONBOARDING_DONE_KEY } from './lib/onboarding'
 import { llmReady } from '../../shared/types'
@@ -77,6 +80,8 @@ export default function App() {
   // 播放调度在主进程：这里只把推来的 PCM 排播出声、把电平显示出来。
   useEffect(() => {
     if (!('api' in window)) return
+    initScreenRecorder()
+    initVirtualCursor()
     audioEngine.init({ onHumanSpeaking: () => {} })
     const offPcm = window.api.audio.onPcm((payload) => {
       streamPlayer.push(
@@ -122,14 +127,11 @@ export default function App() {
   // 主播 Agent 状态 + 评论事件 + 推流状态订阅
   useEffect(() => {
     if (!('api' in window)) return
-    const refreshPersona = useAppStore.getState().refreshPersona
     const offAgent = window.api.agent.onStatus((status) => {
       const prev = useAppStore.getState().agent.state
       setAgent(status)
       // 播报暂停态以主进程为准（speakingPaused 随状态广播来，重启后不失真）
       setLoopRunning(status.speakingPaused !== true)
-      // 节目开播会按节目把人设卡切成当前主播，徽章要跟着新的卡走
-      if (status.state !== prev) void refreshPersona()
     })
     void window.api.agent.status().then((status) => {
       setAgent(status)
@@ -174,6 +176,8 @@ export default function App() {
               )
             })}
           </div>
+          {/* 全局试听条：任何页面触发的试听都收在这同一条上（aux 槽，不打断播报） */}
+          <AuditionBar />
           <StatusBar />
         </SidebarInset>
         <AgentPanel />

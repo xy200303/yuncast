@@ -116,7 +116,7 @@ export function ProgramGateDialog({
                   <CircleAlert className="mt-0.5 size-3.5 shrink-0 text-red-600" />
                 )}
                 <div className="min-w-0">
-                  <p className="truncate text-[13px]">
+                  <p className="break-words text-[13px]">
                     {failure.title || '（无标题）'}
                     {failure.status === 'stale' && (
                       <span className="ml-1.5 text-xs font-medium text-amber-600 dark:text-amber-400">

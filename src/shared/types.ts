@@ -378,17 +378,62 @@ export const DEFAULT_DIRECTOR_CONFIG: DirectorConfig = { name: '小云', modelCo
 export interface LiveStateConfig {
   /** 当前选中的节目 id（空串 = 未选择） */
   activeProgramId: string
-  /** 桥段间留白（毫秒）：正常/兜底车道播完一条后的呼吸停顿；插播/互动车道不等，0 = 不留白 */
-  bitGapMs: number
 }
 
-export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activeProgramId: '', bitGapMs: 1200 }
+export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activeProgramId: '' }
 
 export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUrl: '', streamKey: '' }
 
 export const DEFAULT_BGM_CONFIG: BgmConfig = { path: '', volume: 0.3 }
 
 export const DEFAULT_COMMENT_CONFIG: CommentConfig = { connectorPort: 8102, connectorToken: '' }
+
+// ---------- 开放接口（MCP / CLI，docs 参照同作者 TermPilot） ----------
+
+/** 本机 MCP 服务端口（避开 TermPilot 3927、平台连接器 8102） */
+export const MCP_DEFAULT_PORT = 3931
+export const MCP_HOST = '127.0.0.1'
+
+/** 开放接口配置（config.mcp 段）：只绑回环地址，Bearer 令牌鉴权，默认关闭 */
+export interface McpConfig {
+  enabled: boolean
+  port: number
+  /** 访问令牌（落库时按敏感字段加密；首次启动自动生成） */
+  token: string
+}
+
+export const DEFAULT_MCP_CONFIG: McpConfig = { enabled: false, port: MCP_DEFAULT_PORT, token: '' }
+
+/** MCP 服务运行状态（设置 → 开放接口 的状态徽标；main 广播 + 拉取共用） */
+export interface McpRuntime {
+  running: boolean
+  port: number
+  /** 已建立的 MCP 会话数 */
+  clients: number
+  /** 起不来时的可读原因（端口被占等） */
+  error?: string
+}
+
+/** 录屏状态（设置/播放条红点/MCP 工具共用） */
+export interface RecordingState {
+  recording: boolean
+  /** 录制开始时间（毫秒） */
+  startedAt?: number
+  /** 当前录制落盘文件 */
+  file?: string
+  /** 画面里是否带鼠标指针 */
+  showCursor?: boolean
+}
+
+function parseMcp(input: unknown): McpConfig {
+  const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
+  const port = Number(row.port)
+  return {
+    enabled: row.enabled === true,
+    port: Number.isInteger(port) && port > 0 && port < 65536 ? port : MCP_DEFAULT_PORT,
+    token: typeof row.token === 'string' ? row.token : ''
+  }
+}
 
 function parseStream(input: unknown): StreamConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
@@ -418,6 +463,30 @@ function parseBgm(input: unknown): BgmConfig {
 }
 
 /** 持久化到数据库 app_config 表（单行 JSON）的应用配置。 */
+/** 统一数据变更的 scope：界面订阅 data:changed 后按 scope 重拉对应数据 */
+export type DataChangeScope =
+  | 'personas'
+  | 'voices'
+  | 'programs'
+  | 'drafts'
+  | 'knowledge'
+  | 'triggers'
+  | 'sessions'
+  | 'settings'
+
+/** 音频理解（声音风格解析）：复用某条百炼接入的凭据 + 指定模型（Qwen-Omni 系） */
+export interface AudioStyleConfig {
+  /** 用哪条语音合成接入的 API Key；空 = 自动取最早一条有密钥的百炼接入 */
+  connectionId: string
+  /** 音频理解模型（默认 qwen3.8-omni-flash） */
+  model: string
+}
+
+export const DEFAULT_AUDIO_STYLE_CONFIG: AudioStyleConfig = {
+  connectionId: '',
+  model: 'qwen3.8-omni-flash'
+}
+
 export interface AppConfig {
   theme: AppTheme
   /** 配色主题（点缀色） */
@@ -429,6 +498,8 @@ export interface AppConfig {
   bgm: BgmConfig
   comment: CommentConfig
   director: DirectorConfig
+  mcp: McpConfig
+  audioStyle: AudioStyleConfig
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -440,7 +511,9 @@ export const DEFAULT_CONFIG: AppConfig = {
   stream: DEFAULT_STREAM_CONFIG,
   bgm: DEFAULT_BGM_CONFIG,
   comment: DEFAULT_COMMENT_CONFIG,
-  director: DEFAULT_DIRECTOR_CONFIG
+  director: DEFAULT_DIRECTOR_CONFIG,
+  mcp: DEFAULT_MCP_CONFIG,
+  audioStyle: DEFAULT_AUDIO_STYLE_CONFIG
 }
 
 /** 单层到多层的部分更新（secret 字段同样是明文进、密文存） */
@@ -487,22 +560,28 @@ export function parseAppConfig(input: unknown): AppConfig {
         : null,
     model: typeof directorRow.model === 'string' ? directorRow.model : ''
   }
+  const audioStyleRow =
+    row.audioStyle && typeof row.audioStyle === 'object' ? (row.audioStyle as Record<string, unknown>) : {}
+  const audioStyle: AudioStyleConfig = {
+    connectionId: typeof audioStyleRow.connectionId === 'string' ? audioStyleRow.connectionId : '',
+    model: typeof audioStyleRow.model === 'string' && audioStyleRow.model.trim()
+      ? audioStyleRow.model.trim()
+      : DEFAULT_AUDIO_STYLE_CONFIG.model
+  }
   return {
     theme: APP_THEMES.find((id) => id === row.theme) ?? DEFAULT_CONFIG.theme,
     accent: APP_ACCENTS.find((id) => id === row.accent) ?? DEFAULT_CONFIG.accent,
     tts,
     trigger,
     live: {
-      activeProgramId: typeof liveRow.activeProgramId === 'string' ? liveRow.activeProgramId : '',
-      bitGapMs:
-        typeof liveRow.bitGapMs === 'number' && liveRow.bitGapMs >= 0
-          ? liveRow.bitGapMs
-          : DEFAULT_LIVE_CONFIG.bitGapMs
+      activeProgramId: typeof liveRow.activeProgramId === 'string' ? liveRow.activeProgramId : ''
     },
     stream: parseStream(row.stream),
     bgm: parseBgm(row.bgm),
     comment: parseComment(row.comment),
-    director
+    director,
+    audioStyle,
+    mcp: parseMcp(row.mcp)
   }
 }
 
@@ -527,7 +606,7 @@ export interface UpdateStatus {
 // ---------- 话术池（SpeechPool，docs/01 §3.2/3.3） ----------
 
 export const SPEECH_LANES = ['interrupt', 'next', 'normal', 'filler'] as const
-export type SpeechLane = (typeof SPEECH_LANES)[number]
+export type PoolLane = (typeof SPEECH_LANES)[number]
 
 export const SPEECH_SOURCE_KINDS = [
   'scene',
@@ -538,9 +617,9 @@ export const SPEECH_SOURCE_KINDS = [
   'manual',
   'reaction'
 ] as const
-export type SpeechSourceKind = (typeof SPEECH_SOURCE_KINDS)[number]
+export type PoolSourceKind = (typeof SPEECH_SOURCE_KINDS)[number]
 
-export type SpeechStatus =
+export type PoolItemStatus =
   | 'pending'
   | 'synthesizing'
   | 'ready'
@@ -551,12 +630,12 @@ export type SpeechStatus =
   | 'failed'
   | 'expired'
 
-export interface SpeechReplyTo {
+export interface PoolReplyTo {
   commentId: string
   author: string
 }
 
-export interface SpeechItem {
+export interface PoolItem {
   id: string
   sessionId: string
   text: string
@@ -564,16 +643,17 @@ export interface SpeechItem {
   turnId: string
   /** 话轮内顺序 */
   seq: number
-  /** 角色音色（写稿时按卡司分派），空串 = 用当前出镜主播的嗓音 */
+  /** 这段归哪张主播卡（稳定寻址；改名/换音色不影响）。空 = 合成时用卡司第一张 */
+  /** 角色音色（写稿时按卡司分派），空串 = 用卡司第一张 */
   voiceId: string
-  source: { agentId: string; kind: SpeechSourceKind }
-  lane: SpeechLane
+  source: { agentId: string; kind: PoolSourceKind }
+  lane: PoolLane
   /** 未播条目去重键 */
   dedupeKey?: string
   /** 时效过期不播（毫秒时间戳） */
   expiresAt?: number
-  replyTo?: SpeechReplyTo
-  status: SpeechStatus
+  replyTo?: PoolReplyTo
+  status: PoolItemStatus
   /** TTS 合成完成的音频文件绝对路径（合成前为空） */
   audioPath?: string
   /** 语音稿：真正送进 TTS 的文本（已把 @昵称 转成自然称呼）；空则用 text */
@@ -584,14 +664,22 @@ export interface SpeechItem {
   rate?: number
   /** 音调倍率（1.0 基准，0.9~1.1 保守）：克隆音色大变会不像本人 */
   pitch?: number
+  /** 情感（仅火山支持按条指定：happy / angry / sad 等；留空 = 接入默认） */
+  emotion?: string
+  /** 情感强度（火山 emotion_scale，1~5）：只在带了 emotion 时生效 */
+  emotionScale?: number
+  /** 语种提示（仅百炼 qwen3-tts 支持：Auto / Chinese / English 等；留空 = 接入默认） */
+  languageType?: string
   /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播（tts.realtime 开启时） */
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
-  originUtteranceId?: string
+  originDraftUnitId?: string
   /** 合成/播放失败原因 */
   error?: string
   /** reorder 手动指定的顺序（优先级高于 createdAt） */
   sortOrder?: number
+  /** 播完这条后的停顿毫秒（播放时调度，不进合成）：undefined/0 = 连续播；段内停顿用 <pause> 演法标记 */
+  pauseAfterMs?: number
   createdAt: number
   playedAt?: number
 }
@@ -605,19 +693,26 @@ export interface PoolSayInput {
   /** 语速倍率（1.0 基准，0.85~1.3）/ 音调倍率（0.9~1.1 保守）：演法硬参数，空 = 接入默认 */
   rate?: number
   pitch?: number
-  lane?: SpeechLane
-  sourceKind?: SpeechSourceKind
+  /** 情感 / 情感强度（火山）：按条指定情绪，空 = 接入默认 */
+  emotion?: string
+  emotionScale?: number
+  /** 语种提示（百炼 qwen3-tts）：Auto / Chinese / English…，空 = 接入默认 */
+  languageType?: string
+  lane?: PoolLane
+  sourceKind?: PoolSourceKind
   sourceAgentId?: string
   /** 不传则新开一个话轮 */
   turnId?: string
   seq?: number
   dedupeKey?: string
   expiresAt?: number
-  replyTo?: SpeechReplyTo
+  replyTo?: PoolReplyTo
   /** 从话术库取件入池时带来源 id（复盘溯源） */
-  originUtteranceId?: string
+  originDraftUnitId?: string
   /** 手动指定的播出锚点（精确插队用；不传按入池时间排） */
   sortOrder?: number
+  /** 播完这条后的停顿毫秒（播放时调度）：不传 = 连续播 */
+  pauseAfterMs?: number
   /** 已预合成的音频文件（话术库预合成产物）：带上即置 ready，不再重复合成 */
   audioPath?: string
 }
@@ -625,16 +720,16 @@ export interface PoolSayInput {
 export interface PoolStatus {
   /** 未播完的条目总数（pending + synthesizing + ready + playing） */
   active: number
-  byLane: Record<SpeechLane, number>
-  playing: SpeechItem | null
+  byLane: Record<PoolLane, number>
+  playing: PoolItem | null
 }
 
 /** 池快照：广播给渲染进程驱动队列视图和提词器 */
 export interface PoolSnapshot {
   /** 未播完条目，按播出顺序排好 */
-  items: SpeechItem[]
+  items: PoolItem[]
   /** 近期合成失败的条目（5 分钟内），供 toast / 队列展示 */
-  failed: SpeechItem[]
+  failed: PoolItem[]
 }
 
 /** 池操作统一返回形状（IPC 层不抛异常，错误信息给 UI 用） */
@@ -702,13 +797,14 @@ export interface AgentStatus {
   error?: string
   /** provider/model 展示用 */
   model?: string
-  personaName?: string
+  castName?: string
   /** 生成中预览：text_delta 累积的文本，入池即清空（提词器用） */
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
   scene?: { title: string; index: number; total: number }
-  /** 会话出生后资产改过（导演大脑/主播卡/剧本/节目配置）：改动要重启会话才生效（docs/07 §8.5） */
-  assetsStale?: boolean
+  /** 会话出生后资产改过了：'prompt' = 人设/剧本/手册/节目（热更新即生效，不打断）；
+   *  'brain' = 导演模型/接入（要重开会话）；'none'/缺省 = 都对得上（docs/07 §8.5） */
+  assetsStale?: 'none' | 'prompt' | 'brain'
   /** 节目开播态（引擎语义）：launch 置真、结束节目置假，与 agent 会话是否活着无关 */
   live?: boolean
   /** 播报暂停中（统一开播控制的「暂停」）：渲染层的「播报中/已暂停」以此为准，不做本地镜像 */
@@ -886,6 +982,11 @@ export interface VoiceRecord {
   model: string
   /** 克隆时用的接入 id（合成路由只走它：绑定失效就得重新克隆或把接入加回来） */
   connectionId: string
+  /**
+   * 音色级风格指令（≤100 字符）：合成优先级 agent 逐条演法 > 节目级 > 音色级 > 接入×模型默认参数。
+   * 只对支持 instruction 的模型生效（百炼各系 / 火山 seed-tts-2.0；seed-icl 复刻模型静默跳过）
+   */
+  instruction?: string
   /** 样本音频文件路径（userData/voices/）；百炼公网 URL 克隆时为空 */
   samplePath: string
   status: VoiceStatus
@@ -1034,7 +1135,7 @@ export interface TriggerThrottle {
 export interface TriggerToolAction {
   /** 支持 {{payload.xxx}} / {{aggregated.xxx}} 插值 */
   template: string
-  lane?: SpeechLane
+  lane?: PoolLane
 }
 
 export interface Trigger {
@@ -1064,21 +1165,21 @@ export type TriggerInput = Omit<Trigger, 'id'> & { id?: string }
 export type RenderedAudioStatus = 'pending' | 'synthesizing' | 'ready' | 'failed' | 'stale'
 
 /**
- * 预制音频引用：预制节目的正式产物，挂在 Scene（整章/整期）或 Utterance（段）上。
- * 与 Utterance.audioPath/status 的分工：后者是滚动合成的运行态字段；rendered 是长期资产，
- * 应用重启不随播出队列清理。开始预制合成时把声音安排冻结成快照写进来，
+ * 预制音频引用：预制节目的正式产物，挂在 Scene（整章/整期）或 DraftUnit（段）上。
+ * 与 DraftUnit.audioPath/status 的分工：后者是滚动合成的运行态字段；rendered 是长期资产，
+ * 应用重启不随播出队列清理。开始预制合成时把卡司声音冻结成快照写进来，
  * 之后切换主播/改主播音色不改写已有 rendered。
  */
 export interface RenderedAudioRef {
   audioPath: string
   durationMs?: number
   status: RenderedAudioStatus
-  /** 合成时冻结的完整声音快照；切换当前主播不改写。外部音频记 'external' */
+  /** 合成时冻结的完整声音快照；换卡司不改写。外部音频记 'external' */
   ttsConnectionId: string
   ttsModelId: string
   /** 音色或角色表的指纹（冻结快照的一部分） */
   voiceOrCastFingerprint: string
-  /** 合成时的文稿指纹（shared/fingerprint）；与当前文稿不一致 → stale */
+  /** 合成时的文稿指纹（shared/fingerprint，含节目级风格指令盐）；与当前文稿不一致 → stale */
   sourceFingerprint: string
   /** true = 用户导入的外部音频（跳过 TTS，不参与重新合成） */
   external?: boolean
@@ -1144,32 +1245,36 @@ export const BROADCAST_MODE_LABELS: Record<BroadcastMode, string> = {
 /** 播完以后（即兴播出无此概念） */
 export type FinishMode = 'stop' | 'loop'
 
-export type ProgramAudioMode = 'follow-presenter' | 'custom'
+/**
+ * 节目语言（多语言节目/跨境电商用）：影响写稿语言、TTS 语种提示与标记编译。
+ * auto = 让模型/服务商自动判断（默认，行为与旧版一致）。
+ */
+export type ProgramLanguage =
+  | 'auto'
+  | 'Chinese'
+  | 'English'
+  | 'Japanese'
+  | 'Korean'
+  | 'German'
+  | 'French'
+  | 'Russian'
+  | 'Italian'
+  | 'Spanish'
+  | 'Portuguese'
 
-export interface ProgramCastMember {
-  roleId: string
-  roleName: string
-  voiceId: string
+export const PROGRAM_LANGUAGE_LABELS: Record<ProgramLanguage, string> = {
+  auto: '自动识别',
+  Chinese: '中文',
+  English: 'English（英语）',
+  Japanese: '日本語（日语）',
+  Korean: '한국어（韩语）',
+  German: 'Deutsch（德语）',
+  French: 'Français（法语）',
+  Russian: 'Русский（俄语）',
+  Italian: 'Italiano（意大利语）',
+  Spanish: 'Español（西班牙语）',
+  Portuguese: 'Português（葡萄牙语）'
 }
-
-/** 节目声音配置：跟随当前主播（默认）或自定义合成模型+角色选角；预制合成开始时冻结成快照 */
-export interface ProgramAudioConfig {
-  mode: ProgramAudioMode
-  ttsConnectionId?: string
-  ttsModelId?: string
-  /**
-   * 自定义节目声音（custom）的默认单音色：整期里没在文稿中单独指定音色的段落都用它。
-   * 「跟随当前主播」模式忽略此项；播客模型也不用它（双主持音色走 cast）。
-   */
-  voiceId?: string
-  cast?: ProgramCastMember[]
-  /** 开场音乐（仅 podcast 模型有意义；缺省 true = 跟服务商默认） */
-  useHeadMusic?: boolean
-  /** 结尾音乐（仅 podcast 模型有意义；缺省 false = 跟服务商默认） */
-  useTailMusic?: boolean
-}
-
-export const DEFAULT_PROGRAM_AUDIO_CONFIG: ProgramAudioConfig = { mode: 'follow-presenter' }
 
 export interface Program {
   id: string
@@ -1185,7 +1290,13 @@ export interface Program {
   enabledTriggerIds: string[]
   /** 节目卡司：主播卡 id 数组（告诉导演"你手下有哪些人设可用"）；空数组 = 导演自选 */
   presenterIds: string[]
-  audioConfig: ProgramAudioConfig
+  /**
+   * 节目级风格指令（≤100 字）：整期默认演法，覆盖音色默认风格、低于 agent 逐条 delivery；
+   * 进文稿指纹盐——改了它预制音频会判过期重合成。节目不再配「声音」，出镜与嗓音由卡司决定。
+   */
+  instruction?: string
+  /** 节目语言（多语言播出）：影响写稿语言与 TTS 语种提示；auto = 自动 */
+  language: ProgramLanguage
   scriptId: string | null
   knowledgeScope: ProgramKnowledgeScope
   /** 剧本推进进度（断播续播用），advance_scene 更新 */
@@ -1205,7 +1316,8 @@ export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
   allowLiveEvents: true,
   enabledTriggerIds: [],
   presenterIds: [],
-  audioConfig: DEFAULT_PROGRAM_AUDIO_CONFIG,
+  instruction: '',
+  language: 'auto',
   scriptId: null,
   knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
 }
@@ -1241,19 +1353,19 @@ export const LIVE_EVENT_STATE_LABELS: Record<LiveEventState, string> = {
   expired: '已过期'
 }
 
-// ---------- 话术库（docs/07 §3 utterances：节目底稿库，与运行态 speech_items 分工） ----------
+// ---------- 话术库（docs/07 §3 utterances：节目底稿库，与运行态 pool_items 分工） ----------
 
-export type UtteranceStatus = 'pending' | 'synthesizing' | 'ready' | 'failed'
+export type DraftUnitStatus = 'pending' | 'synthesizing' | 'ready' | 'failed'
 
 /** 话术来源引用（审阅可追溯；url 类型高亮"外部信息需确认"） */
-export interface UtteranceSource {
+export interface DraftUnitSource {
   type: 'file' | 'url' | 'product'
   id: string
   name: string
   snippet: string
 }
 
-export interface Utterance {
+export interface DraftUnit {
   id: string
   programId: string
   /** 所属场景 id；'' = 全场通用（暖场/兜底，不许写开场和收尾） */
@@ -1276,22 +1388,26 @@ export interface Utterance {
   rate?: number
   /** 音调倍率（1.0 基准，保守 0.9~1.1）：克隆音色大变会不像本人；空 = 接入默认 */
   pitch?: number
-  /** 空 = 用节目/人设卡的音色 */
+  /** 播完这段后的停顿毫秒（播放时调度，不进合成）：空 = 连续播 */
+  pauseAfterMs?: number
+  /** 这段归哪张主播卡（稳定寻址：改名/换音色不影响；空 = 合成时用卡司第一张） */
+  presenterId?: string
+  /** 写稿时的音色快照（presenterId 存在时以卡上当前音色为准），空 = 用卡司第一张 */
   voiceId: string
   audioPath: string | null
   /** 预合成时实际用的音色：装载进池前比对，音色改过则旧音频作废 */
   synthVoice?: string
-  status: UtteranceStatus
+  status: DraftUnitStatus
   error?: string
   /** 预制音频资产（预制节目的正式产物，docs/10 §9.6）；滚动节目的段音频继续用 audioPath/status */
   rendered?: RenderedAudioRef
   /** initial=生成时产出；adopted=复盘采纳的现场改写版（docs/07 §5.5） */
   source: 'initial' | 'adopted'
-  sources: UtteranceSource[]
+  sources: DraftUnitSource[]
   createdAt: number
 }
 
-export type UtteranceInput = Omit<Utterance, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error' | 'seq'> & {
+export type DraftUnitInput = Omit<DraftUnit, 'id' | 'createdAt' | 'status' | 'audioPath' | 'error' | 'seq'> & {
   /** 不传 = 自动排到这个场景末尾（编辑已有条目时保留原序号） */
   seq?: number
 }
@@ -1317,7 +1433,7 @@ export const BIT_TYPE_LABEL: Record<string, string> = Object.fromEntries(
 )
 
 /** 底稿合成状态的中文名（agent 工具的 list_drafts 与话术库 UI 共用一份，别各写各的） */
-export const UTTERANCE_STATUS_LABEL: Record<UtteranceStatus, string> = {
+export const UTTERANCE_STATUS_LABEL: Record<DraftUnitStatus, string> = {
   pending: '待合成',
   synthesizing: '合成中',
   ready: '就绪',
@@ -1422,19 +1538,16 @@ export interface ProducePlanInfo {
 
 /**
  * 声音选择弹窗（docs/REDESIGN 4.4）里用户显式选定的声音覆盖：
- * 合成时冻结进产物快照，不改节目 audioConfig 本身。
+ * 合成时冻结进产物快照；节目本身不存任何声音配置。
  * - voiceId：单音色覆盖，值是完整可路由音色（克隆 voiceType / 目录音色 / 手动复合串「接入::模型::音色」），
  *   全部段落都用它（弹窗里明示「混音」风险，可勾全部重合成统一）；
- * - castVoices：播客双主持覆盖（顺序 = 主持人 A/B），两个音色必须路由到同一条接入、同一个播客模型；
- * - forcePresenter：节目配了自定义声音但本次要跟随当前主播。
+ * - castVoices：播客双主持覆盖（顺序 = 主持人 A/B），两个音色必须路由到同一条接入、同一个播客模型。
  */
 export interface ProduceVoiceOverride {
   voiceId?: string
   castVoices?: [string, string]
-  /** 显式忽略节目的自定义声音配置（本次跟随当前主播） */
-  forcePresenter?: boolean
   /**
-   * 播客模型的整期配乐（不给就按节目里存的历史值 / 服务商默认）。
+   * 播客模型的整期配乐（不给就按服务商默认）。
    * 配乐只在「播客双人整期合成」这一条路线上有意义，所以它跟着录入弹窗里选，而不是存在节目上。
    */
   useHeadMusic?: boolean
@@ -1453,22 +1566,22 @@ export interface ProgramExportOptions {
   format: ProgramExportFormat
   /** 输出目录；空字符串 = 主进程弹目录选择框（UI 路径），Agent 路径给默认 exports 目录 */
   outputDir: string
-  /** 文件名模板（分章用）：含 {节目名} {序号} {章节名} 变量，默认 {节目名}-{序号}-{章节名} */
+  /** 文件名模板（分段导出用）：含 {节目名} {序号} {段标题} 变量，默认 {节目名}-{序号}-{段标题} */
   fileNameTemplate?: string
   /** 响度归一（ffmpeg loudnorm 一遍法） */
   loudness: boolean
-  /** true = 仅导出已完成部分（部分章节缺音频时的显式选择，不静默跳过） */
+  /** true = 仅导出已完成部分（部分段缺音频时的显式选择，不静默跳过） */
   onlyReady: boolean
 }
 
-/** 导出进度事件（IPC 广播：当前第几个/共几个/当前章节名） */
+/** 导出进度事件（IPC 广播：当前第几个/共几个/当前段标题/终态） */
 export interface ProgramExportProgress {
   programId: string
   status: 'running' | 'done' | 'cancelled' | 'error'
   /** 当前第几个（1 起）与总数 */
   current: number
   total: number
-  /** 当前处理的章节名 */
+  /** 当前处理的段标题 */
   title: string
   error?: string
 }
@@ -1549,7 +1662,7 @@ export interface SessionViewer {
 /** 场次详情：话术播出条目（按实际播出顺序）+ 事件流 + 互动观众，前端交错渲染（摘要在 session.summary） */
 export interface SessionDetail {
   session: BroadcastSession
-  items: SpeechItem[]
+  items: PoolItem[]
   events: BroadcastEvent[]
   viewers: SessionViewer[]
 }
@@ -1797,7 +1910,7 @@ export interface SessionStats {
   /** 本场评论热词 */
   commentWords: StatsHotWord[]
   /** 话术来源构成（实际播出条目按 source.kind 归集） */
-  sourceMix: { kind: SpeechSourceKind; count: number }[]
+  sourceMix: { kind: PoolSourceKind; count: number }[]
   /** 互动最多观众 TOP10 */
   topViewers: { name: string; count: number }[]
 }

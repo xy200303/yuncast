@@ -19,8 +19,8 @@ import { useAppStore } from '../../stores/useAppStore'
 import {
   BROADCAST_MODE_LABELS,
   CONTENT_TYPE_LABELS,
-  DEFAULT_PROGRAM_AUDIO_CONFIG,
   DEFAULT_PROGRAM_INPUT,
+  PROGRAM_LANGUAGE_LABELS,
   type BroadcastMode,
   type ContentType,
   type KnowledgeFile,
@@ -28,6 +28,7 @@ import {
   type Product,
   type Program,
   type ProgramInput,
+  type ProgramLanguage,
   type Script,
   type Trigger
 } from '../../../../shared/types'
@@ -92,7 +93,8 @@ export function ProgramDialog({
           allowLiveEvents: program.allowLiveEvents,
           enabledTriggerIds: program.enabledTriggerIds,
           presenterIds: program.presenterIds,
-          audioConfig: program.audioConfig,
+          instruction: program.instruction ?? '',
+          language: program.language ?? 'auto',
           scriptId: program.scriptId,
           knowledgeScope: program.knowledgeScope
         }
@@ -138,17 +140,15 @@ export function ProgramDialog({
   const submit = () => {
     if (!form.name.trim() || busy) return
     /**
-     * 声音不在节目里配：合成（「合成声音」弹窗）时自会让人选接入/模型/音色，选完冻结进每段产物。
-     * 这里只是把老节目已存的自定义声音配置原样带回去——改个名字不该把存量配置冲掉；
-     * 新建节目用默认（跟随当前主播）。
+     * 节目不存任何声音配置：谁出声由卡司决定（卡司卡上的音色），合成时也可在弹窗里临时换一把。
+     * 这里只配节目级风格指令——整期默认演法，覆盖音色默认风格、低于 agent 逐条 delivery，进预制音频指纹。
      */
-    const audioConfig = program?.audioConfig ?? DEFAULT_PROGRAM_AUDIO_CONFIG
     setBusy(true)
     const input: ProgramInput = {
       ...form,
       name: form.name.trim(),
       finishMode: form.broadcastMode === 'improvised' ? 'stop' : form.finishMode,
-      audioConfig
+      instruction: form.instruction?.trim() || undefined
     }
     void window.api.program
       .save(input, program?.id)
@@ -243,6 +243,43 @@ export function ProgramDialog({
                 placeholder="这个节目播什么、什么氛围；会作为节目上下文交给导演"
                 className="min-h-16 resize-none"
               />
+            </div>
+
+            {/* 节目级风格指令：整期默认演法（覆盖卡司嗓音的默认风格，agent 逐条演法优先） */}
+            <div>
+              <Label className="mb-1">节目风格指令（可选，≤100 字）</Label>
+              <Input
+                value={form.instruction ?? ''}
+                onChange={(e) => patch({ instruction: e.target.value })}
+                maxLength={100}
+                placeholder="年轻活泼的女性，语速较快，带货场景"
+              />
+              <p className="mt-1 text-xs text-muted-foreground">
+                整期默认演法：覆盖卡司嗓音的默认风格，agent 逐条指定的 delivery 优先。改动后已合成的预制音频会判过期，重新合成
+              </p>
+            </div>
+
+            {/* 播出语言（多语言节目/跨境电商） */}
+            <div>
+              <Label className="mb-1">播出语言</Label>
+              <Select
+                value={form.language ?? 'auto'}
+                onValueChange={(value) => patch({ language: value as ProgramLanguage })}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(Object.keys(PROGRAM_LANGUAGE_LABELS) as ProgramLanguage[]).map((language) => (
+                    <SelectItem key={language} value={language}>
+                      {PROGRAM_LANGUAGE_LABELS[language]}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="mt-1 text-xs text-muted-foreground">
+                非中文节目：写稿要求用该语言撰写，合成时给 TTS 传语种提示（仅百炼 qwen3-tts 生效）；跨境电商/多语种播报用
+              </p>
             </div>
 
             {/* 播出方式 */}

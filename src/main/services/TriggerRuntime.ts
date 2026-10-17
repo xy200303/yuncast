@@ -62,7 +62,7 @@ interface AggregateBuffer {
  */
 const LEGACY_TEMPLATES: Record<string, string[]> = {
   冷场自救: [
-    '话术池空了，直播不能冷场。主动带节奏：用 say 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
+    '话术池空了，直播不能冷场。主动带节奏：用 speak 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
   ],
   价格变动提醒: [
     '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；没有要改的就照常继续，不用特意播报。'
@@ -79,15 +79,15 @@ const BUILTIN_DEFAULT_DISABLED = new Set(['整点带节奏'])
 /**
  * 已下线的内建触发器：模板没改过的旧行直接删掉。
  * 开场白下线——开场由底稿 hook 段承担（按 seq 第一个播，预合成零 token），
- * 不再让 agent 例行 say（烧 token、刷对话区、还和底稿重复）
+ * 不再让 agent 例行 speak（烧 token、刷对话区、还和底稿重复）
  * 续写补给下线——低水位续写升级为引擎行为（broadcastPolicy rolling.shouldAutoWrite →
  * AgentService.notifyLowWater），不再依赖节目勾选触发器；导演要自定义写法直接在对话里说
  */
 const BUILTIN_REMOVED: Record<string, string> = {
   开场白:
-    '直播开始了。用 say 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。',
+    '直播开始了。用 speak 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。',
   续写补给:
-    '话术池只剩 {{payload.remaining}} 段了，撑不了几分钟。list_drafts 看看底稿库：还有没轮到的存货就按节奏播（循环会接上）；存货见底了就现场写一个新桥段直接 say 播出——接着刚才的内容往下讲，返场不返词，别冷场。'
+    '话术池只剩 {{payload.remaining}} 段了，撑不了几分钟。list_drafts 看看底稿库：还有没轮到的存货就按节奏播（循环会接上）；存货见底了就现场写一个新桥段直接 speak 播出——接着刚才的内容往下讲，返场不返词，别冷场。'
 }
 
 /** 内建触发器模板（首次启动播种，用户可关可改） */
@@ -101,7 +101,7 @@ export function builtinTriggers(): TriggerInput[] {
         agentId: 'anchor',
         mode: 'task',
         promptTemplate:
-          '刚进场的朋友：{{aggregated.list}}。用 insert_next 或 say 欢迎他们（人多就点名 1-2 个，说「欢迎 xx 等几位朋友」），自然一点，别打断自己的节奏。'
+          '刚进场的朋友：{{aggregated.list}}。用 insert_next 或 speak 欢迎他们（人多就点名 1-2 个，说「欢迎 xx 等几位朋友」），自然一点，别打断自己的节奏。'
       },
       throttle: { aggregateMs: 5000, aggregateAs: 'list', cooldownMs: 60_000, maxPerSession: 10 }
     },
@@ -134,7 +134,7 @@ export function builtinTriggers(): TriggerInput[] {
         agentId: 'anchor',
         mode: 'steer',
         promptTemplate:
-          '话术池空了。先用 get_pool_status 看一眼：如果底稿刚装回来（池里有存货），按节奏播就行，不用补；真的没存货了再用 say 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
+          '话术池空了。先用 get_pool_status 看一眼：如果底稿刚装回来（池里有存货），按节奏播就行，不用补；真的没存货了再用 speak 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
       },
       throttle: { cooldownMs: 120_000 }
     },
@@ -191,7 +191,9 @@ export class TriggerRuntime {
     private readonly storage: StorageService,
     private readonly bus: EventBus,
     private readonly pool: SpeechPool,
-    private readonly agent: AgentService
+    private readonly agent: AgentService,
+    /** 触发器直连话术池时的嗓音（节目默认嗓音；空 = 条目合成时报缺音色） */
+    private readonly voiceProvider: () => string = () => ''
   ) {
     this.seedMissingBuiltins()
     this.reload()
@@ -384,13 +386,18 @@ export class TriggerRuntime {
       // 模板直连话术池，确定性动作不过 LLM
       const text = renderTemplate(toolAction?.template ?? '', payload, aggregated).trim()
       if (!text || text.includes('{{')) return // 模板渲染不完整（缺字段）就别播
+      const voiceId = this.voiceProvider().trim()
+      if (!voiceId) {
+        console.warn(`[AgentAnchor] 触发器「${trigger.name}」跳过：当前节目没配卡司嗓音（节目卡司里的卡都没选音色）`)
+        return
+      }
       try {
         this.pool.say({
           text,
           lane: toolAction?.lane ?? 'normal',
           sourceAgentId: `trigger:${trigger.id}`,
           sourceKind: 'interact',
-          voiceId: this.agent.currentVoice() || undefined
+          voiceId
         })
       } catch (error) {
         console.error(`[AgentAnchor] 触发器「${trigger.name}」入池失败:`, error)

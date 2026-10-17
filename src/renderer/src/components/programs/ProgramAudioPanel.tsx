@@ -6,9 +6,9 @@ import {
   CircleAlert,
   FileAudio,
   Loader2,
+  Pause,
   Play,
   RefreshCw,
-  Square,
   AudioWaveform
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -33,6 +33,7 @@ import {
   listProgramAudioUnits,
   type ProgramAudioUnit
 } from '../../lib/audioUnits'
+import { audition, useAuditionStore } from '../../lib/audition'
 
 /**
  * 预制节目的音频进度区（docs/10 §7.7）：挂在底稿库顶部。
@@ -51,7 +52,6 @@ export function ProgramAudioPanel({
   const [units, setUnits] = useState<ProgramAudioUnit[]>([])
   const [gate, setGate] = useState<ProgramGateResult | null>(null)
   const [producing, setProducing] = useState(false)
-  const [previewingId, setPreviewingId] = useState('')
   const [importOpen, setImportOpen] = useState(false)
   const [voicePickOpen, setVoicePickOpen] = useState(false)
 
@@ -78,20 +78,6 @@ export function ProgramAudioPanel({
       if (payload.programId === program.id) void load()
     })
   }, [program.id, load])
-
-  // 卸载时停掉试听（试听出声在主进程 aux 槽，这里走了就喊停）
-  useEffect(() => {
-    return () => {
-      void window.api.audio.stopAux()
-    }
-  }, [])
-
-  // 试听自然播完：主进程 audio:end 带 preview- 前缀的会话 id，按钮收回到「试听」
-  useEffect(() => {
-    return window.api.audio.onEnd((payload) => {
-      if (payload.itemId?.startsWith('preview-')) setPreviewingId('')
-    })
-  }, [])
 
   /** 门禁 failures 按单元 id 索引：行显示以它为准（能覆盖「就绪但文件被移走」这种渲染层查不到的情况） */
   const failureOf = (unit: ProgramAudioUnit): ProgramGateFailure | undefined =>
@@ -127,31 +113,6 @@ export function ProgramAudioPanel({
   /** 重试失败项 / 重新合成过期项：同样先过声音选择弹窗（已就绪且文稿未改的自动跳过） */
   const redo = async () => {
     setVoicePickOpen(true)
-  }
-
-  const stopPreview = () => {
-    void window.api.audio.stopAux()
-    setPreviewingId('')
-  }
-
-  /**
-   * 试听走主进程 aux 槽（audio.playFile）：ffmpeg 在主进程解码出声，
-   * dev server（http 源拦 file://）和打包版表现一致；同槽互斥，点下一条自动顶掉上一条。
-   * 试听与播报互不打扰（aux 不打断主槽）。
-   */
-  const togglePreview = (unit: ProgramAudioUnit) => {
-    if (previewingId === unit.id) {
-      stopPreview()
-      return
-    }
-    if (!unit.audioPath) return
-    void window.api.audio.playFile(unit.audioPath).then((result) => {
-      if (!result.ok) {
-        setPreviewingId('')
-        toast.error('试听失败', { description: result.error ?? '音频文件打不开（可能已被移动或清理）' })
-      }
-    })
-    setPreviewingId(unit.id)
   }
 
   const importExternal = async (unit: ProgramAudioUnit) => {
@@ -204,8 +165,6 @@ export function ProgramAudioPanel({
               unit={unit}
               failure={failureOf(unit)}
               producing={producing}
-              previewing={previewingId === unit.id}
-              onPreview={() => togglePreview(unit)}
               onRedo={() => void redo()}
             />
           ))}
@@ -255,21 +214,20 @@ function UnitRow({
   unit,
   failure,
   producing,
-  previewing,
-  onPreview,
   onRedo
 }: {
   unit: ProgramAudioUnit
   failure?: ProgramGateFailure
   producing: boolean
-  previewing: boolean
-  onPreview: () => void
   onRedo: () => void
 }) {
   // 门禁把「就绪但文件不在」也列为失败：以门禁的原因为准显示
   const failedReason =
     unit.status === 'failed' ? unit.error || '合成失败' : failure && unit.status === 'ready' ? failure.reason : undefined
   const actionable = unit.status === 'failed' || unit.status === 'stale'
+  // 试听状态是全局的（AuditionBar）：本行是不是正在试听的那条
+  const auditionState = useAuditionStore()
+  const auditioning = auditionState.playing && auditionState.key === `unit:${unit.kind}:${unit.id}`
 
   return (
     <div className="flex items-center gap-2 rounded-md border bg-card px-2.5 py-1.5">
@@ -302,9 +260,17 @@ function UnitRow({
                 : '等待合成'}
       </span>
       {unit.status === 'ready' && !failedReason && (
-        <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs" onClick={onPreview}>
-          {previewing ? <Square /> : <Play />}
-          {previewing ? '停止' : '试听'}
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 shrink-0 px-2 text-xs"
+          onClick={() =>
+            unit.audioPath &&
+            audition.toggle({ key: `unit:${unit.kind}:${unit.id}`, title: unit.title, audioPath: unit.audioPath })
+          }
+        >
+          {auditioning && !auditionState.paused ? <Pause /> : <Play />}
+          {auditioning ? (auditionState.paused ? '继续' : '暂停') : '试听'}
         </Button>
       )}
       {actionable && (

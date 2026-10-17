@@ -38,7 +38,6 @@ export function LlmSection() {
   const connections = useAppStore((s) => s.connections)
   const providers = useAppStore((s) => s.llmProviders)
   const setConnections = useAppStore((s) => s.setConnections)
-  const refreshPersona = useAppStore((s) => s.refreshPersona)
   const [editing, setEditing] = useState<{ connection?: ModelConnectionSafe } | null>(null)
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
   /** 待删接入是不是导演大脑在用的那条（删除前查一次，用于提示） */
@@ -57,7 +56,6 @@ export function LlmSection() {
     setDeleting(null)
     void window.api.model.remove(connection.id).then((result) => {
       setConnections(result.connections)
-      void refreshPersona()
       toast.success(`已删除「${connection.name}」`)
     })
   }
@@ -276,7 +274,6 @@ function ConnectionEditorView({
   onDelete: (connection: ModelConnectionSafe) => void
 }) {
   const setConnections = useAppStore((s) => s.setConnections)
-  const refreshPersona = useAppStore((s) => s.refreshPersona)
   const initialProviderId = connection?.providerId ?? providers[0]?.id ?? 'deepseek'
   const [providerId, setProviderId] = useState(initialProviderId)
   // 接入名默认就用服务商 label（一条接入 = 一家，改不改随你）
@@ -462,7 +459,6 @@ function ConnectionEditorView({
         return
       }
       setConnections(result.connections)
-      void refreshPersona()
       toast.success(connection ? '接入已保存' : '接入已新建', {
         description: '已启动的主播重启后使用新模型'
       })

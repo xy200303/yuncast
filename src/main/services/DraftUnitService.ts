@@ -9,10 +9,10 @@ import type {
   ProduceVoiceOverride,
   Program,
   RenderedAudioRef,
-  Utterance,
-  UtteranceInput
+  DraftUnit,
+  DraftUnitInput
 } from '../../shared/types'
-import { stableHash, utteranceFingerprint, sceneFingerprint } from '../../shared/fingerprint'
+import { stableHash, programStyleSalt, utteranceFingerprint, sceneFingerprint } from '../../shared/fingerprint'
 import { buildPodcastTurns } from '../../shared/podcast'
 import { findCloneVoice, parseManualVoice } from '../../shared/voiceProvider'
 import type { StorageService } from './StorageService'
@@ -31,7 +31,7 @@ const IMPORT_AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a'])
 const CHARS_PER_SECOND = 4.5
 
 /**
- * 节目话术库（docs/07 §3 utterances）+ 节目音频统一生产入口（docs/10 §7.5）。
+ * 节目话术库（docs/07 §3 draftUnits）+ 节目音频统一生产入口（docs/10 §7.5）。
  * 与运行态 speech_items 分工：开播时按轮播规则从这里取件入池；
  * 直播中的改写不回写底稿（复盘采纳才回写，source='adopted'）。
  *
@@ -39,18 +39,21 @@ const CHARS_PER_SECOND = 4.5
  * - rolling：行为同原 synthesizeAll（逐段提前合成，非门禁）；
  * - prepared：按内容类型划分合成单元（场景类节目=每章一个单元，solo=每段一个单元），
  *   合成路线由模型 capability 决定（docs/10 §7.6）：
- *   standard → 逐段合成后整章用 ffmpeg 拼接挂 Scene.rendered，段级产物挂 Utterance.rendered；
+ *   standard → 逐段合成后整章用 ffmpeg 拼接挂 Scene.rendered，段级产物挂 DraftUnit.rendered；
  *   podcast  → 该单元文稿组装成双人轮次稿，一次合成整章/整期双人音频挂 Scene.rendered；
- *   开始时把节目 audioConfig 冻结成声音快照写进产物（§9.6），切换主播不改写已有音频。
+ *   开始时把卡司声音冻结成快照写进产物（§9.6），换卡司不改写已有音频。
  * standard 路线文案只承诺「分段合成并拼接」，不承诺连续表演效果（§15.10）；
  * podcast 路线失败显式报错，绝不无提示降级回 standard（§15.9）。
  */
-export class UtteranceService {
+export class DraftUnitService {
+  /** 底稿变更（写/改/删/清空，含 agent 路径）：index.ts 接上 → 广播 { scope:'drafts', programId } */
+  onDraftChanged: ((programId: string) => void) | null = null
+
   /** 单条状态变化广播（index.ts 接 broadcastUtterance；预合成与底稿改后重合成共用） */
-  onEvent: ((u: Utterance) => void) | null = null
+  onEvent: ((u: DraftUnit) => void) | null = null
   /** 一批合成结束广播（id='' 的特殊事件，UI 整体刷新） */
   onBatchDone: ((programId: string) => void) | null = null
-  /** 预制音频资产变化广播（Scene.rendered / Utterance.rendered 更新；渲染层刷新节目音频进度） */
+  /** 预制音频资产变化广播（Scene.rendered / DraftUnit.rendered 更新；渲染层刷新节目音频进度） */
   onRenderedEvent: ((programId: string) => void) | null = null
   /** 正在后台合成的节目（重入转 dirty，跑完补一轮） */
   private readonly synthRunning = new Set<string>()
@@ -71,7 +74,7 @@ export class UtteranceService {
   /**
    * 后台把节目里 pending/failed 的条目合成就绪（带节目锁）：
    * 预合成按钮、主播改/补底稿后的重合成都走这里。同时在跑就标 dirty，本轮结束自动补跑一轮。
-   * voiceOverride：声音选择弹窗里用户显式选的声音（docs/REDESIGN 4.4），空 = 跟随当前主播/段落指定。
+   * voiceOverride：声音选择弹窗里用户显式选的声音（docs/REDESIGN 4.4），空 = 卡司第一张/段落指定。
    */
   async kickSynthesis(programId: string, voiceOverride?: ProduceVoiceOverride): Promise<void> {
     this.synthOverride.set(programId, voiceOverride)
@@ -96,17 +99,17 @@ export class UtteranceService {
     }
   }
 
-  list(programId: string): Utterance[] {
-    return this.storage.utteranceList(programId)
+  list(programId: string): DraftUnit[] {
+    return this.storage.draftUnitList(programId)
   }
 
   /** 生成 Agent 的 write_bits 工具走这里：一次写一场景的一批桥段 */
   saveMany(
     programId: string,
     sceneId: string,
-    items: { text: string; bitType?: string; delivery?: string; rate?: number; pitch?: number; sources?: Utterance['sources'] }[]
-  ): Utterance[] {
-    const existing = this.storage.utteranceList(programId).filter((u) => u.sceneId === sceneId)
+    items: { text: string; bitType?: string; delivery?: string; rate?: number; pitch?: number; pauseAfterMs?: number; presenterId?: string; voiceId?: string; sources?: DraftUnit['sources'] }[]
+  ): DraftUnit[] {
+    const existing = this.storage.draftUnitList(programId).filter((u) => u.sceneId === sceneId)
     let variantIdx = existing.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
     const saved = items
       .filter((item) => item.text.trim().length > 0)
@@ -120,7 +123,9 @@ export class UtteranceService {
           delivery: item.delivery?.trim() ?? '',
           rate: item.rate,
           pitch: item.pitch,
-          voiceId: '',
+          pauseAfterMs: item.pauseAfterMs,
+          presenterId: item.presenterId?.trim() || undefined,
+          voiceId: item.voiceId?.trim() ?? '',
           source: 'initial',
           sources: item.sources ?? []
         })
@@ -130,24 +135,26 @@ export class UtteranceService {
   }
 
   /** 新建/编辑。文本变了则作废旧音频（待重新预合成）；预制资产走 stale 检测（指纹不一致置 stale，不删文件）。 */
-  save(input: UtteranceInput, id?: string): Utterance {
+  save(input: DraftUnitInput, id?: string): DraftUnit {
     if (!input.text.trim()) throw new Error('话术文本不能为空')
     const existing = id
-      ? (this.storage.utteranceList(input.programId).find((u) => u.id === id) ?? null)
+      ? (this.storage.draftUnitList(input.programId).find((u) => u.id === id) ?? null)
       : null
     const textChanged = existing !== null && existing.text !== input.text.trim()
-    const utterance: Utterance = {
+    const utterance: DraftUnit = {
       id: id ?? `ut-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       programId: input.programId,
       sceneId: input.sceneId,
       variantIdx: input.variantIdx,
       // 创作序号：编辑保留原序号；新增自动排到场景末尾（装池按它恢复叙事顺序）
-      seq: input.seq ?? existing?.seq ?? this.storage.utteranceNextSeq(input.programId, input.sceneId),
+      seq: input.seq ?? existing?.seq ?? this.storage.draftUnitNextSeq(input.programId, input.sceneId),
       text: input.text.trim(),
       bitType: input.bitType?.trim() ?? existing?.bitType ?? '',
       delivery: input.delivery?.trim() ?? existing?.delivery ?? '',
       rate: input.rate ?? existing?.rate,
       pitch: input.pitch ?? existing?.pitch,
+      pauseAfterMs: input.pauseAfterMs ?? existing?.pauseAfterMs,
+      presenterId: input.presenterId?.trim() || existing?.presenterId,
       voiceId: input.voiceId ?? '',
       audioPath: textChanged ? null : (existing?.audioPath ?? null),
       status: textChanged ? 'pending' : (existing?.status ?? 'pending'),
@@ -158,27 +165,32 @@ export class UtteranceService {
       sources: input.sources ?? [],
       createdAt: existing?.createdAt ?? Date.now()
     }
-    this.storage.utteranceSave(utterance)
+    this.storage.draftUnitSave(utterance)
     this.refreshRenderedStaleness(input.programId)
+    this.onDraftChanged?.(input.programId)
     return utterance
   }
 
   remove(id: string): void {
-    const existing = this.storage.utteranceGet(id)
-    this.storage.utteranceDelete(id)
+    const existing = this.storage.draftUnitGet(id)
+    this.storage.draftUnitDelete(id)
     this.deleteOrphanAudio([existing?.audioPath])
-    if (existing) this.refreshRenderedStaleness(existing.programId)
+    if (existing) {
+      this.refreshRenderedStaleness(existing.programId)
+      this.onDraftChanged?.(existing.programId)
+    }
   }
 
   /** 清空节目话术库（重生成前）；给 sceneId 只清某场景。连缓存音频一起清（不被别处引用的才删） */
   clear(programId: string, sceneId?: string): void {
     const doomed = this.storage
-      .utteranceList(programId)
+      .draftUnitList(programId)
       .filter((u) => sceneId === undefined || u.sceneId === sceneId)
       .map((u) => u.audioPath)
-    this.storage.utteranceDeleteWhere(programId, sceneId)
+    this.storage.draftUnitDeleteWhere(programId, sceneId)
     this.deleteOrphanAudio(doomed)
     this.refreshRenderedStaleness(programId)
+    this.onDraftChanged?.(programId)
   }
 
   /**
@@ -190,16 +202,16 @@ export class UtteranceService {
   clearAudio(programId: string): number {
     const doomed: (string | null | undefined)[] = []
     let cleared = 0
-    for (const u of this.storage.utteranceList(programId)) {
+    for (const u of this.storage.draftUnitList(programId)) {
       if (u.audioPath || u.status !== 'pending') {
         doomed.push(u.audioPath)
-        this.storage.utteranceSetAudio(u.id, 'pending', null, undefined, '')
+        this.storage.draftUnitSetAudio(u.id, 'pending', null, undefined, '')
         this.onEvent?.({ ...u, status: 'pending', audioPath: null, error: undefined, synthVoice: '' })
         if (u.audioPath) cleared++
       }
       if (u.rendered && !u.rendered.external) {
         doomed.push(u.rendered.audioPath)
-        this.storage.utteranceSetRendered(u.id, null)
+        this.storage.draftUnitSetRendered(u.id, null)
         cleared++
       }
     }
@@ -226,15 +238,16 @@ export class UtteranceService {
   refreshRenderedStaleness(programId: string): void {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return
-    const all = this.storage.utteranceList(programId)
+    const styleSalt = programStyleSalt(program)
+    const all = this.storage.draftUnitList(programId)
     for (const u of all) {
       const rendered = u.rendered
       if (!rendered) continue
-      const match = rendered.sourceFingerprint === utteranceFingerprint(u)
+      const match = rendered.sourceFingerprint === utteranceFingerprint(u, styleSalt)
       if (rendered.status === 'ready' && !match) {
-        this.storage.utteranceSetRendered(u.id, { ...rendered, status: 'stale' })
+        this.storage.draftUnitSetRendered(u.id, { ...rendered, status: 'stale' })
       } else if (rendered.status === 'stale' && match) {
-        this.storage.utteranceSetRendered(u.id, { ...rendered, status: 'ready' })
+        this.storage.draftUnitSetRendered(u.id, { ...rendered, status: 'ready' })
       }
     }
     const script = this.script.getScript(program.scriptId)
@@ -242,7 +255,7 @@ export class UtteranceService {
     for (const scene of script.scenes) {
       const rendered = scene.rendered
       if (!rendered) continue
-      const current = sceneFingerprint(narrativeOrder(all.filter((u) => u.sceneId === scene.id)))
+      const current = sceneFingerprint(narrativeOrder(all.filter((u) => u.sceneId === scene.id)), styleSalt)
       const match = rendered.sourceFingerprint === current
       if (rendered.status === 'ready' && !match) {
         this.script.setSceneRendered(script.id, scene.id, { ...rendered, status: 'stale' })
@@ -262,7 +275,7 @@ export class UtteranceService {
     const normalize = (value: string) => resolve(value).toLowerCase()
     // 剩下的底稿（全节目，内容寻址跨节目共享）+ 池里条目还在引用的文件不能删
     const referenced = new Set(
-      [...this.storage.utteranceAllAudioPaths(), ...this.storage.speechReferencedAudioPaths()].map(normalize)
+      [...this.storage.draftUnitAllAudioPaths(), ...this.storage.poolItemReferencedAudioPaths()].map(normalize)
     )
     for (const path of candidates) {
       // blob 路径由引用钩子（行删除时已解除登记）+ 宽限期 GC 管，这里不直接删文件
@@ -281,17 +294,22 @@ export class UtteranceService {
    */
   async synthesizeAll(
     programId: string,
-    onProgress?: (u: Utterance) => void,
+    onProgress?: (u: DraftUnit) => void,
     signal?: AbortSignal,
     voiceOverride?: ProduceVoiceOverride
   ): Promise<{ done: number; failed: number }> {
     const pending = this.storage
-      .utteranceList(programId)
+      .draftUnitList(programId)
       .filter((u) => u.status === 'pending' || u.status === 'failed')
-    // 合成用的音色与开播装载时的判定口径一致（人设默认音色，u.voiceId 可单条覆盖）；
-    // 弹窗里显式选的声音优先级最高（用户已在弹窗里看过「混音」提醒）
+    // 合成用的音色：弹窗显式选的声音 > 段落指定的卡（presenterId）> 段落音色快照 > 目标节目的卡司第一张
     const explicit = voiceOverride?.voiceId?.trim() ?? ''
-    const voiceOf = (u: Utterance) => explicit || this.persona.resolveProgramVoice(u.voiceId) || ''
+    const voiceOf = (u: DraftUnit) => {
+      if (explicit) return explicit
+      const byPresenter = u.presenterId
+        ? (this.persona.list().find((p) => p.id === u.presenterId)?.voiceId.trim() ?? '')
+        : ''
+      return byPresenter || u.voiceId.trim() || this.persona.castVoiceOf(programId) || ''
+    }
 
     let done = 0
     let failed = 0
@@ -301,17 +319,17 @@ export class UtteranceService {
     for (const u of pending) {
       if (signal?.aborted) break
       const voice = voiceOf(u)
-      this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
+      this.storage.draftUnitSetAudio(u.id, 'synthesizing', u.audioPath)
       onProgress?.({ ...u, status: 'synthesizing' })
       try {
         await pace(voice)
         const audioPath = await this.synthesizeWithRetry(u, voice, synthRetries, signal)
-        this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
+        this.storage.draftUnitSetAudio(u.id, 'ready', audioPath, undefined, voice)
         onProgress?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
         done++
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        this.storage.utteranceSetAudio(u.id, 'failed', null, message.slice(0, 200))
+        this.storage.draftUnitSetAudio(u.id, 'failed', null, message.slice(0, 200))
         onProgress?.({ ...u, status: 'failed', error: message })
         failed++
       }
@@ -373,14 +391,16 @@ export class UtteranceService {
   describeProducePlan(programId: string): ProducePlanInfo {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return { ok: false, error: '节目不存在' }
-    // 滚动/即兴：提前合成的计划 = 库里待合成段数 + 跟随当前主播的声音描述
+    // 滚动/即兴：提前合成的计划 = 库里待合成段数 + 卡司第一张的声音描述
     if (program.broadcastMode !== 'prepared') {
-      const all = this.storage.utteranceList(program.id)
+      const all = this.storage.draftUnitList(program.id)
       if (all.length === 0) return { ok: false, error: '节目还没有文稿：先写稿，再提前合成' }
       const pending = all.filter((u) => u.status === 'pending' || u.status === 'failed')
       const ready = all.filter((u) => u.status === 'ready').length
       const totalChars = pending.reduce((sum, u) => sum + u.text.length, 0)
-      const persona = this.persona.get()
+      const cast = this.persona.programCast()
+      const first = cast[0]
+      const voice = this.persona.castVoice()
       return {
         ok: true,
         segments: all.length,
@@ -388,14 +408,14 @@ export class UtteranceService {
         pendingSegments: pending.length,
         totalChars,
         estMinutes: Math.round((totalChars / CHARS_PER_SECOND / 60) * 10) / 10,
-        modelDesc: `跟随当前主播（「${persona.name}」音色路由）`,
-        voiceDesc: persona.voiceId
-          ? `当前主播「${persona.name}」的音色：${this.voiceDisplayName(persona.voiceId)}`
-          : '当前主播还没选音色'
+        modelDesc: '跟随节目卡司（卡司第一张的音色路由）',
+        voiceDesc: voice
+          ? `卡司第一张「${first?.name ?? '—'}」的音色：${this.voiceDisplayName(voice)}`
+          : '卡司里的主播卡都还没选音色'
       }
     }
     const script = this.script.getScript(program.scriptId)
-    const units = listAudioUnits(program, script, this.storage.utteranceList(program.id))
+    const units = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
     if (units.length === 0) return { ok: false, error: '节目还没有文稿：先让主播写稿，再生成节目音频' }
     let frozen: FrozenSnapshot
     try {
@@ -403,7 +423,7 @@ export class UtteranceService {
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     }
-    const segments = units.reduce((sum, unit) => sum + unit.utterances.length, 0)
+    const segments = units.reduce((sum, unit) => sum + unit.draftUnits.length, 0)
     // 已就绪且指纹一致、文件还在的单元本次会跳过：待合成段数/字数只算剩下的
     const pendingUnits = units.filter(
       (unit) =>
@@ -414,7 +434,7 @@ export class UtteranceService {
         )
     )
     const totalChars = pendingUnits.reduce(
-      (sum, unit) => sum + unit.utterances.reduce((s, u) => s + u.text.length, 0),
+      (sum, unit) => sum + unit.draftUnits.reduce((s, u) => s + u.text.length, 0),
       0
     )
     // 能力校验（§6.4）：双人播客模型拒绝三人以上内容，确认卡之前就把错报出来
@@ -428,7 +448,7 @@ export class UtteranceService {
       scenes: units.filter((unit) => unit.kind === 'scene').length,
       segments,
       readyCount: units.length - pendingUnits.length,
-      pendingSegments: pendingUnits.reduce((sum, unit) => sum + unit.utterances.length, 0),
+      pendingSegments: pendingUnits.reduce((sum, unit) => sum + unit.draftUnits.length, 0),
       totalChars,
       estMinutes: Math.round((totalChars / CHARS_PER_SECOND / 60) * 10) / 10,
       modelDesc: frozen.modelDesc,
@@ -444,7 +464,7 @@ export class UtteranceService {
    */
   private async producePrepared(program: Program, voiceOverride?: ProduceVoiceOverride): Promise<ProduceAudioResult> {
     const script = this.script.getScript(program.scriptId)
-    const units = listAudioUnits(program, script, this.storage.utteranceList(program.id))
+    const units = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
     const base: ProduceAudioResult = {
       ok: false,
       mode: 'prepared',
@@ -472,7 +492,7 @@ export class UtteranceService {
 
     const writeUnitRendered = (unit: AudioUnit, rendered: RenderedAudioRef) => {
       if (unit.kind === 'scene' && script) this.script.setSceneRendered(script.id, unit.id, rendered)
-      else this.storage.utteranceSetRendered(unit.id, rendered)
+      else this.storage.draftUnitSetRendered(unit.id, rendered)
       this.onRenderedEvent?.(program.id)
     }
 
@@ -492,7 +512,7 @@ export class UtteranceService {
         base.skipped++
         continue
       }
-      const voices = unit.utterances.map((u) => frozen.voiceFor(u))
+      const voices = unit.draftUnits.map((u) => frozen.voiceFor(u))
       const snapshot = frozen.snapshotFor(voices)
       const pending: RenderedAudioRef = {
         audioPath: '',
@@ -503,14 +523,14 @@ export class UtteranceService {
       writeUnitRendered(unit, pending)
       try {
         if (unit.kind === 'utterance') {
-          const u = unit.utterances[0]
+          const u = unit.draftUnits[0]
           await pace(voices[0])
           const audioPath = await this.synthesizeWithRetry(u, voices[0], synthRetries)
-          this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voices[0])
+          this.storage.draftUnitSetAudio(u.id, 'ready', audioPath, undefined, voices[0])
           this.onEvent?.({ ...u, status: 'ready', audioPath, synthVoice: voices[0] })
           writeUnitRendered(unit, { ...pending, status: 'ready', audioPath })
         } else {
-          const audioPath = await this.produceSceneUnit(unit, voices, snapshot, pace, synthRetries)
+          const audioPath = await this.produceSceneUnit(unit, voices, snapshot, pace, synthRetries, programStyleSalt(program))
           writeUnitRendered(unit, { ...pending, status: 'ready', audioPath })
         }
         base.done++
@@ -538,7 +558,7 @@ export class UtteranceService {
     const script = this.script.getScript(program.scriptId)
     const writeUnitRendered = (unit: AudioUnit, rendered: RenderedAudioRef) => {
       if (unit.kind === 'scene' && script) this.script.setSceneRendered(script.id, unit.id, rendered)
-      else this.storage.utteranceSetRendered(unit.id, rendered)
+      else this.storage.draftUnitSetRendered(unit.id, rendered)
       this.onRenderedEvent?.(program.id)
     }
 
@@ -559,7 +579,10 @@ export class UtteranceService {
         continue
       }
       const turns = buildPodcastTurns(
-        unit.utterances.map((u) => ({ voiceId: u.voiceId, text: u.text })),
+        unit.draftUnits.map((u) => ({
+          voiceId: (u.presenterId ? this.persona.list().find((p) => p.id === u.presenterId)?.voiceId.trim() : '') || u.voiceId,
+          text: u.text
+        })),
         route.castVoices,
         route.speakers,
         route.maxCharsPerTurn
@@ -620,8 +643,11 @@ export class UtteranceService {
   private podcastContentIssue(units: AudioUnit[], route: PodcastRouteInfo): string | null {
     const known = new Set([...route.castVoices, ...route.speakers])
     for (const unit of units) {
-      for (const u of unit.utterances) {
-        const voice = u.voiceId.trim()
+      for (const u of unit.draftUnits) {
+        const cardVoice = u.presenterId
+          ? (this.persona.list().find((p) => p.id === u.presenterId)?.voiceId ?? '').trim()
+          : ''
+        const voice = cardVoice || u.voiceId.trim()
         if (voice && !known.has(voice)) {
           return (
             `「${unit.title}」里有第三个音色（${voice}）：Podcast 双人播客模型只支持两个主持人。` +
@@ -636,9 +662,7 @@ export class UtteranceService {
   /** 播客发音人解析：cast 里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id；手动复合串取音色段） */
   private resolvePodcastSpeaker(voiceId: string): string {
     const voice = voiceId.trim()
-    const clone =
-      findCloneVoice(this.storage.listVoices(), voice) ??
-      this.storage.listVoices().find((item) => item.name === voice && item.voiceType)
+    const clone = findCloneVoice(this.storage.listVoices(), voice)
     if (clone?.voiceType.trim()) return clone.voiceType.trim()
     const manual = parseManualVoice(voice)
     if (manual) return manual.voice
@@ -671,52 +695,56 @@ export class UtteranceService {
     voices: string[],
     snapshot: SnapshotFields,
     pace: (voice: string) => Promise<void>,
-    retries: number
+    retries: number,
+    styleSalt = ''
   ): Promise<string> {
     const segmentPaths: string[] = []
-    for (let i = 0; i < unit.utterances.length; i++) {
-      const u = unit.utterances[i]
+    for (let i = 0; i < unit.draftUnits.length; i++) {
+      const u = unit.draftUnits[i]
       const voice = voices[i]
       const segmentSnapshot = {
         ttsConnectionId: snapshot.ttsConnectionId,
         ttsModelId: snapshot.ttsModelId,
-        voiceOrCastFingerprint: stableHash(voice)
+        voiceOrCastFingerprint: stableHash(this.voiceStyleSalt([voice]))
       }
-      // 段音频已有就绪产物（滚动预合成/上次生产）就直接复用
-      if (u.status === 'ready' && u.audioPath && existsSync(u.audioPath)) {
+      // 段音频已有就绪产物（滚动预合成/上次生产）且**演法指纹一致**才复用：
+      // 只改 delivery/rate/pitch 而不改文本时，旧音频必须重合成，否则新演法永远不生效
+      const segmentFresh =
+        u.rendered?.status === 'ready' && u.rendered.sourceFingerprint === utteranceFingerprint(u, styleSalt)
+      if (segmentFresh && u.status === 'ready' && u.audioPath && existsSync(u.audioPath)) {
         segmentPaths.push(u.audioPath)
-        if (u.rendered?.status !== 'ready' || u.rendered.sourceFingerprint !== utteranceFingerprint(u)) {
-          this.storage.utteranceSetRendered(u.id, {
+        if (u.rendered?.status !== 'ready' || u.rendered.sourceFingerprint !== utteranceFingerprint(u, styleSalt)) {
+          this.storage.draftUnitSetRendered(u.id, {
             audioPath: u.audioPath,
             status: 'ready',
             ...segmentSnapshot,
-            sourceFingerprint: utteranceFingerprint(u)
+            sourceFingerprint: utteranceFingerprint(u, styleSalt)
           })
         }
         continue
       }
-      this.storage.utteranceSetAudio(u.id, 'synthesizing', u.audioPath)
+      this.storage.draftUnitSetAudio(u.id, 'synthesizing', u.audioPath)
       this.onEvent?.({ ...u, status: 'synthesizing' })
       try {
         await pace(voice)
         const audioPath = await this.synthesizeWithRetry(u, voice, retries)
-        this.storage.utteranceSetAudio(u.id, 'ready', audioPath, undefined, voice)
-        this.storage.utteranceSetRendered(u.id, {
+        this.storage.draftUnitSetAudio(u.id, 'ready', audioPath, undefined, voice)
+        this.storage.draftUnitSetRendered(u.id, {
           audioPath,
           status: 'ready',
           ...segmentSnapshot,
-          sourceFingerprint: utteranceFingerprint(u)
+          sourceFingerprint: utteranceFingerprint(u, styleSalt)
         })
         this.onEvent?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
         segmentPaths.push(audioPath)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        this.storage.utteranceSetAudio(u.id, 'failed', null, message.slice(0, 200))
-        this.storage.utteranceSetRendered(u.id, {
+        this.storage.draftUnitSetAudio(u.id, 'failed', null, message.slice(0, 200))
+        this.storage.draftUnitSetRendered(u.id, {
           audioPath: '',
           status: 'failed',
           ...segmentSnapshot,
-          sourceFingerprint: utteranceFingerprint(u),
+          sourceFingerprint: utteranceFingerprint(u, styleSalt),
           error: message.slice(0, 200)
         })
         this.onEvent?.({ ...u, status: 'failed', error: message })
@@ -736,11 +764,18 @@ export class UtteranceService {
   }
 
   /**
-   * 冻结声音快照（§9.6）：开始预制合成时把节目 audioConfig（或弹窗里的显式覆盖）解析成具体接入/模型/音色，
-   * 连同音色（或角色表）指纹一起写进每个单元的 rendered；之后切换主播/改主播音色不改写已有产物。
-   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：
-   * castVoices（播客双主持）> voiceId（单音色）> forcePresenter（忽略自定义跟随主播）> 节目 audioConfig。
+   * 冻结声音快照（§9.6）：开始预制合成时把弹窗里的显式覆盖（优先）或节目卡司解析成具体接入/模型/音色，
+   * 连同音色（或角色表）指纹一起写进每个单元的 rendered；之后换卡司/改音色不改写已有产物。
+   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：castVoices（播客双主持）> voiceId（单音色）> 卡司第一张。
    */
+  /** 音色级风格指令也进指纹：改 instruction 等于换了演法，预制音频要判过期重合成 */
+  private voiceStyleSalt(voices: string[]): string {
+    const list = this.storage.listVoices()
+    return JSON.stringify(
+      voices.map((voice) => [voice, list.find((item) => item.voiceType === voice)?.instruction?.trim() ?? ''])
+    )
+  }
+
   private resolveFrozenSnapshot(program: Program, override?: ProduceVoiceOverride): FrozenSnapshot {
     // 弹窗显式覆盖：播客双主持（两个音色必须路由到同一条接入、同一个播客模型）
     if (override?.castVoices) {
@@ -756,10 +791,10 @@ export class UtteranceService {
         throw new Error(`模型「${routeA.model.label}」不是双人播客模型：回到合成声音弹窗换成 Podcast 模型或单音色`)
       }
       const speakers: [string, string] = [this.resolvePodcastSpeaker(voiceA), this.resolvePodcastSpeaker(voiceB)]
-      const castFingerprint = stableHash(JSON.stringify(override.castVoices))
-      // 配乐：弹窗里选了就按这次选的，没给就退回节目存的历史值（老数据）/服务商默认
-      const useHeadMusic = override.useHeadMusic ?? program.audioConfig.useHeadMusic ?? true
-      const useTailMusic = override.useTailMusic ?? program.audioConfig.useTailMusic ?? false
+      const castFingerprint = stableHash(this.voiceStyleSalt(override.castVoices))
+      // 配乐：弹窗里选了就按这次选的，没给就走服务商默认
+      const useHeadMusic = override.useHeadMusic ?? true
+      const useTailMusic = override.useTailMusic ?? false
       return {
         podcast: {
           connectionId: routeA.connection.id,
@@ -795,97 +830,68 @@ export class UtteranceService {
         snapshotFor: () => ({
           ttsConnectionId: route.connection.id,
           ttsModelId: route.modelId,
-          voiceOrCastFingerprint: stableHash(voice)
+          voiceOrCastFingerprint: stableHash(this.voiceStyleSalt([voice]))
         }),
         modelDesc: `${route.connection.name} / ${route.model.label}`,
         voiceDesc: `本次指定音色：${this.voiceDisplayName(voice)}`
       }
     }
-    const cfg = program.audioConfig
-    if (cfg.mode === 'custom' && !override?.forcePresenter) {
-      const connectionId = cfg.ttsConnectionId?.trim() ?? ''
-      const modelId = cfg.ttsModelId?.trim() ?? ''
-      if (!connectionId || !modelId) {
-        throw new Error('这个节目存的自定义声音配置缺接入/模型：点「生成节目音频」，在「合成声音」弹窗里重选一套')
-      }
-      const connection = this.storage.ttsConnectionGet(connectionId)
-      if (!connection) throw new Error('节目声音配置里的合成接入已被删除：到节目设置里重选')
-      const spec = ttsModelSpec(connection.providerId, modelId)
-      if (!spec) throw new Error(`模型 ${modelId} 不在目录里：到节目设置里重选合成模型`)
-      const blocker = ttsModelBlocker(connection, getTtsProvider(connection.providerId), modelId)
-      if (blocker) throw new Error(`合成模型现在用不了：${blocker}（接入「${connection.name}」）`)
-      const cast = (cfg.cast ?? []).filter((member) => member.voiceId.trim())
-      // 指纹带上默认音色；没配默认音色时与旧版指纹一致——别让升级本身把已有产物标脏
-      const defaultVoice = (cfg.voiceId ?? '').trim()
-      const castFingerprint = stableHash(
-        JSON.stringify(defaultVoice ? { cast, voice: defaultVoice } : cast)
-      )
-      // capability 分流（§7.5/§7.6）：podcast 模型 → 双人轮次整期合成；其余（standard/longform
-      // 未接适配器）→ standard 逐段（+整章拼接）路线
-      const caps = ttsModelCapabilities(spec)
+    // 跟随节目卡司：卡司第一张的音色路由决定接入/模型；播客模型要求恰好两个卡司音色
+    const castCards = this.persona.programCastOf(program.id).filter((p) => p.voiceId.trim())
+    const firstVoice = castCards[0]?.voiceId.trim() ?? ''
+    if (firstVoice) {
+      const firstRoute = this.tts.routeForVoice(firstVoice)
+      const caps = ttsModelCapabilities(firstRoute.model)
       if (caps.kind === 'podcast') {
-        if (cast.length !== caps.maxSpeakers) {
+        const voices = castCards.map((p) => p.voiceId.trim())
+        if (voices.length < caps.maxSpeakers) {
           throw new Error(
-            `「${spec.label}」是双人播客模型，需要恰好 ${caps.maxSpeakers} 个主持人音色：到节目设置里配好主持人 A 和主持人 B`
+            `「${firstRoute.model.label}」是双人播客模型，需要 ${caps.maxSpeakers} 个卡司音色：在节目卡司里配两张卡并都选好音色`
           )
         }
-        const speakers: [string, string] = [
-          this.resolvePodcastSpeaker(cast[0].voiceId),
-          this.resolvePodcastSpeaker(cast[1].voiceId)
-        ]
+        const [voiceA, voiceB] = [voices[0], voices[1]]
+        const routeB = this.tts.routeForVoice(voiceB)
+        if (routeB.connection.id !== firstRoute.connection.id || routeB.modelId !== firstRoute.modelId) {
+          throw new Error('两位主持人的音色要走同一条接入、同一个播客模型：回卡司里换音色')
+        }
+        const speakers: [string, string] = [this.resolvePodcastSpeaker(voiceA), this.resolvePodcastSpeaker(voiceB)]
+        const castFingerprint = stableHash(this.voiceStyleSalt([voiceA, voiceB]))
+        const useHeadMusic = override?.useHeadMusic ?? true
+        const useTailMusic = override?.useTailMusic ?? false
         return {
           podcast: {
-            connectionId: connection.id,
-            modelId: spec.id,
+            connectionId: firstRoute.connection.id,
+            modelId: firstRoute.modelId,
             speakers,
-            castVoices: [cast[0].voiceId.trim(), cast[1].voiceId.trim()],
+            castVoices: [voiceA, voiceB],
             castFingerprint,
             maxCharsPerTurn: caps.maxCharsPerTurn ?? 300,
-            useHeadMusic: cfg.useHeadMusic ?? true,
-            useTailMusic: cfg.useTailMusic ?? false
+            useHeadMusic,
+            useTailMusic
           },
           voiceFor: () => {
             throw new Error('双人播客路线不按段落取音色（整期一次合成）')
           },
           snapshotFor: () => ({
-            ttsConnectionId: connection.id,
-            ttsModelId: spec.id,
+            ttsConnectionId: firstRoute.connection.id,
+            ttsModelId: firstRoute.modelId,
             voiceOrCastFingerprint: castFingerprint
           }),
-          modelDesc: `Podcast 双人合成 · ${spec.label}（${connection.name}）`,
+          modelDesc: `Podcast 双人合成 · ${firstRoute.model.label}（${firstRoute.connection.name}）`,
           voiceDesc:
-            `${cast[0].roleName || '主持人 A'} → ${this.voiceDisplayName(cast[0].voiceId)}、` +
-            `${cast[1].roleName || '主持人 B'} → ${this.voiceDisplayName(cast[1].voiceId)}` +
-            `（${cfg.useHeadMusic ?? true ? '含' : '不含'}开场音乐 / ${cfg.useTailMusic ?? false ? '含' : '不含'}结尾音乐）`
+            `主持人 A → ${this.voiceDisplayName(voiceA)}、主持人 B → ${this.voiceDisplayName(voiceB)}` +
+            `（${useHeadMusic ? '含' : '不含'}开场音乐 / ${useTailMusic ? '含' : '不含'}结尾音乐）`
         }
       }
-      return {
-        voiceFor: (u) => {
-          // 优先级：段落单独指定 > 角色表第一条 > 节目默认音色（都是「自定义节目声音」这一档）
-          const voice = u.voiceId.trim() || cast[0]?.voiceId.trim() || defaultVoice
-          if (!voice) throw new Error('自定义节目声音还没配音色：点「生成节目音频」，在「合成声音」弹窗里选一个音色（段落里单独指定过的不受影响）')
-          return voice
-        },
-        snapshotFor: () => ({
-          ttsConnectionId: connection.id,
-          ttsModelId: spec.id,
-          voiceOrCastFingerprint: castFingerprint
-        }),
-        modelDesc: `${connection.name} / ${spec.label}`,
-        voiceDesc:
-          cast.length > 0
-            ? cast.map((member) => `${member.roleName}→${this.voiceDisplayName(member.voiceId)}`).join('、')
-            : defaultVoice
-              ? `默认音色：${this.voiceDisplayName(defaultVoice)}（段落没指定就用它）`
-              : '按段落指定音色'
-      }
     }
-    // 跟随当前主播：快照取当前主播音色路由出的接入/模型（只用于填充快照，不形成永久绑定）
-    const persona = this.persona.get()
+    // 跟随节目卡司：快照取卡司第一张音色路由出的接入/模型（只用于填充快照，不形成永久绑定）
     return {
       voiceFor: (u) => {
-        const voice = this.persona.resolveProgramVoice(u.voiceId)
-        if (!voice) throw new Error('文稿没有可用音色：当前主播没选音色，段落也没单独指定')
+        const byPresenter = u.presenterId
+          ? (this.persona.list().find((p) => p.id === u.presenterId)?.voiceId.trim() ?? '')
+          : ''
+        const voice = byPresenter || u.voiceId.trim() || this.persona.castVoiceOf(program.id)
+        if (!voice) throw new Error('文稿没有可用音色：卡司没选音色（先在合成弹窗里选一个）')
         return voice
       },
       snapshotFor: (voices) => {
@@ -896,10 +902,13 @@ export class UtteranceService {
           voiceOrCastFingerprint: stableHash([...new Set(voices)].sort().join(','))
         }
       },
-      modelDesc: `跟随当前主播（「${persona.name}」音色路由）`,
-      voiceDesc: persona.voiceId
-        ? `当前主播「${persona.name}」的音色：${this.voiceDisplayName(persona.voiceId)}`
-        : '当前主播还没选音色'
+      modelDesc: '跟随节目卡司（卡司第一张的音色路由）',
+      voiceDesc: (() => {
+        const cast = this.persona.programCastOf(program.id)
+        const voice = this.persona.castVoiceOf(program.id)
+        if (!voice) return '卡司里的主播卡都还没选音色'
+        return `卡司第一张（${cast[0]?.name ?? '—'}）的音色：${this.voiceDisplayName(voice)}`
+      })()
     }
   }
 
@@ -941,7 +950,7 @@ export class UtteranceService {
 
   /**
    * 导入外部音频（§7.4，program:import-audio 的后端）：单流复制入 BlobStore（不动用户原文件），
-   * 挂到指定 Scene/Utterance 的 rendered（status='ready'、external=true、快照字段记 'external'、
+   * 挂到指定 Scene/DraftUnit 的 rendered（status='ready'、external=true、快照字段记 'external'、
    * 指纹取当前文稿指纹）。外部音频不参与重新合成。
    */
   async importExternalAudio(
@@ -956,17 +965,18 @@ export class UtteranceService {
       if (!IMPORT_AUDIO_EXTS.has(ext)) return { ok: false, error: '只支持 mp3 / wav / m4a 音频文件' }
       if (!existsSync(sourcePath)) return { ok: false, error: '文件不存在（可能已被移动）' }
 
-      const all = this.storage.utteranceList(programId)
+      const all = this.storage.draftUnitList(programId)
+      const styleSalt = programStyleSalt(program)
       let fingerprint: string
       if (target.kind === 'scene') {
         const script = this.script.getScript(program.scriptId)
         const scene = script?.scenes.find((s) => s.id === target.id)
         if (!script || !scene) return { ok: false, error: '场景不存在（节目没绑剧本或场景已删）' }
-        fingerprint = sceneFingerprint(narrativeOrder(all.filter((u) => u.sceneId === scene.id)))
+        fingerprint = sceneFingerprint(narrativeOrder(all.filter((u) => u.sceneId === scene.id)), styleSalt)
       } else {
         const utterance = all.find((u) => u.id === target.id)
         if (!utterance) return { ok: false, error: '文稿段落不存在（可能已删）' }
-        fingerprint = utteranceFingerprint(utterance)
+        fingerprint = utteranceFingerprint(utterance, styleSalt)
       }
 
       const put = await this.blobs.putFile(sourcePath, ext.replace(/^\./, ''), { move: false })
@@ -983,8 +993,8 @@ export class UtteranceService {
       if (target.kind === 'scene') {
         this.script.setSceneRendered(this.script.getScript(program.scriptId)!.id, target.id, rendered)
       } else {
-        this.storage.utteranceSetRendered(target.id, rendered)
-        const updated = this.storage.utteranceGet(target.id)
+        this.storage.draftUnitSetRendered(target.id, rendered)
+        const updated = this.storage.draftUnitGet(target.id)
         if (updated) this.onEvent?.(updated)
       }
       this.onRenderedEvent?.(programId)
@@ -1012,7 +1022,7 @@ export class UtteranceService {
    * 鉴权与参数类硬错误（401/403/invalid）重试也没意义，一次就抛；中止信号立即抛。
    */
   private async synthesizeWithRetry(
-    u: Utterance,
+    u: DraftUnit,
     voice: string,
     retries: number,
     signal?: AbortSignal
@@ -1042,7 +1052,7 @@ export class UtteranceService {
   }
 }
 
-/** 冻结快照（一次预制生产的声音安排）：逐段取音色 + 单元级快照字段 + 确认卡展示文案 */
+/** 冻结快照（一次预制生产用的卡司声音）：逐段取音色 + 单元级快照字段 + 确认卡展示文案 */
 type SnapshotFields = Pick<RenderedAudioRef, 'ttsConnectionId' | 'ttsModelId' | 'voiceOrCastFingerprint'>
 
 /** podcast 路线的冻结信息：两个主持人（原始音色输入 + 解析后的 speaker id）与音乐开关 */
@@ -1063,7 +1073,7 @@ interface FrozenSnapshot {
   /** 模型是双人播客时有值：producePrepared 走 podcast 路线（整期一次合成） */
   podcast?: PodcastRouteInfo
   /** 这条文稿用哪个音色（没有就抛中文原因，不带兜底） */
-  voiceFor: (u: Utterance) => string
+  voiceFor: (u: DraftUnit) => string
   /** 单元级快照字段：接入/模型/音色或角色表指纹 */
   snapshotFor: (voices: string[]) => SnapshotFields
   modelDesc: string

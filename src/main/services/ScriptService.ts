@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
 import {
-  DEFAULT_PROGRAM_AUDIO_CONFIG,
   DEFAULT_PROGRAM_KNOWLEDGE_SCOPE,
   type Program,
   type ProgramInput,
@@ -18,7 +17,7 @@ import type { StorageService } from './StorageService'
 export class ScriptService {
   /**
    * 场景内容被 Agent 改动后的回调（appendScene/updateScene/removeScene）：
-   * index.ts 接到 UtteranceService.refreshRenderedStaleness，让改稿入口触发预制音频的 stale 检测
+   * index.ts 接到 DraftUnitService.refreshRenderedStaleness，让改稿入口触发预制音频的 stale 检测
    */
   onContentChanged: ((programId: string) => void) | null = null
 
@@ -94,7 +93,8 @@ export class ScriptService {
             ? [...new Set(input.enabledTriggerIds.map((t) => t.trim()).filter(Boolean))]
             : this.storage.triggerList().filter((t) => t.enabled).map((t) => t.id)),
       presenterIds: [...new Set((input.presenterIds ?? []).map((p) => p.trim()).filter(Boolean))],
-      audioConfig: { ...DEFAULT_PROGRAM_AUDIO_CONFIG, ...input.audioConfig },
+      instruction: input.instruction?.trim() || undefined,
+      language: input.language ?? existing?.language ?? 'auto',
       scriptId: input.scriptId,
       currentSceneIdx: existing?.currentSceneIdx ?? 0,
       knowledgeScope: { ...DEFAULT_PROGRAM_KNOWLEDGE_SCOPE, ...input.knowledgeScope },
@@ -113,6 +113,8 @@ export class ScriptService {
     this.storage.deleteProgramSession(id)
     this.storage.timelineClear(id)
     if (this.storage.getConfig().live.activeProgramId === id) this.setActiveProgram('')
+    // agent/MCP 删节目后界面也要刷新（setActiveProgram('') 已通知一次，这里补 id 删除场景）
+    this.onProgramsChanged?.(id)
   }
 
   /**
@@ -170,6 +172,8 @@ export class ScriptService {
   /** 设为当前节目（持久化进 config；空串 = 取消选择） */
   setActiveProgram(id: string): void {
     this.storage.setConfig({ live: { activeProgramId: id } })
+    // 界面要立刻跟着切（agent/MCP 调 program_activate 时也走这里）
+    this.onProgramsChanged?.(id)
   }
 
   /** 当前节目 + 它的剧本（主播启动时注入 system prompt 用） */

@@ -98,6 +98,12 @@ export interface SynthPerformance {
   rate?: number
   /** 音调倍率（1.0 基准，0.9~1.1 保守） */
   pitch?: number
+  /** 情感（火山 emotion）：happy / angry / sad 等，模型声明了才透传 */
+  emotion?: string
+  /** 情感强度（火山 emotion_scale，1~5）：只有带 emotion 时生效 */
+  emotionScale?: number
+  /** 语种提示（百炼 qwen3-tts language_type）：Auto / Chinese / English 等，模型声明了才透传 */
+  languageType?: string
 }
 
 export interface TtsTestResult {
@@ -112,6 +118,20 @@ export interface TtsTestResult {
 function asNumber(value: unknown, fallback: number): number {
   const n = Number(value)
   return Number.isFinite(n) ? n : fallback
+}
+
+/** 语气指令上限 100 字符（百炼官方约束；火山 context_texts 同口径截断防呆） */
+export function clampInstruction(raw: unknown): string {
+  return Array.from(String(raw ?? '').trim()).slice(0, 100).join('')
+}
+
+/**
+ * 百炼 seed 复现（[0, 65535]）：同一文本重复合成用同一 seed，
+ * 话术池轮播/缓存失效重合成时不会同一段话两种读法。按文本哈希取模，确定性。
+ */
+function seedForText(text: string): number {
+  const digest = createHash('sha1').update(text).digest()
+  return digest.readUInt32BE(0) % 65536
 }
 
 export class TtsService {
@@ -211,8 +231,7 @@ export class TtsService {
       throw new Error('这条话术没有音色：到主播团给人设卡选一个音色')
     }
     const voices = this.storage.listVoices()
-    const clone =
-      findCloneVoice(voices, voice) ?? voices.find((item) => item.name === voice && item.voiceType)
+    const clone = findCloneVoice(voices, voice)
     if (clone) return this.routeClone(clone)
     return this.routeSystem(voice)
   }
@@ -369,8 +388,9 @@ export class TtsService {
   }
 
   /** 合成一条话术到缓存文件，返回绝对路径。signal 用于预合成窗口挤出时取消。
-   *  perf：这次合成专用的演法（agent 写的 delivery/rate/pitch）——覆盖接入上的静态默认并参与缓存键（不同演法不串缓存）
-   *  programId：用量归属的节目（用量看板按节目分摊）；现场 say 由调用方带 activeProgramId */
+   *  perf：这次合成专用的演法（agent 写的 delivery/rate/pitch）——instruction 优先级链
+   *  （agent 逐条 > 节目级 > 音色级 > 接入默认）在 withPerformance 里解析，解析结果参与缓存键（不同演法不串缓存）
+   *  programId：用量归属的节目 + 节目级风格指令来源；现场 say 由调用方带 activeProgramId */
   async synthesize(
     itemId: string,
     text: string,
@@ -379,11 +399,11 @@ export class TtsService {
     perf?: SynthPerformance,
     programId?: string
   ): Promise<string> {
-    return this.synthesizeWithRoute(itemId, text, this.withPerformance(this.route(voiceId), perf), signal, programId)
+    return this.synthesizeWithRoute(itemId, text, this.withPerformance(this.route(voiceId), perf, programId), signal, programId)
   }
 
   /**
-   * 统一合成入口（docs/10 §6.5）：显式指定接入 + 模型（节目声音快照冻结的就是这两个 id，
+   * 统一合成入口（docs/10 §6.5）：显式指定接入 + 模型（合成快照冻结的就是这两个 id，
    * 不从音色反推路由），按模型 capability 分发到适配器：
    * - text：普通单人合成（既有 HTTP/SSE 通道）；voiceId 是这个接入 + 模型下的音色标识；
    * - podcast：双人轮次稿 → 火山 PodcastAPI（WebSocket v3）。请求前先本地校验（§15.9：
@@ -445,7 +465,7 @@ export class TtsService {
     const audioPath = await this.synthesizeWithRoute(
       itemId,
       request.text,
-      this.withPerformance(route, { instruction: request.instruction, rate: request.rate, pitch: request.pitch }),
+      this.withPerformance(route, { instruction: request.instruction, rate: request.rate, pitch: request.pitch }, programId),
       signal,
       programId
     )
@@ -528,22 +548,29 @@ export class TtsService {
   }
 
   /**
-   * 演法覆盖到路由参数：instruction 覆盖静态语气指令（模型标了 instruction 才发）；
+   * 演法覆盖到路由参数：instruction 按优先级链解析——agent 逐条 delivery > 节目级
+   * （programId → program.instruction）> 音色级（克隆音色记录上的默认演法）>
+   * 接入×模型默认参数（route.params 里那份），高优先级存在时低的让位，都没有就不发
+   * （模型标了 instruction 能力位才发；seed-icl 复刻模型没这个位，静默跳过）。
    * rate/pitch 是 agent 侧的 1.0 基准倍率，按服务商口径换算（百炼倍率直发；火山 speech_rate 百分点 / pitch 半音），
    * 模型参数表里没有对应键的不发。
    */
-  private withPerformance(route: TtsRoute, perf?: SynthPerformance): TtsRoute {
-    if (!perf) return route
+  private withPerformance(route: TtsRoute, perf?: SynthPerformance, programId?: string): TtsRoute {
     let params = route.params
     const declares = (key: string) => route.model.params?.some((p) => p.key === key) ?? false
-    const trimmed = perf.instruction?.trim()
-    if (trimmed && route.model.instruction) params = { ...params, instruction: trimmed }
-    if (perf.rate !== undefined && Number.isFinite(perf.rate)) {
+    if (route.model.instruction) {
+      const instruction =
+        clampInstruction(perf?.instruction) ||
+        this.programInstruction(programId) ||
+        this.voiceInstruction(route)
+      if (instruction) params = { ...params, instruction }
+    }
+    if (perf?.rate !== undefined && Number.isFinite(perf.rate)) {
       const rate = Math.min(1.3, Math.max(0.85, perf.rate))
       if (declares('rate')) params = { ...params, rate: Math.round(rate * 100) / 100 }
       else if (declares('speech_rate')) params = { ...params, speech_rate: Math.round((rate - 1) * 100) }
     }
-    if (perf.pitch !== undefined && Number.isFinite(perf.pitch)) {
+    if (perf?.pitch !== undefined && Number.isFinite(perf.pitch)) {
       const pitch = Math.min(1.1, Math.max(0.9, perf.pitch))
       if (route.provider === 'bailian' && declares('pitch')) {
         params = { ...params, pitch: Math.round(pitch * 100) / 100 }
@@ -552,7 +579,41 @@ export class TtsService {
         params = { ...params, pitch: Math.max(-12, Math.min(12, Math.round(12 * Math.log2(pitch)))) }
       }
     }
+    // 情感（火山 emotion / emotion_scale）：按条指定情绪，模型参数表声明了才发
+    if (route.provider === 'volcano' && declares('emotion') && perf?.emotion?.trim()) {
+      const scale = perf.emotionScale !== undefined && Number.isFinite(perf.emotionScale)
+        ? Math.min(5, Math.max(1, perf.emotionScale))
+        : asNumber(params.emotion_scale, 4)
+      params = { ...params, emotion: perf.emotion.trim(), emotion_scale: scale }
+    }
+    // 语种提示（百炼 qwen3-tts language_type）：逐条 > 节目语言 > 不指定；模型参数表声明了才发
+    if (declares('language_type')) {
+      const languageType = perf?.languageType?.trim() || this.programLanguageType(programId)
+      if (languageType) params = { ...params, language_type: languageType }
+    }
     return params === route.params ? route : { ...route, params }
+  }
+
+  /** 节目级风格指令（programId → program.instruction）：覆盖音色默认，低于 agent 逐条演法 */
+  private programInstruction(programId?: string): string {
+    if (!programId) return ''
+    const program = this.storage.programList().find((item) => item.id === programId)
+    return clampInstruction(program?.instruction)
+  }
+
+  /** 音色级风格指令：克隆音色记录上配的默认演法（系统/手动音色没有这档） */
+  private voiceInstruction(route: TtsRoute): string {
+    if (!route.isClone) return ''
+    const voice = this.storage.listVoices().find((item) => item.voiceType === route.voice)
+    return clampInstruction(voice?.instruction)
+  }
+
+  /** 节目语言（多语言播出）：auto 不指定，交给模型/服务商自动判断 */
+  private programLanguageType(programId?: string): string {
+    if (!programId) return ''
+    const program = this.storage.programList().find((item) => item.id === programId)
+    const language = program?.language ?? 'auto'
+    return language === 'auto' ? '' : language
   }
 
   /** 这条音色路由所属服务商的预合成请求间隔（config 没显式配时的默认值，来自 manifest 的官方限流档） */
@@ -763,8 +824,9 @@ export class TtsService {
     const format = String(p.format ?? 'mp3')
     const emotion = String(p.emotion ?? '').trim()
     const pitch = asNumber(p.pitch, 0)
-    // additions：音调后处理 + 语音指令（仅 2.0 / ICL2.0 支持，文档说列表只第一个值有效）
-    const instruction = route.model.instruction ? String(p.instruction ?? '').trim() : ''
+    // additions：音调后处理 + 语音指令（context_texts 仅 seed-tts-2.0 精品音色支持且不计费，
+    // 复刻音色指定 model 后不可用——manifest 只给 seed-tts-2.0 标 instruction，文档说列表只第一个值有效）
+    const instruction = route.model.instruction ? clampInstruction(p.instruction) : ''
     const additions: Record<string, unknown> = {}
     if (pitch !== 0) additions.post_process = { pitch }
     if (instruction) additions.context_texts = [instruction]
@@ -784,6 +846,7 @@ export class TtsService {
         sample_rate: asNumber(p.sample_rate, 24000),
         speech_rate: asNumber(p.speech_rate, 0),
         loudness_rate: asNumber(p.loudness_rate, 0),
+        ...(asNumber(p.silence_duration, 0) > 0 ? { silence_duration: asNumber(p.silence_duration, 0) } : {}),
         ...(emotion ? { emotion, emotion_scale: asNumber(p.emotion_scale, 4) } : {})
       },
       ...(Object.keys(additions).length > 0 ? { additions: JSON.stringify(additions) } : {})
@@ -855,7 +918,7 @@ export class TtsService {
     perf?: SynthPerformance,
     programId?: string
   ): AsyncGenerator<{ pcm: Buffer; sampleRate: number }> {
-    const route = this.withPerformance(this.route(voiceId), perf)
+    const route = this.withPerformance(this.route(voiceId), perf, programId)
     // 按模型能力透传/剥出演法标记：Qwen-Audio 系吃 [标签]，其余百炼模型全剥
     const sendText = this.markupFor(route, text)
     const apiKey = String(route.connection.params.apiKey ?? '')
@@ -929,8 +992,9 @@ export class TtsService {
   /**
    * 依据路由的模型系列，构造百炼请求的端点与请求体：
    * qwen3-tts 系 → DashScope 通用端点（language_type，无 format/sample_rate）；
-   * 其余系（needsWorkspace）→ maas 业务空间端点（format/sample_rate/volume/rate/pitch）。
-   * instruction 是模型参数（在接入弹窗里逐个模型配），只发给 manifest 标 instruction 的模型。
+   * 其余系（needsWorkspace）→ maas 业务空间端点（format/sample_rate/volume/rate/pitch/seed）。
+   * instruction 是模型参数（在接入弹窗里逐个模型配，≤100 字截断），只发给 manifest 标 instruction 的模型；
+   * seed 按文本哈希固定（seedForText）：同一文本重复合成产物一致（话术池轮播不会同话两读）。
    */
   private buildBailianTarget(
     text: string,
@@ -939,7 +1003,7 @@ export class TtsService {
   ): BailianTarget {
     const credentials = route.connection.params
     const base = (String(credentials.baseUrl ?? '') || BAILIAN_DEFAULT_BASE).replace(/\/+$/, '')
-    const instruction = route.model.instruction ? String(route.params.instruction ?? '').trim() : ''
+    const instruction = route.model.instruction ? clampInstruction(route.params.instruction) : ''
 
     // Qwen-TTS 系列（qwen3-tts-flash）：通用端点 + multimodal-generation 请求体
     if (route.modelId.startsWith(BAILIAN_QWEN_TTS_PREFIX)) {
@@ -977,6 +1041,7 @@ export class TtsService {
           volume: asNumber(route.params.volume, 50),
           rate: asNumber(route.params.rate, 1),
           pitch: asNumber(route.params.pitch, 1),
+          seed: seedForText(text),
           ...(instruction ? { instruction } : {})
         }
       }

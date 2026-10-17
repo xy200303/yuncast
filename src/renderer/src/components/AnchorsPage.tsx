@@ -1,16 +1,15 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Bot, Plus } from 'lucide-react'
+import { Bot, Plus, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { cn } from '@/lib/utils'
 import { AssetStaleBanner } from '@/components/AssetStaleBanner'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { useAppStore } from '../stores/useAppStore'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { voiceDisplayName, voiceRouteSummary } from '../lib/voice'
 import { ModelBadgeIcons } from './ModelBadgeIcons'
@@ -21,28 +20,22 @@ type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 /** 主播团：只有人设卡（风格 + 嗓音）。大脑归导演（设置 → 导演），启停归播出流程（开播/写稿）。 */
 export function AnchorsPage() {
   const agent = useAppStore((s) => s.agent)
-  const setPersona = useAppStore((s) => s.setPersona)
   const voices = useAppStore((s) => s.voices)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
   const [personas, setPersonas] = useState<Persona[]>([])
-  const [activeId, setActiveId] = useState('')
   /** 编辑器：undefined=关闭；{id?}=编辑某张卡；{}=新建 */
   const [editing, setEditing] = useState<{ persona?: Persona } | null>(null)
 
   const reload = useCallback(async () => {
-    const [list, current] = await Promise.all([
-      window.api.persona.list(),
-      window.api.persona.get()
-    ])
-    setPersonas(list)
-    setActiveId(current?.id ?? '')
-    setPersona(current)
-  }, [setPersona])
+    setPersonas(await window.api.persona.list())
+  }, [])
 
   useEffect(() => {
     void reload()
   }, [reload])
+  // agent/MCP 改了人设卡：广播到达就重拉（不用手动切页）
+  useDataRefresh(['personas'], () => void reload())
 
   const openEditor = (persona?: Persona) => setEditing(persona ? { persona } : {})
 
@@ -62,7 +55,7 @@ export function AnchorsPage() {
         <Bot className="size-4 shrink-0 text-primary" />
         <h1 className="shrink-0 text-sm font-medium">主播团</h1>
         <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
-          人设卡：风格 + 嗓音（谁上场、什么时候开播由导演与节目决定，不在这页管）
+          人设卡：风格 + 嗓音（谁上场由节目卡司决定，在节目配置里选；没配卡司导演逐条指定）
         </p>
       </header>
 
@@ -76,31 +69,30 @@ export function AnchorsPage() {
 
           <div className="mb-3 flex items-center gap-2">
             <p className="text-xs text-muted-foreground">主播团 · {personas.length} 位</p>
-            <Button variant="outline" size="sm" className="ml-auto h-7 text-xs" onClick={() => openEditor()}>
+            <Button variant="ghost" size="sm" className="ml-auto h-7 text-xs" title="重新拉取主播卡（agent 改动会自动刷新，这里是手动兜底）" onClick={() => void reload()}>
+              <RefreshCw className="size-3.5" />
+              刷新
+            </Button>
+            <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => openEditor()}>
               <Plus className="size-3.5" />
               新建人设卡
             </Button>
           </div>
 
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 [&>*]:min-w-0">
             {personas.map((item) => {
-              const active = item.id === activeId
               return (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => openEditor(item)}
-                  className={cn(
-                    'flex flex-col gap-2 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:bg-accent/40',
-                    active && 'border-primary'
-                  )}
+                  className="flex flex-col gap-2 rounded-lg border bg-card px-4 py-3 text-left transition-colors hover:bg-accent/40"
                 >
                   <div className="flex items-center gap-2.5">
                     <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/12 text-sm font-semibold text-primary">
                       {item.name.trim().slice(0, 1) || '主'}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{item.name}</span>
-                    {active && <Badge variant="secondary" className="shrink-0">当前出镜</Badge>}
                   </div>
                   <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">
                     {item.personality || '（还没写性格）'}
@@ -126,7 +118,6 @@ export function AnchorsPage() {
       <PersonaEditorDialog
         key={editing?.persona?.id ?? 'new-persona'}
         editing={editing}
-        isActive={editing?.persona?.id === activeId}
         onOpenChange={(open) => !open && setEditing(null)}
         onSaved={async (text) => {
           setEditing(null)
@@ -142,16 +133,14 @@ export function AnchorsPage() {
   )
 }
 
-/** 人设卡编辑器：点击卡片弹出，含设为当前出镜与删除 */
+/** 人设卡编辑器：点击卡片弹出，含删除 */
 function PersonaEditorDialog({
   editing,
-  isActive,
   onOpenChange,
   onSaved,
   onDeleted
 }: {
   editing: { persona?: Persona } | null
-  isActive: boolean
   onOpenChange: (open: boolean) => void
   onSaved: (okText: string) => void | Promise<void>
   onDeleted: () => void | Promise<void>
@@ -171,7 +160,26 @@ function PersonaEditorDialog({
 
   const patch = (part: Partial<PersonaForm>) => setForm((prev) => ({ ...prev, ...part }))
 
-  const save = async (alsoActivate: boolean) => {
+  /** 重新从后端读这张卡（agent/MCP 刚改过：不用关弹窗，刷新一下就能看到最新内容） */
+  const refreshFromBackend = async () => {
+    if (!source) return
+    const fresh = (await window.api.persona.list()).find((p) => p.id === source.id)
+    if (!fresh) {
+      toast.error('这张卡已经被删除了')
+      return
+    }
+    setForm({
+      name: fresh.name,
+      personality: fresh.personality,
+      catchphrases: fresh.catchphrases,
+      background: fresh.background,
+      taboos: fresh.taboos,
+      voiceId: fresh.voiceId
+    })
+    toast.success('已重新读取最新内容')
+  }
+
+  const save = async () => {
     if (busy) return
     if (!form.name.trim()) {
       toast.warning('请填写主播名字')
@@ -183,10 +191,8 @@ function PersonaEditorDialog({
     }
     setBusy(true)
     try {
-      const saved = await window.api.persona.save(form, source?.id)
-      // 新建卡默认上场：主进程不再自动激活（防 agent 建卡偷换当前主播），人的新建由这里显式激活
-      if (alsoActivate || !source) await window.api.persona.setActive(saved.id)
-      await onSaved(alsoActivate ? '已保存并设为当前出镜' : '人设已保存')
+      await window.api.persona.save(form, source?.id)
+      await onSaved('人设已保存')
     } finally {
       setBusy(false)
     }
@@ -256,23 +262,23 @@ function PersonaEditorDialog({
         </div>
 
         <DialogFooter className="gap-2 sm:justify-between">
-          <div>
+          <div className="flex gap-2">
             {source && (
-              <Button variant="ghost" className="text-destructive" onClick={() => setConfirmDelete(true)}>
-                删除
-              </Button>
+              <>
+                <Button variant="ghost" onClick={() => void refreshFromBackend()}>
+                  刷新内容
+                </Button>
+                <Button variant="ghost" className="text-destructive" onClick={() => setConfirmDelete(true)}>
+                  删除
+                </Button>
+              </>
             )}
           </div>
           <div className="flex gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>
               取消
             </Button>
-            {!isActive && source && (
-              <Button variant="outline" disabled={busy} onClick={() => void save(true)}>
-                保存并设为当前
-              </Button>
-            )}
-            <Button disabled={busy} onClick={() => void save(false)}>
+            <Button disabled={busy} onClick={() => void save()}>
               {busy ? '保存中…' : '保存'}
             </Button>
           </div>
@@ -284,7 +290,7 @@ function PersonaEditorDialog({
               <DialogTitle>删除人设卡</DialogTitle>
             </DialogHeader>
             <p className="text-sm text-muted-foreground">
-              确认删除「{source?.name}」？删掉当前出镜的卡时会自动切到剩余的第一张卡。
+              确认删除「{source?.name}」？它已生成的音频保留；节目卡司里会少一项。
             </p>
             <DialogFooter>
               <Button variant="ghost" onClick={() => setConfirmDelete(false)}>

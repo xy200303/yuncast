@@ -28,20 +28,28 @@ import { cn } from '@/lib/utils'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { ProgramAudioPanel } from './ProgramAudioPanel'
 import { useAppStore } from '../../stores/useAppStore'
+
+/** 逐段主播：下拉值 = 主播卡 id（稳定寻址），落库到 draft_units.presenter_id */
+function castValueOf(presenterId: string | undefined, personas: Persona[]): string {
+  if (!presenterId) return '__default'
+  return personas.some((p) => p.id === presenterId) ? presenterId : '__default'
+}
+
 import {
   BIT_TYPES,
   BIT_TYPE_LABEL,
   UTTERANCE_STATUS_LABEL,
+  type Persona,
   type ProduceVoiceOverride,
   type Program,
   type Script,
-  type Utterance,
-  type UtteranceStatus
+  type DraftUnit,
+  type DraftUnitStatus
 } from '../../../../shared/types'
 import { ContentText } from '../ContentText'
 import { VoicePickDialog } from '../VoicePickDialog'
 
-const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
+const UTTERANCE_STATUS: Record<DraftUnitStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
   pending: { label: UTTERANCE_STATUS_LABEL.pending, variant: 'outline' },
   synthesizing: { label: UTTERANCE_STATUS_LABEL.synthesizing, variant: 'secondary' },
   ready: { label: UTTERANCE_STATUS_LABEL.ready, variant: 'default' },
@@ -54,7 +62,7 @@ const UTTERANCE_STATUS: Record<UtteranceStatus, { label: string; variant: 'defau
  * 合成入口按播出方式分流（docs/10 §7.5）：滚动=「提前合成全部」（走统一生产入口 produceAudio），
  * 预制=顶部节目音频进度区（ProgramAudioPanel，§7.7），即兴=不显示合成入口。
  */
-export function UtteranceDialog({
+export function DraftUnitDialog({
   program,
   script,
   open,
@@ -67,7 +75,7 @@ export function UtteranceDialog({
   onOpenChange: (open: boolean) => void
   onChanged: () => Promise<void>
 }) {
-  const [items, setItems] = useState<Utterance[]>([])
+  const [items, setItems] = useState<DraftUnit[]>([])
   const [presynthRunning, setPresynthRunning] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editText, setEditText] = useState('')
@@ -76,6 +84,10 @@ export function UtteranceDialog({
   const [creating, setCreating] = useState(false)
   const [newText, setNewText] = useState('')
   const [newDelivery, setNewDelivery] = useState('')
+  /** 卡司候选（主播卡）：逐段指定「这段谁读」 */
+  const [personas, setPersonas] = useState<Persona[]>([])
+  const [newPresenterId, setNewPresenterId] = useState('')
+  const [editPresenterId, setEditPresenterId] = useState('')
 
   const reload = useCallback(async () => {
     setItems(await window.api.utterance.list(program.id))
@@ -108,7 +120,7 @@ export function UtteranceDialog({
   }, [script])
 
   const groups = useMemo(() => {
-    const out: { sceneId: string; items: Utterance[] }[] = []
+    const out: { sceneId: string; items: DraftUnit[] }[] = []
     for (const item of items) {
       const last = out[out.length - 1]
       if (last && last.sceneId === item.sceneId) last.items.push(item)
@@ -157,7 +169,7 @@ export function UtteranceDialog({
     }
   }
 
-  const saveEdit = async (u: Utterance) => {
+  const saveEdit = async (u: DraftUnit) => {
     const result = await window.api.utterance.save(
       {
         programId: u.programId,
@@ -166,7 +178,8 @@ export function UtteranceDialog({
         text: editText,
         bitType: editType,
         delivery: editDelivery,
-        voiceId: u.voiceId,
+        presenterId: editPresenterId || undefined,
+        voiceId: editPresenterId ? '' : u.voiceId,
         source: u.source,
         sources: u.sources
       },
@@ -192,6 +205,7 @@ export function UtteranceDialog({
       text,
       bitType: 'general',
       delivery: newDelivery.trim(),
+      presenterId: newPresenterId || undefined,
       voiceId: '',
       source: 'initial',
       sources: []
@@ -316,6 +330,20 @@ export function UtteranceDialog({
               autoFocus
             />
             <div className="flex items-center gap-2">
+              <Select value={castValueOf(newPresenterId, personas)} onValueChange={(value) => setNewPresenterId(value === '__default' ? '' : value)}>
+                <SelectTrigger className="h-8 w-36 text-xs" title="这段谁读（卡司）">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__default">默认（卡司第一张）</SelectItem>
+                  {(program.presenterIds.length > 0
+                    ? program.presenterIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is Persona => Boolean(p))
+                    : personas
+                  ).map((p) => (
+                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Input
                 value={newDelivery}
                 onChange={(event) => setNewDelivery(event.target.value)}
@@ -358,6 +386,20 @@ export function UtteranceDialog({
                               autoFocus
                             />
                             <div className="flex items-center gap-2">
+                              <Select value={castValueOf(editPresenterId, personas)} onValueChange={(value) => setEditPresenterId(value === '__default' ? '' : value)}>
+                                <SelectTrigger className="h-7 w-28 text-xs" title="这段谁读（卡司）">
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="__default">默认</SelectItem>
+                                  {(program.presenterIds.length > 0
+                                    ? program.presenterIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is Persona => Boolean(p))
+                                    : personas
+                                  ).map((p) => (
+                                    <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
                               <Select value={editType || 'general'} onValueChange={setEditType}>
                                 <SelectTrigger className="h-7 w-28 text-xs">
                                   <SelectValue />
@@ -405,6 +447,14 @@ export function UtteranceDialog({
                                   {u.delivery && (
                                     <p className="mt-0.5 text-xs text-muted-foreground">演法：{u.delivery}</p>
                                   )}
+                                  {(u.presenterId || u.voiceId) && (
+                                    <p className="mt-0.5 text-xs text-muted-foreground">
+                                      主播：
+                                      {u.presenterId
+                                        ? (personas.find((p) => p.id === u.presenterId)?.name ?? u.presenterId)
+                                        : (personas.find((p) => p.voiceId === u.voiceId)?.name ?? u.voiceId)}
+                                    </p>
+                                  )}
                                 </>
                               )}
                               {u.error && <p className="mt-0.5 text-xs text-destructive">{u.error}</p>}
@@ -435,6 +485,7 @@ export function UtteranceDialog({
                                 setEditText(u.text)
                                 setEditType(u.bitType || 'general')
                                 setEditDelivery(u.delivery)
+                                setEditPresenterId(u.presenterId ?? '')
                               }}
                             >
                               <Pencil />

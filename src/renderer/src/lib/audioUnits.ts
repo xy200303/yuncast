@@ -1,5 +1,5 @@
-import type { ContentType, Program, RenderedAudioStatus, Script, Utterance } from '../../../shared/types'
-import { sceneFingerprint, utteranceFingerprint } from '../../../shared/fingerprint'
+import type { ContentType, Program, RenderedAudioStatus, Script, DraftUnit } from '../../../shared/types'
+import { programStyleSalt, sceneFingerprint, utteranceFingerprint } from '../../../shared/fingerprint'
 import { stripSpeechTags } from '../../../shared/speechTags'
 
 /**
@@ -38,8 +38,21 @@ export const AUDIO_UNIT_LABEL: Record<ContentType, string> = {
   roleplay: '场'
 }
 
+/**
+ * 段卡片的 caption（docs/11 第一部分）：只回答"这是什么位置"（类型 + 序号），
+ * 不引入内容语义（"开场""高潮"这类交给 agent 写进标题）。
+ * total 用于区分 solo 单段（一篇短文 → 正文）与多段（第 N 段）。
+ */
+export function unitCaption(program: Program, unit: ProgramAudioUnit, index: number, total = 1): string {
+  if (program.contentType === 'solo') return total <= 1 ? '正文' : `第 ${index + 1} 段`
+  if (unit.kind === 'utterance') return '散段'
+  if (program.contentType === 'reading') return `第 ${index + 1} 章`
+  if (program.contentType === 'roleplay') return `第 ${index + 1} 场`
+  return `环节 ${index + 1}`
+}
+
 /** 段落在单元内的叙事顺序：创作序号优先，其次入库时间（与主进程 narrativeOrder 一致） */
-function narrativeOrder(list: Utterance[]): Utterance[] {
+function narrativeOrder(list: DraftUnit[]): DraftUnit[] {
   return [...list].sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt)
 }
 
@@ -52,15 +65,17 @@ function segmentTitle(text: string): string {
 export function listProgramAudioUnits(
   program: Program,
   script: Script | null,
-  utterances: Utterance[]
+  utterances: DraftUnit[]
 ): ProgramAudioUnit[] {
+  // 与主进程 listAudioUnits 同口径：节目级风格指令进指纹盐（空盐时与旧版一致）
+  const styleSalt = programStyleSalt(program)
   const unitOf = (
     kind: ProgramAudioUnit['kind'],
     id: string,
     title: string,
     text: string,
     fingerprint: string,
-    rendered?: Utterance['rendered']
+    rendered?: DraftUnit['rendered']
   ): ProgramAudioUnit => {
     // 就绪但文稿指纹已不一致 → 按过期展示（不落库也拦得住，与主进程 unitStatus 同口径）
     const status: RenderedAudioStatus = !rendered
@@ -82,9 +97,9 @@ export function listProgramAudioUnits(
   }
 
   if (program.contentType === 'solo') {
-    return utterances.map((u) => unitOf('utterance', u.id, segmentTitle(u.text), u.text, utteranceFingerprint(u), u.rendered))
+    return utterances.map((u) => unitOf('utterance', u.id, segmentTitle(u.text), u.text, utteranceFingerprint(u, styleSalt), u.rendered))
   }
-  const byScene = new Map<string, Utterance[]>()
+  const byScene = new Map<string, DraftUnit[]>()
   for (const u of utterances) {
     const list = byScene.get(u.sceneId) ?? []
     list.push(u)
@@ -94,11 +109,11 @@ export function listProgramAudioUnits(
   for (const scene of script?.scenes ?? []) {
     const list = narrativeOrder(byScene.get(scene.id) ?? [])
     if (list.length === 0) continue // 没有文稿的场景不产生单元（没有要合成的声音）
-    units.push(unitOf('scene', scene.id, scene.title, list.map((u) => u.text).join('\n'), sceneFingerprint(list), scene.rendered))
+    units.push(unitOf('scene', scene.id, scene.title, list.map((u) => u.text).join('\n'), sceneFingerprint(list, styleSalt), scene.rendered))
   }
   // 全场通用段（没挂场景）：场景类节目里它们是独立的段级单元
   for (const u of narrativeOrder(byScene.get('') ?? [])) {
-    units.push(unitOf('utterance', u.id, segmentTitle(u.text), u.text, utteranceFingerprint(u), u.rendered))
+    units.push(unitOf('utterance', u.id, segmentTitle(u.text), u.text, utteranceFingerprint(u, styleSalt), u.rendered))
   }
   return units
 }

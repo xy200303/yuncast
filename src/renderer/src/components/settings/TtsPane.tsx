@@ -650,7 +650,7 @@ function TtsConnectionEditor({
               </SelectContent>
               </Select>
             )}
-            {def.note && <p className="mt-1.5 truncate text-xs text-muted-foreground">{def.note}</p>}
+            {def.note && <p className="mt-1.5 break-words text-xs text-muted-foreground">{def.note}</p>}
           </div>
 
           <div>
@@ -724,7 +724,7 @@ function TtsConnectionEditor({
                           )}
                         </div>
                         {spec.note && (
-                          <p className="mt-0.5 truncate text-xs text-muted-foreground">{spec.note}</p>
+                          <p className="mt-0.5 break-words text-xs text-muted-foreground">{spec.note}</p>
                         )}
                       </div>
                       {spec.params.length > 0 && (

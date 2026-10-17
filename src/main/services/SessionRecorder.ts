@@ -16,6 +16,9 @@ const SKIP_EVENT_TYPES = new Set(['timer.interval', 'stream.started', 'stream.en
  * - fixUnfinished：启动时给上次崩溃遗留的「还在播」场次补 end_reason='crash'
  */
 export class SessionRecorder {
+  /** 场次开始/结束：index.ts 接上 → 广播 data:changed('sessions')，场次/统计页自动重拉 */
+  onChanged: (() => void) | null = null
+
   private activeId: string | null = null
   private unsubscribe: (() => void) | null = null
 
@@ -50,14 +53,16 @@ export class SessionRecorder {
     }
     this.storage.sessionInsert(session)
     // 池里可能还有上一场的存货（收播不清池）：改挂到这场，谁播的算谁的
-    this.storage.speechRestampActive(session.id)
+    this.storage.poolItemRestampActive(session.id)
     this.activeId = session.id
     this.unsubscribe = this.bus.subscribe((event) => this.mirror(event))
+    this.onChanged?.()
     return session.id
   }
 
   /** 收播：结算统计 + 摘镜像。幂等——没活跃场次直接返回 */
   end(reason: BroadcastEndReason): void {
+    this.onChanged?.()
     const id = this.activeId
     this.unsubscribe?.()
     this.unsubscribe = null

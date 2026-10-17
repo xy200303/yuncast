@@ -24,6 +24,7 @@ import { useAppStore } from '../stores/useAppStore'
 import { voiceDisplayName } from '../lib/voice'
 import {
   TTS_MODEL_KIND_LABEL,
+  type Persona,
   type ProducePlanInfo,
   type ProduceVoiceOverride,
   type Program
@@ -68,7 +69,7 @@ function readLastPick(): LastPick | null {
   }
 }
 
-type PickMode = 'presenter' | 'program' | 'other'
+type PickMode = 'presenter' | 'other'
 
 /** 弹窗里「这次用什么声音」的草稿：确认时一起读、换节目/重开时整块重置，收在一处免得漏改某个字段 */
 interface PickDraft {
@@ -109,7 +110,7 @@ function pickDraftReducer(draft: PickDraft, action: PickDraftAction): PickDraft 
 /**
  * 声音选择弹窗（docs/REDESIGN 4.4，所有合成入口统一）：点「合成」先弹这个，确认才真的合成。
  * - 显示「本次合成 N 段 · 约 X 分钟」（producePlan IPC）；
- * - 声音三选一：当前主播嗓音 / 节目声音安排（只有老节目存了自定义配置才出现）/ 其他（内嵌统一音色选择器）；
+ * - 声音二选一：卡司嗓音（节目卡司第一张）/ 其他（内嵌统一音色选择器）；
  *   节目里已经不再配声音了——合成这一步是唯一的选声音入口，选完冻结进每段产物；
  * - 播客模型时「其他」呈现为主持人 A/B 两个选择器 + 开场/结尾音乐（配乐只在播客路线有意义，跟着这次选）；
  * - 池里已有其他嗓音成品时给混音提醒 + 「全部重合成统一」勾选；
@@ -135,7 +136,7 @@ export function VoicePickDialog({
   const voices = useAppStore((s) => s.voices)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
-  const persona = useAppStore((s) => s.persona)
+  const [castPersona, setCastPersona] = useState<Persona | null>(null)
 
   const [plan, setPlan] = useState<ProducePlanInfo | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
@@ -148,9 +149,7 @@ export function VoicePickDialog({
   /** 池里/库里已成品的嗓音（混音提醒的比对基准） */
   const [existingVoices, setExistingVoices] = useState<string[]>([])
 
-  const hasProgramAudio = program.audioConfig.mode === 'custom'
-
-  // 打开时拉合成计划 + 已成品的嗓音清单；默认项：上次手动选择 > 节目自定义 > 当前主播
+  // 打开时拉合成计划 + 已成品的嗓音清单；默认项：上次手动选择 > 卡司第一张
   useEffect(() => {
     if (!open) return
     setPlanLoading(true)
@@ -170,13 +169,13 @@ export function VoicePickDialog({
       })
       .catch(() => setExistingVoices([]))
     setRebuildAll(false)
-    setHeadMusic(program.audioConfig.useHeadMusic ?? true)
-    setTailMusic(program.audioConfig.useTailMusic ?? false)
+    setHeadMusic(true)
+    setTailMusic(false)
     const last = readLastPick()
     if (last?.voiceId || last?.castVoiceA) {
       dispatchDraft({ type: 'remember', last })
     } else {
-      dispatchDraft({ type: 'reset', mode: hasProgramAudio ? 'program' : 'presenter' })
+      dispatchDraft({ type: 'reset', mode: 'presenter' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, program.id])
@@ -204,16 +203,29 @@ export function VoicePickDialog({
   const pickedModel = modelOptions.find((option) => option.value === modelValue) ?? null
   const podcastMode = pickedModel?.podcast === true
 
-  const presenterVoice = persona?.voiceId.trim() ?? ''
+  // 出镜由节目卡司决定（没有「当前出镜」全局概念）：取节目卡司第一张，没配卡司就取第一张卡
+  useEffect(() => {
+    if (!open || !('api' in window)) return
+    let alive = true
+    void window.api.persona.list().then((list) => {
+      if (!alive) return
+      const first = program.presenterIds[0] ? (list.find((item) => item.id === program.presenterIds[0]) ?? null) : null
+      setCastPersona(first)
+    })
+    return () => {
+      alive = false
+    }
+  }, [open, program.presenterIds])
+
+  const presenterVoice = castPersona?.voiceId.trim() ?? ''
   const presenterVoiceName = presenterVoice ? voiceDisplayName(voices, ttsProviders, presenterVoice) : ''
 
   /** 本次选定的声音（混音提醒比对用；播客/节目安排是多个，逐个比） */
   const chosenVoices = useMemo(() => {
     if (mode === 'presenter') return presenterVoice ? [presenterVoice] : []
-    if (mode === 'program') return (program.audioConfig.cast ?? []).map((member) => member.voiceId.trim()).filter(Boolean)
     if (podcastMode) return [castVoiceA.trim(), castVoiceB.trim()].filter(Boolean)
     return otherVoice.trim() ? [otherVoice.trim()] : []
-  }, [mode, presenterVoice, program.audioConfig.cast, podcastMode, castVoiceA, castVoiceB, otherVoice])
+  }, [mode, presenterVoice, podcastMode, castVoiceA, castVoiceB, otherVoice])
 
   /** 混音提醒：已有成品里有任何一把嗓音不在本次选定集合里 */
   const mixingVoices = existingVoices.filter((voice) => !chosenVoices.includes(voice))
@@ -225,18 +237,16 @@ export function VoicePickDialog({
     (plan.pendingSegments ?? 0) > 0 &&
     (mode === 'presenter'
       ? presenterVoice.length > 0
-      : mode === 'program'
-        ? true
-        : podcastMode
-          ? castVoiceA.trim().length > 0 && castVoiceB.trim().length > 0
-          : otherVoice.trim().length > 0)
+      : podcastMode
+        ? castVoiceA.trim().length > 0 && castVoiceB.trim().length > 0
+        : otherVoice.trim().length > 0)
 
   const confirm = async () => {
     if (!canConfirm) return
     let override: ProduceVoiceOverride | undefined
     if (mode === 'presenter') {
-      // 节目配了自定义声音但本次选跟随主播：显式忽略 audioConfig
-      override = hasProgramAudio ? { forcePresenter: true } : undefined
+      // 卡司嗓音：不传覆盖，后端按卡司第一张解析（节目不再存声音配置）
+      override = undefined
     } else if (mode === 'other') {
       override = podcastMode
         ? { castVoices: [castVoiceA.trim(), castVoiceB.trim()], useHeadMusic: headMusic, useTailMusic: tailMusic }
@@ -309,11 +319,13 @@ export function VoicePickDialog({
                 <Label className="text-xs text-muted-foreground">声音</Label>
                 {optionRow(
                   'presenter',
-                  `当前主播嗓音${persona?.name ? `（${persona.name}）` : ''}`,
-                  presenterVoiceName ? presenterVoiceName : '当前主播还没选音色'
+                  `卡司嗓音${castPersona?.name ? `（${castPersona.name}）` : ''}`,
+                  presenterVoiceName
+                    ? presenterVoiceName
+                    : castPersona
+                      ? '卡司还没选音色'
+                      : '未选主播：本节目没配卡司，逐段用 speaker 指定，或在下面选其他音色'
                 )}
-                {hasProgramAudio &&
-                  optionRow('program', '节目声音安排', plan.voiceDesc || '这个节目配好的合成模型与角色音色')}
                 {optionRow('other', '选择其他音色…', '换一把嗓音合成这一次，不改节目配置')}
               </div>
 

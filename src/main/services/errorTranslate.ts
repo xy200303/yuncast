@@ -27,6 +27,11 @@ const RULES: ErrorRule[] = [
     test: /notallowederror|permission denied|getusermedia/i,
     friendly: '没拿到麦克风权限：到系统设置里允许 YunCast 使用麦克风，再回来重试'
   },
+  // TTS 限流（429：请求太密/配额到顶）——临时错误，系统会自动退避重试
+  {
+    test: /429|throttl|rate.?quota/i,
+    friendly: '语音合成被服务商限流了（请求太密或配额到顶）：系统会自动退避重试；反复出现就到 设置 → 语音合成 换一条接入'
+  },
   // TTS 鉴权失败 / 欠费
   {
     test: /(tts|语音|合成)[^\n]{0,60}?(401|403|unauthorized|forbidden)|(401|403|unauthorized|forbidden)[^\n]{0,60}?(tts|语音|合成)/i,

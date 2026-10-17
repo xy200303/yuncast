@@ -6,18 +6,18 @@ import type {
   ProgramGateResult,
   RenderedAudioRef,
   Script,
-  Utterance
+  DraftUnit
 } from '../../shared/types'
-import { sceneFingerprint, utteranceFingerprint } from '../../shared/fingerprint'
+import { programStyleSalt, sceneFingerprint, utteranceFingerprint } from '../../shared/fingerprint'
 
 /**
  * 预制节目的合成单元与门禁判定（docs/10 §7.5-§7.8）。
- * 纯函数模块：生产入口（UtteranceService.produceProgramAudio）、播放门禁与装播
+ * 纯函数模块：生产入口（DraftUnitService.produceProgramAudio）、播放门禁与装播
  * （ProgramPlaybackService）、Agent 工具的进度统计共用同一份单元划分与判定口径。
  *
  * 合成单元按内容类型划分（§7.6 可独立重试的自然内容单位）：
  * - reading/conversation/roleplay：每 Scene（章/环节/场）一个单元；
- * - solo：每段（Utterance）一个单元；
+ * - solo：每段（DraftUnit）一个单元；
  * - 没挂到任何场景的段落（sceneId=''）在场景类节目里退化为独立的段级单元。
  * 没有文稿的场景不产生单元（没有要合成的声音）。
  */
@@ -30,33 +30,35 @@ export interface AudioUnit {
   /** 当前文稿指纹：与 rendered.sourceFingerprint 不一致 → 过期 */
   fingerprint: string
   /** 单元内段落（场景单元 = 该章全部段，按叙事顺序；段单元 = 单条） */
-  utterances: Utterance[]
+  draftUnits: DraftUnit[]
   /** 已有的预制音频资产 */
   rendered?: RenderedAudioRef
 }
 
 /** 段落在单元内的叙事顺序：创作序号优先，其次入库时间 */
-export function narrativeOrder(list: Utterance[]): Utterance[] {
+export function narrativeOrder(list: DraftUnit[]): DraftUnit[] {
   return [...list].sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt)
 }
 
 export function listAudioUnits(
   program: Program,
   script: Script | null,
-  utterances: Utterance[]
+  draftUnits: DraftUnit[]
 ): AudioUnit[] {
+  // 节目级风格指令进指纹：改它 = 全部单元过期重合成（空盐时与旧版指纹一致）
+  const styleSalt = programStyleSalt(program)
   if (program.contentType === 'solo') {
-    return utterances.map((u) => ({
+    return draftUnits.map((u) => ({
       kind: 'utterance' as const,
       id: u.id,
       title: u.text.length > 20 ? `${u.text.slice(0, 20)}…` : u.text,
-      fingerprint: utteranceFingerprint(u),
-      utterances: [u],
+      fingerprint: utteranceFingerprint(u, styleSalt),
+      draftUnits: [u],
       rendered: u.rendered
     }))
   }
-  const byScene = new Map<string, Utterance[]>()
-  for (const u of utterances) {
+  const byScene = new Map<string, DraftUnit[]>()
+  for (const u of draftUnits) {
     const list = byScene.get(u.sceneId) ?? []
     list.push(u)
     byScene.set(u.sceneId, list)
@@ -69,8 +71,8 @@ export function listAudioUnits(
       kind: 'scene',
       id: scene.id,
       title: scene.title,
-      fingerprint: sceneFingerprint(list),
-      utterances: list,
+      fingerprint: sceneFingerprint(list, styleSalt),
+      draftUnits: list,
       rendered: scene.rendered
     })
   }
@@ -80,8 +82,8 @@ export function listAudioUnits(
       kind: 'utterance',
       id: u.id,
       title: u.text.length > 20 ? `${u.text.slice(0, 20)}…` : u.text,
-      fingerprint: utteranceFingerprint(u),
-      utterances: [u],
+      fingerprint: utteranceFingerprint(u, styleSalt),
+      draftUnits: [u],
       rendered: u.rendered
     })
   }
@@ -100,10 +102,10 @@ function unitStatus(unit: AudioUnit): RenderedAudioRef['status'] | 'missing' {
 export function audioProgress(
   program: Program,
   script: Script | null,
-  utterances: Utterance[]
+  draftUnits: DraftUnit[]
 ): ProgramAudioProgress {
   const progress: ProgramAudioProgress = { total: 0, ready: 0, synthesizing: 0, pending: 0, failed: 0, stale: 0 }
-  for (const unit of listAudioUnits(program, script, utterances)) {
+  for (const unit of listAudioUnits(program, script, draftUnits)) {
     progress.total++
     const status = unitStatus(unit)
     if (status === 'ready') {
@@ -125,7 +127,7 @@ export function audioProgress(
 export function evaluateGate(
   program: Program,
   script: Script | null,
-  utterances: Utterance[]
+  draftUnits: DraftUnit[]
 ): ProgramGateResult {
   const result: ProgramGateResult = {
     ok: false,
@@ -141,7 +143,7 @@ export function evaluateGate(
   const fail = (unit: AudioUnit, status: ProgramGateFailure['status'], reason: string) => {
     result.failures.push({ unitKind: unit.kind, unitId: unit.id, title: unit.title, status, reason })
   }
-  for (const unit of listAudioUnits(program, script, utterances)) {
+  for (const unit of listAudioUnits(program, script, draftUnits)) {
     result.total++
     const rendered = unit.rendered
     const status = unitStatus(unit)

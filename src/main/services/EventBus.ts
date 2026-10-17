@@ -18,6 +18,7 @@ const EVENT_REGISTRY = new Map<string, string>([
   ['viewer.share', '分享直播间'],
   ['pool.empty', '话术池空了'],
   ['pool.low', '话术池低水位'],
+  ['speech.failed', '合成彻底失败停播'],
   ['timer.interval', '定时节拍（5 分钟）'],
   ['stream.started', '开播'],
   ['stream.ended', '下播'],

@@ -16,9 +16,18 @@ import {
  * 官方复刻 API 的 target_model 不含 cosyvoice-v1，所以 V1 不能作为复刻目标。
  */
 
+/** 语气指令（自然语言风格底色，≤100 字）：接入级静态默认，只给 manifest 标 instruction 的模型；
+ *  agent 每条话术的 delivery 会覆盖它（TtsService.withPerformance） */
+const INSTRUCTION_PARAM: ParamSpec = {
+  key: 'instruction',
+  label: '语气指令（风格底色）',
+  type: 'text',
+  help: '≤100 字，如「年轻活泼的女性，语速较快，带货场景」；每条话术的 delivery 会覆盖它'
+}
+
 /** Qwen-Audio-TTS / CosyVoice 系共用的合成参数（maas SpeechSynthesizer）。
- *  语气指令不放这里：演法归 agent 的 delivery（每次合成现给），静态底色由人设卡性格承担 */
-function maasParams(): ParamSpec[] {
+ *  instruction 仅支持语气指令的模型声明（withInstruction），参数表单按 ParamSpec 自动渲染 */
+function maasParams(withInstruction = false): ParamSpec[] {
   return [
     {
       key: 'format',
@@ -40,12 +49,13 @@ function maasParams(): ParamSpec[] {
     },
     { key: 'volume', label: '音量', type: 'number', min: 0, max: 100, default: 50 },
     { key: 'rate', label: '语速倍率（接入默认，agent 可按条覆盖）', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 },
-    { key: 'pitch', label: '音调倍率（接入默认，agent 可按条覆盖）', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 }
+    { key: 'pitch', label: '音调倍率（接入默认，agent 可按条覆盖）', type: 'number', min: 0.5, max: 2, step: 0.1, default: 1 },
+    ...(withInstruction ? [INSTRUCTION_PARAM] : [])
   ]
 }
 
 const QWEN_AUDIO_NOTE = '需要业务空间 ID；支持语气指令与文本内嵌情感标签'
-const COSY_NOTE = '需要业务空间 ID；支持语气指令与声音复刻'
+const COSY_NOTE = '需要业务空间 ID；支持声音复刻；不吃语气指令（instruction 会被引擎 428 拒绝，已标记不支持）'
 
 const models: TtsModelSpec[] = [
   {
@@ -87,7 +97,7 @@ const models: TtsModelSpec[] = [
     instruction: true,
     inlineTags: true,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(true),
     voices: []
   },
   {
@@ -100,7 +110,7 @@ const models: TtsModelSpec[] = [
     instruction: true,
     inlineTags: true,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(true),
     voices: []
   },
   {
@@ -113,7 +123,7 @@ const models: TtsModelSpec[] = [
     instruction: true,
     inlineTags: true,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(true),
     voices: []
   },
   {
@@ -144,9 +154,9 @@ const models: TtsModelSpec[] = [
     kind: 'tts',
     needsWorkspace: true,
     streaming: true,
-    instruction: true,
+    instruction: false,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(false),
     voices: cosyvoiceV3PlusVoices
   },
   {
@@ -156,9 +166,9 @@ const models: TtsModelSpec[] = [
     kind: 'tts',
     needsWorkspace: true,
     streaming: true,
-    instruction: true,
+    instruction: false,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(false),
     voices: cosyvoiceV3FlashVoices
   },
   {
@@ -168,9 +178,9 @@ const models: TtsModelSpec[] = [
     kind: 'tts',
     needsWorkspace: true,
     streaming: true,
-    instruction: true,
+    instruction: false,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(false),
     voices: []
   },
   {
@@ -180,9 +190,9 @@ const models: TtsModelSpec[] = [
     kind: 'tts',
     needsWorkspace: true,
     streaming: true,
-    instruction: true,
+    instruction: false,
     cloneTarget: true,
-    params: maasParams(),
+    params: maasParams(false),
     voices: []
   }
 ]

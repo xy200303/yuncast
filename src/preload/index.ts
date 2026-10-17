@@ -21,6 +21,9 @@ import type {
   KnowledgeFile,
   LiveComment,
   LaunchResult,
+  McpConfig,
+  McpRuntime,
+  RecordingState,
   ModelConnectionInput,
   ModelConnectionSafe,
   PartialDeep,
@@ -51,16 +54,16 @@ import type {
   SessionExportOptions,
   SessionExportResult,
   SessionStats,
-  SpeechItem,
-  SpeechLane,
+  PoolItem,
+  PoolLane,
   StatsGlobal,
   StatsQuery,
   TtsConnectionInput,
   TtsConnectionSafe,
   TtsRecord,
   UsageRecord,
-  Utterance,
-  UtteranceInput,
+  DraftUnit,
+  DraftUnitInput,
   VoiceRecord,
   VoiceUsage,
   StreamStats,
@@ -101,18 +104,18 @@ const api = {
       ipcRenderer.invoke(IPC.configSet, patch) as Promise<AppConfig>
   },
   pool: {
-    say: (input: PoolSayInput) => ipcRenderer.invoke(IPC.poolSay, input) as Promise<PoolResult<SpeechItem>>,
+    say: (input: PoolSayInput) => ipcRenderer.invoke(IPC.poolSay, input) as Promise<PoolResult<PoolItem>>,
     insertNext: (input: Omit<PoolSayInput, 'lane'>) =>
-      ipcRenderer.invoke(IPC.poolInsertNext, input) as Promise<PoolResult<SpeechItem>>,
+      ipcRenderer.invoke(IPC.poolInsertNext, input) as Promise<PoolResult<PoolItem>>,
     revise: (id: string, text: string) =>
-      ipcRenderer.invoke(IPC.poolRevise, id, text) as Promise<PoolResult<SpeechItem>>,
+      ipcRenderer.invoke(IPC.poolRevise, id, text) as Promise<PoolResult<PoolItem>>,
     revoke: (id: string) => ipcRenderer.invoke(IPC.poolRevoke, id) as Promise<PoolResult>,
     reorder: (ids: string[]) => ipcRenderer.invoke(IPC.poolReorder, ids) as Promise<PoolResult>,
-    clearLane: (lane: SpeechLane) => ipcRenderer.invoke(IPC.poolClearLane, lane) as Promise<PoolResult>,
+    clearLane: (lane: PoolLane) => ipcRenderer.invoke(IPC.poolClearLane, lane) as Promise<PoolResult>,
     status: () => ipcRenderer.invoke(IPC.poolStatus) as Promise<PoolStatus>,
-    recentPlayed: (n: number) => ipcRenderer.invoke(IPC.poolRecentPlayed, n) as Promise<SpeechItem[]>,
+    recentPlayed: (n: number) => ipcRenderer.invoke(IPC.poolRecentPlayed, n) as Promise<PoolItem[]>,
     /** 取第一个 ready 条目开始播放（主进程置 playing），无则 null */
-    next: () => ipcRenderer.invoke(IPC.poolNext) as Promise<SpeechItem | null>,
+    next: () => ipcRenderer.invoke(IPC.poolNext) as Promise<PoolItem | null>,
     markDone: (id: string) => ipcRenderer.invoke(IPC.poolMarkDone, id) as Promise<void>,
     /** 播放中断：把正在播的这条退回 ready（恢复后从头重播） */
     requeue: (id: string) => ipcRenderer.invoke(IPC.poolRequeue, id) as Promise<PoolResult>,
@@ -190,10 +193,8 @@ const api = {
     stop: () => ipcRenderer.invoke(IPC.agentStop) as Promise<void>,
     /** 打断当前这一轮生成（会话保留）；对话输入框的停止钮 */
     abort: () => ipcRenderer.invoke(IPC.agentAbort) as Promise<void>,
-    restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; error?: string }>,
-    /** 卡司切换：接下来由另一张主播卡出镜（不换脑不重启会话，未播旧音色话术重合成；直播中可切） */
-    switchPresenter: (personaId: string) =>
-      ipcRenderer.invoke(IPC.agentSwitchPresenter, personaId) as Promise<{ ok: boolean; error?: string }>,
+    /** 应用改动后的资产：mode = hot（热更新，会话没断）/ cold（模型变了，重开会话） */
+    restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; mode?: 'hot' | 'cold'; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
     /** 写稿：派导演给该节目写底稿（直播台看过程，随时可插话改口径） */
     draftStart: (programId: string) =>
@@ -262,11 +263,17 @@ const api = {
     }
   },
   persona: {
-    get: () => ipcRenderer.invoke(IPC.personaGet) as Promise<Persona>,
+    /** 人设卡变更（含 agent/MCP 改动）：返回取消订阅函数 */
+    onChanged: (cb: (personaId: string) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, personaId: string) => cb(personaId)
+      ipcRenderer.on(IPC.personaChanged, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.personaChanged, listener)
+      }
+    },
     list: () => ipcRenderer.invoke(IPC.personaList) as Promise<Persona[]>,
     save: (input: Omit<Persona, 'id' | 'updatedAt'>, id?: string) =>
       ipcRenderer.invoke(IPC.personaSave, input, id) as Promise<Persona>,
-    setActive: (id: string) => ipcRenderer.invoke(IPC.personaSetActive, id) as Promise<Persona | null>,
     remove: (id: string) => ipcRenderer.invoke(IPC.personaRemove, id) as Promise<void>
   },
   audio: {
@@ -280,11 +287,14 @@ const api = {
       ipcRenderer.invoke(IPC.audioSetBgm, action, filePath, volume) as Promise<AudioCommandResult>,
     /** 停掉当前 AI 播报（跳过这条 / 紧急停止）：主进程掐断解码与排播，BGM 与推流不断 */
     stopAll: () => ipcRenderer.invoke(IPC.audioStopAll) as Promise<AudioCommandResult>,
-    /** 试听：主进程把指定音频文件播到监听通道（aux 槽，不打断主槽播报；dev 下渲染层读不了 file://，统一走这里） */
-    playFile: (filePath: string) =>
-      ipcRenderer.invoke(IPC.audioPlayFile, filePath) as Promise<AudioCommandResult>,
+    /** 试听：主进程把指定音频文件播到监听通道（aux 槽，不打断主槽播报；dev 下渲染层读不了 file://，统一走这里）。
+     *  itemId 可选（preview- 前缀）：试听模块自带 id，audio:end 按它精确收尾 */
+    playFile: (filePath: string, itemId?: string) =>
+      ipcRenderer.invoke(IPC.audioPlayFile, filePath, itemId) as Promise<AudioCommandResult>,
     /** 停止试听（停 aux 槽，不动主槽播报） */
     stopAux: () => ipcRenderer.invoke(IPC.audioStopAux) as Promise<AudioCommandResult>,
+    /** 试听暂停/继续（aux 槽用户级暂停：不消费队列，主槽播报照常） */
+    pauseAux: (paused: boolean) => ipcRenderer.invoke(IPC.audioPauseAux, paused) as Promise<AudioCommandResult>,
     /** 章内 seek（预制节目长音频）：主槽从指定毫秒位置继续播 */
     seekMain: (offsetMs: number) =>
       ipcRenderer.invoke(IPC.audioSeekMain, offsetMs) as Promise<AudioCommandResult>,
@@ -321,6 +331,16 @@ const api = {
       }
     }
   },
+  /** 统一数据变更：按 scope 重拉（personas/voices/programs/drafts/knowledge/triggers/sessions/settings） */
+  data: {
+    onChanged: (cb: (payload: { scope: string; detail?: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { scope: string; detail?: string }) => cb(payload)
+      ipcRenderer.on(IPC.dataChanged, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.dataChanged, listener)
+      }
+    }
+  },
   voice: {
     list: () => ipcRenderer.invoke(IPC.voiceList) as Promise<VoiceRecord[]>,
     /** 克隆到指定接入 + 模型（火山要本地样本 samplePath；百炼要公网音频地址 sampleUrl） */
@@ -328,8 +348,8 @@ const api = {
       ipcRenderer.invoke(IPC.voiceClone, input) as Promise<{ ok: boolean; error?: string }>,
     remove: (id: string) =>
       ipcRenderer.invoke(IPC.voiceRemove, id) as Promise<{ ok: boolean; error?: string }>,
-    rename: (id: string, name: string) =>
-      ipcRenderer.invoke(IPC.voiceRename, id, name) as Promise<{ ok: boolean; error?: string }>,
+    update: (id: string, patch: { name?: string; instruction?: string }) =>
+      ipcRenderer.invoke(IPC.voiceUpdate, id, patch) as Promise<{ ok: boolean; error?: string }>,
     /** 试听：合成一句固定文案，合成完由**主进程**直接出声（不再返回 audioPath 让渲染层播） */
     preview: (id: string) =>
       ipcRenderer.invoke(IPC.voicePreview, id) as Promise<
@@ -420,6 +440,14 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke(IPC.programDelete, id) as Promise<PoolResult>,
     /** 设为当前节目，返回生效的 activeProgramId */
     setActive: (id: string) => ipcRenderer.invoke(IPC.programSetActive, id) as Promise<string>,
+    /** 节目数据变更（保存/删除/切换，含 agent 与 MCP 路径）：界面收到后重拉列表 */
+    onChanged: (cb: () => void) => {
+      const listener = () => cb()
+      ipcRenderer.on(IPC.programChanged, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.programChanged, listener)
+      }
+    },
     /** 开播前预检：检查项清单（阻断/警告） */
     preflight: (id: string) => ipcRenderer.invoke(IPC.programPreflight, id) as Promise<PreflightItem[]>,
     /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播；opts.allowPartial = 预制节目「仅播放已完成部分」 */
@@ -443,7 +471,7 @@ const api = {
         already?: boolean
         error?: string
       }>,
-    /** 导入外部音频（预制节目）：主进程弹文件选择框（mp3/wav/m4a），挂到指定 Scene/Utterance；取消返回 ok:false */
+    /** 导入外部音频（预制节目）：主进程弹文件选择框（mp3/wav/m4a），挂到指定 Scene/DraftUnit；取消返回 ok:false */
     importAudio: (id: string, target: { kind: 'scene' | 'utterance'; id: string }) =>
       ipcRenderer.invoke(IPC.programImportAudio, id, target) as Promise<
         { ok: true; audioPath: string } | { ok: false; error: string }
@@ -465,7 +493,7 @@ const api = {
     exportCancel: () => ipcRenderer.invoke(IPC.programExportCancel) as Promise<{ ok: boolean }>,
     /** 用系统文件管理器打开导出输出目录 */
     openExportDir: (dir: string) => ipcRenderer.invoke(IPC.programExportOpenDir, dir) as Promise<string>,
-    /** 订阅导出进度（当前第几个/共几个/当前章节名/终态），返回取消订阅函数 */
+    /** 订阅导出进度（当前第几个/共几个/当前段标题/终态），返回取消订阅函数 */
     onExportEvent: (cb: (progress: ProgramExportProgress) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, progress: ProgramExportProgress) => cb(progress)
       ipcRenderer.on(IPC.programExportEvent, listener)
@@ -475,10 +503,10 @@ const api = {
     }
   },
   utterance: {
-    list: (programId: string) => ipcRenderer.invoke(IPC.utteranceList, programId) as Promise<Utterance[]>,
-    save: (input: UtteranceInput, id?: string) =>
-      ipcRenderer.invoke(IPC.utteranceSave, input, id) as Promise<PoolResult<Utterance>>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.utteranceDelete, id) as Promise<PoolResult>,
+    list: (programId: string) => ipcRenderer.invoke(IPC.draftUnitList, programId) as Promise<DraftUnit[]>,
+    save: (input: DraftUnitInput, id?: string) =>
+      ipcRenderer.invoke(IPC.draftUnitSave, input, id) as Promise<PoolResult<DraftUnit>>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.draftUnitDelete, id) as Promise<PoolResult>,
     clear: (programId: string, sceneId?: string) =>
       ipcRenderer.invoke(IPC.utteranceClear, programId, sceneId) as Promise<PoolResult>,
     /** 清空已合成音频（文稿保留；滚动段回待合成，预制资产摘除，可重新合成）。返回清掉的段数 */
@@ -486,8 +514,8 @@ const api = {
       ipcRenderer.invoke(IPC.utteranceClearAudio, programId) as Promise<PoolResult<number>>,
     /** 批量预合成（异步启动，进度走 onEvent；id='' 表示批次结束） */
     presynth: (programId: string) => ipcRenderer.invoke(IPC.utterancePresynth, programId) as Promise<{ ok: boolean }>,
-    onEvent: (cb: (utterance: Utterance) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, utterance: Utterance) => cb(utterance)
+    onEvent: (cb: (utterance: DraftUnit) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, utterance: DraftUnit) => cb(utterance)
       ipcRenderer.on(IPC.utteranceEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.utteranceEvent, listener)
@@ -503,10 +531,7 @@ const api = {
     remove: (id: string) => ipcRenderer.invoke(IPC.sessionDelete, id) as Promise<PoolResult>,
     /** 场次音频导出：实际播出的有音频条目按播放顺序导出；进度走 program.onExportEvent（programId 字段带场次 id） */
     exportAudio: (options: SessionExportOptions) =>
-      ipcRenderer.invoke(IPC.sessionExport, options) as Promise<SessionExportResult>,
-    /** 逐条试听（aux 槽，本机出声不进推流） */
-    playItem: (itemId: string) =>
-      ipcRenderer.invoke(IPC.sessionPlayItem, itemId) as Promise<{ ok: boolean; error?: string }>
+      ipcRenderer.invoke(IPC.sessionExport, options) as Promise<SessionExportResult>
   },
   stream: {
     start: () => ipcRenderer.invoke(IPC.streamStart) as Promise<{ ok: boolean; error?: string }>,
@@ -536,6 +561,50 @@ const api = {
       ipcRenderer.on(IPC.connectorStatusEvent, listener)
       return () => {
         ipcRenderer.removeListener(IPC.connectorStatusEvent, listener)
+      }
+    }
+  },
+  /** 开放接口（设置 → 开放接口）：本机 MCP / CLI，把 YunCast 能力开给本机 Agent */
+  mcp: {
+    get: () => ipcRenderer.invoke(IPC.mcpGet) as Promise<McpConfig>,
+    /** 保存开关/端口（regenerateToken=true 重新生成令牌）；保存即重启服务 */
+    save: (input: { enabled: boolean; port: number; regenerateToken?: boolean }) =>
+      ipcRenderer.invoke(IPC.mcpSave, input) as Promise<{ ok: true; config: McpConfig } | { ok: false; error: string }>,
+    state: () => ipcRenderer.invoke(IPC.mcpState) as Promise<McpRuntime>,
+    /** 订阅 MCP 服务运行状态，返回取消订阅函数 */
+    onState: (cb: (state: McpRuntime) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, state: McpRuntime) => cb(state)
+      ipcRenderer.on(IPC.mcpStateEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.mcpStateEvent, listener)
+      }
+    }
+  },
+  /**
+   * 通用录屏：start/stop 由 UI 按钮或 MCP 工具发起；渲染层是采集本体——
+   * onCmd 收到 start 就 getDisplayMedia 开录，分块走 chunk 回传，stop 时收尾后 done。
+   */
+  record: {
+    start: (name?: string, showCursor?: boolean) =>
+      ipcRenderer.invoke(IPC.recordStart, name, showCursor) as Promise<{ ok: true; file: string } | { ok: false; error: string }>,
+    stop: () => ipcRenderer.invoke(IPC.recordStop) as Promise<{ ok: true; file: string } | { ok: false; error: string }>,
+    state: () => ipcRenderer.invoke(IPC.recordState) as Promise<RecordingState>,
+    chunk: (base64: string) => ipcRenderer.invoke(IPC.recordChunk, base64) as Promise<boolean>,
+    ready: (container?: string) => ipcRenderer.invoke(IPC.recordReady, container) as Promise<void>,
+    fail: (error: string) => ipcRenderer.invoke(IPC.recordFail, error) as Promise<void>,
+    done: () => ipcRenderer.invoke(IPC.recordDone) as Promise<void>,
+    onCmd: (cb: (cmd: { action: 'start' | 'stop'; showCursor?: boolean }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, cmd: { action: 'start' | 'stop'; showCursor?: boolean }) => cb(cmd)
+      ipcRenderer.on(IPC.recordCmdEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.recordCmdEvent, listener)
+      }
+    },
+    onState: (cb: (state: RecordingState) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, state: RecordingState) => cb(state)
+      ipcRenderer.on(IPC.recordStateEvent, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.recordStateEvent, listener)
       }
     }
   }

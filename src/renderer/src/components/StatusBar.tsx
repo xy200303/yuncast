@@ -1,11 +1,13 @@
+import { useEffect, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useAppStore, selectLlmReady, providerLabel } from '../stores/useAppStore'
 import { NAV_ITEMS } from './Sidebar'
 import { voiceRouteSummary } from '../lib/voice'
 
 /**
- * 底部状态栏（docs/REDESIGN 4.7）：显示当前**实际生效**的导演大脑与出镜主播 + 嗓音 + 服务商，
- * 不再是「已配置」布尔值；导演大脑没配 / 嗓音路由断了给红色块，点击直达对应设置页。
+ * 底部状态栏：显示当前**实际生效**的导演大脑与节目卡司的嗓音 + 服务商；
+ * 没有「当前出镜」概念——卡司没选音色就照实写「卡司没选音色」。
+ * 导演大脑没配 / 嗓音路由断了给红色块，点击直达对应设置页。
  */
 export function StatusBar() {
   const page = useAppStore((s) => s.page)
@@ -15,7 +17,6 @@ export function StatusBar() {
   const ttsConnections = useAppStore((s) => s.ttsConnections)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const voices = useAppStore((s) => s.voices)
-  const persona = useAppStore((s) => s.persona)
   const levels = useAppStore((s) => s.levels)
   const agent = useAppStore((s) => s.agent)
   const pool = useAppStore((s) => s.pool)
@@ -34,11 +35,40 @@ export function StatusBar() {
     ? `导演 ${config.director.name}（${providerLabel(llmProviders, directorConnection?.providerId ?? '')}）`
     : null
 
-  // 出镜主播 + 嗓音 + TTS 服务商；嗓音路由断了（接入被删/模型没启用）红色警示
-  const voice = persona ? voiceRouteSummary(voices, ttsProviders, ttsConnections, persona.voiceId) : null
+  // 节目卡司：取卡司第一张的嗓音；没配就照实说明
+  const [programVoice, setProgramVoice] = useState<{ name: string; voiceId: string; hasCast: boolean } | null>(null)
+  useEffect(() => {
+    if (!('api' in window)) return
+    let alive = true
+    const load = () => {
+      void window.api.program.list().then(async (list) => {
+        if (!alive) return
+        const program = list.find((p) => p.id === config.live.activeProgramId)
+        if (!program) {
+          setProgramVoice(null)
+          return
+        }
+        const castFirst = program.presenterIds[0]
+        const personas = await window.api.persona.list()
+        const voiceId = (castFirst ? personas.find((p) => p.id === castFirst)?.voiceId : '') ?? ''
+        setProgramVoice({ name: program.name, voiceId: voiceId.trim(), hasCast: Boolean(castFirst) })
+      })
+    }
+    load()
+    const off = window.api.program.onChanged(load)
+    return () => {
+      alive = false
+      off()
+    }
+  }, [config.live.activeProgramId])
+
+  // 卡司嗓音 + TTS 服务商；嗓音路由断了（接入被删/模型没启用）红色警示
+  const voice = programVoice?.voiceId
+    ? voiceRouteSummary(voices, ttsProviders, ttsConnections, programVoice.voiceId)
+    : null
   const presenterText =
-    persona && voice && !voice.broken
-      ? `出镜 ${persona.name}（${voice.voiceName}${voice.providerShort ? ` · ${voice.providerShort}` : ''}）`
+    voice && !voice.broken
+      ? `卡司嗓音 ${voice.voiceName}${voice.providerShort ? ` · ${voice.providerShort}` : ''}`
       : null
 
   /**
@@ -88,18 +118,20 @@ export function StatusBar() {
         )}
         <Dot />
         {presenterText ? (
-          <span title="出镜主播与嗓音">{presenterText}</span>
-        ) : persona && voice?.broken ? (
+          <span title="卡司嗓音">{presenterText}</span>
+        ) : voice?.broken ? (
           <button
             type="button"
             className="text-destructive hover:underline"
             title={`${voice.broken}（点这里去设置 → 语音合成）`}
             onClick={() => openSettings('tts')}
           >
-            出镜 {persona.name} 的嗓音失效 → 去修复
+            卡司嗓音失效 → 去修复
           </button>
         ) : (
-          <span>未选出镜主播</span>
+          <span title={programVoice?.hasCast ? '卡司里的卡还没选音色' : '本节目没配卡司：合成时逐段用 speaker 指定'}>
+            {!programVoice ? '未选节目' : programVoice.hasCast ? '卡司没选音色' : '未选主播'}
+          </span>
         )}
         {synthesizing > 0 && (
           <>

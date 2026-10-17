@@ -3,7 +3,7 @@ import type { StorageService } from './StorageService'
 
 /**
  * 记忆服务（docs/01 §3.6）。
- * 长期记忆 = 老粉画像 viewer_profiles；下播复盘摘要直接写进场次（broadcast_sessions.summary）。
+ * 长期记忆 = 老粉画像 viewer_profiles；下播复盘摘要直接写进场次（live_sessions.summary）。
  * 场内记忆由 pi 会话上下文 + 自动压缩天然覆盖，不用单独做。
  */
 
@@ -51,7 +51,7 @@ export class MemoryService {
     return parts.join('，')
   }
 
-  /** 下播复盘摘要写进场次（场记详情与 session_history 工具都读 broadcast_sessions.summary） */
+  /** 下播复盘摘要写进场次（场记详情与 session_history 工具都读 live_sessions.summary） */
   saveSessionSummary(sessionId: string, summary: string): void {
     const text = summary.trim()
     if (text) this.storage.sessionSetSummary(sessionId, text)

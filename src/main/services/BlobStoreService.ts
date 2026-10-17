@@ -232,7 +232,7 @@ export class BlobStoreService {
   /**
    * 一次性迁移：老 audio-cache 全部文件搬进 blobs。
    * 文件名里的参数指纹（tts-<sha1-20>.<ext>）提成 tts_cache 别名，缓存语义无缝延续；
-   * 被 speech_items/utterances 引用的补登记引用，并把行内路径改写到新位置。
+   * 被 pool_items/draft_units 引用的补登记引用，并把行内路径改写到新位置。
    */
   async migrateLegacyAudioCache(): Promise<{ moved: number }> {
     const legacyDir = join(app.getPath('userData'), 'audio-cache')
@@ -240,7 +240,7 @@ export class BlobStoreService {
     if (names.length === 0) return { moved: 0 }
     // 迁移期间引用快照：同一路径可能被多个 owner 引用，逐个补登记。
     // 库里存的路径可能是正斜杠，join 出来的是反斜杠——两边都 resolve+小写归一化再比对
-    const referenced = this.storage.speechReferencedAudioPaths()
+    const referenced = this.storage.poolItemReferencedAudioPaths()
     const ownersByPath = new Map<string, { kind: 'utterance' | 'speech_item'; id: string }[]>()
     if (referenced.length > 0) {
       for (const row of this.storage.audioPathOwners()) {
@@ -322,7 +322,7 @@ export class BlobStoreService {
 
   /**
    * 一次性迁移：老 program-audio/ 目录（整章拼接产物 + 导入的外部音频）搬进 blobs（cache 档）。
-   * owner 是 rendered JSON（utterances.rendered / scripts.scenes[].rendered），迁移后改写 JSON 里的
+   * owner 是 rendered JSON（draftUnits.rendered / scripts.scenes[].rendered），迁移后改写 JSON 里的
    * audioPath 并登记引用（ownerKind = utterance_rendered / scene_rendered）。
    * 没被任何 rendered 引用的残留文件不入库——cache 档无引用宽限期会清，直接删掉。
    */

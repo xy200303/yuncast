@@ -9,6 +9,7 @@ import {
   Pencil,
   Play,
   Plus,
+  RefreshCw,
   Trash2
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -36,7 +37,7 @@ import {
   type Script
 } from '../../../shared/types'
 import { ProgramDialog } from './programs/ProgramDialog'
-import { UtteranceDialog } from './programs/UtteranceDialog'
+import { DraftUnitDialog } from './programs/DraftUnitDialog'
 import { ProgramGateDialog } from './ProgramGateDialog'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { VoicePickDialog } from './VoicePickDialog'
@@ -80,7 +81,7 @@ function programLibraryReducer(state: ProgramLibrary, action: ProgramLibraryActi
   }
 }
 
-/** 节目库：一场直播/一期播客/一本有声书都是一个节目（内容 + 播出方式 + 事件规则 + 知识范围）。谁播由当前主播定；预制节目音频全部就绪后卡片上可直接播放（门禁不过进弹窗，不静默跳过）。 */
+/** 节目库：一场直播/一期播客/一本有声书都是一个节目（内容 + 播出方式 + 事件规则 + 知识范围）。谁播由节目卡司定；预制节目音频全部就绪后卡片上可直接播放（门禁不过进弹窗，不静默跳过）。 */
 export function ProgramsPage() {
   const config = useAppStore((s) => s.config)
   const loadConfig = useAppStore((s) => s.loadConfig)
@@ -125,6 +126,9 @@ export function ProgramsPage() {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  // agent / MCP 改了节目（新建/改名/删除/切换卡司）：广播到达就重拉
+  useEffect(() => window.api.program.onChanged(() => void reload()), [reload])
 
   // 预制音频资产变化：刷新对应节目的音频摘要（合成进度实时反映到卡片上）
   useEffect(() => {
@@ -223,8 +227,12 @@ export function ProgramsPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <Clapperboard className="size-4 shrink-0 text-primary" />
         <h1 className="shrink-0 text-sm font-medium">节目</h1>
-        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">一场直播、一期播客、一本有声书都是一个节目：内容 + 播出方式 + 事件规则 + 知识范围（谁播由当前主播定）</p>
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">一场直播、一期播客、一本有声书都是一个节目：内容 + 播出方式 + 事件规则 + 知识范围（谁播由节目卡司定）</p>
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button variant="ghost" size="sm" title="刷新列表（agent 在后台建的节目会经广播自动刷新，这里是手动兜底）" onClick={() => void reload()}>
+            <RefreshCw />
+            刷新
+          </Button>
           <Button size="sm" onClick={() => setEditing({})}>
             <Plus />
             新建节目
@@ -371,7 +379,7 @@ export function ProgramsPage() {
         onSaved={reload}
       />
       {reviewing && (
-        <UtteranceDialog
+        <DraftUnitDialog
           program={reviewing}
           script={scripts.find((s) => s.id === reviewing.scriptId) ?? null}
           open

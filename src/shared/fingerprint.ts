@@ -23,6 +23,14 @@ function hash16(input: string, seed = 0): string {
 /** 通用稳定哈希（音色集合/角色表等快照指纹用） */
 export const stableHash = hash16
 
+/**
+ * 节目级风格指令盐（program.instruction）：不在文稿字段里但影响「听起来是什么」，
+ * 并进指纹——改它 = 全部单元判过期重合成；空盐时指纹与旧版逐位一致（升级不标脏存量产物）
+ */
+export function programStyleSalt(program: { instruction?: string }): string {
+  return program.instruction?.trim() ?? ''
+}
+
 /** 会影响「这段音频听起来是什么」的文稿字段 */
 export interface FingerprintSource {
   text: string
@@ -31,10 +39,10 @@ export interface FingerprintSource {
   pitch?: number
 }
 
-/** 单段（Utterance）级文稿指纹：文本 + 表演指示 + 语速/音调 */
-export function utteranceFingerprint(source: FingerprintSource): string {
+/** 单段（DraftUnit）级文稿指纹：文本 + 表演指示 + 语速/音调（+ 节目级风格指令盐） */
+export function utteranceFingerprint(source: FingerprintSource, styleSalt = ''): string {
   return hash16(
-    [source.text, source.delivery ?? '', source.rate ?? '', source.pitch ?? ''].join('')
+    [source.text, source.delivery ?? '', source.rate ?? '', source.pitch ?? '', styleSalt].join('')
   )
 }
 
@@ -42,6 +50,6 @@ export function utteranceFingerprint(source: FingerprintSource): string {
  * 整章/整期（Scene）级文稿指纹：该章全部段落的段指纹按叙事顺序串联。
  * 任何一段的文本/演法变动、段序变动、增删段都会改变它。
  */
-export function sceneFingerprint(utterances: FingerprintSource[]): string {
-  return hash16(utterances.map((u) => utteranceFingerprint(u)).join(','))
+export function sceneFingerprint(utterances: FingerprintSource[], styleSalt = ''): string {
+  return hash16(utterances.map((u) => utteranceFingerprint(u, styleSalt)).join(','))
 }

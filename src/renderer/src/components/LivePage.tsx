@@ -49,10 +49,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
 import { Markdown } from '@/components/Markdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { AutoResponsePicker } from './live/AutoResponsePicker'
+import { RecordMenuSub } from './live/RecordControl'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { ProgramGateDialog } from '@/components/ProgramGateDialog'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
@@ -60,6 +60,7 @@ import { VoicePickDialog } from '@/components/VoicePickDialog'
 import { useAppStore, type NavPage, type SettingsPaneId } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
+import { audition, auditionTitle } from '../lib/audition'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { CommentList } from './live/CommentList'
 import { EventStream } from './live/EventStream'
@@ -67,6 +68,7 @@ import { ImprovisedPanel } from './live/ImprovisedPanel'
 import { NowPlayingBar } from './live/NowPlayingBar'
 import { PreparedPanel } from './live/PreparedPanel'
 import type {
+  Persona,
   ChatEntry,
   DirectorMessage,
   LiveComment,
@@ -76,22 +78,22 @@ import type {
   ProduceVoiceOverride,
   ProgramGateResult,
   Script,
-  SpeechItem,
-  SpeechLane,
-  SpeechSourceKind,
-  SpeechStatus
+  PoolItem,
+  PoolLane,
+  PoolSourceKind,
+  PoolItemStatus
 } from '../../../shared/types'
 import { stripSpeechTags } from '../../../shared/speechTags'
 import { ContentItem, ContentList } from './live/ContentItem'
 
-const LANE_LABEL: Record<SpeechLane, string> = {
+const LANE_LABEL: Record<PoolLane, string> = {
   interrupt: '打断',
   next: '下一条',
   normal: '常规',
   filler: '垫底'
 }
 
-const STATUS_LABEL: Record<SpeechStatus, string> = {
+const STATUS_LABEL: Record<PoolItemStatus, string> = {
   pending: '待合成',
   synthesizing: '合成中',
   ready: '就绪',
@@ -103,7 +105,7 @@ const STATUS_LABEL: Record<SpeechStatus, string> = {
   expired: '已过期'
 }
 
-const SOURCE_LABEL: Record<SpeechSourceKind, string> = {
+const SOURCE_LABEL: Record<PoolSourceKind, string> = {
   scene: '剧情',
   reply: '回复',
   interact: '互动',
@@ -134,6 +136,17 @@ export function LivePage() {
   /** 节目控制（选择/启动/暂停/结束 + 预检与门禁弹窗）：activeProgram 也由它给，只有一处真值 */
   const programControl = useProgramLauncher()
   const activeProgram = programControl.activeProgram
+  // 主播卡名单：队列行按音色反查卡名，多主播节目显示身份
+  const [castList, setCastList] = useState<Persona[]>([])
+  useEffect(() => {
+    if (!('api' in window)) return
+    const load = () => void window.api.persona.list().then(setCastList)
+    load()
+    const off = window.api.data.onChanged((payload) => {
+      if (payload.scope === 'personas') load()
+    })
+    return off
+  }, [])
 
   /** 当前节目是否向主播提供直播间动态：关闭时评论流区域整体隐藏（docs/10 §11.5） */
   const allowLiveEvents = activeProgram?.allowLiveEvents ?? true
@@ -180,7 +193,7 @@ export function LivePage() {
   // 队列：按话轮分组（同 lane + turnId 一组，原子播出不拆开）。
   // 正在播的那条同样列在这里，用「播报中」标记标出来——不再单独做一块状态显示。
   const groups = useMemo(() => {
-    const out: { key: string; items: SpeechItem[] }[] = []
+    const out: { key: string; items: PoolItem[] }[] = []
     for (const item of pool.items) {
       const key = `${item.lane}:${item.turnId}`
       const last = out[out.length - 1]
@@ -214,7 +227,7 @@ export function LivePage() {
                     </div>
                   ) : (
                     <>
-                      {groups.flatMap((group) => group.items.map((item) => <QueueRow key={item.id} item={item} />))}
+                      {groups.flatMap((group) => group.items.map((item) => <QueueRow key={item.id} item={item} presenters={castList} />))}
                       {pool.failed.length > 0 && (
                         <div className="mt-2 flex flex-col gap-1.5">
                           <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
@@ -295,7 +308,6 @@ export function LivePage() {
 function useProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
-  const persona = useAppStore((s) => s.persona)
   const director = useAppStore((s) => s.config.director)
   const [programs, setPrograms] = useState<Program[]>([])
   const [presenters, setPresenters] = useState<Awaited<ReturnType<typeof window.api.persona.list>>>([])
@@ -326,12 +338,15 @@ function useProgramLauncher() {
     if (page === 'live') void loadPrograms()
   }, [page, loadPrograms])
 
+  // agent / MCP 在后台建了/删了/切了节目：收到广播就重拉，界面不用手动刷新
+  useEffect(() => window.api.program.onChanged(() => void loadPrograms()), [loadPrograms])
+
   /** 直播中的判定：开播态归引擎（agent.live）——主播会话没起来也照播存量，不算没开播 */
   const running = agent.live === true
   const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
   const castNames = activeProgram?.presenterIds.length
     ? activeProgram.presenterIds.map((id) => presenters.find((item) => item.id === id)?.name).filter(Boolean).join('、')
-    : `导演自选（当前：${persona?.name ?? '未选'}）`
+    : `导演自选（可用 ${presenters.length} 位）`
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
   const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
@@ -797,7 +812,7 @@ const TimelineLine = memo(function TimelineLine({
 })
 
 /** 话轮卡片头：图标 + 颜色区分，不放原始 id/hash 这类机器串 */
-const SOURCE_ICON: Record<SpeechSourceKind, typeof Clapperboard> = {
+const SOURCE_ICON: Record<PoolSourceKind, typeof Clapperboard> = {
   scene: Clapperboard,
   reply: MessageCircle,
   interact: MessagesSquare,
@@ -808,14 +823,14 @@ const SOURCE_ICON: Record<SpeechSourceKind, typeof Clapperboard> = {
 }
 
 /** lane 颜色（常规是默认不露头，减少噪音；其余用色点区分） */
-const LANE_DOT: Partial<Record<SpeechLane, string>> = {
+const LANE_DOT: Partial<Record<PoolLane, string>> = {
   interrupt: 'bg-red-500',
   next: 'bg-blue-500',
   filler: 'bg-amber-400'
 }
 
 /** 状态图标：文字徽标太吵，队列行改用图标 + 颜色（含义放 title） */
-function StatusIcon({ status }: { status: SpeechStatus }) {
+function StatusIcon({ status }: { status: PoolItemStatus }) {
   switch (status) {
     case 'playing':
       return <Volume2 className="size-4 shrink-0 animate-pulse text-primary" />
@@ -831,14 +846,26 @@ function StatusIcon({ status }: { status: SpeechStatus }) {
 /** 长文本阈值：超过则默认折叠几行，给「展开全文」——段一眼看全，文章不撑爆列表 */
 const LONG_TEXT_CHARS = 160
 
+/** 点正文 = 试听这条（docs/11 第二部分：aux 槽出声，不动话术池/队列/推流） */
+function auditionSpeech(item: PoolItem): void {
+  if (!item.audioPath) {
+    toast.warning('这段还没合成', { description: '等它合成好，点正文就能听' })
+    return
+  }
+  audition.toggle({ key: `speech:${item.id}`, title: auditionTitle(item.text), audioPath: item.audioPath })
+}
+
 /** 队列条目（滚动模式）：外观与预制/即兴共用 ContentItem，这里只负责填槽 */
-function QueueRow({ item }: { item: SpeechItem }) {
+function QueueRow({ item, presenters }: { item: PoolItem; presenters: Persona[] }) {
   const voices = useAppStore((s) => s.voices)
   const playing = item.status === 'playing'
   const canRevoke = item.status === 'pending' || item.status === 'synthesizing' || item.status === 'ready'
   const SourceIcon = SOURCE_ICON[item.source.kind]
   // voiceId 是合成路由的内部标识（克隆音色 speaker_id 等），显示成人能读懂的音色名
   const voiceName = item.voiceId ? (voices.find((v) => v.voiceType === item.voiceId)?.name ?? '角色音色') : ''
+  // 主播身份：按音色反查卡（多主播节目一眼看出这段是谁的）
+  const presenterName = item.voiceId ? (presenters.find((p) => p.voiceId === item.voiceId)?.name ?? '') : ''
+  const whoLabel = presenterName && voiceName ? `${presenterName} · ${voiceName}` : presenterName || voiceName
   return (
     <ContentItem
       current={playing}
@@ -860,10 +887,10 @@ function QueueRow({ item }: { item: SpeechItem }) {
         </>
       }
       meta={
-        voiceName ? (
-          <span className="flex items-center gap-1">
+        whoLabel ? (
+          <span className="flex items-center gap-1" title={whoLabel}>
             <Mic className="size-3" />
-            {voiceName}
+            {whoLabel}
           </span>
         ) : undefined
       }
@@ -886,6 +913,7 @@ function QueueRow({ item }: { item: SpeechItem }) {
         ) : undefined
       }
       text={item.text}
+      onTextClick={() => auditionSpeech(item)}
       longTextThreshold={LONG_TEXT_CHARS}
       title={
         item.speechText && item.speechText !== item.text
@@ -968,7 +996,6 @@ const TOOL_LABEL: Record<string, string> = {
   edit_draft: '修改了底稿',
   say: '安排了播报',
   insert_next: '安排了下一条播报',
-  switch_presenter: '切换了出镜主播',
   save_program: '保存了节目',
   save_script: '保存了剧本',
   save_persona: '保存了主播卡',
@@ -1075,7 +1102,6 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
   const [awaiting, setAwaiting] = useState(false)
   const [input, setInput] = useState('')
   const [attachments, setAttachments] = useState<{ name: string; path: string }[]>([])
-  const listRef = useRef<HTMLDivElement>(null)
   /** 最新值镜像（给异步回调读）：在 effect 里同步，不在渲染期写 ref——渲染可能被丢弃/重放 */
   const activeRef = useRef(active)
   const onUnreadRef = useRef(onUnread)
@@ -1244,24 +1270,25 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
   }, [])
 
   /**
-   * 贴底跟随：**自己维护"贴底模式"**，内容一变就钉到最后一条。
-   * 之前用 Virtuoso 的 followOutput，问题是流式期间"当前不在底部"与"内容刚变高"无法区分：
-   * 定稿那次正文从纯文本换成富文本、高度一变，followOutput 判定成"用户翻上去了"就再也不跟了（实测掉到 329px）。
-   * 现在只有真实用户动作（滚轮向上、拖到上方）才退出贴底模式；回到贴底附近自动恢复。
+   * 贴底跟随：列表用 `flex-col-reverse` 逆序渲染（最后一行在 DOM 最前、视觉最底）。
+   * 这样 scrollTop=0 天然就是底部——新消息追加、思考过程展开撑高行、流式定稿换富文本，
+   * 浏览器都自动保持视口钉在底部，不需要任何 JS 补偿；用户向上翻（scrollTop 变负）时
+   * 滚动锚定也天然保住阅读位置。JS 只维护「贴底模式」标志：
+   * 只有真实用户动作（滚轮向上、拖到上方）才退出贴底；回到底部附近自动恢复。
    */
   const stickRef = useRef(true)
   const [atBottom, setAtBottom] = useState(true)
-  const virtuosoRef = useRef<VirtuosoHandle>(null)
-  const scrollerRef = useRef<HTMLElement | null>(null)
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const el = scrollerRef.current
     if (!el) return
     const onScroll = (): void => {
-      const dist = el.scrollHeight - el.scrollTop - el.clientHeight
+      // column-reverse：scrollTop 0 = 视觉底部，向上翻为负值
+      const dist = -el.scrollTop
       if (dist < 40) stickRef.current = true
       else if (dist > 200) stickRef.current = false
-      setAtBottom((prev) => (prev === dist < 120 ? prev : dist < 120))
+      setAtBottom((prev) => (prev === (dist < 120) ? prev : dist < 120))
     }
     const onWheel = (event: WheelEvent): void => {
       if (event.deltaY < 0) stickRef.current = false
@@ -1274,19 +1301,18 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
     }
   }, [])
 
-  // 历史异步恢复后先定位到底部（挂载时还拿不到行数）
-  const didInitialScroll = useRef(false)
+  // 条目变化（新消息/流式追加/恢复历史）时兜底钉一次：column-reverse 下本就近乎免费，
+  // 这里防的是个别浏览器在「行高原地变化」时不做滚动锚定
   useEffect(() => {
-    if (entries.length === 0) return
-    if (!didInitialScroll.current) didInitialScroll.current = true
-    if (!stickRef.current) return
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end' })
+    const el = scrollerRef.current
+    if (!el || !stickRef.current) return
+    el.scrollTop = 0
   }, [entries])
 
   const jumpToBottom = (): void => {
     stickRef.current = true
     setAtBottom(true)
-    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'smooth' })
+    scrollerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   /** 快速指令本地解析（不过 LLM）。命中返回 true。 */
@@ -1378,31 +1404,31 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
     return list
   }, [entries])
 
-  /** 渲染一条时间线行（Virtuoso 逐条调用；与虚拟化前的 JSX 等价，只把 index 用上算分隔标记） */
-  const renderRow = (
+  /** 每行的分隔标记（日期/是否末行）按正序算好，渲染时才逆序——与视觉顺序解耦 */
+  const displayRows = useMemo(() => {
+    const metas = rows.map((row, index) => {
+      const firstEntry = row.kind === 'tools' ? row.items[0] : row.entry
+      const prevRow = index > 0 ? rows[index - 1] : undefined
+      const prevEntry = prevRow?.kind === 'entry' ? prevRow.entry : prevRow?.items?.[0]
+      const dayLabel =
+        prevEntry && new Date(prevEntry.ts).toDateString() !== new Date(firstEntry.ts).toDateString()
+          ? new Date(firstEntry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
+          : undefined
+      return { row, dayLabel, isTail: index === rows.length - 1 }
+    })
+    // column-reverse 列表：渲染顺序与视觉相反（最后一行 DOM 最前）
+    return metas.reverse()
+  }, [rows])
+
+  /** 渲染一条时间线行（分隔标记由 displayRows 预算好） */
+  const renderRow = (meta: {
     row:
       | { kind: 'entry'; entry: ChatEntry }
-      | { kind: 'tools'; id: string; items: Extract<ChatEntry, { type: 'tool' }>[] },
-    index: number
-  ): React.ReactNode => {
-    const firstEntry = row.kind === 'tools' ? row.items[0] : row.entry
-    const prevRow = index > 0 ? rows[index - 1] : undefined
-    const prevEntry = prevRow?.kind === 'entry' ? prevRow.entry : prevRow?.items?.[0]
-    const dayLabel =
-      prevEntry && new Date(prevEntry.ts).toDateString() !== new Date(firstEntry.ts).toDateString()
-        ? new Date(firstEntry.ts).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })
-        : undefined
-    const turnId =
-      firstEntry.type === 'text' || firstEntry.type === 'tool' || firstEntry.type === 'thinking'
-        ? firstEntry.turnId
-        : undefined
-    const prevTurnId =
-      prevEntry && (prevEntry.type === 'text' || prevEntry.type === 'tool' || prevEntry.type === 'thinking')
-        ? prevEntry.turnId
-        : undefined
-    const timeLabel = Boolean(turnId) && turnId !== prevTurnId ? clock(firstEntry.ts) : undefined
-    const isTail = index === rows.length - 1
-
+      | { kind: 'tools'; id: string; items: Extract<ChatEntry, { type: 'tool' }>[] }
+    dayLabel?: string
+    isTail: boolean
+  }): React.ReactNode => {
+    const { row, dayLabel, isTail } = meta
     if (row.kind === 'tools') {
       return (
         <>
@@ -1427,48 +1453,39 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 虚拟列表（react-virtuoso）：时间线上限 200 条、每条高度不定，几轮长回复之后 DOM 会很可观；
-          虚拟化只渲染可视区，历史里的 Markdown 也不再参与布局。贴底跟随、空态、生成中占位都走它的组件槽 */}
-      <Virtuoso
-        ref={virtuosoRef}
-        className="min-h-0 flex-1"
-        data={rows}
-        computeItemKey={(_, row) => (row.kind === 'tools' ? row.id : row.entry.id)}
-        // 每行包一层 flex 列容器：导演消息靠 self-end 右对齐（块级容器里 self-end 是无效的，
-        // 那会让自己的消息只在"86% 宽的盒子内"右对齐，长消息就从左边一路铺过来）
-        itemContent={(index, row) => <div className="flex flex-col px-4 pb-3">{renderRow(row, index)}</div>}
-        increaseViewportBy={{ top: 300, bottom: 600 }}
-        atBottomThreshold={120}
-        // 跟随逻辑在组件里自己做（见 stickRef 注释）：Virtuoso 的 followOutput 在流式下会误判
-        scrollerRef={(el) => {
-          scrollerRef.current = el as HTMLElement | null
-        }}
-        atBottomStateChange={(bottom) => {
-          stickRef.current = bottom
-          setAtBottom((prev) => (prev === bottom ? prev : bottom))
-        }}
-        alignToBottom
-        initialTopMostItemIndex={Math.max(0, rows.length - 1)}
-        components={{
-          EmptyPlaceholder: () => (
-            <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-              <Bot className="size-8" strokeWidth={1.25} />
-              <p className="px-6 text-center text-xs leading-5">
-                这里能看到主播的想法、工具调用和最终回复。
-                <br />
-                消息只进对话，不会被播出去。
-              </p>
+      {/* 对话时间线：column-reverse 逆序渲染，scrollTop=0 天然钉在底部。
+          新消息/流式追加/行高变化都由浏览器自动保底，JS 只管「贴底模式」标志（见 stickRef 注释）。
+          时间线上限 200 条，行组件都有 memo，全量渲染负担可控（虚拟化反而引入测量/贴底一串问题，已移除） */}
+      {rows.length === 0 ? (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
+          <Bot className="size-8" strokeWidth={1.25} />
+          <p className="px-6 text-center text-xs leading-5">
+            这里能看到主播的想法、工具调用和最终回复。
+            <br />
+            消息只进对话，不会被播出去。
+          </p>
+        </div>
+      ) : (
+        <div ref={scrollerRef} className="flex min-h-0 flex-1 flex-col-reverse overflow-y-auto">
+          {/* 生成中占位在 DOM 最前 = 视觉最底（紧挨最新一行） */}
+          {(awaiting || agent.busy) && (
+            <div className="flex items-center gap-1.5 px-4 pt-1 pb-2 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              正在生成回复中…
             </div>
-          ),
-          Footer: () =>
-            awaiting || agent.busy ? (
-              <div className="flex items-center gap-1.5 px-3 pb-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" />
-                正在生成回复中…
-              </div>
-            ) : null
-        }}
-      />
+          )}
+          {displayRows.map((meta) => (
+            <div
+              key={meta.row.kind === 'tools' ? meta.row.id : meta.row.entry.id}
+              // 每行包一层 flex 列容器：导演消息靠 self-end 右对齐（块级容器里 self-end 是无效的，
+              // 那会让自己的消息只在"86% 宽的盒子内"右对齐，长消息就从左边一路铺过来）
+              className="flex shrink-0 flex-col px-4 pb-3"
+            >
+              {renderRow(meta)}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 用户往上翻着看历史时，新内容不抢滚动条，给一个回到底部的入口 */}
       {!atBottom && (
@@ -1692,6 +1709,7 @@ function DeskActions({ program, onProgramSaved }: { program: Program | null; onP
             <Zap />
             自动响应{program ? `（${program.enabledTriggerIds.length}）` : ''}
           </DropdownMenuItem>
+          <RecordMenuSub />
         </DropdownMenuContent>
       </DropdownMenu>
       <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />

@@ -9,8 +9,18 @@ import { seedTts1Voices, seedTts2Voices } from './voices.volcano'
  * 复刻走 /api/v3/tts/voice_clone + /api/v3/tts/get_voice（VoiceService）。
  */
 
+/** 语音指令（additions.context_texts，不计费）：仅 seed-tts-2.0 精品音色支持；
+ *  复刻音色（seed-icl-x）指定 model 后不可用，所以只挂在 seed-tts-2.0 的参数表里。
+ *  接入级静态底色，agent 每条话术的 delivery 会覆盖它（TtsService.withPerformance） */
+const CONTEXT_INSTRUCTION_PARAM: ParamSpec = {
+  key: 'instruction',
+  label: '语音指令（风格底色）',
+  type: 'text',
+  help: '如「用热情爽朗的语气说」；不计费；每条话术的 delivery 会覆盖它'
+}
+
 /** 火山全模型共用的合成参数（V3 req_params / audio_params / additions）。
- *  语气指令不放这里：演法归 agent 的 delivery（每次合成现给）；speech_rate/pitch 是接入默认，agent 可按条覆盖 */
+ *  speech_rate/pitch/silence_duration 是接入默认，agent 可按条覆盖（语速/音调） */
 function volcanoParams(extra: ParamSpec[] = []): ParamSpec[] {
   return [
     {
@@ -31,6 +41,14 @@ function volcanoParams(extra: ParamSpec[] = []): ParamSpec[] {
       max: 12,
       default: 0,
       help: '对应 additions.post_process.pitch'
+    },
+    {
+      key: 'silence_duration',
+      label: '句尾静音（毫秒）',
+      type: 'number',
+      min: 0,
+      default: 0,
+      help: '0 为不额外留白；段落之间的停顿也可以用 pauseAfterMs / <pause> 标记'
     },
     {
       key: 'format',
@@ -68,10 +86,10 @@ const models: TtsModelSpec[] = [
   {
     id: 'seed-tts-2.0',
     label: 'Seed-TTS 2.0',
-    note: '最新一代大模型音色（uranus 族），Resource-Id 同名',
+    note: '最新一代大模型音色（uranus 族），Resource-Id 同名；支持语音指令（context_texts，不计费）',
     kind: 'tts',
     instruction: true,
-    params: volcanoParams(),
+    params: volcanoParams([CONTEXT_INSTRUCTION_PARAM]),
     voices: seedTts2Voices
   },
   {
@@ -85,10 +103,9 @@ const models: TtsModelSpec[] = [
   {
     id: 'seed-icl-2.0',
     label: '声音复刻 2.0',
-    note: '只吃复刻出的 speaker_id（音色库克隆产物）',
+    note: '只吃复刻出的 speaker_id（音色库克隆产物）；复刻音色指定 model 后不支持语音指令（context_texts），局部情绪用 expressive 的 cot 标签',
     kind: 'clone',
     cloneTarget: true,
-    instruction: true,
     params: volcanoParams([
       {
         key: 'model',
@@ -184,7 +201,7 @@ export const volcanoTtsProvider: TtsProviderManifest = {
   capabilities: {
     streaming: false,
     clone: true,
-    instruction: false,
+    instruction: true,
     formats: ['mp3', 'ogg_opus', 'pcm']
   },
   configFields: [

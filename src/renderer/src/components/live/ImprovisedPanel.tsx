@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { History, Mic, Sparkles } from 'lucide-react'
+import { toast } from 'sonner'
 import { useAppStore } from '../../stores/useAppStore'
-import type { SpeechItem } from '../../../../shared/types'
+import { audition, auditionTitle } from '../../lib/audition'
+import type { PoolItem } from '../../../../shared/types'
 import { ContentItem, ContentList } from './ContentItem'
 
 /**
@@ -13,7 +15,7 @@ import { ContentItem, ContentList } from './ContentItem'
 export function ImprovisedPanel() {
   const pool = useAppStore((s) => s.pool)
   const agent = useAppStore((s) => s.agent)
-  const [recent, setRecent] = useState<SpeechItem[]>([])
+  const [recent, setRecent] = useState<PoolItem[]>([])
 
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const queuedCount = pool.items.length - (playing ? 1 : 0)
@@ -31,7 +33,7 @@ export function ImprovisedPanel() {
           status={<Sparkles className="size-4 shrink-0 text-primary" />}
           header={
             <>
-              <span className="truncate">{agent.personaName ?? '主播'} · 现场发挥</span>
+              <span className="truncate">{agent.castName ?? '主播'} · 现场发挥</span>
               {queuedCount > 0 && <span className="shrink-0">待播 {queuedCount} 条</span>}
             </>
           }
@@ -73,6 +75,13 @@ export function ImprovisedPanel() {
                 ) : null
               }
               text={item.text}
+              onTextClick={() => {
+                if (!item.audioPath) {
+                  toast.warning('这段还没合成', { description: '这条是流式播报或没合成，没有可试听的音频文件' })
+                  return
+                }
+                audition.toggle({ key: `speech:${item.id}`, title: auditionTitle(item.text), audioPath: item.audioPath })
+              }}
             />
           ))}
         </ContentList>

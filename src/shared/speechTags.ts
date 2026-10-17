@@ -32,47 +32,59 @@ export type SpeechCompileTarget = 'volcano-cot' | 'bailian-brackets' | 'plain'
 const FX_TABLE: Record<string, { bailian: string; word: string; style: string }> = {
   笑声: { bailian: 'laughing', word: '哈哈', style: '开怀地笑出声' },
   大笑: { bailian: 'laughing', word: '哈哈', style: '开怀大笑' },
+  laugh: { bailian: 'laughing', word: '哈哈', style: '开怀地笑出声' },
   咯咯笑: { bailian: 'giggles', word: '呵呵', style: '咯咯地轻笑' },
   轻笑: { bailian: 'giggles', word: '呵呵', style: '轻轻笑了一声' },
+  giggle: { bailian: 'giggles', word: '呵呵', style: '咯咯地轻笑' },
   叹息: { bailian: 'sighing', word: '唉', style: '无奈地叹一口气' },
   叹气: { bailian: 'sighing', word: '唉', style: '无奈地叹一口气' },
+  sigh: { bailian: 'sighing', word: '唉', style: '无奈地叹一口气' },
   倒吸气: { bailian: 'gasp', word: '嘶', style: '惊讶地倒吸一口气' },
+  gasp: { bailian: 'gasp', word: '嘶', style: '惊讶地倒吸一口气' },
   清嗓: { bailian: 'clears throat', word: '咳咳', style: '清清嗓子' },
+  'clear throat': { bailian: 'clears throat', word: '咳咳', style: '清清嗓子' },
   咳嗽: { bailian: 'cough', word: '咳咳', style: '咳嗽两声' },
+  cough: { bailian: 'cough', word: '咳咳', style: '咳嗽两声' },
   哼声: { bailian: 'snorts', word: '哼', style: '不屑地哼了一声' },
-  嗤笑: { bailian: 'snorts', word: '哼', style: '嗤笑一声' }
+  嗤笑: { bailian: 'snorts', word: '哼', style: '嗤笑一声' },
+  snort: { bailian: 'snorts', word: '哼', style: '不屑地哼了一声' }
 }
 
-/** cot 情绪描述 → 百炼控制标签：按关键词命中，从上到下先赢；命中不了返回空（剥掉留正文） */
+/** cot 情绪描述 → 百炼控制标签：按关键词命中，从上到下先赢；命中不了返回空（剥掉留正文）。
+ *  目标集 = 官方 23 个控制标签（情感 + 语速两档），仅 qwen-audio-3.1-tts-flash / 3.0-plus/flash 支持
+ *  （manifest 的 inlineTags 已按这个范围标）；映射关键词只往这 23 个里收，不发明新标签 */
 const COT_STYLE_TO_BAILIAN: [RegExp, string][] = [
   [/asmr/i, 'asmr'],
-  [/悄悄话|耳语|压低声音|小声/, 'whispers'],
+  [/悄悄话|耳语|咬耳朵|压低声音|小声|悄声|whisper|hush|softly/i, 'whispers'],
   [/深沉.*呐喊|呐喊/, 'deep and loud shouting'],
-  [/大喊|喊|吆喝|叫卖/, 'shouting'],
-  [/颤抖|发抖/, 'trembling'],
-  [/哭|哽咽|啜泣/, 'crying'],
-  [/伤心|难过|悲伤|委屈/, 'sad'],
-  [/愤怒|生气|发火|恼火/, 'angry'],
-  [/兴奋|激动|热血|高亢|亢奋/, 'excited'],
-  [/惊叹|惊讶|吃惊|震惊/, 'amazed'],
-  [/讽刺|阴阳怪气|挖苦/, 'sarcastic'],
-  [/轻蔑|不屑|鄙视/, 'scornful'],
-  [/好奇|疑惑/, 'curious'],
-  [/阴森|德古拉|恐怖/, 'like dracula'],
-  [/无聊|倦怠|没劲/, 'bored'],
-  [/疲惫|疲倦|累了/, 'tired'],
-  [/恐慌|慌张|惊慌|紧张/, 'panicked'],
-  [/调皮|俏皮|顽皮/, 'mischievously'],
-  [/共情|温柔|体贴|安慰|暖心/, 'empathetic'],
-  [/不情愿|勉强|无奈/, 'reluctantly'],
-  [/严肃|认真|郑重|正经/, 'serious'],
-  [/非常慢|很慢|缓慢|慢慢|放缓/, 'very slowly'],
-  [/非常快|很快|急促|飞快|加快|语速快/, 'very fast']
+  [/大喊|高喊|喊|吆喝|叫卖|shout|yell|scream/i, 'shouting'],
+  [/颤抖|发抖|哆嗦|打颤|trembl/i, 'trembling'],
+  [/哭|哽咽|啜泣|抽泣|含泪|落泪|cry|sobbing|tearful/i, 'crying'],
+  [/伤心|难过|悲伤|委屈|低落|沮丧|心碎|sad|sorrow|upset|heartbrok/i, 'sad'],
+  [/愤怒|生气|发火|恼火|气愤|怒吼|气呼呼|咬牙切齿|angry|furious|mad\b|rage/i, 'angry'],
+  [/兴奋|激动|热血|高亢|亢奋|热情|欢快|喜悦|excited|thrilled|energetic|enthusiastic/i, 'excited'],
+  [/惊叹|惊讶|吃惊|震惊|惊呆|不可思议|amazed|surprised|astonish/i, 'amazed'],
+  [/讽刺|阴阳怪气|挖苦|嘲讽|sarcas|sardonic/i, 'sarcastic'],
+  [/轻蔑|不屑|鄙视|蔑视|scorn|disdain|contempt/i, 'scornful'],
+  [/好奇|疑惑|疑问|纳闷|curious|wonder|puzzl/i, 'curious'],
+  [/阴森|德古拉|恐怖|吸血鬼|dracula|spooky|horror/i, 'like dracula'],
+  [/无聊|倦怠|没劲|乏味|bored|dull tone/i, 'bored'],
+  [/疲惫|疲倦|累了|困倦|没精神|tired|weary|exhausted/i, 'tired'],
+  [/恐慌|慌张|惊慌|紧张|慌乱|发慌|panic|nervous|anxious/i, 'panicked'],
+  [/调皮|俏皮|顽皮|淘气|坏笑|playful|mischievous|teasing/i, 'mischievously'],
+  [/共情|温柔|体贴|安慰|暖心|心疼|温情|gentle|warm|kind|empathetic|comforting/i, 'empathetic'],
+  [/不情愿|勉强|无奈|被迫|reluctant|unwilling/i, 'reluctantly'],
+  [/严肃|认真|郑重|正经|庄重|serious|solemn|earnest/i, 'serious'],
+  [/非常慢|很慢|缓慢|慢慢|放缓|慢吞吞|缓缓|very slow|slowly|drawl/i, 'very slowly'],
+  [/非常快|很快|急促|飞快|加快|语速快|加速|very fast|rapid|urgent|quickly/i, 'very fast']
 ]
 
-/** 统一语法 tokenizer：cot 开/闭、fx、pause */
+/** 统一语法 tokenizer：cot 开/闭、fx、pause（裸 <pause> / <pause/> 按默认 500ms 容错） */
 const MARKUP_RE =
-  /<cot\s+text=(?:"([^"]*)"|'([^']*)'|([^\s>]+))\s*>|<\/cot\s*>|<fx>([\s\S]*?)<\/fx>|<pause>\s*(\d{1,5})\s*<\/pause>/gi
+  /<cot\s+text=(?:"([^"]*)"|'([^']*)'|([^\s>]+))\s*>|<\/cot\s*>|<fx>([\s\S]*?)<\/fx>|<pause>\s*(\d{1,5})\s*<\/pause>|<pause\s*\/?>/gi
+
+/** 裸 <pause>（没写毫秒）的默认停顿 */
+const DEFAULT_PAUSE_MS = 500
 
 /** 停顿毫秒 → 省略号个数：大模型把 …… 读成停顿，约 500ms 一拍，最多三拍 */
 function pauseToEllipsis(ms: number): string {
@@ -121,8 +133,9 @@ export function parseSpeechMarkup(raw: string): SpeechSegment[] {
       if (name) segments.push({ kind: 'fx', name })
       cursor = index + full.length
     } else {
-      // <pause>毫秒</pause>：cot 内也生效（停顿是点位，不包正文）
-      const ms = Math.min(5000, Math.max(100, Number(pauseMs) || 0))
+      // <pause>毫秒</pause>：cot 内也生效（停顿是点位，不包正文）；裸 <pause> / <pause/> 用默认时长
+      const numbered = full.startsWith('<pause>') && Number(pauseMs) > 0
+      const ms = numbered ? Math.min(5000, Math.max(100, Number(pauseMs))) : DEFAULT_PAUSE_MS
       if (cotStyle !== null) {
         pushCot(segments, cotStyle, raw.slice(cotStart, index))
         cotStart = index + full.length

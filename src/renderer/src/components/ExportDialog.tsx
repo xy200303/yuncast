@@ -28,7 +28,7 @@ import type {
 } from '../../../shared/types'
 import { AUDIO_UNIT_LABEL } from '../lib/audioUnits'
 
-const DEFAULT_TEMPLATE = '{节目名}-{序号}-{章节名}'
+const DEFAULT_TEMPLATE = '{节目名}-{序号}-{段标题}'
 
 type Phase =
   | { kind: 'config' }
@@ -36,8 +36,8 @@ type Phase =
   | { kind: 'done'; result: ProgramExportResult }
 
 /**
- * 节目音频导出弹窗（docs/10 §8.3/§11.6，P6）：全部章节、分章/合并、MP3/WAV、响度归一。
- * 缺音频不静默跳过（§15.5）：默认禁用开始并列出缺失章节，勾选「仅导出已完成部分」才放行。
+ * 节目音频导出弹窗（docs/10 §8.3/§11.6，P6）：全部段、分段/合并、MP3/WAV、响度归一。
+ * 缺音频不静默跳过（§15.5）：默认禁用开始并列出缺失的段，勾选「仅导出已完成部分」才放行。
  * 导出中禁关弹窗（要停就点「取消导出」），完成后显示产出清单与「打开目录」。
  * 入口在节目页的节目卡上；直播现场（滚动/即兴）的音频走「场次记录」的整场导出。
  */
@@ -66,7 +66,7 @@ export function ExportDialog({
 
   const running = phase.kind === 'running'
 
-  /** 打开时拉门禁结果：缺章清单与导出本体的「可导出」判定同口径（不静默跳过） */
+  /** 打开时拉门禁结果：缺段清单与导出本体的「可导出」判定同口径（不静默跳过） */
   const refreshGate = useCallback(async () => {
     setLoading(true)
     setGateError('')
@@ -159,7 +159,7 @@ export function ExportDialog({
 
         {phase.kind !== 'done' ? (
           <div className="flex flex-col gap-3 text-[13px]">
-            {/* 导出范围：第一版固定全部章节（§8.3 第一版不做当前段/当前章单选） */}
+            {/* 导出范围：第一版固定全部段（§8.3 第一版不做当前段单选） */}
             <div className="flex items-center justify-between gap-2">
               <span className="text-muted-foreground">导出范围</span>
               <span>
@@ -215,7 +215,7 @@ export function ExportDialog({
                   disabled={running}
                   onClick={() => setMode('separate')}
                 >
-                  分章导出
+                  分段导出
                 </Button>
                 <Button
                   size="sm"
@@ -273,7 +273,7 @@ export function ExportDialog({
             )}
             {mode === 'separate' && (
               <p className="-mt-2 text-right text-xs text-muted-foreground">
-                可用变量：{'{节目名}'} {'{序号}'} {'{章节名}'}；重名自动加 -2 后缀，不覆盖
+                可用变量：{'{节目名}'} {'{序号}'} {'{段标题}'}；重名自动加 -2 后缀，不覆盖
               </p>
             )}
 

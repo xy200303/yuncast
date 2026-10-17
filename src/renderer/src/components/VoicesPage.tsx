@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AudioLines, Loader2, Mic, Pencil, Play, Square, Trash2, Upload } from 'lucide-react'
+import { AudioLines, Loader2, Mic, Pencil, Play, Square, Trash2, Upload, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -19,6 +19,7 @@ import { cn } from '@/lib/utils'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { cloneVoiceHint, flattenModelCatalog, type CatalogModel } from '@/lib/voice'
 import { useAppStore } from '../stores/useAppStore'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import { TTS_PROVIDER_SHORT, type VoiceRecord, type VoiceUsage } from '../../../shared/types'
 
 /** 只显示文件名：分隔符按字符码判断（92=\ 47=/），省得在字符串与正则里跟反斜杠较劲 */
@@ -62,6 +63,7 @@ export function VoicesPage() {
   const reload = () => void window.api.voice.list().then(useAppStore.getState().setVoices)
 
   useEffect(reload, [])
+  useDataRefresh(['voices'], () => reload())
 
   useEffect(() => {
     let cancelled = false
@@ -102,6 +104,10 @@ export function VoicesPage() {
         <h1 className="shrink-0 text-sm font-medium">音色库</h1>
         <p className="text-[13px] text-muted-foreground">克隆音色管理 · 主播可以调度各家的音色</p>
         <p className="text-[13px] text-muted-foreground">共 {voices.length} 个</p>
+        <Button variant="ghost" size="sm" className="h-7 text-xs" title="重新拉取音色库（克隆完成/agent 改动会自动刷新，这里是手动兜底）" onClick={() => reload()}>
+          <RefreshCw className="size-3.5" />
+          刷新
+        </Button>
         {ttsConnections.length > 0 && (
           <Select value={connectionFilter} onValueChange={setConnectionFilter}>
             <SelectTrigger className="ml-2 h-7 w-56 text-xs">
@@ -194,10 +200,15 @@ export function VoicesPage() {
                       标识 {voice.voiceType.length > 18 ? `${voice.voiceType.slice(0, 18)}…` : voice.voiceType}（点按复制）
                     </button>
                   )}
-                  <p className="truncate text-[13px] text-muted-foreground" title={voice.model}>
+                  <p className="break-words text-[13px] text-muted-foreground" title={voice.model}>
                     模型 {spec?.model.label ?? (voice.model || '—')}
                     {connection ? ` · 接入「${connection.name}」` : ''}
                   </p>
+                  {voice.instruction && (
+                    <p className="truncate text-xs text-muted-foreground" title={voice.instruction}>
+                      风格：{voice.instruction}
+                    </p>
+                  )}
                   {voice.status === 'failed' && voice.error && (
                     <p className="text-[13px] text-destructive">{voice.error}</p>
                   )}
@@ -226,7 +237,7 @@ export function VoicesPage() {
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      title="重命名"
+                      title="编辑（名称 / 风格指令）"
                       onClick={() => setRenaming(voice)}
                     >
                       <Pencil />
@@ -268,7 +279,7 @@ export function VoicesPage() {
                 <p key={item.id}>主播卡「{item.name}」 · 音色</p>
               ))}
               {usages[deleting.id].programs.map((item) => (
-                <p key={item.id}>节目「{item.name}」的节目声音</p>
+                <p key={item.id}>节目「{item.name}」的卡司里</p>
               ))}
               {usages[deleting.id].utteranceCount > 0 && (
                 <p>
@@ -320,7 +331,7 @@ function usageCount(usage: VoiceUsage): number {
   return usage.personas.length + usage.programs.length + usage.utteranceCount
 }
 
-/** 重命名音色（只改显示名） */
+/** 编辑音色（显示名 + 风格指令；复刻标识与绑定不动） */
 function RenameVoiceDialog({
   voice,
   onOpenChange,
@@ -330,22 +341,23 @@ function RenameVoiceDialog({
   onOpenChange: (open: boolean) => void
   onDone: () => void
 }) {
-  // 名称是用户没提交的草稿：初值只取一次，之后交给本地 state；换音色由父层 key={voice.id} 重挂载重置，
+  // 名称与风格指令是用户没提交的草稿：初值只取一次，之后交给本地 state；换音色由父层 key={voice.id} 重挂载重置，
   // 所以不要用 effect 把 prop 抄进来——那样连无关的重渲染都会把正在输入的内容冲掉
   const [name, setName] = useState(voice?.name ?? '')
+  const [instruction, setInstruction] = useState(voice?.instruction ?? '')
   const [busy, setBusy] = useState(false)
 
   const submit = () => {
     if (!voice || busy || !name.trim()) return
     setBusy(true)
     void window.api.voice
-      .rename(voice.id, name)
+      .update(voice.id, { name, instruction: instruction.trim() })
       .then((r) => {
         if (r.ok) {
-          toast.success('已重命名')
+          toast.success('已保存')
           onOpenChange(false)
           onDone()
-        } else toast.error('重命名失败', { description: r.error })
+        } else toast.error('保存失败', { description: r.error })
       })
       .finally(() => setBusy(false))
   }
@@ -354,19 +366,33 @@ function RenameVoiceDialog({
     <Dialog open={voice !== null} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-sm">
         <DialogHeader>
-          <DialogTitle>重命名音色</DialogTitle>
+          <DialogTitle>编辑音色</DialogTitle>
         </DialogHeader>
-        <div>
-          <Label className="mb-1">音色名称</Label>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="如：店主本人 / 小助理"
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit()
-            }}
-          />
+        <div className="flex min-w-0 flex-col gap-3">
+          <div>
+            <Label className="mb-1">音色名称</Label>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="如：店主本人 / 小助理"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) submit()
+              }}
+            />
+          </div>
+          <div>
+            <Label className="mb-1">风格指令（可选，≤100 字）</Label>
+            <Input
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              maxLength={100}
+              placeholder="年轻活泼的女性，语速较快，带货场景"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              这个音色的默认演法。阿里云百炼音色生效；火山 seed-tts-2.0 走语音指令，复刻音色不支持。节目可以另配风格覆盖它
+            </p>
+          </div>
         </div>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
@@ -400,6 +426,7 @@ function NewVoiceDialog({
   const [connectionId, setConnectionId] = useState(readyConnections[0]?.id ?? '')
   const [model, setModel] = useState('')
   const [name, setName] = useState('')
+  const [instruction, setInstruction] = useState('')
   const [samplePath, setSamplePath] = useState('')
   const [sampleUrl, setSampleUrl] = useState('')
   const [uploading, setUploading] = useState(false)
@@ -536,7 +563,8 @@ function NewVoiceDialog({
         sampleUrl: sampleUrl.trim() || undefined,
         authorized,
         connectionId: connection.id,
-        model
+        model,
+        instruction: instruction.trim() || undefined
       })
       .then((result) => {
         if (result.ok) {
@@ -557,7 +585,7 @@ function NewVoiceDialog({
           <DialogTitle>新建音色（声音克隆）</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
           <div>
             <Label className="mb-1">接入（复刻在它那边做，用它的凭据）</Label>
             <Select value={connection?.id ?? ''} onValueChange={setConnectionId}>
@@ -613,8 +641,27 @@ function NewVoiceDialog({
           </div>
 
           <div>
-            <Label className="mb-1">声音样本（建议 10-30 秒清晰人声，无背景音乐）</Label>
-            <div className="flex items-center gap-2">
+            <Label className="mb-1">风格指令（可选，≤100 字）</Label>
+            <Input
+              value={instruction}
+              onChange={(e) => setInstruction(e.target.value)}
+              maxLength={100}
+              placeholder="年轻活泼的女性，语速较快，带货场景"
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              这个音色的默认演法，克隆完成后也能改。阿里云百炼音色生效；火山 seed-tts-2.0 走语音指令，复刻音色不支持
+            </p>
+          </div>
+
+          <div>
+            <Label className="mb-1">
+              声音样本（
+              {provider === 'volcano'
+                ? '火山要求 14–30 秒：wav/单声道、低噪声、无背景音乐，吐字清晰'
+                : '百炼要求 10–20 秒干净人声最佳：≤60 秒、采样率 ≥16kHz、无背景音乐'}
+              ）
+            </Label>
+            <div className="flex min-w-0 items-center gap-2">
               <Button variant="outline" size="sm" onClick={() => void pickFile()}>
                 <Upload />
                 上传音频
@@ -677,10 +724,10 @@ function NewVoiceDialog({
             </span>
           </label>
 
-          <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+          <p className="min-w-0 break-words text-xs text-muted-foreground">
             {provider === 'volcano'
-              ? '提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」；样本支持 wav / mp3 / ogg / m4a / aac / pcm，录音产物（webm）要先转码。火山复刻走后付费音色：首次正式合成即转正收费，试听 7 天未正式调用会被删除。'
-              : '百炼复刻创建即完成（无异步训练），音色长期有效；创建时绑定的目标模型之后不能改。'}
+              ? '提交前会先校验样本时长（14–30 秒），不合规直接拦下。提交后由火山引擎异步训练（通常秒级完成），本页会自动更新状态。账号需已开通「声音复刻」；样本支持 wav / mp3 / ogg / m4a / aac / pcm，录音产物（webm）会自动转码成单声道 mp3。火山复刻走后付费音色：首次正式合成即转正收费，试听 7 天未正式调用会被删除。'
+              : '提交前会先校验样本时长（10–60 秒，10–20 最佳），不合规直接拦下。百炼复刻创建即完成（无异步训练），音色长期有效；创建时绑定的目标模型之后不能改。'}
           </p>
         </div>
 

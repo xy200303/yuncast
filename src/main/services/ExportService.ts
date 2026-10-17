@@ -17,10 +17,10 @@ import { getFfmpegPath } from './stream/ffmpeg/bin'
 import type { StorageService } from './StorageService'
 import type { ScriptService } from './ScriptService'
 
-/** Windows 文件名非法字符（模板与节目名/章节名统一过滤） */
+/** Windows 文件名非法字符（模板与节目名/段标题统一过滤） */
 const ILLEGAL_CHARS = /[\\/:*?"<>|]/g
 
-const DEFAULT_TEMPLATE = '{节目名}-{序号}-{章节名}'
+const DEFAULT_TEMPLATE = '{节目名}-{序号}-{段标题}'
 
 /** 响度归一（一遍法 loudnorm；第一版不做两遍法 True Peak，docs/10 §8.3） */
 const LOUDNORM_FILTER = 'loudnorm=I=-16:TP=-1.5:LRA=11'
@@ -93,7 +93,7 @@ export class ExportService {
       return { ok: false, error: '滚动/即兴节目的音频是边播边合成的运行态产物，没有节目级预制音频可导出；只有预制节目支持导出' }
     }
     const script = this.script.getScript(program.scriptId)
-    const units = listAudioUnits(program, script, this.storage.utteranceList(programId))
+    const units = listAudioUnits(program, script, this.storage.draftUnitList(programId))
     if (units.length === 0) return { ok: false, error: '节目还没有文稿，没有可导出的音频' }
     const missing: { title: string; reason: string }[] = []
     let totalBytes = 0
@@ -120,7 +120,7 @@ export class ExportService {
       return { ok: false, error: '滚动/即兴节目的音频是边播边合成的运行态产物，没有节目级预制音频可导出；只有预制节目支持导出' }
     }
     const script = this.script.getScript(program.scriptId)
-    const allUnits = listAudioUnits(program, script, this.storage.utteranceList(program.id))
+    const allUnits = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
     if (allUnits.length === 0) return { ok: false, error: '节目还没有文稿，没有可导出的音频' }
 
     // 缺音频默认阻断并列出缺哪些；显式「仅导出已完成部分」才放行（§15.5/§15.17，不静默跳过）
@@ -264,7 +264,7 @@ export class ExportService {
 
       // 结束校验：指纹或 mtime 变了 → 警告但不算失败（结果可能混着新旧音频）
       const staleHits: string[] = []
-      const freshUnits = listAudioUnits(program, this.script.getScript(program.scriptId), this.storage.utteranceList(program.id))
+      const freshUnits = listAudioUnits(program, this.script.getScript(program.scriptId), this.storage.draftUnitList(program.id))
       const freshById = new Map(freshUnits.map((unit) => [unit.id, unit]))
       for (const unit of units) {
         const before = snapshot.get(unit.id)!
@@ -298,7 +298,7 @@ export class ExportService {
 
   /**
    * 场记导出：一场实际播出的音频按播放顺序导出（与节目导出同一套 ffmpeg 管线）。
-   * 数据源 = speech_items 里 session_id 指向这场、播过（done/interrupted）且音频文件还在的条目；
+   * 数据源 = pool_items 里 session_id 指向这场、播过（done/interrupted）且音频文件还在的条目；
    * 流式播报不落文件，跳过并在结果里明示条数；loop 重播的同一份音频按播出次数重复收录（现场事实）。
    */
   async exportSession(options: SessionExportOptions): Promise<SessionExportResult> {
@@ -423,12 +423,12 @@ export class ExportService {
     }
   }
 
-  /** 文件名模板替换：{节目名} {序号}（两位） {章节名}，再过滤非法字符 */
+  /** 文件名模板替换：{节目名} {序号}（两位） {段标题}，再过滤非法字符 */
   private applyTemplate(template: string, programName: string, index: number, unit: AudioUnit): string {
     const applied = template
       .replaceAll('{节目名}', programName)
       .replaceAll('{序号}', String(index + 1).padStart(2, '0'))
-      .replaceAll('{章节名}', unit.title)
+      .replaceAll('{段标题}', unit.title)
     return sanitizeFileName(applied)
   }
 

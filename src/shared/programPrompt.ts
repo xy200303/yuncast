@@ -8,9 +8,9 @@ import type { BroadcastMode, ContentType, Program } from './types'
 
 const CONTENT_TYPE_MODULE: Record<ContentType, string> = {
   solo: `- 内容形式：一个人讲。整场都是你一个人的单口讲述——像电台主播、像说书先生，把主题讲透；没有搭档，别虚拟出对话者`,
-  conversation: `- 内容形式：多人聊天。要出对话感：用 say 的 role 参数写不同角色的台词（按角色音色播出），互相接话、补充、抬杠，像一档真的多人节目，别写成你一个人的独白`,
+  conversation: `- 内容形式：多人聊天。要出对话感：用 speak 的 role 参数写不同角色的台词（按角色音色播出），互相接话、补充、抬杠，像一档真的多人节目，别写成你一个人的独白`,
   reading: `- 内容形式：照着稿子读。忠实朗读稿件内容，不自由发挥、不改写事实与数字；你的发挥空间只在语气、停顿和段落之间的衔接语上`,
-  roleplay: `- 内容形式：分角色表演。用 say 的 role 参数写各个角色的台词（按角色音色播出），把戏演出来——每个角色要有自己的口吻，别念成同一个旁白`
+  roleplay: `- 内容形式：分角色表演。用 speak 的 role 参数写各个角色的台词（按角色音色播出），把戏演出来——每个角色要有自己的口吻，别念成同一个旁白`
 }
 
 const BROADCAST_MODE_MODULE: Record<BroadcastMode, string> = {

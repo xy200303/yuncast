@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { AudioLines, BookOpen, Brain, Cable, Compass, Info, MessageSquareText, Palette } from 'lucide-react'
+import { AudioLines, AudioWaveform, BookOpen, Brain, Cable, Compass, Info, MessageSquareText, Palette, PlugZap } from 'lucide-react'
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import { useAppStore, type SettingsPaneId } from '../stores/useAppStore'
@@ -7,8 +7,10 @@ import { AboutPane } from './settings/AboutPane'
 import { AppearancePane } from './settings/AppearancePane'
 import { DirectorSection } from './settings/DirectorPane'
 import { LlmSection } from './settings/LlmPane'
+import { McpPane } from './settings/McpPane'
 import { PromptsSection } from './settings/PromptsPane'
 import { TtsSection } from './settings/TtsPane'
+import { AudioStylePane } from './settings/AudioStylePane'
 import { StreamSection } from './settings/StreamPane'
 import { CommentGatewayCard } from './settings/CommentPane'
 
@@ -20,8 +22,10 @@ const PANES: { id: Pane; label: string; icon: typeof Palette }[] = [
   { id: 'llm', label: '语言模型', icon: Brain },
   { id: 'prompts', label: '导演手册', icon: BookOpen },
   { id: 'tts', label: '语音合成', icon: AudioLines },
+  { id: 'audioStyle', label: '音频理解', icon: AudioWaveform },
   { id: 'stream', label: '推流', icon: Cable },
   { id: 'comment', label: '连接器', icon: MessageSquareText },
+  { id: 'mcp', label: '开放接口', icon: PlugZap },
   { id: 'about', label: '关于', icon: Info }
 ]
 
@@ -69,8 +73,10 @@ export function SettingsDialog() {
             {pane === 'llm' && <div className="max-w-2xl"><LlmSection /></div>}
             {pane === 'prompts' && <PromptsSection />}
             {pane === 'tts' && <div className="max-w-3xl"><TtsSection /></div>}
+            {pane === 'audioStyle' && <AudioStylePane />}
             {pane === 'stream' && <div className="max-w-xl"><StreamSection /></div>}
             {pane === 'comment' && <div className="max-w-xl"><CommentGatewayCard /></div>}
+            {pane === 'mcp' && <div className="max-w-xl"><McpPane /></div>}
             {pane === 'about' && <div className="max-w-xl"><AboutPane /></div>}
           </div>
         </div>

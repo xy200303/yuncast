@@ -1,4 +1,4 @@
-import type { SpeechItem } from '../../../shared/types'
+import type { PoolItem } from '../../../shared/types'
 import type { SpeechPool } from '../SpeechPool'
 import type { TtsStreamService } from '../TtsStreamService'
 import type { AudioPipeline, PlayResult } from './AudioPipeline'
@@ -28,11 +28,7 @@ export class PlaybackLoop {
   constructor(
     private readonly pool: SpeechPool,
     private readonly ttsStream: () => TtsStreamService | null,
-    private readonly pipeline: AudioPipeline,
-    /** 桥段间留白（毫秒，读 config.live.bitGapMs）：下一条是正常/兜底车道才留，插播不等 */
-    private readonly gapMs: () => number = () => 0,
-    /** 当前在场主播的生效音色：池里音色不匹配的条目不播（等重嗓音），通配条目用它兜底 */
-    private readonly currentVoice: () => string = () => ''
+    private readonly pipeline: AudioPipeline
   ) {}
 
   get isRunning(): boolean {
@@ -89,9 +85,24 @@ export class PlaybackLoop {
     })
   }
 
+  /**
+   * 段后停顿的专用等待：必须等满，只有插播/打断车道的急事（回评论/突发）能提前结束。
+   * 普通 kick（合成完成、状态刷新等）不该把停顿截短——被叫醒后重新评估剩余时间接着等。
+   */
+  private async waitPause(ms: number): Promise<void> {
+    const deadline = Date.now() + ms
+    while (this.running) {
+      const remain = deadline - Date.now()
+      if (remain <= 0) return
+      const upcoming = this.pool.peekUpcoming()
+      if (upcoming && (upcoming.lane === 'interrupt' || upcoming.lane === 'next')) return
+      await this.wait(Math.min(remain, 200))
+    }
+  }
+
   private async loop(): Promise<void> {
     while (this.running) {
-      let item: SpeechItem | null
+      let item: PoolItem | null
       try {
         item = this.pool.next()
       } catch (error) {
@@ -113,39 +124,36 @@ export class PlaybackLoop {
       else if (result.stopped) this.pool.markDone(item.id)
       else this.pool.markFailed(item.id, result.error ?? '播放失败')
       this.current = null
-      // 桥段间留白：播完一条正常/兜底内容后留口气（真人主播段与段之间有停顿）。
-      // 下一条是插播/打断车道（回评论/急事）不等；池子有任何变化（新话术进来）都会提前叫醒
-      if (result.ok) {
-        const gap = this.gapMs()
-        const next = gap > 0 ? this.pool.peek() : null
-        if (next && (next.lane === 'normal' || next.lane === 'filler')) {
-          await this.wait(gap)
-          if (!this.running) break
-        }
+      // 段后停顿（条目自带的 pauseAfterMs，播放时调度）：默认 0 连续播；等满为止，急事车道可提前打断
+      if (result.ok && (item.pauseAfterMs ?? 0) > 0) {
+        await this.waitPause(item.pauseAfterMs ?? 0)
+        if (!this.running) break
       }
     }
   }
 
-  private async play(item: SpeechItem): Promise<PlayResult> {
+  private async play(item: PoolItem): Promise<PlayResult> {
     // 实时合成条目：不读文件，由 TtsStreamService 边合成边推 PCM，管线边收边播
     if (item.stream && !item.audioPath) {
       const service = this.ttsStream()
       if (!service) return { ok: false, error: '流式合成服务不可用' }
+      if (!item.voiceId) return { ok: false, error: '这条话术没有指定音色（role/voiceId 都没给），无法流式合成' }
       const session = this.pipeline.beginStream(item.id, { slot: 'main' })
       void service.start(
         `stream-${item.id}`,
         item.speechText || item.text,
-        item.voiceId || this.currentVoice() || undefined,
+        item.voiceId,
         {
           onChunk: (pcm, sampleRate) => session.push(pcm, sampleRate),
           onEnd: () => session.end(),
           onError: (error) => session.fail(error)
         },
-        { instruction: item.delivery, rate: item.rate, pitch: item.pitch }
+        { instruction: item.delivery, rate: item.rate, pitch: item.pitch, emotion: item.emotion, emotionScale: item.emotionScale, languageType: item.languageType }
       )
       return session.done
     }
 
+    // 播已合成的文件不需要音色（音色只在流式合成时用）；没音频才报错
     if (!item.audioPath) {
       return { ok: false, error: '这条话术没有音频文件，也没有可流式合成的文本' }
     }

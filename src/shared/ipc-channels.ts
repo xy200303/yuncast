@@ -59,8 +59,6 @@ export const IPC = {
   agentStop: 'agent:stop',
   agentAbort: 'agent:abort',
   agentRestart: 'agent:restart',
-  /** 卡司切换（不换脑、不重启会话）：换当前主播卡 + 池里旧音色存货重合成 */
-  agentSwitchPresenter: 'agent:switch-presenter',
   agentStatus: 'agent:status',
   /** 写稿：跳到直播台，派导演给该节目写底稿（过程走对话时间线） */
   agentDraftStart: 'agent:draft-start',
@@ -90,10 +88,11 @@ export const IPC = {
   playbackControlEvent: 'playback:control',
 
   // 人设卡
-  personaGet: 'persona:get',
   personaList: 'persona:list',
+  personaChanged: 'persona:changed',
+  /** 统一数据变更（personas/voices/knowledge/drafts/triggers/sessions）：界面按 scope 重拉对应数据 */
+  dataChanged: 'data:changed',
   personaSave: 'persona:save',
-  personaSetActive: 'persona:set-active',
   personaRemove: 'persona:remove',
 
   // 实时 TTS 流式合成（主进程内部：AudioPipeline 的 PCM 生产者，不再直接对渲染层开口）
@@ -115,6 +114,8 @@ export const IPC = {
   audioPlayFile: 'audio:play-file',
   /** 渲染层 → 主进程：停掉 aux 槽（停止试听；不动主槽播报） */
   audioStopAux: 'audio:stop-aux',
+  /** 渲染层 → 主进程：aux 槽用户级暂停/继续（试听条；与解码背压是两码事） */
+  audioPauseAux: 'audio:pause-aux',
   /** 渲染层 → 主进程：主槽章内 seek（预制节目长音频；ffmpeg 以 -ss 重启解码） */
   audioSeekMain: 'audio:seek-main',
   /** 主进程 → 渲染层：主槽播放进度（预制节目进度条用） */
@@ -129,8 +130,8 @@ export const IPC = {
   voiceUploadTemp: 'voice:upload-temp',
   /** 用该音色合成一句固定文案试听（用该音色自己那家的接入，那条接入没配就返回中文错误） */
   voicePreview: 'voice:preview',
-  /** 重命名音色 */
-  voiceRename: 'voice:rename',
+  /** 编辑音色：改名 / 风格指令（平台侧的复刻音色标识不动） */
+  voiceUpdate: 'voice:update',
   /** 谁在用它：人设卡 / 节目 / 话术库条目（删除前提示占用） */
   voiceUsage: 'voice:usage',
   /** main → renderer：音色列表变化（训练状态更新） */
@@ -175,6 +176,7 @@ export const IPC = {
   programSave: 'program:save',
   programDelete: 'program:delete',
   programSetActive: 'program:set-active',
+  programChanged: 'program:changed',
   /** 开播前预检（docs/07 §8.5）：返回检查项清单，UI 弹确认 */
   programPreflight: 'program:preflight',
   /** 启动节目：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */
@@ -188,11 +190,11 @@ export const IPC = {
   programPlayGate: 'program:play-gate',
   /** 节目音频进度（单元总数/ready/synthesizing/failed/stale/pending） */
   programAudioProgress: 'program:audio-progress',
-  /** 导入外部音频（§7.4）：主进程弹文件选择框，挂到指定 Scene/Utterance 的 rendered */
+  /** 导入外部音频（§7.4）：主进程弹文件选择框，挂到指定 Scene/DraftUnit 的 rendered */
   programImportAudio: 'program:import-audio',
-  /** 预制节目按章跳播（docs/10 §11.5 上一章/下一章/章节点播）：装池提到队首并打断当前条目 */
+  /** 预制节目按段跳播（docs/10 §11.5 上一段/下一段/段点播）：装池提到队首并打断当前条目 */
   programPlayUnit: 'program:play-unit',
-  /** main → renderer：预制音频资产变化（Scene/Utterance 的 rendered 更新，渲染层刷新进度） */
+  /** main → renderer：预制音频资产变化（Scene/DraftUnit 的 rendered 更新，渲染层刷新进度） */
   programAudioEvent: 'program:audio-event',
   /** 节目音频导出（docs/10 §8.3）：分章/合并、MP3/WAV、响度归一，逐单元进度走 programExportEvent */
   programExport: 'program:export',
@@ -202,7 +204,7 @@ export const IPC = {
   programExportPickDir: 'program:export-pick-dir',
   /** 用系统文件管理器打开导出输出目录 */
   programExportOpenDir: 'program:export-open-dir',
-  /** main → renderer：导出进度（当前第几个/共几个/当前章节名/终态） */
+  /** main → renderer：导出进度（当前第几个/共几个/当前段标题/终态） */
   programExportEvent: 'program:export-event',
 
   // 场记（场次记录）
@@ -214,13 +216,11 @@ export const IPC = {
   sessionDelete: 'session:delete',
   /** 场次音频导出：实际播出的有音频条目按播放顺序导出（进度复用 programExportEvent） */
   sessionExport: 'session:export',
-  /** 场次详情里逐条试听（aux 槽，不进推流） */
-  sessionPlayItem: 'session:play-item',
 
   // 话术库（节目底稿）
-  utteranceList: 'utterance:list',
-  utteranceSave: 'utterance:save',
-  utteranceDelete: 'utterance:delete',
+  draftUnitList: 'utterance:list',
+  draftUnitSave: 'utterance:save',
+  draftUnitDelete: 'utterance:delete',
   utteranceClear: 'utterance:clear',
   /** 只清已合成音频（文稿保留，回到待合成可重蒸） */
   utteranceClearAudio: 'utterance:clear-audio',
@@ -247,5 +247,26 @@ export const IPC = {
   /** main → renderer：连接器状态 */
   connectorStatusEvent: 'connector:status-event',
   /** 出站动作口：调连接器工具（CompanionBridge 并入） */
-  connectorCallTool: 'connector:call-tool'
+  connectorCallTool: 'connector:call-tool',
+
+  // 开放接口（MCP / CLI，设置 → 开放接口）
+  mcpGet: 'mcp:get',
+  /** 保存开放接口配置（enabled/port，regenerateToken=true 换新令牌）并重启服务 */
+  mcpSave: 'mcp:save',
+  mcpState: 'mcp:state',
+  /** main → renderer：MCP 服务运行状态（运行中/端口被占/会话数） */
+  mcpStateEvent: 'mcp:state-event',
+
+  // 通用录屏：主进程发起/停止 + 状态查询，渲染层采集（getDisplayMedia + MediaRecorder）分块回传落盘
+  recordStart: 'record:start',
+  recordStop: 'record:stop',
+  recordState: 'record:state',
+  /** renderer → main：分块数据 / 采集就绪 / 启动失败 / 收尾完成 */
+  recordChunk: 'record:chunk',
+  recordReady: 'record:ready',
+  recordFail: 'record:fail',
+  recordDone: 'record:done',
+  /** main → renderer：录制命令（start/stop）与状态广播 */
+  recordCmdEvent: 'record:cmd-event',
+  recordStateEvent: 'record:state-event'
 } as const

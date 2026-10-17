@@ -3,6 +3,8 @@ import { ListMusic, Loader2, Pause, Play, SkipBack, SkipForward, Volume2, Volume
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
+import { RecordIndicator } from './RecordControl'
+import type { Persona } from '../../../../shared/types'
 import { useAppStore } from '../../stores/useAppStore'
 import { voiceRouteSummary } from '../../lib/voice'
 import { audioEngine } from '../../audio/engine'
@@ -13,7 +15,7 @@ import type { Program, Script } from '../../../../shared/types'
 /**
  * 直播台吸底的 NowPlayingBar（docs/REDESIGN 4.6）：音乐播放器式，三种播出模式统一。
  * 状态 + 当前内容摘要 + 统一控制（暂停/继续、跳过、急停声音、主音量）；
- * 预制节目（prepared）额外有章级进度条 + seek + 上一章/下一章，
+ * 预制节目（prepared）额外有段级进度条 + seek + 上一段/下一段，
  * 数据口径与原 PreparedPanel 播放器一致（dedupeKey = rendered:<kind>:<id>，onProgress 250ms 一拍）。
  */
 export function NowPlayingBar({
@@ -39,10 +41,12 @@ export function NowPlayingBar({
   const pool = useAppStore((s) => s.pool)
   const loopRunning = useAppStore((s) => s.loopRunning)
   const agent = useAppStore((s) => s.agent)
-  const persona = useAppStore((s) => s.persona)
   const voices = useAppStore((s) => s.voices)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
+  /** 节目卡司第一张：名字与嗓音必须同源（别再拿全局默认卡的声音配卡司的名字） */
+  const [castCard, setCastCard] = useState<Persona | null>(null)
   const [masterVolume, setMasterVolume] = useState(Math.round(audioEngine.volume * 100))
   /** 上一次"有声"的音量：点静音再点回来时恢复它 */
   const lastAudible = useRef(masterVolume > 0 ? masterVolume : 100)
@@ -60,18 +64,32 @@ export function NowPlayingBar({
     if (next > 0) lastAudible.current = next
   }
 
+  useEffect(() => {
+    if (!('api' in window)) return
+    const load = async () => {
+      const [programs, personas] = await Promise.all([window.api.program.list(), window.api.persona.list()])
+      const program = programs.find((p) => p.id === activeProgramId)
+      const first = program?.presenterIds[0]
+      setCastCard(first ? (personas.find((p) => p.id === first) ?? null) : null)
+    }
+    void load()
+    return window.api.data.onChanged((payload) => {
+      if (payload.scope === 'personas' || payload.scope === 'programs') void load()
+    })
+  }, [activeProgramId])
+
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const running = agent.live === true
-  /** 当前出镜主播的嗓音名（路由断了就只显示人名） */
-  const voiceName = persona
+  /** 节目卡司第一张的嗓音名（与上面的名字同源；路由断了就只显示人名） */
+  const voiceName = castCard
     ? (() => {
-        const route = voiceRouteSummary(voices, ttsProviders, ttsConnections, persona.voiceId)
+        const route = voiceRouteSummary(voices, ttsProviders, ttsConnections, castCard.voiceId)
         return route.broken ? '' : route.voiceName
       })()
     : ''
   const prepared = program?.broadcastMode === 'prepared'
 
-  // —— 预制节目的章级进度（口径同 PreparedPanel 章节列表）——
+  // —— 预制节目的段级进度（口径同 PreparedPanel 段列表）——
   const [units, setUnits] = useState<ProgramAudioUnit[]>([])
   /** 主槽播放进度（itemId 对得上当前 playing 条目才采用） */
   const [progress, setProgress] = useState<{ itemId: string; positionMs: number } | null>(null)
@@ -136,7 +154,7 @@ export function NowPlayingBar({
     }
   }
 
-  /** 上一章/下一章：当前没章在播时，「下一章」= 第一个就绪章 */
+  /** 上一段/下一段：当前没段在播时，「下一段」= 第一个就绪段 */
   const jumpBy = (delta: 1 | -1): void => {
     const readyIdxs = units.map((unit, i) => (unit.status === 'ready' ? i : -1)).filter((i) => i >= 0)
     if (readyIdxs.length === 0) return
@@ -157,7 +175,7 @@ export function NowPlayingBar({
       ? units.slice(currentIdx + 1).some((unit) => unit.status === 'ready')
       : units.some((unit) => unit.status === 'ready')
 
-  /** 顶部那条进度线（只有确定时长的预制章节音频才有）：拖动 seek，松手才真跳 */
+  /** 顶部那条进度线（只有确定时长的预制段音频才有）：拖动 seek，松手才真跳 */
   const seekable = prepared && Boolean(playing && currentUnit) && durationMs > 0
   const playedPct = durationMs > 0 ? Math.min(100, (shownMs / durationMs) * 100) : 0
   const seekFromEvent = (event: React.PointerEvent<HTMLDivElement>): number => {
@@ -168,7 +186,7 @@ export function NowPlayingBar({
 
   // 副标题只放"谁在播"与预制章节的进度时间；正在播什么由内容区负责（播放条不重复铺稿子）
   const presenterLine = [
-    agent.personaName ?? persona?.name ?? '未选主播',
+    castCard?.name ?? agent.castName ?? '未选主播',
     voiceName
   ]
     .filter(Boolean)
@@ -209,7 +227,7 @@ export function NowPlayingBar({
       )}
 
       <div className="flex items-center gap-4 px-4 py-4">
-        {/* 左：节目名（可换）+ 当前主播——像播放器的曲名/歌手位，不铺稿子文字（稿子看内容区） */}
+        {/* 左：节目名（可换）+ 卡司嗓音——像播放器的曲名/歌手位，不铺稿子文字（稿子看内容区） */}
         <div className="flex w-[32%] min-w-0 flex-col justify-center">
           <div className="flex min-w-0 items-center text-sm font-medium">
             {programPicker ?? <span className="truncate text-muted-foreground">未选节目</span>}
@@ -226,7 +244,7 @@ export function NowPlayingBar({
             launchAction
           ) : (
             <>
-              {/* 上一章只在预制节目里有意义（那里才有"章"）；现场发挥/边播边准备没有可回退的单元，
+              {/* 上一段只在预制节目里有意义（那里才有"段"）；现场发挥/边播边准备没有可回退的单元，
                   以前这个按钮在这种模式下永远灰着——留着像坏了，直接不显示 */}
               {prepared && (
                 <Button
@@ -234,7 +252,7 @@ export function NowPlayingBar({
                   size="icon-sm"
                   disabled={busy || !hasPrev}
                   onClick={() => jumpBy(-1)}
-                  title="上一章"
+                  title="上一段"
                 >
                   <SkipBack />
                 </Button>
@@ -261,7 +279,7 @@ export function NowPlayingBar({
                   audioEngine.stopCurrent()
                   toast.message('已跳过当前这条', { description: '接着播队列里的下一条' })
                 }}
-                title={prepared ? '下一章' : '跳过当前这条，播下一条'}
+                title={prepared ? '下一段' : '跳过当前这条，播下一条'}
               >
                 {busy && prepared ? <Loader2 className="animate-spin" /> : <SkipForward />}
               </Button>
@@ -278,8 +296,9 @@ export function NowPlayingBar({
           )}
         </div>
 
-        {/* 右：音量（图标＝静音开关）/ ⋯ 动作菜单 */}
+        {/* 右：录屏指示（只在录制中占位）/ 音量（图标＝静音开关）/ ⋯ 动作菜单 */}
         <div className="flex w-[32%] items-center justify-end gap-2">
+          <RecordIndicator />
           <Button
             variant="ghost"
             size="icon-sm"

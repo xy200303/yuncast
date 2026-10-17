@@ -1,6 +1,6 @@
 {
   "name": "yuncast",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "description": "小云播客坊 YunCast - AI 直播工作台（智能主播 · 节目制作与播出）",
   "main": "out/main/index.js",
   "license": "MIT",
@@ -15,8 +15,9 @@
     "typecheck": "tsc --noEmit",
     "selfcheck:podcast": "esbuild scripts/selfcheck-podcast-protocol.mts --bundle --platform=node --format=esm --outfile=node_modules/.tmp-selfcheck/podcast.mjs && node node_modules/.tmp-selfcheck/podcast.mjs",
     "icon": "node scripts/gen-icon.mjs",
-    "dist": "electron-vite build && electron-builder --publish never",
-    "dist:win": "electron-vite build && electron-builder --win --publish never"
+    "cli:build": "node scripts/build-cli.mjs",
+    "dist": "node scripts/build-cli.mjs && electron-vite build && electron-builder --publish never",
+    "dist:win": "node scripts/build-cli.mjs windows-amd64 && electron-vite build && electron-builder --win --publish never"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^1.2.0",
@@ -35,13 +36,13 @@
     "radix-ui": "^1.6.7",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
-    "react-virtuoso": "^4.18.19",
     "remark-breaks": "^4.0.0",
     "shadcn": "^4.21.0",
     "sonner": "^2.0.8",
     "streamdown": "^2.7.0",
     "tw-animate-css": "^1.4.0",
     "typebox": "^1.3.27",
+    "undici": "^7.30.0",
     "ws": "^8.22.0",
     "zod": "^4.6.5",
     "zustand": "^5.0.15"
@@ -73,6 +74,12 @@
       "out/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "cli/dist/${os}-${arch}",
+        "to": "bin"
+      }
+    ],
     "npmRebuild": true,
     "icon": "resources/icon.png",
     "asarUnpack": [
@@ -94,7 +101,8 @@
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
       "deleteAppDataOnUninstall": false,
-      "artifactName": "YunCast.Setup.${version}.${ext}"
+      "artifactName": "YunCast.Setup.${version}.${ext}",
+      "include": "build/installer.nsh"
     },
     "mac": {
       "category": "public.app-category.productivity",

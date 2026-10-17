@@ -24,6 +24,7 @@ export function ContentItem({
   actions,
   text,
   title,
+  onTextClick,
   muted = false,
   current = false,
   loading = false,
@@ -43,6 +44,8 @@ export function ContentItem({
   text: string
   /** 正文 hover 提示 */
   title?: string
+  /** 点正文 = 试听这段（docs/11 第二部分）；不传则正文不可点 */
+  onTextClick?: () => void
   /** 次要正文（历史回看、章节全文）：只压字色，字号行高不变 */
   muted?: boolean
   /** 正在播的那条：主色描边 + 淡底 + 正文变主色 */
@@ -77,7 +80,10 @@ export function ContentItem({
         <Skeleton className="mt-2 h-4 w-3/4" />
       ) : (
         plain.length > 0 && (
-          <div className={cn('flex', textTrailing ? 'items-end gap-0.5' : 'block')}>
+          <div
+            className={cn('flex', textTrailing ? 'items-end gap-0.5' : 'block', onTextClick && 'cursor-pointer')}
+            onClick={onTextClick}
+          >
             <ContentText
               text={text}
               muted={muted && !current}

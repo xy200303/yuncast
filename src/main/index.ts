@@ -1,8 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell } from 'electron'
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, shell } from 'electron'
 import { setDefaultResultOrder } from 'node:dns'
+import { randomUUID } from 'node:crypto'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
-import { appendFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
 import { BRAND_DISPLAY } from '../shared/brand'
@@ -16,6 +18,39 @@ function crashNote(kind: string, detail: string): void {
     appendFileSync(join(dir, 'crash.log'), `${new Date().toISOString()} ${kind} ${detail.slice(0, 800)}\n`)
   } catch {
     // 记不进去就算了
+  }
+}
+
+/**
+ * macOS / Linux 没有安装器钩子，在应用启动时把 Go CLI 软链进 PATH 常见目录：
+ * mac 优先 /usr/local/bin（管理员可写），linux 用 ~/.local/bin（现代发行版默认在 PATH）。
+ * Windows 不走这里——NSIS 安装/卸载时直接读写注册表 PATH（build/installer.nsh）。
+ */
+function linkCliToPath(): void {
+  if (!app.isPackaged || process.platform === 'win32') return
+  const target = join(process.resourcesPath, 'bin', 'yuncast')
+  if (!existsSync(target)) return
+  const dirs =
+    process.platform === 'darwin'
+      ? ['/usr/local/bin', join(homedir(), '.local', 'bin')]
+      : [join(homedir(), '.local', 'bin')]
+  for (const dir of dirs) {
+    try {
+      mkdirSync(dir, { recursive: true })
+      const link = join(dir, 'yuncast')
+      if (existsSync(link)) {
+        try {
+          if (readlinkSync(link) === target) return // 已就位
+        } catch {
+          // 不是软链：不动别人的文件
+        }
+        return
+      }
+      symlinkSync(target, link)
+      return
+    } catch {
+      // 这个目录不可写就试下一个
+    }
   }
 }
 process.on('uncaughtException', (error) =>
@@ -54,6 +89,8 @@ import {
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
   type LiveComment,
+  type McpConfig,
+  type McpRuntime,
   type ModelConnectionInput,
   type PartialDeep,
   type Persona,
@@ -66,15 +103,15 @@ import {
   type ProduceVoiceOverride,
   type ScriptInput,
   type SessionExportOptions,
-  type SpeechItem,
-  type SpeechLane,
+  type PoolItem,
+  type PoolLane,
   type StatsQuery,
   type StreamStats,
   type TriggerInput,
   type TtsConnectionInput,
   type TtsProvider,
-  type Utterance,
-  type UtteranceInput,
+  type DraftUnit,
+  type DraftUnitInput,
   type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
@@ -93,9 +130,11 @@ import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
 import { VoiceService, type VoiceCloneInput } from './services/VoiceService'
 import { TempUploadService } from './services/TempUpload'
+import { AudioStyleService } from './services/AudioStyleService'
+import type { DataChangeScope } from '../shared/types'
 import { TtsStreamService } from './services/TtsStreamService'
 import { TtsRealtimeService } from './services/TtsRealtimeService'
-import { UtteranceService } from './services/UtteranceService'
+import { DraftUnitService } from './services/DraftUnitService'
 import { ProgramPlaybackService } from './services/ProgramPlaybackService'
 import { SessionRecorder } from './services/SessionRecorder'
 import { policyFor } from './services/broadcastPolicy'
@@ -106,6 +145,9 @@ import { friendlyError } from './services/errorTranslate'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders, secretFieldKeys, ttsSecretFieldKeys } from './services/providers/registry'
 import { AudioPipeline } from './services/audio/AudioPipeline'
 import { PlaybackLoop } from './services/audio/PlaybackLoop'
+import { McpService } from './services/McpService'
+import { EventHub } from './services/EventHub'
+import { RecordingService } from './services/RecordingService'
 
 // 固定到 %APPDATA%\YunCast。必须在 ready 之前设置，
 // 否则开发时和打包后目录名不一致，配置会看起来"丢了"。
@@ -224,6 +266,28 @@ function createWindow(storage: StorageService): void {
   })
   mainWindow = win
 
+  // 通用录屏授权闸门：渲染层 getDisplayMedia 只在 RecordingService 发起的录制会话激活期
+  // 自动放行「本应用窗口 + 系统回放声」，不弹系统选择器；其余请求一律拒绝（正式包同样走这道闸门）。
+  // 只采本窗口（WGC 窗口采集）：其它窗口遮挡、用户鼠标的真实操作都不会进画面。
+  win.webContents.session.setDisplayMediaRequestHandler((request, callback) => {
+    if (!screenRecorder?.isArmed) {
+      callback({})
+      return
+    }
+    desktopCapturer
+      .getSources({ types: ['window'] })
+      .then((sources) => {
+        const title = win.isDestroyed() ? '' : win.getTitle()
+        const self = sources.find((s) => s.name === title) ?? sources.find((s) => title && s.name.includes(title))
+        if (!self) {
+          callback({})
+          return
+        }
+        callback({ video: self, audio: 'loopback' })
+      })
+      .catch(() => callback({}))
+  })
+
   // 崩溃现场（无声退出排查）：渲染进程死了（崩溃/卡死被系统收）都记一笔到 userData/crash.log
   win.webContents.on('render-process-gone', (_e, details) =>
     crashNote('render-process-gone', JSON.stringify(details))
@@ -250,6 +314,46 @@ function registerUpdateIpc(u: UpdateService): void {
   ipcMain.handle(IPC.updateCheck, () => u.check())
   ipcMain.handle(IPC.updateDownload, () => u.download())
   ipcMain.handle(IPC.updateInstall, () => u.install())
+}
+
+/** MCP 段变了才重启服务（配置保存很频繁，无关改动不折腾端口） */
+function syncMcp(config: McpConfig): void {
+  const signature = `${config.enabled}|${config.port}|${config.token}`
+  if (signature === mcpApplied) return
+  mcpApplied = signature
+  void mcp?.apply(config).catch((error) => {
+    // 端口被占等：状态（含 error）已经广播给设置页，这里只记日志
+    console.warn('[AgentAnchor] MCP 启动失败:', error instanceof Error ? error.message : error)
+  })
+}
+
+/** 开放接口 IPC（设置 → 开放接口） */
+function registerMcpIpc(storage: StorageService): void {
+  ipcMain.handle(IPC.mcpGet, () => storage.getConfig().mcp)
+  ipcMain.handle(
+    IPC.mcpSave,
+    async (_e, input: { enabled?: boolean; port?: number; regenerateToken?: boolean }) => {
+      const current = storage.getConfig().mcp
+      const port = Number(input?.port ?? current.port)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        return { ok: false as const, error: '端口需要在 1–65535' }
+      }
+      const next: McpConfig = {
+        enabled: Boolean(input?.enabled),
+        port,
+        token: input?.regenerateToken === true ? randomUUID() : current.token
+      }
+      storage.setConfig({ mcp: next })
+      try {
+        mcpApplied = `${next.enabled}|${next.port}|${next.token}`
+        await mcp?.apply(next)
+        return { ok: true as const, config: next }
+      } catch (error) {
+        return { ok: false as const, error: friendlyError(error) }
+      }
+    }
+  )
+  ipcMain.handle(IPC.mcpState, (): McpRuntime => mcp?.state() ?? { running: false, port: storage.getConfig().mcp.port, clients: 0 })
 }
 
 /** 池快照广播给所有窗口；顺带探测 pool.empty / pool.low（沿只发一次，恢复后可再发） */
@@ -294,7 +398,7 @@ function broadcastDirectorTimeline(event: DirectorTimelineEvent | DirectorTimeli
 
 
 /** 话术库单条状态变化广播（预合成进度） */
-function broadcastUtterance(utterance: Utterance): void {
+function broadcastUtterance(utterance: DraftUnit): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.utteranceEvent, utterance)
   }
@@ -319,7 +423,7 @@ function broadcastUtteranceDone(programId: string): void {
         source: 'initial',
         sources: [],
         createdAt: Date.now()
-      } satisfies Utterance)
+      } satisfies DraftUnit)
     }
   }
 }
@@ -339,6 +443,12 @@ function broadcastConnector(status: ConnectorStatus): void {
 }
 
 /** 音色库变化广播（训练状态更新/新增/删除） */
+function broadcastDataChanged(scope: DataChangeScope, detail?: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) win.webContents.send(IPC.dataChanged, { scope, detail })
+  }
+}
+
 function broadcastVoices(voices: VoiceRecord[]): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.voiceChanged, voices)
@@ -386,6 +496,12 @@ let streamSvc: StreamService | null = null
 let pipeline: AudioPipeline | null = null
 let recorder: SessionRecorder | null = null
 let playback: PlaybackLoop | null = null
+let mcp: McpService | null = null
+let eventHub: EventHub | null = null
+let screenRecorder: RecordingService | null = null
+let audioStyle: AudioStyleService | null = null
+/** 上次实际应用的 MCP 配置签名（配置保存很频繁，只有 mcp 段变了才重启服务） */
+let mcpApplied = ''
 
 /**
  * finishMode=stop 的收播两阶段状态（pool.empty 决策点用）：
@@ -414,6 +530,8 @@ function finishRoundStop(programId: string): void {
   resetStopWrap()
   console.log('[AgentAnchor] finishMode=stop：收尾播完，节目结束')
   agent?.setLiveActive(false)
+  // 收播清场：池里剩下的（收尾没播到的/插播/存货）全部作废，换节目不遗留
+  pool?.clearAll('场次已结束')
   // 场记收播：自动收播（整轮播完不循环）
   recorder?.end('auto_stop')
   if (pool) pool.sessionId = null
@@ -434,6 +552,19 @@ function guard(fn: () => unknown): { ok: true; item?: unknown } | { ok: false; e
   }
 }
 
+// ---------- 通用录屏（RecordingService：主进程状态机 + 落盘；渲染层采集） ----------
+
+function registerRecordIpc(recorder: RecordingService): void {
+  ipcMain.handle(IPC.recordStart, (_e, name?: string, showCursor?: boolean) => recorder.start(name, showCursor))
+  ipcMain.handle(IPC.recordStop, () => recorder.stop())
+  ipcMain.handle(IPC.recordState, () => recorder.state())
+  ipcMain.handle(IPC.recordChunk, (_e, base64: string) => recorder.appendChunk(String(base64 ?? '')))
+  ipcMain.handle(IPC.recordReady, (_e, container?: string) => recorder.notifyReady(container))
+  ipcMain.handle(IPC.recordFail, (_e, error: string) => recorder.notifyFailed(String(error ?? '未知错误')))
+  ipcMain.handle(IPC.recordDone, () => recorder.notifyDone())
+}
+
+
 function registerIpc(
   storage: StorageService,
   tts: TtsService,
@@ -447,7 +578,7 @@ function registerIpc(
   script: ScriptService,
   stream: StreamService,
   connector: ConnectorService,
-  utterances: UtteranceService,
+  draftUnits: DraftUnitService,
   programPlayback: ProgramPlaybackService,
   exporter: ExportService
 ): void {
@@ -487,7 +618,7 @@ function registerIpc(
   )
   ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
   ipcMain.handle(IPC.poolReorder, (_e, ids: string[]) => guard(() => pool.reorder(ids)))
-  ipcMain.handle(IPC.poolClearLane, (_e, lane: SpeechLane) => guard(() => pool.clearLane(lane)))
+  ipcMain.handle(IPC.poolClearLane, (_e, lane: PoolLane) => guard(() => pool.clearLane(lane)))
   ipcMain.handle(IPC.poolStatus, () => pool.getStatus())
   ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) => pool.getRecentPlayed(n))
   ipcMain.handle(IPC.poolNext, () => pool.next())
@@ -672,12 +803,14 @@ function registerIpc(
   ipcMain.handle(IPC.agentStop, async () => {
     const statusBefore = agent.status()
     resetStopWrap()
-    // 结束节目 = 收播：播放循环一起停（掐当前音频、正在播的退回 ready），存货留在池里不播
+    // 结束节目 = 收播：播放循环一起停（掐当前音频、正在播的退回 ready），随后池子整体清场
     playback?.setRunning(false)
     await agent.stop()
     // 结束节目：开播态归引擎——就算 agent 早就没起来，这场也算收了
     if (statusBefore.live) {
       agent.setLiveActive(false)
+      // 收播清场：本场所有话术（含人工插播/导演现场话术）全部作废，换节目不遗留
+      pool.clearAll('场次已结束')
       // 场记收播：手动「结束节目」
       recorder?.end('manual')
       if (pool) pool.sessionId = null
@@ -688,14 +821,13 @@ function registerIpc(
   ipcMain.handle(IPC.agentAbort, () => agent.stopGeneration())
   ipcMain.handle(IPC.agentRestart, async () => {
     try {
-      // 重启 = 资产重组装（导演大脑/卡司/剧本按当前值），历史从全局存档恢复；与开播态无关
-      await agent.restart()
-      return { ok: true }
+      // 应用改动后的资产：文本层（人设/剧本/手册/节目）热替换不打断；脑层（模型/接入）才重开会话
+      const mode = await agent.applyAssets()
+      return { ok: true, mode }
     } catch (error) {
       return { ok: false, error: friendlyError(error) }
     }
   })
-  ipcMain.handle(IPC.agentSwitchPresenter, async (_e, personaId: string) => agent.switchPresenter(personaId))
   ipcMain.handle(IPC.agentStatus, () => agent.status())
   // 直播间动态收件箱（直播台「事件流」）：快照拉取 + 250ms 节流广播
   ipcMain.handle(IPC.agentInbox, () => agent.inboxSnapshot())
@@ -724,6 +856,7 @@ function registerIpc(
   // 统一开播控制里的「暂停」：停播报（主进程播放循环）+ 停主播产出（评论/触发器不派、say 被拒）
   ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => {
     const value = Boolean(paused)
+    if (!value) pool.retryFailed() // 点「继续」= 失败条目重新触发合成
     agent.setSpeakingPaused(value)
     playback?.setRunning(!value)
   })
@@ -828,13 +961,11 @@ function registerIpc(
   })
 
   // ---------- 人设卡 ----------
-  ipcMain.handle(IPC.personaGet, () => persona.get())
   ipcMain.handle(IPC.personaList, () => persona.list())
   ipcMain.handle(
     IPC.personaSave,
     (_e, input: Omit<Persona, 'id' | 'updatedAt'>, id?: string) => persona.save(input, id)
   )
-  ipcMain.handle(IPC.personaSetActive, (_e, id: string) => persona.setActive(id))
   ipcMain.handle(IPC.personaRemove, (_e, id: string) => persona.remove(id))
 
   // ---------- 音频（主进程 AudioPipeline 是唯一音频权威） ----------
@@ -857,17 +988,24 @@ function registerIpc(
   })
   // 试听（aux 槽）：主进程播指定音频文件到监听通道——渲染层不再碰 file://（dev 的 http 源读不了本地文件）。
   // 真的开始出声才回 ok；同槽互斥，新试听自动顶掉旧的。
-  ipcMain.handle(IPC.audioPlayFile, async (_e, filePath: string) => {
+  // itemId 由渲染层带（preview- 前缀，audio:end 据此判播完收尾）；没带就现场生成一个。
+  ipcMain.handle(IPC.audioPlayFile, async (_e, filePath: string, itemId?: string) => {
     if (!pipeline) return { ok: false, error: '音频管线未初始化' }
     const path = String(filePath ?? '')
     if (!path) return { ok: false, error: '没有音频文件路径' }
-    const request = pipeline.playFile(`preview-${Date.now()}`, path, { slot: 'aux' })
+    const id = typeof itemId === 'string' && itemId.startsWith('preview-') ? itemId : `preview-${Date.now()}`
+    const request = pipeline.playFile(id, path, { slot: 'aux' })
     const started = await request.started
     if (!started.ok) return { ok: false, error: started.error ?? '音频没能放出来' }
     return { ok: true }
   })
   ipcMain.handle(IPC.audioStopAux, () => {
     pipeline?.stopSlot('aux')
+    return { ok: true }
+  })
+  // aux 槽用户级暂停/继续（试听条）：只停消费队列，主槽播报与解码背压不受影响
+  ipcMain.handle(IPC.audioPauseAux, (_e, paused: boolean) => {
+    pipeline?.pauseAux(Boolean(paused))
     return { ok: true }
   })
   // 章内 seek（预制节目长音频）：主槽 ffmpeg 以 -ss 重启解码
@@ -884,8 +1022,11 @@ function registerIpc(
       voiceSvc?.clone(input) ?? { ok: false, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceRemove, (_e, id: string) => voiceSvc?.remove(id) ?? { ok: false, error: '音色服务未初始化' })
-  ipcMain.handle(IPC.voiceRename, (_e, id: string, name: string) =>
-    voiceSvc?.rename(String(id ?? ''), String(name ?? '')) ?? { ok: false, error: '音色服务未初始化' }
+  ipcMain.handle(IPC.voiceUpdate, (_e, id: string, patch: { name?: string; instruction?: string }) =>
+    voiceSvc?.update(String(id ?? ''), {
+      name: typeof patch?.name === 'string' ? patch.name : undefined,
+      instruction: typeof patch?.instruction === 'string' ? patch.instruction : undefined
+    }) ?? { ok: false, error: '音色服务未初始化' }
   )
   ipcMain.handle(
     IPC.voicePreview,
@@ -903,6 +1044,7 @@ function registerIpc(
 
   // 本地样本 → 临时文件站 → 公网直链（百炼复刻只收 URL）
   const tempUpload = new TempUploadService()
+  audioStyle = new AudioStyleService(storage, tempUpload)
   ipcMain.handle(IPC.voiceUploadTemp, (_e, filePath: string) => tempUpload.upload(String(filePath ?? '')))
 
   // ---------- 知识库 ----------
@@ -1022,11 +1164,11 @@ function registerIpc(
   // 统一音频生产入口（docs/10 §7.5）：rolling=后台提前合成全部；prepared=同步跑完返回汇总。
   // voiceOverride = 声音选择弹窗（docs/REDESIGN 4.4）里用户显式选的声音，本次合成冻结它
   ipcMain.handle(IPC.programProduceAudio, (_e, programId: string, voiceOverride?: ProduceVoiceOverride) =>
-    utterances.produceProgramAudio(String(programId ?? ''), voiceOverride)
+    draftUnits.produceProgramAudio(String(programId ?? ''), voiceOverride)
   )
   // 生产前的合成计划摘要（声音选择弹窗）：段数、就绪/待合成计数、声音描述、粗估时长
   ipcMain.handle(IPC.programProducePlan, (_e, programId: string) =>
-    utterances.describeProducePlan(String(programId ?? ''))
+    draftUnits.describeProducePlan(String(programId ?? ''))
   )
   // 预制节目正式播放门禁（docs/10 §7.8）：结构化结果，未通过不静默跳过
   ipcMain.handle(IPC.programPlayGate, (_e, programId: string) =>
@@ -1035,7 +1177,7 @@ function registerIpc(
   ipcMain.handle(IPC.programAudioProgress, (_e, programId: string) =>
     programPlayback.audioProgress(String(programId ?? ''))
   )
-  // 预制节目按章跳播（上一章/下一章/章节点播）：装池提到队首，再打断当前条目让播放循环立即取它
+  // 预制节目按段跳播（上一段/下一段/段点播）：装池提到队首，再打断当前条目让播放循环立即取它
   ipcMain.handle(
     IPC.programPlayUnit,
     (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
@@ -1047,7 +1189,7 @@ function registerIpc(
       return result
     }
   )
-  // 导入外部音频（§7.4）：主进程弹文件选择框，复制入 BlobStore（不动用户原文件）并挂到指定 Scene/Utterance 的 rendered
+  // 导入外部音频（§7.4）：主进程弹文件选择框，复制入 BlobStore（不动用户原文件）并挂到指定 Scene/DraftUnit 的 rendered
   ipcMain.handle(
     IPC.programImportAudio,
     async (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
@@ -1058,7 +1200,7 @@ function registerIpc(
         filters: [{ name: '音频文件', extensions: ['mp3', 'wav', 'm4a'] }]
       })
       if (result.canceled || !result.filePaths[0]) return { ok: false as const, error: '已取消' }
-      return utterances.importExternalAudio(
+      return draftUnits.importExternalAudio(
         String(programId ?? ''),
         { kind: target?.kind === 'scene' ? 'scene' : 'utterance', id: String(target?.id ?? '') },
         result.filePaths[0]
@@ -1148,32 +1290,22 @@ function registerIpc(
       loudness: options?.loudness === true
     })
   })
-  // 逐条试听：走音频管线 aux 槽（本机出声，不进推流），与音色试听同一条通路
-  ipcMain.handle(IPC.sessionPlayItem, async (_e, itemId: string) => {
-    const item = storage.speechGet(String(itemId ?? ''))
-    if (!item?.audioPath) return { ok: false, error: '这条没有音频文件（流式播报或未合成）' }
-    if (!pipeline) return { ok: false, error: '音频管线还没就绪' }
-    const request = pipeline.playFile(item.id, item.audioPath, { slot: 'aux' })
-    const started = await request.started
-    if (started.ok) await request.done
-    return started
-  })
 
   // ---------- 话术库（节目底稿） ----------
-  ipcMain.handle(IPC.utteranceList, (_e, programId: string) => utterances.list(String(programId)))
-  ipcMain.handle(IPC.utteranceSave, (_e, input: UtteranceInput, id?: string) =>
-    guard(() => utterances.save(input, id))
+  ipcMain.handle(IPC.draftUnitList, (_e, programId: string) => draftUnits.list(String(programId)))
+  ipcMain.handle(IPC.draftUnitSave, (_e, input: DraftUnitInput, id?: string) =>
+    guard(() => draftUnits.save(input, id))
   )
-  ipcMain.handle(IPC.utteranceDelete, (_e, id: string) => guard(() => utterances.remove(id)))
+  ipcMain.handle(IPC.draftUnitDelete, (_e, id: string) => guard(() => draftUnits.remove(id)))
   ipcMain.handle(IPC.utteranceClear, (_e, programId: string, sceneId?: string) =>
-    guard(() => utterances.clear(String(programId), sceneId))
+    guard(() => draftUnits.clear(String(programId), sceneId))
   )
   ipcMain.handle(IPC.utteranceClearAudio, (_e, programId: string) =>
-    guard(() => utterances.clearAudio(String(programId)))
+    guard(() => draftUnits.clearAudio(String(programId)))
   )
   ipcMain.handle(IPC.utterancePresynth, async (_e, programId: string) => {
     // 批量预合成：异步跑（带节目锁，主播改底稿触发的重合成共用同一条流水线），进度走 utteranceEvent
-    void utterances.kickSynthesis(String(programId))
+    void draftUnits.kickSynthesis(String(programId))
     return { ok: true }
   })
 
@@ -1239,10 +1371,13 @@ if (!single) {
     watchSystemChrome()
 
     const storage = new StorageService()
+    // 命令行（Go 版，resources/bin/yuncast）在应用没开时按这个把应用拉起来
+    storage.setLaunch(process.execPath, app.isPackaged ? [] : [app.getAppPath()])
+    linkCliToPath()
     const blobs = new BlobStoreService(storage)
     const tts = new TtsService(storage, blobs)
     ttsRealtime = new TtsRealtimeService(storage, tts)
-    pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime, () => agent?.currentVoice() ?? '')
+    pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime)
     pool.onWarmCache = (path) => blobs.warm(path)
     const prompts = new PromptTemplateService(storage)
     const persona = new PersonaService(storage)
@@ -1255,19 +1390,25 @@ if (!single) {
     recorder = new SessionRecorder(storage, bus)
     recorder.fixUnfinished()
     // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
-    const utterances = new UtteranceService(storage, tts, persona, script, blobs)
-    utterances.onEvent = (u) => broadcastUtterance(u)
-    utterances.onBatchDone = (programId) => broadcastUtteranceDone(programId)
-    // 预制音频资产变化广播（Scene/Utterance 的 rendered 更新，渲染层刷新节目音频进度）
-    utterances.onRenderedEvent = (programId) => {
+    const draftUnits = new DraftUnitService(storage, tts, persona, script, blobs)
+    draftUnits.onEvent = (u) => broadcastUtterance(u)
+    draftUnits.onBatchDone = (programId) => broadcastUtteranceDone(programId)
+    // 预制音频资产变化广播（Scene/DraftUnit 的 rendered 更新，渲染层刷新节目音频进度）
+    draftUnits.onRenderedEvent = (programId) => {
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(IPC.programAudioEvent, { programId })
       }
     }
     // Agent 改场景（append/update/remove_scene）也触发预制音频的 stale 检测
-    script.onContentChanged = (programId) => utterances.refreshRenderedStaleness(programId)
+    script.onContentChanged = (programId) => draftUnits.refreshRenderedStaleness(programId)
     // 节目配置落库 → 刷新引擎侧事件接线：播出中改自动响应白名单/互动总闸立即生效
-    script.onProgramsChanged = () => agent?.refreshProgramGate()
+    // 节目数据变更（保存/删除/切换，含 agent 与 MCP 路径）→ 广播给所有窗口，界面自己重拉列表
+    script.onProgramsChanged = () => {
+      agent?.refreshProgramGate()
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.programChanged)
+      }
+    }
     agent = new AgentService(
       storage,
       pool,
@@ -1276,12 +1417,16 @@ if (!single) {
       knowledge,
       memory,
       script,
-      utterances,
+      draftUnits,
       broadcastAgent,
-      // 对话时间线：文本流式 + 工具卡片，照 pi 事件流原样推到渲染层（docs/09 §11）
-      broadcastDirectorTimeline
+      // 对话时间线：文本流式 + 工具卡片，照 pi 事件流原样推到渲染层（docs/09 §11）；
+      // 顺带喂给 MCP 服务：agent_chat 工具的等待者从这里收本轮回复
+      (event) => {
+        broadcastDirectorTimeline(event)
+        mcp?.feedTimeline(event)
+      }
     )
-    triggers = new TriggerRuntime(storage, bus, pool, agent)
+    triggers = new TriggerRuntime(storage, bus, pool, agent, () => persona.castVoice())
     // 节目事件接线：触发器白名单/动态事件总闸跟着当前节目走
     triggers.gateProvider = () => agent!.currentProgramGate()
     streamSvc = new StreamService(storage, broadcastStream)
@@ -1299,15 +1444,18 @@ if (!single) {
       sendEnd: broadcastAudioEnd,
       sendProgress: broadcastProgress
     })
-    // 播放循环搬到了主进程：渲染层不再参与播放调度。留白优先听 agent 的（set_gap），没调走系统默认
-    playback = new PlaybackLoop(
-      pool,
-      () => ttsStream,
-      pipeline,
-      () => agent?.currentGapMs() ?? storage.getConfig().live.bitGapMs,
-      () => agent?.currentVoice() ?? ''
-    )
+    // 播放循环搬到了主进程：渲染层不再参与播放调度。段间不留白，停顿由主播用 <pause> 标记写在内容里
+    playback = new PlaybackLoop(pool, () => ttsStream, pipeline)
     playback.start()
+
+    // 合成彻底失败（退避重试耗尽，或 401/403 这类重试无意义的）：一条合不出来就停播——
+    // 走统一暂停（播报停 + 主播产出停），点「继续」时 playbackSetPaused 里 retryFailed 重新触发合成
+    pool.onSynthHalt = (item, error) => {
+      console.error(`[AgentAnchor] 合成彻底失败，停播等人处理（${item.id}）: ${error}`)
+      bus?.emit('speech.failed', { id: item.id, error, text: item.text.slice(0, 80) })
+      agent?.setSpeakingPaused(true)
+      playback?.setRunning(false)
+    }
 
     // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（任何事件源下游都无感知）
     bus.subscribe((event) => {
@@ -1332,16 +1480,32 @@ if (!single) {
     agent.getConnector = () => connector
 
     // 音色库（M8 声音克隆）：训练状态变化推给渲染进程；试听由主进程合成完直接出声（aux 槽）
-    voiceSvc = new VoiceService(storage, tts, blobs, broadcastVoices, async (itemId, filePath) => {
+    // 音色库变更：payload 事件（旧订阅）+ 统一 data:changed
+    const broadcastVoicesAll = (voices: VoiceRecord[]): void => {
+      broadcastVoices(voices)
+      broadcastDataChanged('voices')
+    }
+    voiceSvc = new VoiceService(storage, tts, blobs, broadcastVoicesAll, async (itemId, filePath) => {
       const request = pipeline!.playFile(itemId, filePath, { slot: 'aux' })
       const started = await request.started
       if (started.ok) await request.done
       return started
     })
     agent.getVoices = () => voiceSvc
+    // agent/MCP 改人设卡：广播给所有窗口，界面即时刷新（不再依赖用户手动切页）
+    knowledge.onChanged = (scope) => broadcastDataChanged('knowledge', scope)
+    recorder.onChanged = () => broadcastDataChanged('sessions')
+    draftUnits.onDraftChanged = (programId) => broadcastDataChanged('drafts', programId)
+    persona.onChanged = (personaId) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.personaChanged, personaId)
+      }
+      broadcastDataChanged('personas', personaId)
+    }
+    agent.getAudioStyle = () => audioStyle
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
-    const programPlayback = new ProgramPlaybackService(storage, script, persona, utterances, pool, agent, connector, streamSvc, tts)
+    const programPlayback = new ProgramPlaybackService(storage, script, persona, draftUnits, pool, agent, connector, streamSvc, tts)
     programPlayback.recorder = recorder
     // 节目音频导出（docs/10 §8.3，P6）：进度逐单元广播；export_program 工具的确认卡用它出计划摘要
     const exporter = new ExportService(storage, script)
@@ -1351,9 +1515,67 @@ if (!single) {
       }
     }
     agent.getExporter = () => exporter
+
+    // 通用录屏：主进程状态机 + 授权闸门；状态广播给所有窗口（播放条红点），事件进 SSE 流
+    screenRecorder = new RecordingService()
+    screenRecorder.bindContents(() => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null))
+    screenRecorder.onStateChange = (state) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.recordStateEvent, state)
+      }
+    }
+    screenRecorder.onEvent = (type, payload) => bus?.emit(type, payload, 'human')
+    registerRecordIpc(screenRecorder)
+    agent.getRecorder = () => screenRecorder
+
+    // 开放接口（MCP / CLI / SSE 事件流）：与界面走同一批服务实例，Agent 开播/说话窗口里立刻看得到
+    eventHub = new EventHub(bus!, storage)
+    eventHub.start()
+    mcp = new McpService({
+      storage,
+      tts,
+      pool,
+      agent,
+      persona,
+      knowledge,
+      memory,
+      script,
+      stream: streamSvc,
+      draftUnits,
+      programPlayback,
+      exporter,
+      recorder: screenRecorder!,
+      voices: voiceSvc,
+      getAudioStyle: () => audioStyle,
+      eventHub,
+      getConnector: () => connector,
+      getTriggers: () => triggers,
+      hooks: {
+        // 与 IPC.programLaunch 完全同口径：开播事件只发一次、收尾状态复位、0 就绪顶低水位
+        launchProgram: async (programId, allowPartial) => {
+          const wasLive = agent!.status().live === true
+          const result = await programPlayback.launch(programId, { allowPartial })
+          if (result.ok && !wasLive) bus!.emit('stream.started', {}, 'human')
+          if (result.ok) resetStopWrap()
+          if (result.ok && (result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
+          return result
+        },
+        // 与 IPC.playbackSetPaused 同口径：停播报循环 + 停主播产出
+        setPaused: (paused) => {
+          agent!.setSpeakingPaused(paused)
+          playback?.setRunning(!paused)
+        },
+        // 跳过当前这条：掐音频，播放循环按播完处理
+        skipCurrent: () => pipeline?.stopAll()
+      },
+      getSender: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null)
+    })
+    // 配置里的 mcp 段变了才重启服务（无关的配置保存不动端口）
+    storage.onConfigChange((config) => syncMcp(config.mcp))
+    syncMcp(storage.getConfig().mcp)
     // 就绪补装：直播中底稿每就绪一段就补装进池（播出策略决定接不接：rolling 接，prepared/improvised 不接）
-    const broadcastUtteranceOnly = utterances.onEvent
-    utterances.onEvent = (u) => {
+    const broadcastUtteranceOnly = draftUnits.onEvent
+    draftUnits.onEvent = (u) => {
       broadcastUtteranceOnly?.(u)
       if (u.status !== 'ready' || !u.id) return
       if (storage.getConfig().live.activeProgramId !== u.programId) return
@@ -1436,6 +1658,8 @@ if (!single) {
       await agent?.panic()
       if (wasLive) {
         agent?.setLiveActive(false)
+        // 收播清场：紧急停止同样不留存货
+        pool?.clearAll('场次已紧急停止')
         // 场记收播：紧急停止
         recorder?.end('emergency')
         if (pool) pool.sessionId = null
@@ -1477,8 +1701,9 @@ if (!single) {
     storage.onConfigChange((config) => paintAllWindows(config.theme))
     updater = new UpdateService()
     updater.init()
-    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, bus, triggers, script, streamSvc, connector, utterances, programPlayback, exporter)
+    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, bus, triggers, script, streamSvc, connector, draftUnits, programPlayback, exporter)
     registerUpdateIpc(updater)
+    registerMcpIpc(storage)
     createWindow(storage)
 
     app.on('activate', () => {
@@ -1493,6 +1718,7 @@ app.on('window-all-closed', () => {
   recorder?.end('app_quit')
   if (timerInterval) clearInterval(timerInterval)
   connector?.stop()
+  void mcp?.stop()
   // 播放循环先停（它会把正在播的那条退回 ready），再收音频管线（杀掉解码进程、断了推流 BGM）
   playback?.dispose()
   pipeline?.dispose()

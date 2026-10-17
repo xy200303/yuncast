@@ -102,7 +102,10 @@ interface Session {
   error: string | null
   stopped: boolean
   decoder: ChildProcess | null
+  /** 解码背压（stdout pause/resume），与用户暂停是两码事 */
   paused: boolean
+  /** aux 槽用户级暂停（试听条）：泵循环不消费 aux 队列，主槽照常 */
+  userPaused: boolean
   emitted: number
   startedSettled: boolean
   resolveStarted: (result: PlayResult) => void
@@ -299,6 +302,12 @@ export class AudioPipeline {
     if (session) this.settleSession(session, { ok: false, stopped: true })
   }
 
+  /** aux 槽用户级暂停/继续（试听条）：只停消费队列，解码与主槽播报照常 */
+  pauseAux(paused: boolean): void {
+    const session = this.slots['aux']
+    if (session) session.userPaused = Boolean(paused)
+  }
+
   /** 接一路流式 PCM（动态内容的实时合成），与文件播放共用同一条排播/混音链 */
   beginStream(itemId: string, opts: { slot?: AudioSlot } = {}): PcmStreamHandle {
     const session = this.createSession(itemId, opts.slot ?? 'main')
@@ -402,6 +411,7 @@ export class AudioPipeline {
       stopped: false,
       decoder: null,
       paused: false,
+      userPaused: false,
       emitted: 0,
       startedSettled: false,
       resolveStarted: started.resolve,
@@ -601,6 +611,8 @@ export class AudioPipeline {
     for (const slot of SLOTS) {
       const session = this.slots[slot]
       if (!session) continue
+      // aux 用户级暂停（试听条）：不消费 aux 队列，主槽照常；队列积压由解码背压兜住
+      if (slot === 'aux' && session.userPaused) continue
       const part = this.slotScratch[slot]
       part.fill(0)
       const n = this.takeInto(session, part)

@@ -60,6 +60,9 @@ function snippetAround(content: string, terms: Set<string>, width = 120): string
 }
 
 export class KnowledgeService {
+  /** 知识库变更（保存/删除/同步/导入）：index.ts 接上 → 广播让界面重拉 */
+  onChanged: ((scope: 'entries' | 'files') => void) | null = null
+
   constructor(
     private readonly storage: StorageService,
     private readonly blobs: BlobStoreService
@@ -86,11 +89,13 @@ export class KnowledgeService {
       createdAt: id ? (this.storage.productList().find((p) => p.id === id)?.createdAt ?? Date.now()) : Date.now()
     }
     this.storage.productSave(product)
+    this.onChanged?.('entries')
     return product
   }
 
   deleteProduct(id: string): void {
     this.storage.productDelete(id)
+    this.onChanged?.('entries')
   }
 
   // ---------- 资料文件 ----------
@@ -242,7 +247,9 @@ export class KnowledgeService {
     let updated = 0
     const existing = this.storage.productList()
     for (const item of items) {
-      const dup = existing.find((p) => (item.externalId && p.externalId === item.externalId) || p.name === item.name)
+      const dup = item.externalId
+        ? existing.find((p) => p.externalId === item.externalId)
+        : existing.find((p) => !p.externalId && p.name === item.name)
       this.saveProduct(
         {
           name: item.name,

@@ -1,11 +1,11 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { ensureCloneSample } from './audio/sampleAudio'
+import { ensureCloneSample, CLONE_SAMPLE_DURATION, probeSampleDuration } from './audio/sampleAudio'
 import { existsSync } from 'node:fs'
 import { dirname, extname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { StorageService } from './StorageService'
 import type { BlobStoreService } from './BlobStoreService'
-import type { TtsService } from './TtsService'
+import { clampInstruction, type TtsService } from './TtsService'
 import {
   getTtsProvider,
   isTtsConnectionReady,
@@ -56,6 +56,8 @@ export interface VoiceCloneInput {
   connectionId: string
   /** 克隆目标模型（火山 seed-icl-x / 百炼 target_model） */
   model: string
+  /** 音色级风格指令（可选，≤100 字符；克隆完成后也可在音色库编辑） */
+  instruction?: string
 }
 
 export class VoiceService {
@@ -131,6 +133,9 @@ export class VoiceService {
     if (!prepared.ok || !prepared.path) {
       return { ok: false, error: prepared.error ?? '样本处理失败：换个 wav / mp3 / m4a 试试' }
     }
+    // 提交前的前置校验：时长不合规（火山 14–30s）必然白跑一次训练，先拦下来
+    const durationError = await this.checkSampleDuration(prepared.path, 'volcano')
+    if (durationError) return { ok: false, error: durationError }
     const samplePath = await this.archiveSample(prepared.path)
     if (!samplePath) return { ok: false, error: '样本归档失败：检查文件是否可读写' }
 
@@ -142,6 +147,7 @@ export class VoiceService {
       voiceType: '',
       model: input.model,
       connectionId: connection.id,
+      instruction: clampInstruction(input.instruction),
       samplePath,
       status: 'training',
       error: '',
@@ -290,10 +296,16 @@ export class VoiceService {
         error: '百炼复刻需要「业务空间 ID」：到设置 → 语音合成给这条接入填上'
       }
     }
-    // 本地样本可选归档（留痕用，API 只认 URL）
+    // 本地样本可选归档（留痕用，API 只认 URL）；有本地样本就先做时长前置校验（百炼 10–60s）
     let samplePath = ''
     if (input.samplePath && existsSync(input.samplePath)) {
-      samplePath = (await this.archiveSample(input.samplePath)) ?? ''
+      const prepared = await ensureCloneSample(input.samplePath, this.blobs.stagingDir())
+      if (!prepared.ok || !prepared.path) {
+        return { ok: false, error: prepared.error ?? '样本处理失败：换个 wav / mp3 / m4a 试试' }
+      }
+      const durationError = await this.checkSampleDuration(prepared.path, 'bailian')
+      if (durationError) return { ok: false, error: durationError }
+      samplePath = (await this.archiveSample(prepared.path)) ?? ''
     }
 
     const now = Date.now()
@@ -304,6 +316,7 @@ export class VoiceService {
       voiceType: '',
       model: input.model,
       connectionId: connection.id,
+      instruction: clampInstruction(input.instruction),
       samplePath,
       status: 'training',
       error: '',
@@ -374,6 +387,23 @@ export class VoiceService {
   // ---------- 通用 ----------
 
   /**
+   * 样本时长前置校验（提交给平台前）：探不出来（ffmpeg 读不了时长）不拦，交给服务端校验。
+   * 时长要求各家不同（sampleAudio.CLONE_SAMPLE_DURATION），超了必失败，先拦下来给中文指引。
+   */
+  private async checkSampleDuration(filePath: string, provider: 'bailian' | 'volcano'): Promise<string | null> {
+    const seconds = await probeSampleDuration(filePath)
+    if (seconds === null) return null
+    const rule = CLONE_SAMPLE_DURATION[provider]
+    if (seconds < rule.min) {
+      return `样本太短（${seconds.toFixed(1)} 秒）：${provider === 'volcano' ? '火山' : '百炼'}复刻要求 ${rule.hint}，重新录/选一段再提交`
+    }
+    if (seconds > rule.max) {
+      return `样本太长（${seconds.toFixed(1)} 秒）：${provider === 'volcano' ? '火山' : '百炼'}复刻要求 ${rule.hint}，截短后再提交`
+    }
+    return null
+  }
+
+  /**
    * 样本归档进 BlobStore（asset 档，GC 永不自动删）：已是 blob 的（saveSample 的 temp 暂存）直接转正；
    * 用户原文件/转码产物入库（原文件不动用 copy 语义，暂存区产物直接 move）。失败返回空串。
    */
@@ -419,13 +449,18 @@ export class VoiceService {
     this.emitChanged()
   }
 
-  /** 重命名（只改显示名，平台侧的复刻音色标识不动） */
-  rename(id: string, name: string): { ok: boolean; error?: string } {
+  /** 编辑音色（显示名 / 风格指令；平台侧的复刻音色标识不动）。风格指令统一钳到 ≤100 字符 */
+  update(id: string, patch: { name?: string; instruction?: string }): { ok: boolean; error?: string } {
     const voice = this.storage.listVoices().find((v) => v.id === id)
     if (!voice) return { ok: false, error: '音色不存在' }
-    const next = name.trim()
-    if (!next) return { ok: false, error: '音色名称不能为空' }
-    this.storage.saveVoice({ ...voice, name: next, updatedAt: Date.now() })
+    const next: VoiceRecord = { ...voice, updatedAt: Date.now() }
+    if (patch.name !== undefined) {
+      const name = patch.name.trim()
+      if (!name) return { ok: false, error: '音色名称不能为空' }
+      next.name = name
+    }
+    if (patch.instruction !== undefined) next.instruction = clampInstruction(patch.instruction)
+    this.storage.saveVoice(next)
     this.emitChanged()
     return { ok: true }
   }
@@ -444,15 +479,14 @@ export class VoiceService {
     let utteranceCount = 0
     const utteranceSamples: VoiceUsage['utteranceSamples'] = []
     for (const program of this.storage.programList()) {
-      // 节目的音色引用在音频配置里：演员表 + 「自定义节目声音」的默认音色
-      // （follow-presenter 时空表 = 跟随主播人设卡）
-      const referenced =
-        (program.audioConfig.cast ?? []).some((m) => m.voiceId === voiceType) ||
-        (program.audioConfig.voiceId ?? '').trim() === voiceType
+      // 节目的音色引用只在卡司里：卡司成员的音色
+      const referenced = program.presenterIds.some(
+        (id) => this.storage.personaList().find((p) => p.id === id)?.voiceId === voiceType
+      )
       if (referenced) {
         programs.push({ id: program.id, name: program.name })
       }
-      for (const utterance of this.storage.utteranceList(program.id)) {
+      for (const utterance of this.storage.draftUnitList(program.id)) {
         if (utterance.voiceId !== voiceType) continue
         utteranceCount += 1
         if (utteranceSamples.length < 3) {

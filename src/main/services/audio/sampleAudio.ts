@@ -24,6 +24,30 @@ export function isCloneReadyFormat(filePath: string): boolean {
   return ACCEPTED.has(sampleFormat(filePath))
 }
 
+/** 各家复刻对样本时长的硬要求（秒）：百炼 10–60（10–20 最佳）；火山 14–30 */
+export const CLONE_SAMPLE_DURATION: Record<'bailian' | 'volcano', { min: number; max: number; hint: string }> = {
+  bailian: { min: 10, max: 60, hint: '10–20 秒干净人声最佳（≤60 秒、≥16kHz、无背景音乐）' },
+  volcano: { min: 14, max: 30, hint: '14–30 秒、wav 单声道、低噪声无背景音乐' }
+}
+
+/** 用 ffmpeg 探样本时长（秒）：探不出来返回 null（交给服务端校验，不在这里拦） */
+export async function probeSampleDuration(filePath: string): Promise<number | null> {
+  const result = await new Promise<{ code: number; stderr: string }>((resolve) => {
+    const proc = spawn(getFfmpegPath(), ['-hide_banner', '-i', filePath, '-f', 'null', '-'], {
+      stdio: ['ignore', 'ignore', 'pipe']
+    })
+    let stderr = ''
+    proc.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString()
+    })
+    proc.on('error', (error) => resolve({ code: -1, stderr: String(error) }))
+    proc.on('close', (code) => resolve({ code: code ?? -1, stderr }))
+  })
+  const match = result.stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/)
+  if (!match) return null
+  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3])
+}
+
 export interface PreparedSample {
   ok: boolean
   /** 可以直接交给复刻接口 / 上传的文件路径（转换过就是 mp3） */

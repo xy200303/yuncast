@@ -7,13 +7,14 @@ import {
   History,
   Loader2,
   MessageSquare,
+  Pause,
   Play,
   Trash2,
-  Zap
-} from 'lucide-react'
+  Zap, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import {
   Dialog,
   DialogContent,
@@ -28,6 +29,7 @@ import { cn } from '@/lib/utils'
 import { EChart } from '@/components/EChart'
 import { WordCloud } from '@/components/WordCloud'
 import { ContentText } from './ContentText'
+import { audition, auditionTitle, useAuditionStore } from '../lib/audition'
 import type {
   BroadcastEndReason,
   BroadcastEvent,
@@ -38,9 +40,9 @@ import type {
   SessionDetail,
   SessionExportResult,
   SessionStats,
-  SpeechItem,
-  SpeechSourceKind,
-  SpeechStatus
+  PoolItem,
+  PoolSourceKind,
+  PoolItemStatus
 } from '../../../shared/types'
 
 function formatTime(ts: number): string {
@@ -72,7 +74,7 @@ const END_REASON_LABEL: Record<BroadcastEndReason, string> = {
   crash: '异常中断'
 }
 
-const STATUS_LABEL: Record<SpeechStatus, string> = {
+const STATUS_LABEL: Record<PoolItemStatus, string> = {
   pending: '待合成',
   synthesizing: '合成中',
   ready: '未播',
@@ -85,7 +87,7 @@ const STATUS_LABEL: Record<SpeechStatus, string> = {
 }
 
 /** 话术来源中文名（与 LivePage 的 SOURCE_LABEL 同一口径） */
-const SOURCE_LABEL: Record<SpeechSourceKind, string> = {
+const SOURCE_LABEL: Record<PoolSourceKind, string> = {
   scene: '剧情',
   reply: '回复',
   interact: '互动',
@@ -115,6 +117,7 @@ export function SessionsPage() {
   useEffect(() => {
     void refresh()
   }, [refresh])
+  useDataRefresh(['sessions'], () => void refresh())
 
   // refresh 会随节目筛选换引用，直接进依赖会让定时器被无关重渲染反复重建；
   // 这里用 ref 镜像最新实现（React 19 虽有 useEffectEvent，但项目里既有的最新值镜像一律是 ref + effect，不单独引新写法）
@@ -154,7 +157,11 @@ export function SessionsPage() {
         {!detailId && (
           <>
             <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">每场开播的实际播出、评论与事件留档</p>
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              <Button variant="ghost" size="sm" className="h-8 text-xs" title="重新拉取场次（收播/agent 改动会自动刷新，这里是手动兜底）" onClick={() => void refresh()}>
+                <RefreshCw className="size-3.5" />
+                刷新
+              </Button>
               <Select value={programFilter || 'all'} onValueChange={(v) => setProgramFilter(v === 'all' ? '' : v)}>
                 <SelectTrigger className="h-8 w-44">
                   <SelectValue />
@@ -244,7 +251,7 @@ function SessionDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null)
   const [stats, setStats] = useState<SessionStats | null>(null)
   const [exportOpen, setExportOpen] = useState(false)
-  const [playingId, setPlayingId] = useState<string | null>(null)
+  const auditionState = useAuditionStore()
 
   const refresh = useCallback(async () => {
     setDetail(await window.api.session.detail(id))
@@ -253,10 +260,11 @@ function SessionDetailView({ id, onBack }: { id: string; onBack: () => void }) {
   useEffect(() => {
     void refresh()
   }, [refresh])
+  useDataRefresh(['sessions'], () => void refresh())
 
   const timeline = useMemo(() => {
     if (!detail) return []
-    const rows: ({ ts: number } & ({ kind: 'speech'; item: SpeechItem } | { kind: 'event'; event: BroadcastEvent }))[] =
+    const rows: ({ ts: number } & ({ kind: 'speech'; item: PoolItem } | { kind: 'event'; event: BroadcastEvent }))[] =
       [
         ...detail.items.map((item) => ({ kind: 'speech' as const, item, ts: item.playedAt ?? item.createdAt })),
         ...detail.events.map((event) => ({ kind: 'event' as const, event, ts: event.ts }))
@@ -264,17 +272,6 @@ function SessionDetailView({ id, onBack }: { id: string; onBack: () => void }) {
     rows.sort((a, b) => a.ts - b.ts)
     return rows
   }, [detail])
-
-  const play = async (item: SpeechItem) => {
-    if (playingId) return
-    setPlayingId(item.id)
-    try {
-      const result = await window.api.session.playItem(item.id)
-      if (!result.ok) toast.warning('试听失败', { description: result.error })
-    } finally {
-      setPlayingId(null)
-    }
-  }
 
   const remove = async () => {
     const result = await window.api.session.remove(id)
@@ -354,12 +351,25 @@ function SessionDetailView({ id, onBack }: { id: string; onBack: () => void }) {
                           variant="ghost"
                           size="icon"
                           className="ml-auto size-6"
-                          title="试听这条"
-                          disabled={playingId !== null}
-                          onClick={() => void play(row.item)}
+                          title={
+                            auditionState.key === `session:${row.item.id}` && auditionState.playing
+                              ? auditionState.paused
+                                ? '继续试听'
+                                : '暂停试听'
+                              : '试听这条'
+                          }
+                          onClick={() =>
+                            audition.toggle({
+                              key: `session:${row.item.id}`,
+                              title: auditionTitle(row.item.text),
+                              audioPath: row.item.audioPath!
+                            })
+                          }
                         >
-                          {playingId === row.item.id ? (
-                            <Loader2 className="size-3.5 animate-spin" />
+                          {auditionState.key === `session:${row.item.id}` &&
+                          auditionState.playing &&
+                          !auditionState.paused ? (
+                            <Pause className="size-3.5" />
                           ) : (
                             <Play className="size-3.5" />
                           )}
@@ -407,7 +417,7 @@ function SessionDetailView({ id, onBack }: { id: string; onBack: () => void }) {
               这场没有观众互动
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 [&>*]:min-w-0 xl:grid-cols-3">
               {detail.viewers.map((viewer) => (
                 <div key={viewer.name} className="rounded-lg border bg-card px-3 py-2.5">
                   <div className="flex items-center justify-between gap-2">

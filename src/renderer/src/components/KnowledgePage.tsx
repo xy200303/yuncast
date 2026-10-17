@@ -18,6 +18,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { ENTRY_KINDS, ENTRY_KIND_LABEL } from '../../../shared/types'
 import type { EntryKind, KnowledgeFile, KnowledgeKind, Product, ProductInput, Script, ScriptInput, ScriptScene } from '../../../shared/types'
 import { useAppStore } from '../stores/useAppStore'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import { AssetStaleBanner } from './AssetStaleBanner'
 
 const KIND_LABEL: Record<KnowledgeKind, string> = {
@@ -71,6 +72,7 @@ export function KnowledgePage() {
   useEffect(() => {
     void reload()
   }, [reload])
+  useDataRefresh(['knowledge'], () => void reload())
 
   // 页面常驻不卸载（App 用显隐切页）：每次回到知识库重新拉一遍。
   // 别的内容源也会改这份数据——主播的 save_knowledge_entry / connector 同步商品——
@@ -198,12 +200,12 @@ export function KnowledgePage() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 [&>*]:min-w-0 xl:grid-cols-3">
               {visibleProducts.map((product) => (
                 <Card key={product.id} className="group/card gap-2 py-3">
                   <CardHeader className="px-4">
                     <div className="flex items-center justify-between gap-2">
-                      <CardTitle className="min-w-0 truncate text-sm">
+                      <CardTitle className="min-w-0 flex-1 truncate text-sm">
                         {product.name}
                         {product.kind === 'book' && product.meta.author ? (
                           <span className="ml-1.5 text-xs font-normal text-muted-foreground">
@@ -281,11 +283,11 @@ export function KnowledgePage() {
               <p className="text-sm">剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾），节目绑定后主播按场推进</p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 xl:grid-cols-3">
+            <div className="grid grid-cols-2 gap-3 [&>*]:min-w-0 xl:grid-cols-3">
               {scripts.map((script) => (
                 <Card key={script.id} className="group/card gap-2 py-3">
                   <CardHeader className="px-4">
-                    <CardTitle className="min-w-0 truncate text-sm">{script.title}</CardTitle>
+                    <CardTitle className="min-w-0 flex-1 truncate text-sm">{script.title}</CardTitle>
                   </CardHeader>
                   <CardContent className="px-4">
                     <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">{script.theme || '（没写主题）'}</p>

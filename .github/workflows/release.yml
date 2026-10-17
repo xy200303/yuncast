@@ -32,6 +32,12 @@ jobs:
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: npm run build
+      # CLI 是 Go 静态二进制（resources/bin/yuncast），打包前必须有产物
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: Build CLI
+        run: node scripts/build-cli.mjs
       - name: Package
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false

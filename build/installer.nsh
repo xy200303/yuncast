@@ -1,11 +1,20 @@
 ; YunCast 安装钩子：把 CLI（resources\bin\yuncast.exe）注册进用户 PATH，卸载时摘除。
 ; per-machine 安装关闭（perMachine: false），所以写 HKCU；装完广播 WM_SETTINGCHANGE，
 ; 之后新开的终端/PowerShell 直接敲 yuncast 就能用。
+;
+; 注意：electron-builder 把本文件同时 include 进安装器与卸载器，且 NSIS 以 -WX 编译
+;（警告即错误）。StrFunc 会为每个“声明”生成一个函数，若某个函数生成后没人调用就会
+; 触发 warning 6010。所以按上下文只声明真正用到的版本：
+; - 安装器（BUILD_UNINSTALLER 未定义）：用 ${StrStr} / ${StrRep}
+; - 卸载器（BUILD_UNINSTALLER 已定义）：用 ${UnStrRep}
 !include "StrFunc.nsh"
-; StrFunc 的函数要先零参声明生成，后面才能带参调用；卸载脚本里用 Un 前缀的版本
-${StrStr}
-${StrRep}
-${UnStrRep}
+
+!ifdef BUILD_UNINSTALLER
+  ${UnStrRep}
+!else
+  ${StrStr}
+  ${StrRep}
+!endif
 
 !macro customInstall
   ReadRegStr $0 HKCU "Environment" "Path"

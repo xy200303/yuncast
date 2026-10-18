@@ -1422,11 +1422,13 @@ if (!single) {
     win.focus()
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     Menu.setApplicationMenu(null)
     watchSystemChrome()
 
     const storage = new StorageService()
+    // 结构迁移必须先落地再装配服务：迁移会改表结构，服务构造时就假定结构已就位
+    await storage.init()
     // 命令行（Go 版，resources/bin/yuncast）在应用没开时按这个把应用拉起来
     storage.setLaunch(process.execPath, app.isPackaged ? [] : [app.getAppPath()])
     linkCliToPath()

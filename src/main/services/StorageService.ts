@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
 import { hotWords } from './statsWords'
+import { runMigrations } from '../db/migrator'
 import {
   DEFAULT_CONFIG,
   DEFAULT_DIRECTOR_CONFIG,
@@ -327,9 +328,20 @@ export class StorageService {
       // 端点文件跟随最新配置（端口/开关可能被外部改过）
       this.writeMcpFile()
     }
-    // 节目化迁移（破坏性，docs/10 §9.4）：live_plans/modes/plan_sessions/plan_id 列 → programs/program_id。
-    // 必须跑在相关业务表 CREATE 之前：迁移负责把旧结构抬到最终结构，CREATE 只兜全新库
-    this.migratePrograms()
+  }
+
+  /**
+   * 结构迁移 + 建表 + 启动清扫。**必须在 app.whenReady 里 await 过再往下装配服务**——
+   * 本类其余方法都假定结构已经就位。
+   *
+   * 顺序不能换：迁移跑在建表之前。老库要把旧表抬到最终结构（比如 live_plans → programs），
+   * 建表只兜全新库；反过来先建表会让迁移撞上"表已存在"或漏掉该改的列。
+   */
+  async init(): Promise<void> {
+    const report = await runMigrations(this.db)
+    if (report.applied.length > 0) {
+      console.log(`[YunCast] 结构迁移完成：${report.applied.length} 条，当前版本 v${report.version}`)
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS pool_items (
         id TEXT PRIMARY KEY,
@@ -1269,323 +1281,6 @@ export class StorageService {
       if (migrated > 0 || unmigratable > 0) {
         console.log(`[凭据] ${table} 旧密文迁移：转 v2 ${migrated} 行；解不开 ${unmigratable} 个字段（读出时按缺失提示重填）`)
       }
-    }
-  }
-
-    /** 数据库结构版本（PRAGMA user_version）：1 = 节目化改造（programs 落成，modes/live_plans/plan_id 全删）；2 = 预制音频资产（utterances.rendered 列，docs/10 §9.6）；3 = 用量与成本采集（usage_records/tts_records 表 + event_log.program_id 列 + llm_connections.model_prices 列）；4 = 底层表名改造（agents→personas / utterances→draft_units / speech_items→pool_items / model_connections→llm_connections / program_sessions→director_sessions / broadcast_sessions→live_sessions）；5 = 主播卡去掉大脑/角色/当前出镜旧列；6 = 删 model_profile_id 死列；7 = 节目不再存声音配置（audio_config 的 instruction 提到顶层）；10 = 命名收口（presenter_* → persona_*、blob 引用类型跟新实体名）；11 = 主播卡 id 前缀 anchor-* → persona-*（含节目卡司/底稿/时间线/场次快照里的引用）；12 = 素材统一（products→materials、knowledge_files→material_files，knowledge_scope 键改名）；14 = 编排并入节目（programs.plan），script_id 与 scripts 表退役；15 = 素材支持正文与链接附件，节目素材范围只留 materials */
-  private static readonly DB_VERSION = 15
-
-  /**
-   * 节目化迁移（docs/10 §9.4，破坏性，一次性）：事务内直接得到最终表结构，不留兼容分支。
-   * v1：live_plans → 建新 programs（复制仍有价值的字段，节目新字段给默认值，mode_id/voice_id/
-   * planned_minutes/gen_config/style_hint 随之入土）；plan_sessions → program_sessions；
-   * utterances/director_timeline 的 plan_id 列改名 program_id；modes 表删除。
-   * v2：utterances 加 rendered 列（预制音频资产 JSON；scripts.scenes[].rendered 是可选字段不用迁）。
-   * 迁完用 PRAGMA table_info 校验旧表旧列不存在，不一致直接抛错（启动失败好过脏结构）。
-   */
-  private migratePrograms(): void {
-    const version = Number(
-      (this.db.prepare('PRAGMA user_version').get() as Record<string, unknown>).user_version ?? 0
-    )
-    if (version >= StorageService.DB_VERSION) return
-    const hasTable = (name: string): boolean =>
-      this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
-    const columnsOf = (name: string): Set<string> =>
-      new Set(
-        this.db.prepare(`PRAGMA table_info(${name})`).all().map((row) => str((row as Record<string, unknown>).name))
-      )
-    this.db.exec('BEGIN')
-    try {
-      if (version < 1) {
-        if (hasTable('live_plans')) {
-          // 老库的 knowledge_scope 列是后期补的，补不齐就没法复制（其余列自首版就有）
-          this.ensureColumn('live_plans', 'knowledge_scope', "TEXT NOT NULL DEFAULT '{}'")
-          this.db.exec(`
-            CREATE TABLE programs (
-              id TEXT PRIMARY KEY,
-              name TEXT NOT NULL,
-              theme TEXT NOT NULL DEFAULT '',
-              content_type TEXT NOT NULL DEFAULT 'solo',
-              broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
-              finish_mode TEXT NOT NULL DEFAULT 'loop',
-              allow_live_events INTEGER NOT NULL DEFAULT 1,
-              enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
-                    script_id TEXT,
-              knowledge_scope TEXT NOT NULL DEFAULT '{}',
-              current_scene_idx INTEGER NOT NULL DEFAULT 0,
-              created_at INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL
-            )
-          `)
-          this.db.exec(`
-            INSERT INTO programs (id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at)
-            SELECT id, name, theme, script_id, current_scene_idx, knowledge_scope, created_at, updated_at FROM live_plans
-          `)
-          this.db.exec('DROP TABLE live_plans')
-        }
-        if (hasTable('plan_sessions')) {
-          this.db.exec(`
-            CREATE TABLE program_sessions (
-              program_id TEXT PRIMARY KEY,
-              purpose TEXT NOT NULL DEFAULT 'prep',
-              entries TEXT NOT NULL DEFAULT '[]',
-              updated_at INTEGER NOT NULL
-            )
-          `)
-          this.db.exec(
-            'INSERT INTO program_sessions (program_id, purpose, entries, updated_at) SELECT plan_id, purpose, entries, updated_at FROM plan_sessions'
-          )
-          this.db.exec('DROP TABLE plan_sessions')
-        }
-        // 外键列 plan_id → program_id（SQLite ≥ 3.25 的 RENAME COLUMN，索引定义随列自动改）
-        if (hasTable('utterances') && columnsOf('utterances').has('plan_id')) {
-          this.db.exec('ALTER TABLE utterances RENAME COLUMN plan_id TO program_id')
-        }
-        if (hasTable('director_timeline') && columnsOf('director_timeline').has('plan_id')) {
-          this.db.exec('ALTER TABLE director_timeline RENAME COLUMN plan_id TO program_id')
-        }
-        // 直播模式预设包整体退役
-        if (hasTable('modes')) this.db.exec('DROP TABLE modes')
-        // 校验：旧表旧列必须不存在
-        for (const table of ['live_plans', 'plan_sessions', 'modes']) {
-          if (hasTable(table)) throw new Error(`旧表 ${table} 迁移后仍存在`)
-        }
-        if (hasTable('programs')) {
-          const legacy = ['mode_id', 'voice_id', 'planned_minutes', 'gen_config', 'style_hint'].filter((column) =>
-            columnsOf('programs').has(column)
-          )
-          if (legacy.length > 0) throw new Error(`programs 残留旧列：${legacy.join(', ')}`)
-        }
-        for (const table of ['utterances', 'director_timeline']) {
-          if (hasTable(table) && columnsOf(table).has('plan_id')) throw new Error(`${table}.plan_id 迁移后仍存在`)
-        }
-      }
-      if (version < 2 && hasTable('utterances')) {
-        // 预制音频资产列（RenderedAudioRef JSON）；全新库此时表还没建，由后面的 ensureColumn 兜底
-        this.ensureColumn('utterances', 'rendered', 'TEXT')
-      }
-      if (version < 3) {
-        // 用量与成本采集：两张新表 + event_log 绑节目列 + 接入的模型单价列。
-        // 都是纯增量：全新库由构造器的 CREATE IF NOT EXISTS / ensureColumn 兜底，这里管老库抬升
-        this.db.exec(`
-          CREATE TABLE IF NOT EXISTS usage_records (
-            id TEXT PRIMARY KEY,
-            ts INTEGER NOT NULL,
-            program_id TEXT,
-            persona_id TEXT NOT NULL DEFAULT '',
-            connection_id TEXT NOT NULL DEFAULT '',
-            model TEXT NOT NULL DEFAULT '',
-            kind TEXT NOT NULL DEFAULT 'chat',
-            input_tokens INTEGER NOT NULL DEFAULT 0,
-            output_tokens INTEGER NOT NULL DEFAULT 0,
-            cache_read INTEGER NOT NULL DEFAULT 0,
-            cache_write INTEGER NOT NULL DEFAULT 0,
-            estimated INTEGER NOT NULL DEFAULT 0,
-            cost REAL
-          )
-        `)
-        this.db.exec(`
-          CREATE TABLE IF NOT EXISTS tts_records (
-            id TEXT PRIMARY KEY,
-            ts INTEGER NOT NULL,
-            program_id TEXT,
-            connection_id TEXT NOT NULL DEFAULT '',
-            model_id TEXT NOT NULL DEFAULT '',
-            voice_id TEXT NOT NULL DEFAULT '',
-            chars INTEGER NOT NULL DEFAULT 0,
-            cost REAL
-          )
-        `)
-        if (hasTable('event_log')) this.ensureColumn('event_log', 'program_id', 'TEXT')
-        if (hasTable('model_connections')) {
-          this.ensureColumn('model_connections', 'model_prices', "TEXT NOT NULL DEFAULT '{}'")
-        }
-        // 校验：v3 产物必须都在
-        for (const table of ['usage_records', 'tts_records']) {
-          if (!hasTable(table)) throw new Error(`v3 迁移后 ${table} 表不存在`)
-        }
-        if (hasTable('event_log') && !columnsOf('event_log').has('program_id')) {
-          throw new Error('event_log.program_id 迁移后仍不存在')
-        }
-      }
-      // v4：底层表名改造（agents→personas / utterances→draft_units / speech_items→pool_items /
-      // model_connections→llm_connections / program_sessions→director_sessions / broadcast_sessions→live_sessions）
-      if (version < 4) {
-        const renames: [string, string][] = [
-          ['agents', 'personas'],
-          ['utterances', 'draft_units'],
-          ['speech_items', 'pool_items'],
-          ['model_connections', 'llm_connections'],
-          ['program_sessions', 'director_sessions'],
-          ['broadcast_sessions', 'live_sessions']
-        ]
-        for (const [from, to] of renames) {
-          if (hasTable(from) && !hasTable(to)) this.db.exec(`ALTER TABLE ${from} RENAME TO ${to}`)
-        }
-        // 旧索引名跟着表走会保留旧名：删掉，由 init 里的 CREATE INDEX 用新名重建
-        for (const index of ['speech_items_status', 'utterances_program', 'utterances_plan', 'broadcast_sessions_program']) {
-          this.db.exec(`DROP INDEX IF EXISTS ${index}`)
-        }
-        for (const [, to] of renames) {
-          if (!hasTable(to)) throw new Error(`v4 迁移后 ${to} 表不存在`)
-        }
-      }
-      // v7：节目不再存声音配置——audio_config 列里的 instruction 提到顶层 instruction 列，然后整列删除
-      // （迁移跑在 CREATE 之前，instruction 列要先补上）
-      if (version < 7) {
-        if (hasTable('programs') && !columnsOf('programs').has('instruction')) {
-          this.db.exec('ALTER TABLE programs ADD COLUMN instruction TEXT')
-        }
-        if (hasTable('programs') && columnsOf('programs').has('audio_config')) {
-          const rows = this.db.prepare('SELECT id, audio_config FROM programs').all() as Record<string, unknown>[]
-          const update = this.db.prepare('UPDATE programs SET instruction = ? WHERE id = ?')
-          for (const row of rows) {
-            const cfg = parseJson<{ instruction?: string }>(row.audio_config, {})
-            const instruction = typeof cfg.instruction === 'string' ? cfg.instruction.trim() : ''
-            if (instruction) update.run(instruction, str(row.id))
-          }
-          this.db.exec('ALTER TABLE programs DROP COLUMN audio_config')
-        }
-      }
-      // v6：最后一个死列（model_profile_id 是更早的「模型档案」残留，代码零引用）
-      if (version < 6) {
-        if (columnsOf('personas').has('model_profile_id')) {
-          this.db.exec('ALTER TABLE personas DROP COLUMN model_profile_id')
-        }
-      }
-      // v5：字段改造——删掉主播卡的废弃列（大脑/角色/当前出镜时代的残留），
-      // 并把与新表名不一致的列改名（session_id→live_session_id、source_agent_id→source_actor_id、
-      // origin_utterance_id→origin_draft_unit_id，pool_items 与 broadcast_events 同步）
-      if (version < 5) {
-        const personaCols = columnsOf('personas')
-        for (const col of ['roles', 'active', 'model_connection_id', 'model']) {
-          if (personaCols.has(col)) this.db.exec(`ALTER TABLE personas DROP COLUMN ${col}`)
-        }
-        const renameColumn = (table: string, cols: Set<string>, from: string, to: string) => {
-          if (cols.has(from) && !cols.has(to)) this.db.exec(`ALTER TABLE ${table} RENAME COLUMN ${from} TO ${to}`)
-        }
-        const poolCols = columnsOf('pool_items')
-        renameColumn('pool_items', poolCols, 'session_id', 'live_session_id')
-        renameColumn('pool_items', poolCols, 'source_agent_id', 'source_actor_id')
-        renameColumn('pool_items', poolCols, 'origin_utterance_id', 'origin_draft_unit_id')
-        renameColumn('broadcast_events', columnsOf('broadcast_events'), 'session_id', 'live_session_id')
-        this.db.exec('DROP INDEX IF EXISTS broadcast_events_session')
-      }
-      // v15：素材附件支持链接；条目加正文；节目的素材范围只留 materials（附件随条目走）
-      if (version < 15) {
-        if (hasTable('materials') && !columnsOf('materials').has('content')) {
-          this.db.exec("ALTER TABLE materials ADD COLUMN content TEXT NOT NULL DEFAULT ''")
-        }
-        if (hasTable('material_files') && !columnsOf('material_files').has('type')) {
-          this.db.exec("ALTER TABLE material_files ADD COLUMN type TEXT NOT NULL DEFAULT 'file'")
-        }
-        if (hasTable('material_files') && !columnsOf('material_files').has('url')) {
-          this.db.exec("ALTER TABLE material_files ADD COLUMN url TEXT NOT NULL DEFAULT ''")
-        }
-        if (hasTable('programs') && columnsOf('programs').has('knowledge_scope')) {
-          const rows = this.db.prepare('SELECT id, knowledge_scope FROM programs').all() as Record<string, unknown>[]
-          const update = this.db.prepare('UPDATE programs SET knowledge_scope = ? WHERE id = ?')
-          for (const row of rows) {
-            const scope = parseJson<{ materials?: unknown }>(row.knowledge_scope, {})
-            update.run(JSON.stringify({ materials: scope.materials ?? '*' }), str(row.id))
-          }
-        }
-      }
-      // v14：编排并入节目——programs.plan 存场景序列，script_id 与 scripts 表退役
-      if (version < 14) {
-        if (hasTable('programs') && !columnsOf('programs').has('plan')) {
-          this.db.exec(`ALTER TABLE programs ADD COLUMN plan TEXT NOT NULL DEFAULT '{"scenes":[]}'`)
-        }
-        if (hasTable('programs') && hasTable('scripts') && columnsOf('programs').has('script_id')) {
-          const rows = this.db.prepare('SELECT id, script_id FROM programs').all() as Record<string, unknown>[]
-          const getScenes = this.db.prepare('SELECT scenes FROM scripts WHERE id = ?')
-          const update = this.db.prepare('UPDATE programs SET plan = ? WHERE id = ?')
-          for (const row of rows) {
-            const scriptId = str(row.script_id)
-            if (!scriptId) continue
-            const hit = getScenes.get(scriptId) as Record<string, unknown> | undefined
-            if (!hit) continue
-            update.run(JSON.stringify({ scenes: parseJson(hit.scenes, []) }), str(row.id))
-          }
-        }
-        if (hasTable('programs') && columnsOf('programs').has('script_id')) {
-          this.db.exec('ALTER TABLE programs DROP COLUMN script_id')
-        }
-        this.db.exec('DROP TABLE IF EXISTS scripts')
-      }
-      // v12：素材统一——products → materials（条目），knowledge_files → material_files（附属于条目）；
-      // programs.knowledge_scope 的 products 键 → materials
-      if (version < 12) {
-        if (hasTable('products') && !hasTable('materials')) {
-          this.db.exec('ALTER TABLE products RENAME TO materials')
-        }
-        if (hasTable('knowledge_files') && !hasTable('material_files')) {
-          this.db.exec('ALTER TABLE knowledge_files RENAME TO material_files')
-        }
-        if (hasTable('material_files') && !columnsOf('material_files').has('material_id')) {
-          this.db.exec("ALTER TABLE material_files ADD COLUMN material_id TEXT NOT NULL DEFAULT ''")
-        }
-        if (hasTable('programs') && columnsOf('programs').has('knowledge_scope')) {
-          const rows = this.db.prepare('SELECT id, knowledge_scope FROM programs').all() as Record<string, unknown>[]
-          const update = this.db.prepare('UPDATE programs SET knowledge_scope = ? WHERE id = ?')
-          for (const row of rows) {
-            const scope = parseJson<Record<string, unknown>>(row.knowledge_scope, {})
-            if ('products' in scope || !('materials' in scope)) {
-              update.run(
-                JSON.stringify({ materials: scope.products ?? '*', files: scope.files ?? '*' }),
-                str(row.id)
-              )
-            }
-          }
-        }
-      }
-      // v11：id 前缀去掉历史品牌——主播卡 id `anchor-*` → `persona-*`。
-      // 主播卡 id 是外部可见的稳定寻址（节目卡司、底稿归属、对话时间线、场次快照都存着它），
-      // 所以一次把库里所有引用一起改写，不只是 personas.id。
-      if (version < 11) {
-        const rewrite = (table: string, column: string, quoted = false): void => {
-          if (!hasTable(table) || !columnsOf(table).has(column)) return
-          const col = quoted ? `"${column}"` : column
-          this.db
-            .prepare(`UPDATE ${table} SET ${col} = REPLACE(${col}, 'anchor-', 'persona-') WHERE ${col} LIKE '%anchor-%'`)
-            .run()
-        }
-        rewrite('personas', 'id')
-        rewrite('programs', 'persona_ids')
-        rewrite('draft_units', 'persona_id')
-        rewrite('director_timeline', 'payload')
-        rewrite('director_sessions', 'entries')
-        rewrite('live_sessions', 'cast', true)
-        rewrite('live_sessions', 'personas', true)
-        // 场次卡司快照列跟着改名：cast 是 SQL 关键字，之前一直带引号用，这里一并正名
-        if (hasTable('live_sessions') && columnsOf('live_sessions').has('cast') && !columnsOf('live_sessions').has('personas')) {
-          this.db.exec('ALTER TABLE live_sessions RENAME COLUMN "cast" TO personas')
-        }
-      }
-      // v10：命名收口——主播卡列名 presenter_* → persona_*；blob 引用类型跟着新实体名
-      // （utterance → draft_unit / speech_item → pool_item / utterance_rendered → draft_unit_rendered）
-      if (version < 10) {
-        const renameCol = (table: string, from: string, to: string) => {
-          const cols = columnsOf(table)
-          if (cols.has(from) && !cols.has(to)) this.db.exec(`ALTER TABLE ${table} RENAME COLUMN ${from} TO ${to}`)
-        }
-        if (hasTable('programs')) renameCol('programs', 'presenter_ids', 'persona_ids')
-        if (hasTable('draft_units')) renameCol('draft_units', 'presenter_id', 'persona_id')
-        if (hasTable('blob_refs')) {
-          const kindMap: [string, string][] = [
-            ['utterance', 'draft_unit'],
-            ['speech_item', 'pool_item'],
-            ['utterance_rendered', 'draft_unit_rendered']
-          ]
-          const update = this.db.prepare('UPDATE blob_refs SET owner_kind = ? WHERE owner_kind = ?')
-          for (const [from, to] of kindMap) update.run(to, from)
-        }
-      }
-      this.db.exec(`PRAGMA user_version = ${StorageService.DB_VERSION}`)
-      this.db.exec('COMMIT')
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
     }
   }
 

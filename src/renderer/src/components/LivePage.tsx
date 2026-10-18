@@ -119,7 +119,7 @@ const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page
   'voice-missing': { label: '去选音色', page: 'personas' },
   'tts-broken': { label: '去检查合成', pane: 'tts' },
   'voice-test': { label: '去测发音', pane: 'tts' },
-  'script-missing': { label: '去绑剧本', page: 'programs' },
+  'script-missing': { label: '去写编排', page: 'programs' },
   connector: { label: '去连接', pane: 'comment' },
   stream: { label: '去推流设置', pane: 'stream' }
 }

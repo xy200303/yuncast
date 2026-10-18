@@ -170,14 +170,14 @@ export class ProgramPlaybackService {
       }
     }
 
-    // ③ 剧本
+    // ③ 编排（节目的场景序列）
     const script = this.script.getScript(program.id)
     if (!script) {
-      items.push({ level: 'warn', code: 'script-missing', label: '节目没绑定剧本', detail: '主播只能自由发挥，节奏容易散' })
+      items.push({ level: 'warn', code: 'script-missing', label: '节目还没有编排', detail: '主播只能自由发挥，节奏容易散' })
     } else if (script.scenes.length === 0) {
-      items.push({ level: 'warn', code: 'script-missing', label: '剧本里没有场景', detail: '剧本至少要有一场' })
+      items.push({ level: 'warn', code: 'script-missing', label: '编排里没有场景', detail: '编排至少要有一场' })
     } else {
-      items.push({ level: 'ok', label: `剧本：${script.title}（${script.scenes.length} 场）` })
+      items.push({ level: 'ok', label: `编排：${script.title}（${script.scenes.length} 场）` })
     }
 
     // ④ 话术库（整库装载，不分场景）；即兴播出不要求底稿（docs/10 §7.1），跳过底稿检查
@@ -220,7 +220,7 @@ export class ProgramPlaybackService {
         label: '还没有底稿',
         detail: script
           ? '点下方「去生成底稿」，让主播按场景写稿'
-          : '先给节目绑一个剧本，主播才能按场景出整版底稿'
+          : '先给节目配一份编排，主播才能按场景出整版底稿'
       })
     } else if (ready.length === 0) {
       items.push({

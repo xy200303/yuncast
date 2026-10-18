@@ -971,7 +971,7 @@ export class DraftUnitService {
       if (target.kind === 'scene') {
         const script = this.script.getScript(program.id)
         const scene = script?.scenes.find((s) => s.id === target.id)
-        if (!script || !scene) return { ok: false, error: '场景不存在（节目没绑剧本或场景已删）' }
+        if (!script || !scene) return { ok: false, error: '场景不存在（节目还没编排或场景已删）' }
         fingerprint = sceneFingerprint(narrativeOrder(all.filter((u) => u.sceneId === scene.id)), styleSalt)
       } else {
         const draftUnit = all.find((u) => u.id === target.id)

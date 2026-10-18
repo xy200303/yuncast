@@ -83,8 +83,18 @@ const tracks = [
 /** 更新日志：只写仓库里查得到的事实（与 CHANGELOG.md 对齐） */
 const changelog = [
   {
-    v: 'v0.3.0',
+    v: 'v0.3.1',
     when: '最新',
+    items: [
+      '数据库文件改名 yuncast.db：升级首次启动自动搬（含 -wal/-shm），数据一行不动',
+      '结构迁移交给 umzug：一个版本一个文件，执行明细落 _migrations，失败整体回滚',
+      '修全新安装起不来：迁移里那句无条件断言在空库上必炸，升级上来的老库反而没事',
+      '术语收尾：剧本 → 编排、知识库 → 素材，应用与文档同步'
+    ]
+  },
+  {
+    v: 'v0.3.0',
+    when: '命名收口',
     items: [
       '编排并入节目：独立的「剧本」表退役，场景序列就是节目本身，节目卡上直接「编排」',
       '素材统一：条目带正文 / 附件 / 链接，节目只绑条目，主播需要时才读（material_read）',
@@ -655,8 +665,8 @@ onUnmounted(() => {
         target="_blank"
         rel="noreferrer"
       >
-        <span class="notice-tag">v0.3.0</span>
-        <span class="notice-text">刚发布：编排并入节目、素材统一、克隆验收 · 查看更新说明</span>
+        <span class="notice-tag">v0.3.1</span>
+        <span class="notice-text">刚发布：数据库改名与迁移重构，修全新安装无法启动 · 查看更新说明</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">

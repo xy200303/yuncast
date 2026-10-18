@@ -1,4 +1,6 @@
+import { BrowserWindow } from 'electron'
 import { Type } from 'typebox'
+import { IPC } from '../../../shared/ipc-channels'
 import { TTS_PROVIDER_SHORT } from '../../../shared/types'
 import { defineTool, type ToolCtx } from './types'
 

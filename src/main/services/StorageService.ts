@@ -3093,10 +3093,13 @@ export class StorageService {
         program.createdAt,
         program.updatedAt
       )
+    // 节目行变了就广播：agent/MCP/CLI 建的节目，界面要立刻看得到（之前漏了这条，录制时"建了节目但页面没刷新"）
+    this.onDataChanged?.('programs', program.id)
   }
 
   programDelete(id: string): void {
     this.db.prepare('DELETE FROM programs WHERE id = ?').run(id)
+    this.onDataChanged?.('programs', id)
     // 走 draftUnitDeleteWhere 而不是裸 DELETE：BlobStore 引用要逐条解除
     this.draftUnitDeleteWhere(id)
     // 场记级联：节目的历史场次一起删（播出条目的 blob 引用在 sessionDelete 里逐条解除）

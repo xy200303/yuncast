@@ -670,7 +670,7 @@ onUnmounted(() => {
           </a>
           <button v-press class="btn ghost" type="button" @click="openVideo">
             <span class="btn-ico" v-html="ICONS.play" />
-            看演示（1 分 44 秒）
+            看演示（1 分 08 秒）
           </button>
           <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">使用文档</a>
         </div>
@@ -680,7 +680,7 @@ onUnmounted(() => {
             <div class="window">
               <div class="window-bar"><i /><i /><i /><span class="window-url">小云播客坊 YunCast</span></div>
               <video class="hero-video" src="/demo-loop.mp4" poster="/demo-poster.jpg" autoplay muted loop playsinline />
-              <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放产品自述">
+              <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放功能演示">
                 <span v-html="ICONS.play" />
               </button>
             </div>
@@ -851,17 +851,17 @@ onUnmounted(() => {
     <!-- ============ 演示视频 ============ -->
     <section id="demo" class="section alt video-section">
       <div class="inner">
-        <span class="eyebrow reveal"><i>05</i>产品自述</span>
-        <h2 class="display reveal">产品自述</h2>
+        <span class="eyebrow reveal"><i>05</i>功能演示</span>
+        <h2 class="display reveal">功能<span>演示</span></h2>
         <p class="lead reveal d1">
-          下面三段都是应用自己录的节目实录——画面里写的就是耳朵里听到的；功能演示（旁白由应用合成）正在重录。
+          上面这段 1 分 08 秒带配音，全部是真实操作——让导演写稿、一句话建节目、新建素材条目、看音色库、回直播台；下面三段是应用自己录的节目实录，画面里写的就是耳朵里听到的。
         </p>
         <div class="video-wrap reveal d2">
           <video
             ref="videoEl"
             class="video-player"
-            src="/demo.mp4"
-            poster="/demo-poster.jpg"
+            src="/demo-feature.mp4"
+            poster="/demo-feature.jpg"
             controls
             preload="none"
             playsinline
@@ -878,7 +878,7 @@ onUnmounted(() => {
           </figure>
         </div>
         <ul class="video-notes reveal d3">
-          <li>上面是产品自述（1 分 44 秒）；带旁白的功能演示正在重录，录好会替换到这里</li>
+          <li>上面是功能演示（1 分 08 秒）：让导演写稿 → 一句话建节目 → 新建素材条目 → 音色库 → 回直播台；旁白本身就是应用内克隆音色合成的</li>
           <li><b>三段 50 秒节目实录</b>：有声书（全部做好再播）、带货（边播边备）、跨境（English 多语言）</li>
           <li>节目 = 配置 + 编排（场景序列）+ 卡司 + 素材范围；播到哪一场，左边话术池就高亮到哪一段</li>
           <li>素材是唯一挂料入口：条目里可以写正文、传附件、贴链接，主播需要时才读</li>
@@ -1054,11 +1054,11 @@ $ npm run dev</code></pre>
         <header>
           <div>
             <strong>小云播客坊 · 功能演示</strong>
-            <span>1 分 44 秒 · 产品自述</span>
+            <span>1 分 08 秒 · 真实操作 + 应用合成配音</span>
           </div>
           <button type="button" class="modal-close" aria-label="关闭" @click="closeVideo">✕</button>
         </header>
-        <video src="/demo.mp4" controls autoplay playsinline />
+        <video src="/demo-feature.mp4" controls autoplay playsinline />
       </div>
     </div>
   </div>

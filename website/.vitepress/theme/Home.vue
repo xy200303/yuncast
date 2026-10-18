@@ -129,6 +129,34 @@ const localFirst = [
   }
 ]
 
+/** 三个节目各录一段：同一条界面，三种形态 */
+const demos = [
+  {
+    key: 'reading',
+    title: '深夜朗读 · 有声书形态',
+    desc: '全部做好再播：章节先整体合成，开播按顺序念，段落带气口与情绪标记',
+    src: '/demos/demo-reading.mp4',
+    poster: '/demos/demo-reading.jpg',
+    meta: '云溪 · 中文 · 50 秒'
+  },
+  {
+    key: 'commerce',
+    title: '抖音带货 · 边播边备',
+    desc: '滚动合成：话术池见底自动续写，开播中改稿、插播、催单都在同一屏',
+    src: '/demos/demo-commerce.mp4',
+    poster: '/demos/demo-commerce.jpg',
+    meta: '小满 · 中文 · 50 秒'
+  },
+  {
+    key: 'crossborder',
+    title: '跨境好物 · 英文直播',
+    desc: '多语言节目：稿子、演法、合成语言都按 English 走，成交话术一套英文模板',
+    src: '/demos/demo-crossborder.mp4',
+    poster: '/demos/demo-crossborder.jpg',
+    meta: 'Ava · English · 50 秒'
+  }
+]
+
 /** 三种播出方式：对应「合成策略 / 播放策略」，写法与节目编辑弹窗里的选项一致 */
 const modes = [
   {
@@ -166,7 +194,7 @@ const pipeline = [
 const showcase = [
   { src: shotPrograms, title: '节目', desc: '内容类型 × 播出方式 × 播完策略，底稿与音频状态直接标在卡上' },
   { src: shotAnchors, title: '主播团', desc: '人设卡：名字、音色、性格、口癖、禁区，一个主播串多个节目' },
-  { src: shotKnowledge, title: '知识库', desc: '条目 / 资料文件 / 剧本三栏，报价只认这里核过的价格' },
+  { src: shotKnowledge, title: '素材', desc: '条目带正文、附件与链接；报价只认这里核过的价格' },
   { src: shotVoices, title: '音色库', desc: '云端音色与克隆音色，克隆前可试听，音色绑死接入与模型' },
   { src: shotSessions, title: '场次记录', desc: '每场留档，逐条试听、整场导出、观众画像' },
   { src: shotStats, title: '统计', desc: '概览、排行与热词、用量，按节目归组看 30 天趋势' }
@@ -826,8 +854,8 @@ onUnmounted(() => {
         <span class="eyebrow reveal"><i>05</i>产品自述</span>
         <h2 class="display reveal">产品自述</h2>
         <p class="lead reveal d1">
-          1 分 44 秒，这一场没有第三方解说：稿子存在底稿库，声音由应用自己合成，
-          开播后按章节顺序念出来——听到的就是屏幕上写着的那 12 条。
+          下面四段都是应用自己录的：一个节目一种形态。稿子存在底稿库，声音由应用自己合成，
+          开播后按编排顺序念出来——画面里写的就是耳朵里听到的。
         </p>
         <div class="video-wrap reveal d2">
           <video
@@ -840,10 +868,21 @@ onUnmounted(() => {
             playsinline
           />
         </div>
+        <div class="demo-grid reveal d3">
+          <figure v-for="d in demos" :key="d.key" class="demo-card">
+            <video :src="d.src" :poster="d.poster" controls preload="none" playsinline />
+            <figcaption>
+              <strong>{{ d.title }}</strong>
+              <p>{{ d.desc }}</p>
+              <span class="demo-meta">{{ d.meta }}</span>
+            </figcaption>
+          </figure>
+        </div>
         <ul class="video-notes reveal d3">
-          <li>节目是自己建的：内容类型「单人」、播出方式「全部做好再播」、播完即停</li>
-          <li>12 条底稿先整体合成，再开播；播到哪一条，画面上就高亮哪一条</li>
-          <li>声音来自应用内的语音合成（出镜主播「小陶」，苏瑶音色，语速 1.12）</li>
+          <li>三段 50 秒短片对应三个节目：有声书（全部做好再播）、带货（边播边备）、跨境（English 多语言）</li>
+          <li>节目 = 配置 + 编排（场景序列）+ 卡司 + 素材范围；播到哪一场，左边话术池就高亮到哪一段</li>
+          <li>素材是唯一挂料入口：条目里可以写正文、传附件、贴链接，主播需要时才读</li>
+          <li>播完没内容会自动暂停（不是空转），新内容进池自动接着播</li>
           <li>演示里的底稿、节目与评论是样例数据，用来展示流程</li>
           <li>想看每一步的细节说明，翻 <a :href="withBase('/guide/interface')">界面一览</a></li>
         </ul>
@@ -1757,7 +1796,32 @@ $ npm run dev</code></pre>
   color: var(--vp-c-text-3);
   line-height: 1.9;
 }
+
 .video-notes a { color: var(--yc-accent); }
+.demo-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  max-width: 1180px;
+  margin: 22px auto 0;
+}
+@media (max-width: 900px) {
+  .demo-grid { grid-template-columns: 1fr; }
+}
+.demo-card {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--yc-radius-lg);
+  border: 1px solid var(--yc-line);
+  background: #fff;
+  box-shadow: var(--yc-shadow-md);
+}
+.demo-card video { display: block; width: 100%; aspect-ratio: 16 / 10; background: #1a1a19; }
+.demo-card figcaption { padding: 12px 14px 14px; }
+.demo-card strong { display: block; font-size: 14px; }
+.demo-card p { margin: 6px 0 8px; font-size: 12.5px; line-height: 1.7; color: var(--vp-c-text-3); }
+.demo-card .demo-meta { font-size: 11.5px; letter-spacing: 0.02em; color: var(--yc-accent); }
 
 /* 视频弹窗 */
 .video-modal {

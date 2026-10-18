@@ -13,7 +13,6 @@
   ${UnStrRep}
 !else
   ${StrStr}
-  ${StrRep}
 !endif
 
 !macro customInstall

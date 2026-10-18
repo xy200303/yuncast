@@ -65,7 +65,7 @@ import {
 } from './providers/registry'
 
 /**
- * 持久化层（统一 SQLite，userData/agentanchor.db，Node 内置、WAL、免原生重编译）：
+ * 持久化层（统一 SQLite，userData/yuncast.db，Node 内置、WAL、免原生重编译）：
  * - 应用配置：app_config 表单行 JSON（tts.accessToken / tts.apiKey / llm.apiKey 等加密内联）；
  *   旧版 config.json 启动时一次性迁入并改名留底
  * - 业务数据：各业务表（话术池/节目/底稿/触发器…）
@@ -281,13 +281,37 @@ export class StorageService {
   private launchApp = ''
   private launchArgs: string[] = []
 
+  /** 数据库文件名：项目早期叫 agentanchor.db，现在跟产品名统一成 yuncast.db */
+  private static readonly DB_FILE = 'yuncast.db'
+  private static readonly LEGACY_DB_FILE = 'agentanchor.db'
+
+  /**
+   * 开库路径：老库在就原地改名（-wal/-shm 一起搬，否则新库只看到半份日志）。
+   * 改名失败（旧版进程还占着文件）就退回老路径继续用，下次启动再搬——不为了改名让应用起不来。
+   */
+  private static dbFile(dir: string): string {
+    const next = join(dir, StorageService.DB_FILE)
+    const legacy = join(dir, StorageService.LEGACY_DB_FILE)
+    if (existsSync(next) || !existsSync(legacy)) return next
+    try {
+      renameSync(legacy, next)
+      for (const suffix of ['-wal', '-shm']) {
+        if (existsSync(legacy + suffix)) renameSync(legacy + suffix, next + suffix)
+      }
+      return next
+    } catch (error) {
+      console.error('[YunCast] 数据库改名失败，继续用旧文件名:', error)
+      return legacy
+    }
+  }
+
   constructor() {
     const dir = app.getPath('userData')
     mkdirSync(dir, { recursive: true })
     initSecretBox(dir)
     this.configFile = join(dir, 'config.json')
 
-    this.db = new DatabaseSync(join(dir, 'agentanchor.db'))
+    this.db = new DatabaseSync(StorageService.dbFile(dir))
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA busy_timeout = 5000')
     // 应用配置也存数据库（单行 JSON，敏感字段照样加密内联）：一份存储、一次初始化、不用等两个文件

@@ -51,7 +51,7 @@ try {
   const hasDirectorText = (since) => {
     const out = execFileSync('node', ['-e', `
       const { DatabaseSync } = require('node:sqlite')
-      const db = new DatabaseSync(process.env.APPDATA + '/YunCast/agentanchor.db', { readOnly: true })
+      const db = new DatabaseSync(process.env.APPDATA + '/YunCast/yuncast.db', { readOnly: true })
       const rows = db.prepare("select payload from director_timeline where program_id = 'director' and ts > ?").all(${since})
       let best = 0
       for (const r of rows) {

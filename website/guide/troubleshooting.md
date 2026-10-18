@@ -146,7 +146,7 @@ description: 小云播客坊运行要求与排错手册：系统与网络要求�
 
 目录里放什么：
 
-- `agentanchor.db`：全部业务数据与应用配置，SQLite、WAL 模式
+- `yuncast.db`：全部业务数据与应用配置，SQLite、WAL 模式（旧版叫 `agentanchor.db`，升级后首次启动自动改名）
 - `secret.key`：凭据加密钥匙，数据库里的密钥字段用 AES-256-GCM 加密后存
 - `blobs/`：音频、音色样本、素材附件，按内容寻址存储
 - `blobs-tmp/`：临时文件，到期自动清

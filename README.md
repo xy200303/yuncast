@@ -32,11 +32,16 @@
 
 ## 功能演示
 
-<a href="https://yuncast.xyun.dev/#demo"><img src="docs/media/demo.gif" alt="小云播客坊功能演示" width="100%" /></a>
+<a href="https://yuncast.xyun.dev/#demo"><img src="docs/media/demo.gif" alt="节目与编排：三种形态三个节目" width="100%" /></a>
+
+<p align="center">
+  <img src="docs/media/demo-material.gif" alt="素材：条目带正文、附件与链接" width="100%" />
+</p>
 
 <p align="center">
   <a href="https://yuncast.xyun.dev/#demo"><strong>▶ 看功能演示（1 分 08 秒，含配音）+ 三段节目实录</strong></a><br>
-  <sub>功能演示里全部是真实操作：让导演写稿 → 一句话建节目 → 新建素材条目 → 建主播卡 → 回直播台接着播；旁白与播出音频都来自应用内的语音合成</sub>
+  <sub>功能演示里全部是真实操作：让导演写稿 → 一句话建节目 → 新建素材条目 → 建主播卡 → 回直播台接着播；旁白与播出音频都来自应用内的语音合成。
+  下面三段 50 秒实录分别是：有声书（全部做好再播）、带货（边播边备）、跨境（English 多语言）。</sub>
 </p>
 
 ---

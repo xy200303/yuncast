@@ -13,7 +13,6 @@ import {
   type DirectorConfig,
   type ModelConnectionSafe,
   type PartialDeep,
-  type Persona,
   type PoolSnapshot,
   type TtsConnectionSafe,
   type VoiceRecord,
@@ -28,7 +27,7 @@ import {
 } from '../theme/applyAppearance'
 
 /** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'programs', 'anchors', 'knowledge', 'voices', 'sessions', 'stats'] as const
+export const NAV_PAGES = ['live', 'programs', 'personas', 'knowledge', 'voices', 'sessions', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 export type AgentPanelMode = 'floating' | 'docked' | 'minimized'
 export type SettingsPaneId =
@@ -251,11 +250,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setConnections: (connections) => set({ connections }),
   setTtsConnections: (ttsConnections) => set({ ttsConnections }),
 }))
-
-/** TTS 是否已配置（状态栏徽章用）：存在任一可用接入（凭据齐全 + 至少一个模型能用）就算 */
-export function selectTtsReady(connections: TtsConnectionSafe[]): boolean {
-  return connections.some((connection) => connection.ready)
-}
 
 /** 导演大脑是否就绪（状态栏徽章用）：导演配置里选的接入与模型都可用才算 */
 export function selectLlmReady(

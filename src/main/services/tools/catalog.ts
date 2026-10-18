@@ -4,7 +4,6 @@ import type { ToolCaller, ToolCtx, ToolDef, ToolRisk } from './types'
 import { speechTools } from './speech'
 import { draftTools } from './draft'
 import { sceneTools } from './scene'
-import { scriptTools } from './script'
 import { knowledgeTools } from './knowledge'
 import { viewerTools } from './viewer'
 import { connectorTools } from './connector'
@@ -27,7 +26,6 @@ export const ALL_TOOLS: ToolDef[] = [
   ...speechTools,
   ...draftTools,
   ...sceneTools,
-  ...scriptTools,
   ...programTools,
   ...personaTools,
   ...voiceTools,

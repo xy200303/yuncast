@@ -137,7 +137,7 @@ export class ConnectorService {
       transport.onerror = (error) => {
         // SDK 传输层自带 SSE 重连且不认 404（旧会话僵尸）——传输错误统一按连接失败处理：
         // 关掉旧传输，走我们的退避重连（每次重连都是全新 MCP 会话）
-        console.error('[AgentAnchor] 连接器传输错误:', error.message)
+        console.error('[YunCast] 连接器传输错误:', error.message)
         if (this.transport !== transport) return
         this.client = null
         this.transport = null
@@ -150,7 +150,7 @@ export class ConnectorService {
       this.retryAttempt = 0
       const info = client.getServerVersion()
       this.setState('connected')
-      console.error(`[AgentAnchor] 连接器已连接：${info?.name ?? '?'} ${info?.version ?? ''}，端口 ${connectorPort}`)
+      console.error(`[YunCast] 连接器已连接：${info?.name ?? '?'} ${info?.version ?? ''}，端口 ${connectorPort}`)
     } catch (error) {
       this.scheduleRetry(error instanceof Error ? error.message : String(error))
     } finally {

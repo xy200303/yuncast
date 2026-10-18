@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { getFfmpegPath } from './bin'
 /** 日志走 console（本项目无 electron-log） */
 const log = console

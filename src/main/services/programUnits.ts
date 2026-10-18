@@ -8,7 +8,7 @@ import type {
   Script,
   DraftUnit
 } from '../../shared/types'
-import { programStyleSalt, sceneFingerprint, utteranceFingerprint } from '../../shared/fingerprint'
+import { programStyleSalt, sceneFingerprint, draftUnitFingerprint } from '../../shared/fingerprint'
 
 /**
  * 预制节目的合成单元与门禁判定（docs/10 §7.5-§7.8）。
@@ -22,8 +22,8 @@ import { programStyleSalt, sceneFingerprint, utteranceFingerprint } from '../../
  * 没有文稿的场景不产生单元（没有要合成的声音）。
  */
 export interface AudioUnit {
-  kind: 'scene' | 'utterance'
-  /** sceneId 或 utteranceId */
+  kind: 'scene' | 'draftUnit'
+  /** sceneId 或 draftUnitId */
   id: string
   /** 展示标题：章用场景名，段用文本开头 */
   title: string
@@ -49,10 +49,10 @@ export function listAudioUnits(
   const styleSalt = programStyleSalt(program)
   if (program.contentType === 'solo') {
     return draftUnits.map((u) => ({
-      kind: 'utterance' as const,
+      kind: 'draftUnit' as const,
       id: u.id,
       title: u.text.length > 20 ? `${u.text.slice(0, 20)}…` : u.text,
-      fingerprint: utteranceFingerprint(u, styleSalt),
+      fingerprint: draftUnitFingerprint(u, styleSalt),
       draftUnits: [u],
       rendered: u.rendered
     }))
@@ -79,10 +79,10 @@ export function listAudioUnits(
   // 全场通用段（没挂场景）：场景类节目里它们是独立段级单元
   for (const u of narrativeOrder(byScene.get('') ?? [])) {
     units.push({
-      kind: 'utterance',
+      kind: 'draftUnit',
       id: u.id,
       title: u.text.length > 20 ? `${u.text.slice(0, 20)}…` : u.text,
-      fingerprint: utteranceFingerprint(u, styleSalt),
+      fingerprint: draftUnitFingerprint(u, styleSalt),
       draftUnits: [u],
       rendered: u.rendered
     })
@@ -91,11 +91,31 @@ export function listAudioUnits(
 }
 
 /** 单元的当前有效状态：就绪但文稿指纹已不一致的按 stale 算（不落库也拦得住） */
-function unitStatus(unit: AudioUnit): RenderedAudioRef['status'] | 'missing' {
+/**
+ * 单元的就绪状态。
+ * - 有预制资产（prepared 的章/段渲染）就看 rendered + 指纹；
+ * - 滚动/即兴节目根本不产生 rendered：音频是逐段合成在 DraftUnit 上的（audioPath + status），
+ *   以前这里一律按 pending 报，导致「底稿明明全合成好了，进度条和门禁却说没合成」。
+ */
+function unitStatus(unit: AudioUnit, program: Program): RenderedAudioRef['status'] | 'missing' | 'pending' {
   const rendered = unit.rendered
-  if (!rendered) return 'pending'
-  if (rendered.status === 'ready' && rendered.sourceFingerprint !== unit.fingerprint) return 'stale'
-  return rendered.status
+  if (rendered) {
+    if (rendered.status === 'ready' && rendered.sourceFingerprint !== unit.fingerprint) return 'stale'
+    return rendered.status
+  }
+  if (program.broadcastMode !== 'prepared') {
+    const unitDraft = unit.draftUnits[0]
+    if (!unitDraft) return 'pending'
+    if (unitDraft.status === 'synthesizing') return 'synthesizing'
+    if (unitDraft.status === 'failed') return 'failed'
+    if (unitDraft.status === 'ready' && unitDraft.audioPath) return 'ready'
+  }
+  return 'pending'
+}
+
+/** 单元音频文件路径：预制资产优先，滚动节目回落到 DraftUnit.audioPath */
+function unitAudioPath(unit: AudioUnit): string | undefined {
+  return unit.rendered?.audioPath ?? unit.draftUnits[0]?.audioPath ?? undefined
 }
 
 /** 节目音频进度统计（节目内进度展示 + get_program 工具） */
@@ -107,10 +127,11 @@ export function audioProgress(
   const progress: ProgramAudioProgress = { total: 0, ready: 0, synthesizing: 0, pending: 0, failed: 0, stale: 0 }
   for (const unit of listAudioUnits(program, script, draftUnits)) {
     progress.total++
-    const status = unitStatus(unit)
+    const status = unitStatus(unit, program)
     if (status === 'ready') {
       // 文件真没了按失败计（外部音频被移走等情况）
-      if (existsSync(unit.rendered!.audioPath)) progress.ready++
+      const path = unitAudioPath(unit)
+      if (path && existsSync(path)) progress.ready++
       else progress.failed++
     } else if (status === 'synthesizing') progress.synthesizing++
     else if (status === 'failed') progress.failed++
@@ -146,7 +167,7 @@ export function evaluateGate(
   for (const unit of listAudioUnits(program, script, draftUnits)) {
     result.total++
     const rendered = unit.rendered
-    const status = unitStatus(unit)
+    const status = unitStatus(unit, program)
     if (status === 'pending') {
       result.pending++
       fail(unit, rendered ? 'pending' : 'missing', '还没合成')
@@ -168,7 +189,8 @@ export function evaluateGate(
       continue
     }
     // ready：文件必须真实存在
-    if (!rendered || !existsSync(rendered.audioPath)) {
+    const readyPath = unitAudioPath(unit)
+    if (!readyPath || !existsSync(readyPath)) {
       result.failed++
       fail(unit, 'ready', '音频文件不存在（可能被移动或清理）')
       continue
@@ -177,7 +199,7 @@ export function evaluateGate(
   }
   if (result.total === 0) {
     result.failures.push({
-      unitKind: 'utterance',
+      unitKind: 'draftUnit',
       unitId: '',
       title: '',
       status: 'missing',

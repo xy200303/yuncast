@@ -39,7 +39,13 @@ import { buildAgentTools } from './tools/catalog'
 import type { ToolCtx } from './tools/types'
 import { LiveEventInbox, type LiveInboxEvent } from './LiveEventInbox'
 import { prepareLlmModel, resolveModelForDirector, streamLlmModel } from './llmModel'
-import { clampOversizedMessages, estimateMsgTokens, oneLine, renderMessageForSummary } from './agentText'
+import {
+  clampOversizedMessages,
+  estimateMsgTokens,
+  oneLine,
+  renderMessageForSummary,
+  renderRecentActions
+} from './agentText'
 import type { LlmApi, ResolvedModel } from './providers/registry'
 import type { AudioStyleService } from './AudioStyleService'
 import type { VoiceService } from './VoiceService'
@@ -50,7 +56,7 @@ import type { RecordingService } from './RecordingService'
 
 /**
  * 导演 Agent（单脑架构）：唯一话术生产者。恒定导演身份，从不开口——
- * 卡司（主播卡）只是它手上的资料与嗓音，谁说话由 speak 的 speaker（卡 id）决定。
+ * 卡司（主播卡）只是它手上的资料与嗓音，谁说话由 speak 的 personaId（卡 id）决定。
  * - 引擎：pi-agent-core 的 Agent 裸用。会话树/models.json/资源发现都不存在也不需要——
  *   全局唯一会话自己存 SQLite（线性消息数组，key 固定 'director'），system prompt 是导演手册 + 卡司表 + 节目
  * - 只挂主播工具（tools/ 目录，一切声音走话术池）；core 没有内置工具，不用 allowlist
@@ -158,8 +164,6 @@ export class AgentService {
   private liveActive = false
   /** 最近一条待回应评论（insert_next 工具挂 replyTo 用） */
   private lastComment: LiveComment | null = null
-  /** 本场开播时间（下播总结用） */
-  private startedAt = 0
   /** 本场发生过几轮对话（没对话就不写总结） */
   private exchanges = 0
   /** 播报是否被暂停：暂停时评论/触发器不再派给 LLM，speak 也说不出去（统一开播控制里的「暂停」） */
@@ -259,7 +263,7 @@ export class AgentService {
   private statusHeavyCache: {
     at: number
     assetsStale: 'none' | 'prompt' | 'brain'
-    castName: string | undefined
+    leadPersonaName: string | undefined
     scene: AgentStatus['scene']
     enabledTriggerIds: string[]
     allowLiveEvents: boolean
@@ -276,7 +280,7 @@ export class AgentService {
     this.statusHeavyCache = {
       at: now,
       assetsStale: this.assetsStale(),
-      castName: this.state === 'stopped' ? undefined : (this.persona.castMember()?.name ?? undefined),
+      leadPersonaName: this.state === 'stopped' ? undefined : (this.persona.leadPersona()?.name ?? undefined),
       scene: current ? { title: current.scene.title, index: current.index, total: current.total } : undefined,
       enabledTriggerIds: gate.enabledTriggerIds,
       allowLiveEvents: gate.allowLiveEvents
@@ -344,7 +348,7 @@ export class AgentService {
       state: this.state,
       error: this.error,
       model: this.modelLabel,
-      castName: heavy.castName,
+      leadPersonaName: heavy.leadPersonaName,
       draft: this.draft,
       scene: heavy.scene,
       // 会话还活着时比对资产：prompt = 文本资产变了（热更新即可）；brain = 模型/接入变了（得重开会话）
@@ -390,19 +394,19 @@ export class AgentService {
     this.broadcast(this.status())
   }
 
-  /** 本场卡司：节目定了卡司（presenterIds）就按它，空数组 = 导演自选（全部主播卡都是候选人） */
-  private currentCast(program: Program | null | undefined): { cast: Persona[]; castAuto: boolean } {
+  /** 本场卡司：节目定了卡司（personaIds）就按它，空数组 = 导演自选（全部主播卡都是候选人） */
+  private currentPersonas(program: Program | null | undefined): { personas: Persona[]; personasAuto: boolean } {
     const all = this.persona.list()
-    const ids = program?.presenterIds ?? []
-    if (ids.length === 0) return { cast: all, castAuto: true }
-    return { cast: all.filter((p) => ids.includes(p.id)), castAuto: false }
+    const ids = program?.personaIds ?? []
+    if (ids.length === 0) return { personas: all, personasAuto: true }
+    return { personas: all.filter((p) => ids.includes(p.id)), personasAuto: false }
   }
 
   /**
    * 资产指纹分两层（热更新/冷重启的判据）：
    * brain = 导演模型配置 + 接入本身（换密钥/换模型/调窗口）——焊在 Agent 实例的 streamFn 闭包里，只能重开会话；
    * prompt = 卡司内容/节目字段/剧本/导演手册——只进 system 消息，热替换首条消息即可生效。
-   * 都不含音色（每条话术现算）和卡司指针（谁说话由节目卡司与逐条 speaker 决定）。
+   * 都不含音色（每条话术现算）和卡司指针（谁说话由节目卡司与逐条 personaId 决定）。
    */
   private brainFingerprint(): string {
     const cfg = this.storage.getConfig()
@@ -421,11 +425,11 @@ export class AgentService {
 
   private promptFingerprint(): string {
     const { program, script } = this.script.getActive()
-    const { cast, castAuto } = this.currentCast(program)
+    const { personas, personasAuto } = this.currentPersonas(program)
     return fingerprint(
       JSON.stringify({
-        castAuto,
-        cast: cast.map((p) => [p.id, p.name, p.personality, p.catchphrases, p.background, p.taboos]),
+        personasAuto,
+        personas: personas.map((p) => [p.id, p.name, p.personality, p.catchphrases, p.background, p.taboos]),
         program: program
           ? [
               program.id,
@@ -437,9 +441,9 @@ export class AgentService {
               program.allowLiveEvents,
               program.enabledTriggerIds,
               program.instruction,
-              program.scriptId,
+              program.id,
               program.knowledgeScope,
-              program.presenterIds
+              program.personaIds
             ]
           : null,
         script: script ? [script.title, script.scenes] : null,
@@ -498,7 +502,7 @@ export class AgentService {
       try {
         this.session.steer({ role: 'user', content: note, timestamp: Date.now() } as AgentMessage)
       } catch (error) {
-        console.error('[AgentAnchor] 热更新通知 steer 失败:', error)
+        console.error('[YunCast] 热更新通知 steer 失败:', error)
       }
     } else {
       this.session.state.messages = [
@@ -529,7 +533,6 @@ export class AgentService {
     // 冻结本场事件接线：由当前节目字段决定（开播装载时刷新；换节目不重启会话）
     this.programGate = gateOfProgram(this.script.getActive().program)
     this.setState('running')
-    this.startedAt = Date.now()
     this.exchanges = 0
     // 新一场总是从"能说话"开始（上一场可能是暂停状态停掉的）
     this.speakingPaused = false
@@ -548,7 +551,7 @@ export class AgentService {
         JSON.stringify(this.session.state.messages)
       )
     } catch (error) {
-      console.error('[AgentAnchor] 会话落库失败:', error)
+      console.error('[YunCast] 会话落库失败:', error)
     }
   }
 
@@ -651,7 +654,7 @@ export class AgentService {
       this.storage.deleteProgramSession(StorageService.DIRECTOR_SESSION_KEY)
       if (programId) this.storage.timelineClear(programId)
     } catch (error) {
-      console.error('[AgentAnchor] 清空会话落库失败:', error)
+      console.error('[YunCast] 清空会话落库失败:', error)
     }
     this.onDirectorTimeline?.({ type: 'reset', entries: [] })
     this.broadcast(this.status())
@@ -757,7 +760,7 @@ export class AgentService {
       try {
         this.session.steer({ role: 'user', content: text, timestamp: Date.now() } as AgentMessage)
       } catch (error) {
-        console.error('[AgentAnchor] steer 失败:', error)
+        console.error('[YunCast] steer 失败:', error)
       }
       return
     }
@@ -818,18 +821,18 @@ export class AgentService {
   private emitTimeline(event: DirectorTimelineEvent): void {
     const programId = StorageService.DIRECTOR_SESSION_KEY
     // 发言人标记：agent 侧条目盖卡司第一张的戳（多卡司时时间线看得出哪段是谁）
-    const speakerId = this.state === 'stopped' ? undefined : (this.persona.castMember()?.id ?? undefined)
+    const stampPersonaId = this.state === 'stopped' ? undefined : (this.persona.leadPersona()?.id ?? undefined)
     const stamped = (
-      speakerId ? { ...event.entry, personaId: speakerId } : event.entry
+      stampPersonaId ? { ...event.entry, personaId: stampPersonaId } : event.entry
     ) as DirectorTimelineEntry
     if (programId) {
       const entry = stamped
       const ts = Date.now()
       const pid = 'personaId' in entry ? entry.personaId : undefined
-      const speaker = pid ? { personaId: pid } : {}
+      const personaStamp = pid ? { personaId: pid } : {}
       const chat: ChatEntry =
         entry.type === 'text'
-          ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId, ...speaker }
+          ? { type: 'text', id: entry.id, ts, text: entry.text, final: entry.final ?? false, turnId: event.turnId, ...personaStamp }
           : entry.type === 'thinking'
             ? {
                 type: 'thinking',
@@ -840,7 +843,7 @@ export class AgentService {
                 done: entry.done ?? false,
                 // 权威时长要落库：恢复出来的条目 ts 是"结束时刻"，拿它反推不出真实思考了多久
                 ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
-                ...speaker
+                ...personaStamp
               }
             : entry.type === 'ask'
               ? { type: 'ask', id: entry.id, ts, message: entry.message }
@@ -854,7 +857,7 @@ export class AgentService {
                 status: entry.status,
                 result: entry.result,
                 durationMs: entry.durationMs,
-                ...speaker
+                ...personaStamp
               }
       // 流式增量刻度不落库：库里的行必须是全文，等定稿（final/done）那次再写，
       // 顺带把"每 60ms 一次 UPSERT 整段文本"也去掉（长回复时这是笔不小的写放大）
@@ -897,9 +900,6 @@ export class AgentService {
     if (program.broadcastMode === 'improvised') {
       throw new Error(`「${program.name}」是现场发挥的节目，不需要底稿；要备料可以让我把内容直接存进知识库`)
     }
-    // 没绑剧本不拦：自动建一本空剧本绑到节目（与 create_scene 工具同一套「主播自编」），
-    // 场景让主播用 create_scene 自己搭——兑现任务书里「场景不够自己搭」的承诺
-    const { script } = this.script.ensureProgramScript(program.id)
     if (this.liveActive) {
       throw new Error('正在直播：写稿先下播，或者用对话直接改底稿')
     }
@@ -910,7 +910,9 @@ export class AgentService {
     // 写稿必须有准头：刚换了节目/改过卡司，旧会话的 system prompt 里还是上一套（导演不知道现在手上有哪些主播）
     // → 先把资产应用上：文本层热替换（不打断），脑层变了才重开会话
     if (this.assetsStale() !== 'none') await this.applyAssets()
-    this.directorSay(this.composeDraftBrief(script))
+    const brief = this.script.getScript(program.id)
+    if (!brief) throw new Error('编排读取失败')
+    this.directorSay(this.composeDraftBrief(brief))
   }
 
   /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走导演手册（user.draft_brief）；
@@ -926,24 +928,24 @@ export class AgentService {
                 `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
             )
             .join('\n')
-    return `${this.prompts.render('user.draft_brief', { scenes })}\n\n${this.castBrief()}`
+    return `${this.prompts.render('user.draft_brief', { scenes })}\n\n${this.personaBrief()}`
   }
 
   /** 任务书末尾的卡司段：节目定了卡司就点名，没定就报可用名单（导演自选） */
-  private castBrief(): string {
+  private personaBrief(): string {
     const program = this.script.getActive().program
     const all = this.persona.list()
-    const ids = program?.presenterIds ?? []
+    const ids = program?.personaIds ?? []
     if (all.length === 0) {
       return '# 本场卡司\n  还没有主播卡——先用 save_persona 立一张（人设/口癖/背景/红线/嗓音），不然写出来的稿没人能出声。'
     }
     const describe = (p: (typeof all)[number]): string =>
       `${p.name}${p.personality.trim() ? `（${p.personality.trim().split('\n')[0].slice(0, 24)}）` : ''}`
     if (ids.length > 0) {
-      const cast = all.filter((p) => ids.includes(p.id))
-      return `# 本场卡司（节目定的，只用这几位出镜）\n  写谁的词就钻进谁的人设，同一个人说的连续内容用同一个 speaker；这几位之外不要凭空造人。\n  ${cast.map(describe).join('、')}`
+      const inProgram = all.filter((p) => ids.includes(p.id))
+      return `# 本场卡司（节目定的，只用这几位出镜）\n  写谁的词就钻进谁的人设，同一个人说的连续内容用同一个 personaId；这几位之外不要凭空造人。\n  ${inProgram.map(describe).join('、')}`
     }
-    return `# 本场卡司（节目没定，你自己挑）\n  手上可用：${all.map(describe).join('、')}。\n  单人节目就用其中一位当主讲；需要串场/双人对谈时按人设分派 speaker，别让一个人演两个性格。`
+    return `# 本场卡司（节目没定，你自己挑）\n  手上可用：${all.map(describe).join('、')}。\n  单人节目就用其中一位当主讲；需要串场/双人对谈时按人设分派 personaId，别让一个人演两个性格。`
   }
 
   /** 急停（配合 renderer 停播放 + 清池）：停会话即可，池由调用方清 */
@@ -1216,7 +1218,7 @@ export class AgentService {
       const message = error instanceof Error ? error.message : String(error)
       // 导演按了停止（abort）：不是故障，不进 error 态
       if (!/abort/i.test(message)) {
-        console.error('[AgentAnchor] 主播 Agent 调用失败:', message)
+        console.error('[YunCast] 主播 Agent 调用失败:', message)
         this.setState('error', `LLM 调用失败：${message.slice(0, 200)}`)
         // 会话还活着就留着重试（下一条评论/触发器会再试），不要一报错就死透
       }
@@ -1294,7 +1296,7 @@ export class AgentService {
         id: `ur-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
         ts: Date.now(),
         programId: this.storage.getConfig().live.activeProgramId || null,
-        personaId: this.persona.castMember()?.id ?? '',
+        personaId: this.persona.leadPersona()?.id ?? '',
         connectionId: this.usageConnectionId,
         model: this.usageModel,
         kind,
@@ -1306,7 +1308,7 @@ export class AgentService {
         cost: null
       })
     } catch (error) {
-      console.warn('[AgentAnchor] 用量记录落库失败:', error)
+      console.warn('[YunCast] 用量记录落库失败:', error)
     }
   }
 
@@ -1407,10 +1409,19 @@ export class AgentService {
         if (result.stopReason === 'error' || result.stopReason === 'aborted' || !summaryText) {
           throw new Error(result.errorMessage ?? '摘要为空')
         }
-        noteText = this.prompts.render('compact.summary_note', { summary: summaryText })
+        // 摘要模型常把"刚做过什么"漏掉，模型醒来就以为自己没做过、甚至把刚做的成果撤掉。
+        // 最近几次工具调用由代码补在摘要后面（不花 LLM 调用，不会被漏写）。
+        const recentActions = renderRecentActions(oldPart)
+        noteText =
+          this.prompts.render('compact.summary_note', { summary: summaryText }) +
+          (recentActions ? `
+
+【最近动作·自动记录】压缩前你依次调用过这些工具（照此判断现状，别重复做或误撤）：
+${recentActions}` : '')
+
       } catch (error) {
         // 摘要失败：硬截断保命（插一条说明消息顶替旧部分），卡片如实标错
-        console.error('[AgentAnchor] 上下文压缩的摘要失败，改硬截断:', error)
+        console.error('[YunCast] 上下文压缩的摘要失败，改硬截断:', error)
         this.endCompactionError(
           `摘要失败（${error instanceof Error ? error.message.slice(0, 120) : String(error)}），已直接丢弃最旧记录`
         )
@@ -1530,11 +1541,11 @@ export class AgentService {
   private buildSystemPromptNow(): string {
     const { program, script } = this.script.getActive()
     const director = this.storage.getConfig().director
-    const { cast, castAuto } = this.currentCast(program)
+    const { personas, personasAuto } = this.currentPersonas(program)
     return this.prompts.buildSystemPrompt({
       director,
-      cast,
-      castAuto,
+      personas,
+      personasAuto,
       program,
       script
     })
@@ -1690,7 +1701,7 @@ export class AgentService {
           | undefined
         if (lastAssistant?.stopReason === 'error') {
           const detail = lastAssistant.errorMessage ?? '未知错误'
-          console.error('[AgentAnchor] 主播 Agent 调用失败:', detail)
+          console.error('[YunCast] 主播 Agent 调用失败:', detail)
           this.setState('error', `LLM 调用失败：${detail.slice(0, 200)}`)
         } else if (this.state === 'error') {
           this.setState('running')

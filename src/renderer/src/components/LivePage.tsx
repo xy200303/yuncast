@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   AlertTriangle,
   AudioWaveform,
@@ -35,7 +35,6 @@ import {
   Zap
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
@@ -77,7 +76,6 @@ import type {
   PreflightItem,
   ProduceVoiceOverride,
   ProgramGateResult,
-  Script,
   PoolItem,
   PoolLane,
   PoolSourceKind,
@@ -118,7 +116,7 @@ const SOURCE_LABEL: Record<PoolSourceKind, string> = {
 /** 预检「去修复」深链：按检查项 code 跳到对应设置栏目或页面（docs/REDESIGN 4.5） */
 const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page?: NavPage }> = {
   'director-brain': { label: '去配大脑', pane: 'director' },
-  'voice-missing': { label: '去选音色', page: 'anchors' },
+  'voice-missing': { label: '去选音色', page: 'personas' },
   'tts-broken': { label: '去检查合成', pane: 'tts' },
   'voice-test': { label: '去测发音', pane: 'tts' },
   'script-missing': { label: '去绑剧本', page: 'programs' },
@@ -128,7 +126,6 @@ const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page
 
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
-  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [leftTab, setLeftTab] = useState<'pool' | 'comments' | 'events'>('pool')
   const [comments, setComments] = useState<LiveComment[]>([])
   /** 发给主播的直播间动态（事件流选项卡；主进程 250ms 节流推快照） */
@@ -137,7 +134,7 @@ export function LivePage() {
   const programControl = useProgramLauncher()
   const activeProgram = programControl.activeProgram
   // 主播卡名单：队列行按音色反查卡名，多主播节目显示身份
-  const [castList, setCastList] = useState<Persona[]>([])
+  const [personaList, setCastList] = useState<Persona[]>([])
   useEffect(() => {
     if (!('api' in window)) return
     const load = () => void window.api.persona.list().then(setCastList)
@@ -227,7 +224,7 @@ export function LivePage() {
                     </div>
                   ) : (
                     <>
-                      {groups.flatMap((group) => group.items.map((item) => <QueueRow key={item.id} item={item} presenters={castList} />))}
+                      {groups.flatMap((group) => group.items.map((item) => <QueueRow key={item.id} item={item} personaList={personaList} />))}
                       {pool.failed.length > 0 && (
                         <div className="mt-2 flex flex-col gap-1.5">
                           <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
@@ -307,10 +304,10 @@ export function LivePage() {
  */
 function useProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
-  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const director = useAppStore((s) => s.config.director)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [programs, setPrograms] = useState<Program[]>([])
-  const [presenters, setPresenters] = useState<Awaited<ReturnType<typeof window.api.persona.list>>>([])
+  const [personaList, setCastList] = useState<Awaited<ReturnType<typeof window.api.persona.list>>>([])
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
@@ -329,7 +326,7 @@ function useProgramLauncher() {
   const loadPrograms = useCallback(async (): Promise<Program[]> => {
     const [programList, personaList] = await Promise.all([window.api.program.list(), window.api.persona.list()])
     setPrograms(programList)
-    setPresenters(personaList)
+    setCastList(personaList)
     return programList
   }, [])
 
@@ -344,9 +341,9 @@ function useProgramLauncher() {
   /** 直播中的判定：开播态归引擎（agent.live）——主播会话没起来也照播存量，不算没开播 */
   const running = agent.live === true
   const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
-  const castNames = activeProgram?.presenterIds.length
-    ? activeProgram.presenterIds.map((id) => presenters.find((item) => item.id === id)?.name).filter(Boolean).join('、')
-    : `导演自选（可用 ${presenters.length} 位）`
+  const personaNames = activeProgram?.personaIds.length
+    ? activeProgram.personaIds.map((id) => personaList.find((item) => item.id === id)?.name).filter(Boolean).join('、')
+    : `导演自选（可用 ${personaList.length} 位）`
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
   const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
@@ -370,7 +367,7 @@ function useProgramLauncher() {
   const confirmPresynth = async (voiceOverride?: ProduceVoiceOverride, rebuildAll?: boolean): Promise<void> => {
     if (!activeProgramId) return
     setVoicePickOpen(false)
-    if (rebuildAll) await window.api.utterance.clearAudio(activeProgramId)
+    if (rebuildAll) await window.api.draftUnit.clearAudio(activeProgramId)
     // 滚动节目走统一音频生产入口（produceAudio 的 rolling 分支 = 后台逐段提前合成）
     const result = await window.api.program.produceAudio(activeProgramId, voiceOverride)
     if (!result.ok) toast.error('提前合成没能开始', { description: result.error })
@@ -553,7 +550,7 @@ function useProgramLauncher() {
           {activeProgram && (
             <div className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-2">
               <div><span className="text-muted-foreground">导演：</span>{director.name} · {director.model || '未配置大脑'}</div>
-              <div><span className="text-muted-foreground">卡司：</span>{castNames || '导演自选'}</div>
+              <div><span className="text-muted-foreground">卡司：</span>{personaNames || '导演自选'}</div>
               <div><span className="text-muted-foreground">播出：</span>{activeProgram.broadcastMode === 'prepared' ? '全部做好再播' : activeProgram.broadcastMode === 'rolling' ? '边播边准备' : '现场发挥'}</div>
               <div><span className="text-muted-foreground">互动：</span>{activeProgram.allowLiveEvents ? '开启' : '关闭'} · {activeProgram.enabledTriggerIds.length} 个自动响应</div>
             </div>
@@ -856,7 +853,7 @@ function auditionSpeech(item: PoolItem): void {
 }
 
 /** 队列条目（滚动模式）：外观与预制/即兴共用 ContentItem，这里只负责填槽 */
-function QueueRow({ item, presenters }: { item: PoolItem; presenters: Persona[] }) {
+function QueueRow({ item, personaList }: { item: PoolItem; personaList: Persona[] }) {
   const voices = useAppStore((s) => s.voices)
   const playing = item.status === 'playing'
   const canRevoke = item.status === 'pending' || item.status === 'synthesizing' || item.status === 'ready'
@@ -864,8 +861,8 @@ function QueueRow({ item, presenters }: { item: PoolItem; presenters: Persona[] 
   // voiceId 是合成路由的内部标识（克隆音色 speaker_id 等），显示成人能读懂的音色名
   const voiceName = item.voiceId ? (voices.find((v) => v.voiceType === item.voiceId)?.name ?? '角色音色') : ''
   // 主播身份：按音色反查卡（多主播节目一眼看出这段是谁的）
-  const presenterName = item.voiceId ? (presenters.find((p) => p.voiceId === item.voiceId)?.name ?? '') : ''
-  const whoLabel = presenterName && voiceName ? `${presenterName} · ${voiceName}` : presenterName || voiceName
+  const personaName = item.voiceId ? (personaList.find((p) => p.voiceId === item.voiceId)?.name ?? '') : ''
+  const whoLabel = personaName && voiceName ? `${personaName} · ${voiceName}` : personaName || voiceName
   return (
     <ContentItem
       current={playing}
@@ -1096,7 +1093,6 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
 export function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
-  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [entries, setEntries] = useState<ChatEntry[]>([])
   /** 已发出、还没等到导演第一条动静（占位提示用；首条时间线条目落地即清） */
   const [awaiting, setAwaiting] = useState(false)

@@ -10,6 +10,49 @@ import { knowledgeScope } from './util'
  */
 export const knowledgeTools = [
   defineTool({
+    name: 'material_read',
+    label: '读素材全文',
+    domain: 'knowledge',
+    risk: 'read',
+    expose: { agent: true, mcp: true },
+    description:
+      '按 id 或名称读一条素材的全文：正文 + 要点 + FAQ + 它挂的所有附件（文件解析文本 / 链接地址）。' +
+      'knowledge_search 只给命中片段，需要把这份资料讲到准确时用它；附件文本会截断，超长只看前 2000 字。' +
+      '节目只绑素材条目，附件随条目走——需要就调它，没有附件也不影响。',
+    parameters: Type.Object({
+      query: Type.String({ description: '素材 id（pd- 开头）或名称（可只给一部分）' })
+    }),
+    handler: (ctx, params) => {
+      const key = params.query.trim()
+      const all = ctx.knowledge.listMaterials()
+      const found = all.find((item) => item.id === key) ?? all.find((item) => item.name.includes(key))
+      if (!found) return `没找到素材「${key}」（用 knowledge_list 看现有条目）`
+      const assets = ctx.storage.materialFileList().filter((file) => file.materialId === found.id)
+      const lines: string[] = [
+        `【${found.name}】类型：${found.kind}${found.kind === 'product' ? `｜价格：¥${found.price}` : ''}`,
+        found.content.trim() ? `正文：\n${found.content.trim()}` : '正文：（无）',
+        found.sellingPoints.trim() ? `要点：\n${found.sellingPoints.trim()}` : '',
+        found.faq.trim() ? `问答/备注：\n${found.faq.trim()}` : ''
+      ]
+      if (assets.length === 0) {
+        lines.push('附件：无')
+      } else {
+        lines.push(`附件 ${assets.length} 个：`)
+        assets.forEach((asset, index) => {
+          if (asset.type === 'url') {
+            lines.push(`  ${index + 1}. [链接] ${asset.name} ${asset.url ?? ''}`)
+            return
+          }
+          const text = asset.content.trim()
+          const body = text ? `${text.slice(0, 2000)}${text.length > 2000 ? '…（截断）' : ''}` : '（未解析出文本）'
+          lines.push(`  ${index + 1}. [文件] ${asset.name}：${body}`)
+        })
+      }
+      return lines.filter(Boolean).join('\n')
+    }
+  }),
+
+  defineTool({
     name: 'knowledge_search',
     label: '查知识库',
     domain: 'knowledge',
@@ -28,7 +71,7 @@ export const knowledgeTools = [
       return hits
         .map(
           (hit, i) =>
-            `${i + 1}. [${hit.source === 'product' ? '商品' : '资料'}] ${hit.name}` +
+            `${i + 1}. [${hit.source === 'material' ? '商品' : '资料'}] ${hit.name}` +
             `${hit.price !== undefined ? `（¥${hit.price}）` : ''}\n${hit.snippet}`
         )
         .join('\n')
@@ -51,7 +94,7 @@ export const knowledgeTools = [
       const kind = params.kind?.trim()
       if (kind && !ENTRY_KINDS.includes(kind as EntryKind)) return `类型只能是：${ENTRY_KINDS.join(' / ')}`
       const products = ctx.knowledge
-        .listProducts()
+        .listMaterials()
         .filter((p) => !kind || p.kind === kind)
         .map((p) => ({
           id: p.id,
@@ -77,30 +120,32 @@ export const knowledgeTools = [
     expose: { agent: true, mcp: true },
     description:
       '往知识库写/更新一个条目（商品/书籍/话题/自定义）：观众提到的新商品、导演口头给的新卖点、自己查到的资料。' +
-      '副作用：写库。**寻址一律用 id**：带 id 更新那一条（没传的字段沿用旧值），不带 id 新建（名字只是显示，不参与查重）。' +
+      '副作用：写库。**寻址一律用 knowledgeId**：带 knowledgeId 更新那一条（没传的字段沿用旧值），不带 knowledgeId 新建（名字只是显示，不参与查重）。' +
       '直播里要长期记住的商品信息用它落库，别只记在对话里。返回条目 id；删条目用 knowledge_remove。',
     parameters: Type.Object({
-      id: Type.Optional(Type.String({ description: '条目 id（knowledge_list/knowledge_search 拿）：更新时必传，不传 = 新建' })),
+      knowledgeId: Type.Optional(Type.String({ description: '条目 id（knowledge_list/knowledge_search 拿）：更新时必传，不传 = 新建' })),
       name: Type.String({ description: '条目名（商品名/书名/话题名），只用于显示' }),
       kind: Type.Optional(Type.String({ description: `类型：${ENTRY_KINDS.join('/')}（商品默认 product）` })),
       price: Type.Optional(Type.Number({ description: '价格（元），只有商品有意义' })),
       sellingPoints: Type.Optional(Type.String({ description: '要点：商品=卖点；书籍=内容要点；话题=节目要点' })),
       faq: Type.Optional(Type.String({ description: '问答/备注' })),
+      content: Type.Optional(Type.String({ description: '正文：文章/讲稿/说明书正文都可以直接放这里（附件和链接另挂）' })),
       author: Type.Optional(Type.String({ description: '作者（书籍类用）' }))
     }),
     handler: (ctx, params) => {
       const kind = (ENTRY_KINDS as readonly string[]).includes(params.kind ?? '') ? (params.kind as EntryKind) : 'product'
-      const existing = params.id?.trim()
-        ? ctx.knowledge.listProducts().find((p) => p.id === params.id!.trim())
+      const existing = params.knowledgeId?.trim()
+        ? ctx.knowledge.listMaterials().find((p) => p.id === params.knowledgeId!.trim())
         : undefined
-      if (params.id?.trim() && !existing) return `知识条目 ${params.id} 不存在（用 knowledge_list 拿正确的 id）`
-      const saved = ctx.knowledge.saveProduct(
+      if (params.knowledgeId?.trim() && !existing) return `知识条目 ${params.knowledgeId} 不存在（用 knowledge_list 拿正确的 id）`
+      const saved = ctx.knowledge.saveMaterial(
         {
           name: params.name,
           kind,
           price: params.price ?? existing?.price ?? 0,
           sellingPoints: params.sellingPoints ?? existing?.sellingPoints ?? '',
           faq: params.faq ?? existing?.faq ?? '',
+          content: params.content ?? existing?.content ?? '',
           externalId: existing?.externalId ?? '',
           meta: {
             ...(existing?.meta ?? {}),
@@ -120,15 +165,15 @@ export const knowledgeTools = [
     risk: 'write',
     expose: { agent: true, mcp: true },
     description:
-      '按 id 删一个知识库条目（过时/下架/录错）。副作用：真删，不可恢复——只有导演明确说删才用。' +
-      'id 从 knowledge_list / knowledge_search 拿。返回删除结果；条目不存在时如实告知。',
+      '按 knowledgeId 删一个知识库条目（过时/下架/录错）。副作用：真删，不可恢复——只有导演明确说删才用。' +
+      'knowledgeId 从 knowledge_list / knowledge_search 拿。返回删除结果；条目不存在时如实告知。',
     parameters: Type.Object({
-      id: Type.String({ description: '条目 id（knowledge_list 拿）' })
+      knowledgeId: Type.String({ description: '条目 id（knowledge_list 拿）' })
     }),
     handler: (ctx, params) => {
-      const found = ctx.knowledge.listProducts().find((p) => p.id === params.id.trim())
-      if (!found) return `知识库里没有 id=${params.id}`
-      ctx.knowledge.deleteProduct(found.id)
+      const found = ctx.knowledge.listMaterials().find((p) => p.id === params.knowledgeId.trim())
+      if (!found) return `知识库里没有 id=${params.knowledgeId}`
+      ctx.knowledge.deleteMaterial(found.id)
       return `已删知识条目：「${found.name}」`
     }
   }),

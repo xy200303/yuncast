@@ -163,10 +163,6 @@ export class TtsService {
     return `tts-${createHash('sha1').update(payload).digest('hex').slice(0, 20)}`
   }
 
-  cacheStats(): { hits: number; misses: number } {
-    return { hits: this.cacheHits, misses: this.cacheMisses }
-  }
-
   /**
    * 合成用量落库（用量看板）：每次真正打接口的合成记一条（缓存命中不记）。
    * cost 恒 null（只统计字符数，不折算金额）。落库失败静默。
@@ -205,11 +201,6 @@ export class TtsService {
   /** 路径归不归 BlobStore 管（内容寻址缓存）：调用方删「临时」文件前必须先问，桶里的 blob 别处还在引用 */
   isBlobPath(path: string): boolean {
     return this.blobs.isBlobPath(path)
-  }
-
-  /** 该音色会走哪家（流式通道据此选实现；接入没配就抛中文原因） */
-  providerForVoice(voiceId?: string): TtsProvider {
-    return this.route(voiceId).provider
   }
 
   /** 该音色的完整路由（流式通道据此看模型 streaming 能力位） */

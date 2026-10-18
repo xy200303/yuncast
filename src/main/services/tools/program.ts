@@ -3,7 +3,8 @@ import {
   BROADCAST_MODE_LABELS,
   CONTENT_TYPE_LABELS,
   PROGRAM_LANGUAGE_LABELS,
-  type Program
+  type Program,
+  type ProgramInput
 } from '../../../shared/types'
 import { audioProgress } from '../programUnits'
 import { defineTool, type ToolCtx } from './types'
@@ -35,13 +36,6 @@ const draftStats = (ctx: ToolCtx, programId: string): { total: number; ready: nu
     pending: all.filter((u) => u.status === 'pending' || u.status === 'synthesizing').length,
     failed: all.filter((u) => u.status === 'failed').length
   }
-}
-
-/** 音色显示名：克隆音色按 voiceType 反查音色库，查不到原样显示标识 */
-const voiceLabel = (ctx: ToolCtx, voiceId: string): string => {
-  if (!voiceId.trim()) return '（未设置）'
-  const found = ctx.voices?.list().find((v) => v.voiceType === voiceId.trim())
-  return found ? `${found.name}（${voiceId.trim()}）` : voiceId.trim()
 }
 
 /** 触发器显示名（查不到标注已删除） */
@@ -111,7 +105,7 @@ export const programTools = [
     risk: 'read',
     expose: { agent: true, mcp: true },
     description:
-      '看一个节目的完整配置：内容类型/播出方式/播完策略/事件规则/卡司/节目风格指令/绑的剧本/知识范围/场景进度，附底稿与音频就绪统计和版本号（updatedAt）。' +
+      '看一个节目的完整配置：内容类型/播出方式/播完策略/事件规则/卡司/节目风格指令/编排/知识范围/场景进度，附底稿与音频就绪统计和版本号（updatedAt）。' +
       '改节目（program_save）之前先用它读一遍。programId 从 program_list 拿。',
     parameters: Type.Object({
       programId: Type.String({ description: '节目 id（program_list 拿）' })
@@ -119,7 +113,7 @@ export const programTools = [
     handler: (ctx, params) => {
       const program = findProgram(ctx, params.programId)
       if (!program) return `节目 ${params.programId} 不存在（用 program_list 拿正确的 id）`
-      const bound = program.scriptId ? ctx.script.getScript(program.scriptId) : null
+      const bound = program.id ? ctx.script.getScript(program.id) : null
       const stats = draftStats(ctx, program.id)
       const renderedProgress = audioProgress(program, bound, ctx.draftUnits.list(program.id))
       return JSON.stringify({
@@ -133,18 +127,19 @@ export const programTools = [
         直播间动态提供给主播: program.allowLiveEvents,
         启用触发器: program.enabledTriggerIds.map((id) => ({ id, 名称: triggerLabel(ctx, id) })),
         卡司:
-          program.presenterIds.length > 0
-            ? program.presenterIds.map((id) => {
+          program.personaIds.length > 0
+            ? program.personaIds.map((id) => {
                 const card = ctx.persona.list().find((p) => p.id === id)
                 return card ? `${card.name}（${card.id}）` : `${id}（已不存在）`
               })
             : '（导演自选：全部主播卡都是候选人）',
         节目风格指令: program.instruction || '（未配置：整期用卡司嗓音的默认风格）',
-        剧本: bound ? { id: bound.id, 名称: bound.title, 场景数: bound.scenes.length } : null,
+        编排: bound
+          ? `${bound.scenes.length} 场（${bound.scenes.map((item) => item.title).join(' → ')}）`
+          : '还没编排（scene_create 加场）',
         场景进度: `第 ${program.currentSceneIdx + 1} 场`,
         知识范围: {
-          条目: program.knowledgeScope.products === '*' ? '全部' : `${program.knowledgeScope.products.length} 个`,
-          文件: program.knowledgeScope.files === '*' ? '全部' : `${program.knowledgeScope.files.length} 个`
+          条目: program.knowledgeScope.materials === '*' ? '全部' : `${program.knowledgeScope.materials.length} 个`,
         },
         底稿统计: stats,
         节目音频进度: {
@@ -168,12 +163,12 @@ export const programTools = [
     risk: 'write',
     expose: { agent: true, mcp: true },
     description:
-      '新建或修改节目配置（名称/主题/内容类型/播出方式/播完策略/事件开关/卡司/剧本绑定/知识范围/节目风格指令）。' +
-      '带 id 是修改（没传的字段保持原样），不带 id 是新建（name 必填）。' +
+      '新建或修改节目配置（名称/主题/内容类型/播出方式/播完策略/事件开关/卡司/编排/知识范围/节目风格指令）。' +
+      '带 programId 是修改（没传的字段保持原样），不带 programId 是新建（name 必填）。' +
       '修改时建议带 expectedUpdatedAt（program_get/program_list 里的版本号）：期间有人改过了会拒绝并告诉你新版本号，重新读取后再改，不会悄悄覆盖别人的修改。' +
       '改的是当前节目且会话在跑时，配置下次重开会话/开播才生效（返回值会明说）。',
     parameters: Type.Object({
-      id: Type.Optional(Type.String({ description: '节目 id：修改时必传（program_list 拿），不传 = 新建' })),
+      programId: Type.Optional(Type.String({ description: '节目 id：修改时必传（program_list 拿），不传 = 新建' })),
       name: Type.Optional(Type.String({ description: '节目名称（新建必填）' })),
       theme: Type.Optional(Type.String({ description: '主题/节目说明' })),
       contentType: Type.Optional(
@@ -185,14 +180,12 @@ export const programTools = [
       finishMode: Type.Optional(Type.String({ description: '播完以后：stop=播完停止 / loop=循环播放' })),
       allowLiveEvents: Type.Optional(Type.Boolean({ description: '是否把直播间动态（评论/礼物/进场）提供给主播' })),
       enabledTriggerIds: Type.Optional(Type.Array(Type.String(), { description: '启用的事件触发器 id（全量替换，trigger_list 拿）' })),
-      presenterIds: Type.Optional(
+      personaIds: Type.Optional(
         Type.Array(Type.String(), { description: '节目卡司：主播卡 id 数组（全量替换，persona_list 拿）；空数组 = 导演自选（全部主播卡可用）' })
       ),
-      scriptId: Type.Optional(Type.String({ description: '绑定的剧本 id（剧本列表工具拿）；传空字符串 = 解绑' })),
       knowledgeScope: Type.Optional(
         Type.Object({
-          products: Type.Optional(Type.Union([Type.Literal('*'), Type.Array(Type.String())], { description: '知识条目范围：* = 全部，否则 id 白名单' })),
-          files: Type.Optional(Type.Union([Type.Literal('*'), Type.Array(Type.String())], { description: '知识文件范围' }))
+          materials: Type.Optional(Type.Union([Type.Literal('*'), Type.Array(Type.String())], { description: '素材范围：* = 全部，否则素材 id 白名单（附件随条目走，不用单独配）' }))
         })
       ),
       instruction: Type.Optional(
@@ -207,12 +200,12 @@ export const programTools = [
       expectedUpdatedAt: Type.Optional(Type.Number({ description: '你读到的版本号（并发保护）：不一致就拒绝，不会覆盖别人的修改' }))
     }),
     handler: (ctx, params) => {
-      const existing = params.id ? findProgram(ctx, params.id) : undefined
-      if (params.id && !existing) return `节目 ${params.id} 不存在（用 program_list 拿正确的 id）`
+      const existing = params.programId ? findProgram(ctx, params.programId) : undefined
+      if (params.programId && !existing) return `节目 ${params.programId} 不存在（用 program_list 拿正确的 id）`
       if (!existing && !params.name?.trim()) return '新建节目必须给名称（name）'
       if (!existing) {
         const dup = ctx.script.listPrograms().find((p) => p.name === params.name!.trim())
-        if (dup) return `已存在同名节目「${dup.name}」（id=${dup.id}）：要改它带 id 调用，别重复建`
+        if (dup) return `已存在同名节目「${dup.name}」（id=${dup.id}）：要改它带 programId 调用，别重复建`
       }
       const pickEnum = <T extends string>(
         value: string | undefined,
@@ -237,11 +230,9 @@ export const programTools = [
       )
       if (lang.error) return lang.error
 
-      const scriptId = params.scriptId === undefined ? (existing?.scriptId ?? null) : params.scriptId.trim() || null
-      if (scriptId && !ctx.script.getScript(scriptId)) return `剧本 ${scriptId} 不存在（用剧本列表工具拿正确的 id）`
-      if (params.presenterIds) {
+      if (params.personaIds) {
         const known = new Set(ctx.persona.list().map((p) => p.id))
-        const bad = params.presenterIds.map((id) => id.trim()).filter((id) => id && !known.has(id))
+        const bad = params.personaIds.map((id) => id.trim()).filter((id) => id && !known.has(id))
         if (bad.length > 0) return `卡司里有不存在的主播卡：${bad.join('、')}（用 persona_list 拿正确的 id）`
       }
 
@@ -254,16 +245,15 @@ export const programTools = [
           finishMode: fm.value ?? existing?.finishMode ?? 'loop',
           allowLiveEvents: params.allowLiveEvents ?? existing?.allowLiveEvents ?? true,
           enabledTriggerIds: params.enabledTriggerIds ?? existing?.enabledTriggerIds ?? [],
-          presenterIds: params.presenterIds ?? existing?.presenterIds ?? [],
+          personaIds: params.personaIds ?? existing?.personaIds ?? [],
           instruction: params.instruction === undefined ? (existing?.instruction ?? '') : params.instruction.trim(),
-          scriptId,
           language: lang.value ?? existing?.language ?? 'auto',
+          plan: existing?.plan ?? { scenes: [] },
           knowledgeScope: params.knowledgeScope
             ? {
-                products: params.knowledgeScope.products ?? existing?.knowledgeScope.products ?? '*',
-                files: params.knowledgeScope.files ?? existing?.knowledgeScope.files ?? '*'
+                materials: params.knowledgeScope.materials ?? existing?.knowledgeScope.materials ?? '*'
               }
-            : (existing?.knowledgeScope ?? { products: '*', files: '*' })
+            : (existing?.knowledgeScope ?? { materials: '*' })
         },
         existing?.id,
         params.expectedUpdatedAt
@@ -284,7 +274,7 @@ export const programTools = [
     risk: 'danger',
     expose: { agent: true, mcp: true },
     description:
-      '删除一个节目：底稿、已合成音频、该节目的对话记录一起删除，不可恢复（剧本/音色/知识等全局资产不动）。' +
+      '删除一个节目：底稿、已合成音频、该节目的对话记录一起删除，不可恢复（音色/素材等跨节目资产不动）。' +
       '正在播出的节目删不了（先结束节目）。内置主播第一次调用不传 confirmed：向导演发确认卡；导演确认后带 confirmed=true 重调才执行。' +
       '外部调用没有确认卡、直接执行。programId 从 program_list 拿。',
     parameters: Type.Object({
@@ -311,7 +301,7 @@ export const programTools = [
             `- 底稿 ${stats.total} 段（含已合成音频 ${stats.ready} 段）一并删除\n` +
             `- 该节目的对话记录一并删除\n` +
             `- ${isActive ? '它是当前节目，删除后当前节目选择清空\n- ' : ''}` +
-            `绑定的剧本/音色/知识等全局资产不动\n` +
+            `音色/素材等跨节目资产不动\n` +
             `不可恢复`
         )
         if (msg) return msg
@@ -353,7 +343,7 @@ export const programTools = [
     risk: 'danger',
     expose: { agent: true, mcp: true },
     description:
-      '清空一个节目的全部底稿和已合成音频（不可恢复；节目配置/剧本绑定保留）。整节目推倒重写时用；正在播出的节目清不了。' +
+      '清空一个节目的全部底稿和已合成音频（不可恢复；节目配置与编排保留）。整节目推倒重写时用；正在播出的节目清不了。' +
       '内置主播第一次调用不传 confirmed：向导演发确认卡；确认后带 confirmed=true 重调才执行。外部调用直接执行。',
     parameters: Type.Object({
       programId: Type.Optional(Type.String({ description: '节目 id（program_list 拿），不传 = 当前节目' })),
@@ -374,7 +364,7 @@ export const programTools = [
           ctx,
           `清空节目「${program.name}」的全部内容：\n` +
             `- ${stats.total} 段底稿删除（含 ${stats.ready} 段已合成音频，音频文件一并清理）\n` +
-            `- 节目配置与剧本绑定保留\n不可恢复`
+            `- 节目配置与编排保留\n不可恢复`
         )
         if (msg) return msg
       }
@@ -577,6 +567,116 @@ export const programTools = [
         (result.files ?? []).map((file) => `- ${file}`).join('\n') +
         (result.warning ? `\n警告：${result.warning}` : '')
       )
+    }  }),
+
+  defineTool({
+    name: 'program_scaffold',
+    label: '一键搭节目',
+    risk: 'write',
+    domain: 'program',
+    expose: { agent: true, mcp: true },
+    description:
+      '一条命令把一场戏搭起来：建节目（含卡司/风格指令/语言）→ 按给的场景清单把编排排好 → 选中开播预热。' +
+      '可选顺便建一张主播卡并绑上音色（personaName + voiceId）。' +
+      '它只搭骨架（不写稿）：搭完用 draft_write/program_produce_audio 补内容，或直接 program_launch 让主播现场补。' +
+      '以前这些要走 6~10 次调用且 scene_create 依赖"当前节目"，没切换就把场景写到别的节目上（实测踩过）。',
+    parameters: Type.Object({
+      name: Type.String({ description: '节目名（也是主播卡名之外的唯一标识）' }),
+      theme: Type.Optional(Type.String({ description: '节目说明/主题' })),
+      personaName: Type.Optional(
+        Type.String({ description: '顺便建一张主播卡（名字）；需要同时给 voiceId，不然没嗓音写词会被拦' })
+      ),
+      voiceId: Type.Optional(Type.String({ description: '主播卡用的音色（voice_list 的 voiceId 字段）' })),
+      instruction: Type.Optional(Type.String({ description: '节目级风格指令（≤100 字）' })),
+      contentType: Type.Optional(
+        Type.String({ description: '内容类型：solo=一个人讲（默认）/ conversation / reading / roleplay' })
+      ),
+      broadcastMode: Type.Optional(
+        Type.String({ description: '播出方式：rolling=边播边备（默认）/ prepared=全部做好再播 / improvised=现场发挥' })
+      ),
+      finishMode: Type.Optional(Type.String({ description: '播完策略：loop=循环（默认）/ stop=播完停' })),
+      language: Type.Optional(Type.String({ description: '播出语言，默认 Chinese' })),
+      scenes: Type.Optional(
+        Type.Array(
+          Type.Object({
+            title: Type.String({ description: '场景名' }),
+            goal: Type.String({ description: '这场要达成什么' }),
+            keyPoints: Type.Optional(Type.String({ description: '必讲要点，一行一条' })),
+            estDurationMin: Type.Optional(Type.Number({ description: '预计时长（分钟）' }))
+          }),
+          { description: '场景清单（按顺序建）；不给就留空，之后用 scene_create 补' }
+        )
+      ),
+      activate: Type.Optional(Type.Boolean({ description: '建完就选中并预热主播会话（默认 true）' }))
+    }),
+    handler: (ctx, params) => {
+      const name = params.name.trim()
+      if (!name) return '节目名不能为空'
+      if (params.personaName && !params.voiceId?.trim()) {
+        return '要建主播卡就得同时给 voiceId（voice_list 拿）：没有嗓音的卡写词会被拦'
+      }
+      const personaIds: string[] = []
+      let personaNote = ''
+      if (params.personaName?.trim()) {
+        const saved = ctx.persona.save({
+          name: params.personaName.trim(),
+          personality: '',
+          catchphrases: '',
+          background: '',
+          taboos: '',
+          voiceId: params.voiceId!.trim()
+        })
+        personaIds.push(saved.id)
+        personaNote = `；主播卡「${saved.name}」（id=${saved.id}）`
+      }
+      const contentTypePick = (['solo', 'conversation', 'reading', 'roleplay'] as const).find(
+        (item) => item === (params.contentType ?? 'solo')
+      )
+      const modePick = (['rolling', 'prepared', 'improvised'] as const).find(
+        (item) => item === (params.broadcastMode ?? 'rolling')
+      )
+      const program = ctx.script.saveProgram({
+        name,
+        theme: params.theme?.trim() ?? '',
+        contentType: contentTypePick ?? 'solo',
+        broadcastMode: modePick ?? 'rolling',
+        finishMode: params.finishMode === 'stop' ? 'stop' : 'loop',
+        allowLiveEvents: true,
+        enabledTriggerIds: [],
+        personaIds,
+        instruction: params.instruction?.trim() ?? '',
+        language: (params.language?.trim() || 'Chinese') as ProgramInput['language'],
+        plan: { scenes: [] },
+        knowledgeScope: { materials: '*' }
+      })
+      const scenes = params.scenes ?? []
+      const script = scenes.length > 0 ? ctx.script.getScript(program.id) : null
+      let sceneTotal = 0
+      for (const scene of params.scenes ?? []) {
+        ctx.script.appendScene(program.id, {
+          title: scene.title,
+          goal: scene.goal,
+          keyPoints: scene.keyPoints ?? '',
+          estDurationMin: scene.estDurationMin
+        })
+        sceneTotal++
+      }
+      if (params.activate !== false) {
+        ctx.script.setActiveProgram(program.id)
+        ctx.warmupProgram?.(program.id)
+        ctx.onSceneChanged?.()
+      }
+      const latest = script ? ctx.script.getScript(script.id) : null
+      const lines = [
+        `已搭好节目「${program.name}」（id=${program.id}）${personaNote}`,
+        `编排：${latest?.scenes.length ?? sceneTotal} 场` +
+          (latest && latest.scenes.length > 0
+            ? `\n${latest.scenes.map((item, i) => `  ${i + 1}. ${item.title}｜${item.goal}`).join('\n')}`
+            : ''),
+        params.activate !== false ? '已选中并把主播会话预热好。' : '没选中（activate=false）。',
+        '下一步：draft_write 按场景写稿（sceneId 从这里或 scene_list 拿）→ program_produce_audio 预合成 → program_launch 开播；也可以直接 program_launch 让主播现场补货。'
+      ]
+      return lines.join('\n')
     }
   })
 ]

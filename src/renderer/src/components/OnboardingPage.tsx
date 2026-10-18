@@ -37,7 +37,7 @@ export function OnboardingPage() {
   }, [allReady])
 
   /** 去别的页面建东西：撤掉覆盖层，下次启动（或设置 → 关于重开）再回来接着看清单 */
-  const gotoPage = (page: 'anchors' | 'programs') => {
+  const gotoPage = (page: 'personas' | 'programs') => {
     setOnboardingOpen(false)
     setPage(page)
   }
@@ -70,7 +70,7 @@ export function OnboardingPage() {
       ok: steps.persona,
       title: '建一张主播卡（人设 + 嗓音）',
       hint: '主播是谁、什么性格、用什么声音说话',
-      action: { label: '去创建', run: () => gotoPage('anchors') }
+      action: { label: '去创建', run: () => gotoPage('personas') }
     },
     {
       ok: steps.program,

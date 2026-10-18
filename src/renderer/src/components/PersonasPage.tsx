@@ -18,7 +18,7 @@ import { type Persona } from '../../../shared/types'
 type PersonaForm = Omit<Persona, 'id' | 'updatedAt'>
 
 /** 主播团：只有人设卡（风格 + 嗓音）。大脑归导演（设置 → 导演），启停归播出流程（开播/写稿）。 */
-export function AnchorsPage() {
+export function PersonasPage() {
   const agent = useAppStore((s) => s.agent)
   const voices = useAppStore((s) => s.voices)
   const ttsProviders = useAppStore((s) => s.ttsProviders)

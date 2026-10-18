@@ -241,7 +241,7 @@ export class BlobStoreService {
     // 迁移期间引用快照：同一路径可能被多个 owner 引用，逐个补登记。
     // 库里存的路径可能是正斜杠，join 出来的是反斜杠——两边都 resolve+小写归一化再比对
     const referenced = this.storage.poolItemReferencedAudioPaths()
-    const ownersByPath = new Map<string, { kind: 'utterance' | 'speech_item'; id: string }[]>()
+    const ownersByPath = new Map<string, { kind: 'draft_unit' | 'pool_item'; id: string }[]>()
     if (referenced.length > 0) {
       for (const row of this.storage.audioPathOwners()) {
         const key = resolve(row.path).toLowerCase()
@@ -323,14 +323,14 @@ export class BlobStoreService {
   /**
    * 一次性迁移：老 program-audio/ 目录（整章拼接产物 + 导入的外部音频）搬进 blobs（cache 档）。
    * owner 是 rendered JSON（draftUnits.rendered / scripts.scenes[].rendered），迁移后改写 JSON 里的
-   * audioPath 并登记引用（ownerKind = utterance_rendered / scene_rendered）。
+   * audioPath 并登记引用（ownerKind = draft_unit_rendered / scene_rendered）。
    * 没被任何 rendered 引用的残留文件不入库——cache 档无引用宽限期会清，直接删掉。
    */
   async migrateProgramAudio(): Promise<{ moved: number }> {
     const legacyDir = join(app.getPath('userData'), 'program-audio')
     const names = await readdir(legacyDir).catch(() => [] as string[])
     if (names.length === 0) return { moved: 0 }
-    const ownersByPath = new Map<string, { kind: 'utterance_rendered' | 'scene_rendered'; id: string }[]>()
+    const ownersByPath = new Map<string, { kind: 'draft_unit_rendered' | 'scene_rendered'; id: string }[]>()
     for (const row of this.storage.renderedPathOwners()) {
       const key = resolve(row.path).toLowerCase()
       const list = ownersByPath.get(key) ?? []
@@ -373,9 +373,9 @@ export class BlobStoreService {
    * 注意是 copy（move=false）：老库 file_path 指向用户自己的文件，不能拿走；
    * 迁移后 file_path 指向 blob，用户移动/删除原文件不影响重新解析。
    */
-  async migrateKnowledgeFiles(): Promise<{ moved: number }> {
+  async migrateMaterialFiles(): Promise<{ moved: number }> {
     let moved = 0
-    for (const file of this.storage.knowledgeFileList()) {
+    for (const file of this.storage.materialFileList()) {
       if (!file.filePath || this.isBlobPath(file.filePath)) continue
       const info = await stat(file.filePath).catch(() => null)
       if (!info?.isFile()) continue

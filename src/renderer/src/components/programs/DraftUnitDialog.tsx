@@ -29,16 +29,16 @@ import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { ProgramAudioPanel } from './ProgramAudioPanel'
 import { useAppStore } from '../../stores/useAppStore'
 
-/** 逐段主播：下拉值 = 主播卡 id（稳定寻址），落库到 draft_units.presenter_id */
-function castValueOf(presenterId: string | undefined, personas: Persona[]): string {
-  if (!presenterId) return '__default'
-  return personas.some((p) => p.id === presenterId) ? presenterId : '__default'
+/** 逐段主播：下拉值 = 主播卡 id（稳定寻址），落库到 draft_units.persona_id */
+function castValueOf(personaId: string | undefined, personas: Persona[]): string {
+  if (!personaId) return '__default'
+  return personas.some((p) => p.id === personaId) ? personaId : '__default'
 }
 
 import {
   BIT_TYPES,
   BIT_TYPE_LABEL,
-  UTTERANCE_STATUS_LABEL,
+  DRAFT_UNIT_STATUS_LABEL,
   type Persona,
   type ProduceVoiceOverride,
   type Program,
@@ -49,11 +49,11 @@ import {
 import { ContentText } from '../ContentText'
 import { VoicePickDialog } from '../VoicePickDialog'
 
-const UTTERANCE_STATUS: Record<DraftUnitStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
-  pending: { label: UTTERANCE_STATUS_LABEL.pending, variant: 'outline' },
-  synthesizing: { label: UTTERANCE_STATUS_LABEL.synthesizing, variant: 'secondary' },
-  ready: { label: UTTERANCE_STATUS_LABEL.ready, variant: 'default' },
-  failed: { label: UTTERANCE_STATUS_LABEL.failed, variant: 'destructive' }
+const DRAFT_UNIT_STATUS: Record<DraftUnitStatus, { label: string; variant: 'default' | 'secondary' | 'outline' | 'destructive' }> = {
+  pending: { label: DRAFT_UNIT_STATUS_LABEL.pending, variant: 'outline' },
+  synthesizing: { label: DRAFT_UNIT_STATUS_LABEL.synthesizing, variant: 'secondary' },
+  ready: { label: DRAFT_UNIT_STATUS_LABEL.ready, variant: 'default' },
+  failed: { label: DRAFT_UNIT_STATUS_LABEL.failed, variant: 'destructive' }
 }
 
 /**
@@ -85,12 +85,12 @@ export function DraftUnitDialog({
   const [newText, setNewText] = useState('')
   const [newDelivery, setNewDelivery] = useState('')
   /** 卡司候选（主播卡）：逐段指定「这段谁读」 */
-  const [personas, setPersonas] = useState<Persona[]>([])
-  const [newPresenterId, setNewPresenterId] = useState('')
-  const [editPresenterId, setEditPresenterId] = useState('')
+  const [personas] = useState<Persona[]>([])
+  const [newPersonaId, setNewPersonaId] = useState('')
+  const [editPersonaId, setEditPersonaId] = useState('')
 
   const reload = useCallback(async () => {
-    setItems(await window.api.utterance.list(program.id))
+    setItems(await window.api.draftUnit.list(program.id))
   }, [program.id])
 
   useEffect(() => {
@@ -99,7 +99,7 @@ export function DraftUnitDialog({
 
   // 预合成进度订阅（主播写稿入库走直播台时间线，这里只关心音频状态变化）
   useEffect(() => {
-    const offUt = window.api.utterance.onEvent((u) => {
+    const offUt = window.api.draftUnit.onEvent((u) => {
       if (u.programId !== program.id) return
       if (u.id === '') {
         setPresynthRunning(false)
@@ -161,7 +161,7 @@ export function DraftUnitDialog({
   const startPresynth = async (voiceOverride?: ProduceVoiceOverride, rebuildAll?: boolean) => {
     setVoicePickOpen(false)
     setPresynthRunning(true)
-    if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+    if (rebuildAll) await window.api.draftUnit.clearAudio(program.id)
     const result = await window.api.program.produceAudio(program.id, voiceOverride)
     if (!result.ok) {
       setPresynthRunning(false)
@@ -170,7 +170,7 @@ export function DraftUnitDialog({
   }
 
   const saveEdit = async (u: DraftUnit) => {
-    const result = await window.api.utterance.save(
+    const result = await window.api.draftUnit.save(
       {
         programId: u.programId,
         sceneId: u.sceneId,
@@ -178,8 +178,8 @@ export function DraftUnitDialog({
         text: editText,
         bitType: editType,
         delivery: editDelivery,
-        presenterId: editPresenterId || undefined,
-        voiceId: editPresenterId ? '' : u.voiceId,
+        personaId: editPersonaId || undefined,
+        voiceId: editPersonaId ? '' : u.voiceId,
         source: u.source,
         sources: u.sources
       },
@@ -198,14 +198,14 @@ export function DraftUnitDialog({
   const saveNew = async () => {
     const text = newText.trim()
     if (!text) return
-    const result = await window.api.utterance.save({
+    const result = await window.api.draftUnit.save({
       programId: program.id,
       sceneId: script?.scenes[0]?.id ?? '',
       variantIdx: 0,
       text,
       bitType: 'general',
       delivery: newDelivery.trim(),
-      presenterId: newPresenterId || undefined,
+      personaId: newPersonaId || undefined,
       voiceId: '',
       source: 'initial',
       sources: []
@@ -229,7 +229,7 @@ export function DraftUnitDialog({
       return
     }
     clearGuard.disarm()
-    const result = await window.api.utterance.clear(program.id)
+    const result = await window.api.draftUnit.clear(program.id)
     if (result.ok) {
       toast.success('已清空全部底稿', { description: '可以手动新建，或点「AI 写稿」让导演重写' })
       await reload()
@@ -247,7 +247,7 @@ export function DraftUnitDialog({
       return
     }
     clearAudioGuard.disarm()
-    const result = await window.api.utterance.clearAudio(program.id)
+    const result = await window.api.draftUnit.clearAudio(program.id)
     if (result.ok) {
       if (result.item > 0) {
         toast.success(`已清空 ${result.item} 段音频`, { description: '文稿保留，全部回到待合成' })
@@ -330,14 +330,14 @@ export function DraftUnitDialog({
               autoFocus
             />
             <div className="flex items-center gap-2">
-              <Select value={castValueOf(newPresenterId, personas)} onValueChange={(value) => setNewPresenterId(value === '__default' ? '' : value)}>
+              <Select value={castValueOf(newPersonaId, personas)} onValueChange={(value) => setNewPersonaId(value === '__default' ? '' : value)}>
                 <SelectTrigger className="h-8 w-36 text-xs" title="这段谁读（卡司）">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__default">默认（卡司第一张）</SelectItem>
-                  {(program.presenterIds.length > 0
-                    ? program.presenterIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is Persona => Boolean(p))
+                  {(program.personaIds.length > 0
+                    ? program.personaIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is Persona => Boolean(p))
                     : personas
                   ).map((p) => (
                     <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
@@ -386,14 +386,14 @@ export function DraftUnitDialog({
                               autoFocus
                             />
                             <div className="flex items-center gap-2">
-                              <Select value={castValueOf(editPresenterId, personas)} onValueChange={(value) => setEditPresenterId(value === '__default' ? '' : value)}>
+                              <Select value={castValueOf(editPersonaId, personas)} onValueChange={(value) => setEditPersonaId(value === '__default' ? '' : value)}>
                                 <SelectTrigger className="h-7 w-28 text-xs" title="这段谁读（卡司）">
                                   <SelectValue />
                                 </SelectTrigger>
                                 <SelectContent>
                                   <SelectItem value="__default">默认</SelectItem>
-                                  {(program.presenterIds.length > 0
-                                    ? program.presenterIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is Persona => Boolean(p))
+                                  {(program.personaIds.length > 0
+                                    ? program.personaIds.map((id) => personas.find((p) => p.id === id)).filter((p): p is Persona => Boolean(p))
                                     : personas
                                   ).map((p) => (
                                     <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
@@ -428,8 +428,8 @@ export function DraftUnitDialog({
                           </div>
                         ) : (
                           <div className="flex items-start gap-2">
-                            <Badge variant={UTTERANCE_STATUS[u.status].variant} className="mt-0.5 shrink-0">
-                              {UTTERANCE_STATUS[u.status].label}
+                            <Badge variant={DRAFT_UNIT_STATUS[u.status].variant} className="mt-0.5 shrink-0">
+                              {DRAFT_UNIT_STATUS[u.status].label}
                             </Badge>
                             <div className="min-w-0 flex-1">
                               {u.status === 'synthesizing' ? (
@@ -447,11 +447,11 @@ export function DraftUnitDialog({
                                   {u.delivery && (
                                     <p className="mt-0.5 text-xs text-muted-foreground">演法：{u.delivery}</p>
                                   )}
-                                  {(u.presenterId || u.voiceId) && (
+                                  {(u.personaId || u.voiceId) && (
                                     <p className="mt-0.5 text-xs text-muted-foreground">
                                       主播：
-                                      {u.presenterId
-                                        ? (personas.find((p) => p.id === u.presenterId)?.name ?? u.presenterId)
+                                      {u.personaId
+                                        ? (personas.find((p) => p.id === u.personaId)?.name ?? u.personaId)
                                         : (personas.find((p) => p.voiceId === u.voiceId)?.name ?? u.voiceId)}
                                     </p>
                                   )}
@@ -485,7 +485,7 @@ export function DraftUnitDialog({
                                 setEditText(u.text)
                                 setEditType(u.bitType || 'general')
                                 setEditDelivery(u.delivery)
-                                setEditPresenterId(u.presenterId ?? '')
+                                setEditPersonaId(u.personaId ?? '')
                               }}
                             >
                               <Pencil />
@@ -496,7 +496,7 @@ export function DraftUnitDialog({
                               className="shrink-0"
                               title="删除"
                               onClick={() => {
-                                void window.api.utterance.remove(u.id).then(async (result) => {
+                                void window.api.draftUnit.remove(u.id).then(async (result) => {
                                   if (result.ok) {
                                     await reload()
                                     await onChanged()

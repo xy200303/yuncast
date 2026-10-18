@@ -48,13 +48,13 @@ yuncast events --follow --kinds comment.new,gift.received
 
 | 域 | 工具 |
 | --- | --- |
-| 播报 | `speak`（**真出声**，lane: queue/next/interrupt/filler，`speaker`=主播卡 id，`pauseAfterMs` 段后停顿毫秒，`delivery`/`rate`/`pitch` 逐条演法，`emotion`+`emotionScale` 火山情绪，`languageType` 百炼 qwen3-tts 语种）· `pool_status` / `pool_recent` / `pool_revise` / `pool_revoke`（撤单条）/ `pool_reorder`（调序）· `broadcast_control`（pause/resume/skip/clear） |
-| 底稿 | `draft_list` / `draft_get`（全文）/ `draft_add` / `draft_write`（批量 1~4 段）/ `draft_edit` / `draft_remove` / `draft_clear`（危险）；写稿用 `speaker`=主播卡 id 逐段指定谁读 |
-| 场景/剧本 | `scene_list` / `scene_advance` / `scene_goto` / `scene_create` / `scene_update` / `scene_remove` / `scene_reorder` · `script_list` / `script_get` / `script_save` / `script_delete` |
+| 播报 | `speak`（**真出声**，lane: queue/next/interrupt/filler，`personaId`=主播卡 id，`pauseAfterMs` 段后停顿毫秒，`delivery`/`rate`/`pitch` 逐条演法，`emotion`+`emotionScale` 火山情绪，`languageType` 百炼 qwen3-tts 语种）· `pool_status` / `pool_recent` / `pool_revise` / `pool_revoke`（撤单条）/ `pool_reorder`（调序）· `broadcast_control`（pause/resume/skip/clear） |
+| 底稿 | `draft_list` / `draft_get`（全文）/ `draft_add` / `draft_write`（批量 1~4 段）/ `draft_edit` / `draft_remove` / `draft_clear`（危险）；写稿用 `personaId`=主播卡 id 逐段指定谁读 |
+| 编排（场景序列） | `scene_list` / `scene_advance` / `scene_goto` / `scene_create` / `scene_update` / `scene_remove` / `scene_reorder`（编排属于节目，没有独立剧本库） |
 | 节目 | `program_list` / `program_get` / `program_save`（`language` 多语言播出：auto/Chinese/English/Japanese/Korean/German/French/Russian/Italian/Spanish/Portuguese）· `program_activate` / `program_preflight` / `program_launch`（**真开播**）/ `program_produce_audio` / `program_audio_progress` / `program_export` / `program_delete` / `program_clear_content` |
-| 主播/音色 | `persona_list` / `persona_get` / `persona_save` / `persona_delete`（出镜由节目卡司决定，没配卡司导演逐条用 speaker 指定） · `voice_list` / `voice_get`（含引用关系）/ `voice_update`（改名/风格指令） / `voice_analyze_style`（听样本解析风格指令） / `persona_analyze_audio`（听样本写人设+音色指令） / `voice_clone_start` / `voice_delete` |
+| 主播/音色 | `persona_list` / `persona_get` / `persona_save` / `persona_delete`（出镜由节目卡司决定，没配卡司导演逐条用 personaId 指定） · `voice_list` / `voice_get`（含引用关系）/ `voice_update`（改名/风格指令） / `voice_analyze_style`（听样本解析风格指令） / `persona_analyze_audio`（听样本写人设+音色指令） / `voice_clone_start` / `voice_delete` |
 | TTS | `tts_synthesize`（出文件，`voiceId` 从 `voice_list` 的 `voiceId` 字段取，`outPath` 复制成品；`instruction` 风格指令 ≤100 字，`emotion`/`emotionScale` 火山情绪，`languageType` 百炼 qwen3-tts 语种）· `tts_connections` |
-| 知识/商品 | `knowledge_search` / `knowledge_list`（全量清单）/ `knowledge_save` / `knowledge_remove` / `product_sync` / `price_check`（报价的唯一口径） |
+| 素材/商品 | `knowledge_search` / `knowledge_list`（全量清单）/ `knowledge_save`（含正文）/ `knowledge_remove` / `material_read`（读正文+附件）/ `product_sync` / `price_check`（报价的唯一口径） |
 | 观众 | `viewer_lookup` / `viewer_note` |
 | 触发器 | `trigger_list` / `trigger_get` / `trigger_set` |
 | 连接/网络 | `connector_list` / `connector_call` / `connector_restart`（断线重连）· `web_fetch`（给 url 发请求——method/headers/cookies/body/proxy 都能自定义；给 query 联网搜索） |
@@ -70,7 +70,7 @@ yuncast events --follow --kinds comment.new,gift.received
 - **先探后动**：不知道有什么节目就先 `program_list`，不知道有什么音色就先 `voice_list`，不知道现在什么状态就先 `status`。id 都从列表里拿，不要自己编。
 - **播出即真实**：`speak`、`program_launch`、`broadcast_control`、`stream_start` 直接影响正在播出的直播间。用户没明确要求播出时，不要主动调用。
 - `agent_chat` 依赖已选节目：报「先选一个节目」时，用 `program_list` 找到节目后请用户在界面选中，或用 `program_activate` 选中。主播 `busy` 时拒绝并发，等她这轮说完。
-- **写稿走底稿工具**：帮用户写剧本/稿子用 `draft_write`（批量入库，待合成）或 `draft_add`（单条急用自动合成），写完 `program_produce_audio` 统一生产。改稿前用 `draft_get` 读全文。
+- **写稿走底稿工具**：帮用户写稿用 `draft_write`（批量入库，待合成）或 `draft_add`（单条急用自动合成），写完 `program_produce_audio` 统一生产。改稿前用 `draft_get` 读全文。
 - `tts_synthesize` 的产物默认在应用内部缓存目录；要给用户的文件一律传 `outPath`。缓存是内容寻址的，同文本同音色重合成不重复打接口。
 - `program_export` 只支持预制节目（broadcastMode=prepared）；滚动节目的音频是边播边合成的，没有整期文件可导。
 - 错误信息里都写了下一步（比如「先 voice_list 拿音色 id」），照着做，不要瞎猜参数重试。

@@ -49,7 +49,7 @@ export class EventBus {
       try {
         subscriber(event)
       } catch (error) {
-        console.error('[AgentAnchor] 事件订阅者出错:', error)
+        console.error('[YunCast] 事件订阅者出错:', error)
       }
     }
     return event

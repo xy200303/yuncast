@@ -46,7 +46,7 @@ export function NowPlayingBar({
   const ttsConnections = useAppStore((s) => s.ttsConnections)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   /** 节目卡司第一张：名字与嗓音必须同源（别再拿全局默认卡的声音配卡司的名字） */
-  const [castCard, setCastCard] = useState<Persona | null>(null)
+  const [leadCard, setCastCard] = useState<Persona | null>(null)
   const [masterVolume, setMasterVolume] = useState(Math.round(audioEngine.volume * 100))
   /** 上一次"有声"的音量：点静音再点回来时恢复它 */
   const lastAudible = useRef(masterVolume > 0 ? masterVolume : 100)
@@ -69,7 +69,7 @@ export function NowPlayingBar({
     const load = async () => {
       const [programs, personas] = await Promise.all([window.api.program.list(), window.api.persona.list()])
       const program = programs.find((p) => p.id === activeProgramId)
-      const first = program?.presenterIds[0]
+      const first = program?.personaIds[0]
       setCastCard(first ? (personas.find((p) => p.id === first) ?? null) : null)
     }
     void load()
@@ -81,9 +81,9 @@ export function NowPlayingBar({
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const running = agent.live === true
   /** 节目卡司第一张的嗓音名（与上面的名字同源；路由断了就只显示人名） */
-  const voiceName = castCard
+  const voiceName = leadCard
     ? (() => {
-        const route = voiceRouteSummary(voices, ttsProviders, ttsConnections, castCard.voiceId)
+        const route = voiceRouteSummary(voices, ttsProviders, ttsConnections, leadCard.voiceId)
         return route.broken ? '' : route.voiceName
       })()
     : ''
@@ -99,12 +99,12 @@ export function NowPlayingBar({
 
   const load = useCallback(async () => {
     if (!program) return
-    const [scripts, utterances] = await Promise.all([
-      window.api.script.list(),
-      window.api.utterance.list(program.id)
+    const [scripts, draftUnits] = await Promise.all([
+      window.api.program.plans(),
+      window.api.draftUnit.list(program.id)
     ])
-    const script: Script | null = scripts.find((s) => s.id === program.scriptId) ?? null
-    setUnits(listProgramAudioUnits(program, script, utterances))
+    const script: Script | null = scripts.find((s) => s.id === program.id) ?? null
+    setUnits(listProgramAudioUnits(program, script, draftUnits))
   }, [program])
 
   useEffect(() => {
@@ -185,8 +185,8 @@ export function NowPlayingBar({
   }
 
   // 副标题只放"谁在播"与预制章节的进度时间；正在播什么由内容区负责（播放条不重复铺稿子）
-  const presenterLine = [
-    castCard?.name ?? agent.castName ?? '未选主播',
+  const castLine = [
+    leadCard?.name ?? agent.leadPersonaName ?? '未选主播',
     voiceName
   ]
     .filter(Boolean)
@@ -233,7 +233,7 @@ export function NowPlayingBar({
             {programPicker ?? <span className="truncate text-muted-foreground">未选节目</span>}
           </div>
           <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-            <span className="truncate">{presenterLine}</span>
+            <span className="truncate">{castLine}</span>
             {progressLine && <span className="shrink-0">· {progressLine}</span>}
           </div>
         </div>

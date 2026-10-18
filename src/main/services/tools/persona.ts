@@ -3,8 +3,8 @@ import { defineTool, type ToolCtx } from './types'
 
 /**
  * 主播卡域：人设资料的查/存/删。
- * 没有「当前出镜」概念：一场出谁由节目卡司（presenterIds）决定，
- * 没配卡司就由导演逐条用 speaker 指定；主播卡只是纯资料（人设 + 嗓音）。
+ * 没有「当前出镜」概念：一场出谁由节目卡司（personaIds）决定，
+ * 没配卡司就由导演逐条用 personaId 指定；主播卡只是纯资料（人设 + 嗓音）。
  */
 
 /** 音色显示名：克隆音色按 voiceType 反查音色库，查不到原样显示标识 */
@@ -15,8 +15,8 @@ const voiceLabel = (ctx: ToolCtx, voiceId: string): string => {
 }
 
 /** 这张卡是不是当前节目的卡司成员（没有卡司 = 全部卡都是候选人） */
-const inProgramCast = (ctx: ToolCtx, personaId: string): boolean =>
-  ctx.persona.programCast().some((p) => p.id === personaId)
+const inProgram = (ctx: ToolCtx, personaId: string): boolean =>
+  ctx.persona.programPersonas().some((p) => p.id === personaId)
 
 /**
  * 破坏性操作两段确认：内置主播（agent 侧）没 confirmed 时只发导演确认卡；
@@ -57,7 +57,7 @@ export const personaTools = [
           personality: p.personality,
           voiceId: p.voiceId,
           voice: voiceLabel(ctx, p.voiceId),
-          inProgramCast: inProgramCast(ctx, p.id),
+          inProgram: inProgram(ctx, p.id),
           updatedAt: p.updatedAt
         }))
       )
@@ -86,7 +86,7 @@ export const personaTools = [
         背景: found.background,
         禁区: found.taboos,
         音色: voiceLabel(ctx, found.voiceId),
-        在本节目卡司里: inProgramCast(ctx, found.id),
+        在本节目卡司里: inProgram(ctx, found.id),
         版本号: found.updatedAt
       })
     }
@@ -100,12 +100,12 @@ export const personaTools = [
     expose: { agent: true, mcp: true },
     description:
       '新建或修改主播卡（名字/人格/口癖/背景/禁区/音色）。主播卡是纯资料：大脑是导演的，不在这里配；' +
-      '谁上场由节目卡司决定（节目配置 presenterIds），没配卡司就由你逐条用 speaker 指定。' +
-      '带 id 是修改（没传的字段保持原样），不带 id 是新建（name 必填）。' +
+      '谁上场由节目卡司决定（节目配置 personaIds），没配卡司就由你逐条用 personaId 指定。' +
+      '带 personaId 是修改（没传的字段保持原样），不带 personaId 是新建（name 必填）。' +
       '改音色只影响之后新说出的内容；改人格文本当前会话不自动刷新（重开会话生效）。' +
       '修改时建议带 expectedUpdatedAt（persona_get 里的版本号）做并发保护。',
     parameters: Type.Object({
-      id: Type.Optional(Type.String({ description: '主播卡 id：修改时必传（persona_list 拿），不传 = 新建' })),
+      personaId: Type.Optional(Type.String({ description: '主播卡 id：修改时必传（persona_list 拿），不传 = 新建' })),
       name: Type.Optional(Type.String({ description: '主播名字（新建必填）' })),
       personality: Type.Optional(Type.String({ description: '性格' })),
       catchphrases: Type.Optional(Type.String({ description: '口癖/口头禅' })),
@@ -115,12 +115,12 @@ export const personaTools = [
       expectedUpdatedAt: Type.Optional(Type.Number({ description: '你读到的版本号（并发保护）' }))
     }),
     handler: (ctx, params) => {
-      const existing = params.id ? ctx.persona.list().find((p) => p.id === params.id!.trim()) : undefined
-      if (params.id && !existing) return `主播卡 ${params.id} 不存在（用 persona_list 拿正确的 id）`
+      const existing = params.personaId ? ctx.persona.list().find((p) => p.id === params.personaId!.trim()) : undefined
+      if (params.personaId && !existing) return `主播卡 ${params.personaId} 不存在（用 persona_list 拿正确的 id）`
       if (!existing && !params.name?.trim()) return '新建主播卡必须给名字（name）'
       if (!existing) {
         const dup = ctx.persona.list().find((p) => p.name === params.name!.trim())
-        if (dup) return `已存在同名主播「${dup.name}」（id=${dup.id}）：要改它带 id 调用，别重复建`
+        if (dup) return `已存在同名主播「${dup.name}」（id=${dup.id}）：要改它带 personaId 调用，别重复建`
       }
       const saved = ctx.persona.save(
         {
@@ -135,9 +135,9 @@ export const personaTools = [
         params.expectedUpdatedAt
       )
       if (!existing) {
-        const castHint = inProgramCast(ctx, saved.id)
+        const castHint = inProgram(ctx, saved.id)
           ? '它已在本节目卡司里，直接按名字用 role 写词'
-          : '要让它上场：在节目配置里配卡司（program_save 的 presenterIds），或写词时用 speaker 指定它'
+          : '要让它上场：在节目配置里配卡司（program_save 的 personaIds），或写词时用 personaId 指定它'
         return `已新建主播「${saved.name}」（id=${saved.id}）；${castHint}`
       }
       const effects: string[] = []
@@ -245,7 +245,7 @@ export const personaTools = [
           ctx,
           `删除主播卡「${target.name}」：\n` +
             `- 人格/音色配置一并删除\n` +
-            (inProgramCast(ctx, target.id) ? '- 它在本节目卡司里，删掉后节目卡司会自动少一项\n' : '') +
+            (inProgram(ctx, target.id) ? '- 它在本节目卡司里，删掉后节目卡司会自动少一项\n' : '') +
             `它已合成的节目音频保留，音色与知识不受影响\n不可恢复`
         )
         if (msg) return msg

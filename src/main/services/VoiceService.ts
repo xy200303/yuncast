@@ -34,9 +34,6 @@ import {
 
 const VOLCANO_V3_CLONE_URL = 'https://openspeech.bytedance.com/api/v3/tts/voice_clone'
 const VOLCANO_V3_GET_VOICE_URL = 'https://openspeech.bytedance.com/api/v3/tts/get_voice'
-/** 火山 V3 复刻支持的样本格式（audio.format；webm 不在其列，录音产物要先转码） */
-const VOLCANO_CLONE_FORMATS = new Set(['wav', 'mp3', 'ogg', 'm4a', 'aac', 'pcm'])
-
 const MAAS_CLONE_PATH = '/services/audio/tts/customization'
 const MAAS_BASE = '.cn-beijing.maas.aliyuncs.com/api/v1'
 
@@ -467,7 +464,7 @@ export class VoiceService {
 
   /** 谁在用这个音色：主播卡（音色）、节目（演员表）、话术库条目 */
   usage(id: string): VoiceUsage {
-    const empty: VoiceUsage = { personas: [], programs: [], utteranceCount: 0, utteranceSamples: [] }
+    const empty: VoiceUsage = { personas: [], programs: [], draftUnitCount: 0, draftUnitSamples: [] }
     const voiceType = this.storage.listVoices().find((v) => v.id === id)?.voiceType.trim() ?? ''
     if (!voiceType) return empty
 
@@ -476,25 +473,25 @@ export class VoiceService {
       .map((persona) => ({ id: persona.id, name: persona.name }))
 
     const programs: VoiceUsage['programs'] = []
-    let utteranceCount = 0
-    const utteranceSamples: VoiceUsage['utteranceSamples'] = []
+    let draftUnitCount = 0
+    const draftUnitSamples: VoiceUsage['draftUnitSamples'] = []
     for (const program of this.storage.programList()) {
       // 节目的音色引用只在卡司里：卡司成员的音色
-      const referenced = program.presenterIds.some(
+      const referenced = program.personaIds.some(
         (id) => this.storage.personaList().find((p) => p.id === id)?.voiceId === voiceType
       )
       if (referenced) {
         programs.push({ id: program.id, name: program.name })
       }
-      for (const utterance of this.storage.draftUnitList(program.id)) {
-        if (utterance.voiceId !== voiceType) continue
-        utteranceCount += 1
-        if (utteranceSamples.length < 3) {
-          utteranceSamples.push({ id: utterance.id, programName: program.name, text: utterance.text })
+      for (const draftUnit of this.storage.draftUnitList(program.id)) {
+        if (draftUnit.voiceId !== voiceType) continue
+        draftUnitCount += 1
+        if (draftUnitSamples.length < 3) {
+          draftUnitSamples.push({ id: draftUnit.id, programName: program.name, text: draftUnit.text })
         }
       }
     }
-    return { personas, programs, utteranceCount, utteranceSamples }
+    return { personas, programs, draftUnitCount, draftUnitSamples }
   }
 
   /**

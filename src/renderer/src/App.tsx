@@ -9,7 +9,7 @@ import { AppSidebar } from './components/Sidebar'
 import { DragStrip } from './components/DragStrip'
 import { StatusBar } from './components/StatusBar'
 import { LivePage } from './components/LivePage'
-import { AnchorsPage } from './components/AnchorsPage'
+import { PersonasPage } from './components/PersonasPage'
 import { KnowledgePage } from './components/KnowledgePage'
 import { VoicesPage } from './components/VoicesPage'
 import { ProgramsPage } from './components/ProgramsPage'
@@ -29,7 +29,7 @@ import { llmReady } from '../../shared/types'
 
 const PAGES: Record<NavPage, ComponentType> = {
   live: LivePage,
-  anchors: AnchorsPage,
+  personas: PersonasPage,
   knowledge: KnowledgePage,
   voices: VoicesPage,
   programs: ProgramsPage,
@@ -52,6 +52,13 @@ export default function App() {
   const setStream = useAppStore((s) => s.setStream)
   const setConnector = useAppStore((s) => s.setConnector)
   const setVoices = useAppStore((s) => s.setVoices)
+  const setPage = useAppStore((s) => s.setPage)
+
+  // 主进程/外部调用让界面切页（演示录屏时把直播台推到前台）
+  useEffect(() => {
+    if (!('api' in window)) return
+    return window.api.ui.onNavigate((page) => setPage(page as Parameters<typeof setPage>[0]))
+  }, [setPage])
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
@@ -128,7 +135,6 @@ export default function App() {
   useEffect(() => {
     if (!('api' in window)) return
     const offAgent = window.api.agent.onStatus((status) => {
-      const prev = useAppStore.getState().agent.state
       setAgent(status)
       // 播报暂停态以主进程为准（speakingPaused 随状态广播来，重启后不失真）
       setLoopRunning(status.speakingPaused !== true)
@@ -148,13 +154,18 @@ export default function App() {
     const offConnector = window.api.connector.onStatus(setConnector)
     const offVoices = window.api.voice.onChanged(setVoices)
     void window.api.voice.list().then(setVoices)
+    // 配置是「主进程里 agent/MCP 也能改」的数据：任何一处落库都重拉一次，界面不再停在旧配置上
+    const offData = window.api.data.onChanged((payload) => {
+      if (payload.scope === 'settings') void loadConfig()
+    })
     return () => {
       offAgent()
       offStream()
       offConnector()
       offVoices()
+      offData()
     }
-  }, [setAgent, setStream, setConnector, setVoices, setLoopRunning])
+  }, [setAgent, setStream, setConnector, setVoices, setLoopRunning, loadConfig])
 
   return (
     <TooltipProvider>

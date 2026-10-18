@@ -62,7 +62,7 @@ export class StreamService {
       const raw = err instanceof Error ? err.message : String(err)
       // 给用户看的走错误翻译层（FFmpeg 原文翻成「推流断了…」），原文留日志
       const message = translateError(raw).friendly
-      console.error('[AgentAnchor] 开播失败:', raw)
+      console.error('[YunCast] 开播失败:', raw)
       this.patch({ state: 'error', error: message })
       return { ok: false, error: message }
     }
@@ -71,7 +71,7 @@ export class StreamService {
     this.liveStartedAt = Date.now()
     this.patch({ state: 'live', streaming: true })
     this.startStatsLoop()
-    console.error(`[AgentAnchor] 直播已开始（${mode === 'direct' ? 'FFmpeg 直推' : '伴侣模式'}）`)
+    console.error(`[YunCast] 直播已开始（${mode === 'direct' ? 'FFmpeg 直推' : '伴侣模式'}）`)
     return { ok: true }
   }
 
@@ -83,7 +83,7 @@ export class StreamService {
     try {
       if (this.stats.mode === 'direct') await this.pusher.stop()
     } catch (err) {
-      console.error('[AgentAnchor] 停止推流时出错（忽略）:', err)
+      console.error('[YunCast] 停止推流时出错（忽略）:', err)
     }
     this.patch({ state: 'idle', streaming: false, reconnecting: false, bitrateKbps: 0, durationSec: 0 })
   }
@@ -136,13 +136,13 @@ export class StreamService {
         state: 'error',
         error: translateError(`断流重推 ${MAX_RECONNECT} 次仍失败`).friendly
       })
-      console.error('[AgentAnchor] 断流重推失败。FFmpeg 输出：', this.pusher.getStderrTail().slice(-300))
+      console.error('[YunCast] 断流重推失败。FFmpeg 输出：', this.pusher.getStderrTail().slice(-300))
       return
     }
     this.reconnectAttempt += 1
     const delay = RECONNECT_BASE_DELAY_MS * 2 ** (this.reconnectAttempt - 1)
     this.patch({ streaming: false, reconnecting: true, reconnectAttempt: this.reconnectAttempt })
-    console.error(`[AgentAnchor] 推流进程退出(code=${code})，${delay / 1000}s 后第 ${this.reconnectAttempt} 次重推`)
+    console.error(`[YunCast] 推流进程退出(code=${code})，${delay / 1000}s 后第 ${this.reconnectAttempt} 次重推`)
     this.reconnectTimer = setTimeout(() => {
       const config = this.storage.getConfig()
       this.pusher
@@ -154,7 +154,7 @@ export class StreamService {
           }
         )
         .catch((err) => {
-          console.error('[AgentAnchor] 断流重推失败:', err)
+          console.error('[YunCast] 断流重推失败:', err)
           this.handlePushExit(1)
         })
     }, delay)

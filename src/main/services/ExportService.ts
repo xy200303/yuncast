@@ -92,7 +92,7 @@ export class ExportService {
     if (program.broadcastMode !== 'prepared') {
       return { ok: false, error: '滚动/即兴节目的音频是边播边合成的运行态产物，没有节目级预制音频可导出；只有预制节目支持导出' }
     }
-    const script = this.script.getScript(program.scriptId)
+    const script = this.script.getScript(program.id)
     const units = listAudioUnits(program, script, this.storage.draftUnitList(programId))
     if (units.length === 0) return { ok: false, error: '节目还没有文稿，没有可导出的音频' }
     const missing: { title: string; reason: string }[] = []
@@ -119,7 +119,7 @@ export class ExportService {
     if (program.broadcastMode !== 'prepared') {
       return { ok: false, error: '滚动/即兴节目的音频是边播边合成的运行态产物，没有节目级预制音频可导出；只有预制节目支持导出' }
     }
-    const script = this.script.getScript(program.scriptId)
+    const script = this.script.getScript(program.id)
     const allUnits = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
     if (allUnits.length === 0) return { ok: false, error: '节目还没有文稿，没有可导出的音频' }
 
@@ -264,7 +264,7 @@ export class ExportService {
 
       // 结束校验：指纹或 mtime 变了 → 警告但不算失败（结果可能混着新旧音频）
       const staleHits: string[] = []
-      const freshUnits = listAudioUnits(program, this.script.getScript(program.scriptId), this.storage.draftUnitList(program.id))
+      const freshUnits = listAudioUnits(program, this.script.getScript(program.id), this.storage.draftUnitList(program.id))
       const freshById = new Map(freshUnits.map((unit) => [unit.id, unit]))
       for (const unit of units) {
         const before = snapshot.get(unit.id)!

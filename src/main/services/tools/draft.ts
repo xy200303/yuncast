@@ -49,10 +49,10 @@ export const draftTools = [
       // 列表只给前 100 字（拿 id 和概要用；要看全文用 draft_get，改稿按 id 改）——
       // 底稿一多全文塞进来一条结果就是几万 token，上下文 compression 会被它顶爆
       const brief = (text: string) => (text.length > 100 ? `${text.slice(0, 100)}…` : text)
-      const castName = (u: { presenterId?: string; voiceId: string }) => {
-        const card = u.presenterId
-          ? ctx.persona.list().find((p) => p.id === u.presenterId)
-          : ctx.persona.programCast().find((p) => p.voiceId === u.voiceId)
+      const leadPersonaName = (u: { personaId?: string; voiceId: string }) => {
+        const card = u.personaId
+          ? ctx.persona.list().find((p) => p.id === u.personaId)
+          : ctx.persona.programPersonas().find((p) => p.voiceId === u.voiceId)
         return card?.name ?? ''
       }
       return (
@@ -60,7 +60,7 @@ export const draftTools = [
         shown
           .map(
             (u) =>
-              `${u.id}｜${sceneTitleOf(ctx, u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${castName(u) ? `主播：${castName(u)}｜` : ''}${u.bitType ? `[${u.bitType}] ` : ''}${brief(u.text)}` +
+              `${u.id}｜${sceneTitleOf(ctx, u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${leadPersonaName(u) ? `主播：${leadPersonaName(u)}｜` : ''}${u.bitType ? `[${u.bitType}] ` : ''}${brief(u.text)}` +
               (u.delivery ? `（演法：${u.delivery}）` : '')
           )
           .join('\n')
@@ -76,17 +76,17 @@ export const draftTools = [
     expose: { agent: true, mcp: true },
     description:
       '读一条底稿的完整内容：全文+场景+合成状态+类型/演法/语速/音调参数（只读不改）。' +
-      'draft_list 只给前 100 字概要，改稿前用它看全文。条目 id 从 draft_list 拿。',
+      'draft_list 只给前 100 字概要，改稿前用它看全文。unitId 从 draft_list 拿。',
     parameters: Type.Object({
-      id: Type.String({ description: '底稿条目 id（draft_list 拿）' })
+      unitId: Type.String({ description: '底稿条目 id（draft_list 拿）' })
     }),
     handler: (ctx, params) => {
       const noPlan = requireProgram(ctx)
       if (noPlan) return noPlan
-      const found = ctx.draftUnits.list(activeProgramId(ctx)!).find((u) => u.id === params.id.trim())
-      if (!found) return `找不到底稿 ${params.id}（用 draft_list 拿正确的 id）`
+      const found = ctx.draftUnits.list(activeProgramId(ctx)!).find((u) => u.id === params.unitId.trim())
+      if (!found) return `找不到底稿 ${params.unitId}（用 draft_list 拿正确的 unitId）`
       return JSON.stringify({
-        id: found.id,
+        unitId: found.id,
         场景: sceneTitleOf(ctx, found.sceneId),
         场景id: found.sceneId,
         状态: DRAFT_STATUS[found.status],
@@ -96,13 +96,13 @@ export const draftTools = [
         音调: found.pitch ?? '默认',
         段后停顿: found.pauseAfterMs !== undefined ? `${found.pauseAfterMs}ms` : '连续播',
         主播: (() => {
-          const card = found.presenterId
-            ? ctx.persona.list().find((p) => p.id === found.presenterId)
-            : ctx.persona.programCast().find((p) => p.voiceId === found.voiceId)
-          if (card) return `${card.name}（id=${card.id}）`
+          const card = found.personaId
+            ? ctx.persona.list().find((p) => p.id === found.personaId)
+            : ctx.persona.programPersonas().find((p) => p.voiceId === found.voiceId)
+          if (card) return `${card.name}（personaId=${card.id}）`
           return found.voiceId ? found.voiceId : '默认（卡司第一张）'
         })(),
-        主播卡id: found.presenterId ?? '',
+        personaId: found.personaId ?? '',
         参考来源: found.sources.map((s) => `${s.name}：${s.snippet}`),
         全文: found.text
       })
@@ -126,7 +126,7 @@ export const draftTools = [
             '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/closer/general；closer=收尾段，不进自动轮播）'
         })
       ),
-      speaker: Type.Optional(Type.String({ description: '这段归哪位：填主播卡 id（persona_list 的 id / program_get 卡司里的 id）；不传 = 合成时用卡司第一张' })),
+      personaId: Type.Optional(Type.String({ description: '这段归哪位：主播卡 id（persona_list / program_get 卡司里的 id）；不传 = 合成时用卡司第一张' })),
       delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
       rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
       pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
@@ -134,7 +134,7 @@ export const draftTools = [
         Type.Number({ description: '播完这段后的停顿毫秒（0~10000，默认连续播）。播放时调度，不进合成' })
       ),
       sceneId: Type.Optional(
-        Type.String({ description: '记到哪个场景（scene_list 拿 id）；不传记到当前场景，没有剧本则记为全场通用' })
+        Type.String({ description: '记到哪个场景（scene_list 拿 id）；不传记到当前场景，节目还没有编排则记为全场通用' })
       )
     }),
     handler: (ctx, params) => {
@@ -146,8 +146,8 @@ export const draftTools = [
       const sceneId = params.sceneId?.trim() ?? currentSceneId(ctx)
       const siblings = ctx.draftUnits.list(programId).filter((u) => u.sceneId === sceneId)
       const variantIdx = siblings.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
-      const castVoice = resolveCastVoice(ctx.persona, params.speaker)
-      if (castVoice.error) return castVoice.error
+      const programVoice = resolveCastVoice(ctx.persona, params.personaId)
+      if (programVoice.error) return programVoice.error
       ctx.draftUnits.save({
         programId,
         sceneId,
@@ -161,8 +161,8 @@ export const draftTools = [
           params.pauseAfterMs === undefined
             ? undefined
             : Math.max(0, Math.min(10000, Math.floor(Number(params.pauseAfterMs) || 0))),
-        presenterId: castVoice.presenterId,
-        voiceId: castVoice.voiceId ?? '',
+        personaId: programVoice.personaId,
+        voiceId: programVoice.voiceId ?? '',
         source: 'initial',
         sources: []
       })
@@ -190,7 +190,7 @@ export const draftTools = [
         Type.Object({
           type: Type.String({ description: '桥段类型（见工具描述），自定义类型也行' }),
           text: Type.String({ description: `桥段全文：多句连续口语，150~350 字，有铺垫有落点。${MARKUP_HINT}` }),
-          speaker: Type.Optional(
+          personaId: Type.Optional(
             Type.String({ description: '这段归哪位：主播卡 id（persona_list / program_get 卡司里的 id）；双主持/多角色节目逐段指定，不传 = 卡司第一张' })
           ),
           delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
@@ -218,9 +218,9 @@ export const draftTools = [
       if (noPlan) return noPlan
       const capped = draftCapHit(ctx)
       if (capped) return capped
-      // 先校验全部 speaker，别写一半才发现卡司名写错
-      const castVoices = params.items.map((item) => resolveCastVoice(ctx.persona, item.speaker))
-      const castError = castVoices.find((entry) => entry.error)
+      // 先校验全部 personaId，别写一半才发现卡司名写错
+      const podcastVoices = params.items.map((item) => resolveCastVoice(ctx.persona, item.personaId))
+      const castError = podcastVoices.find((entry) => entry.error)
       if (castError?.error) return castError.error
       const saved = ctx.draftUnits.saveMany(
         activeProgramId(ctx)!,
@@ -228,8 +228,8 @@ export const draftTools = [
         params.items.map((item, index) => ({
           text: item.text,
           bitType: item.type,
-          presenterId: castVoices[index].presenterId,
-          voiceId: castVoices[index].voiceId,
+          personaId: podcastVoices[index].personaId,
+          voiceId: podcastVoices[index].voiceId,
           delivery: item.delivery,
           rate: item.rate,
           pitch: item.pitch,
@@ -261,12 +261,12 @@ export const draftTools = [
     description:
       '改一条底稿（长期生效）：文本、类型、表演指示都能改（导演口径调整/价格修正/说法优化）。' +
       '副作用：改完旧音频作废、后台自动重新合成，好了之后轮播/装载就用新版；已经在池里没播的副本不受影响，要改用 pool_revise。' +
-      '条目 id 从 draft_list 拿，改前用 draft_get 看全文。',
+      'unitId 从 draft_list 拿，改前用 draft_get 看全文。',
     parameters: Type.Object({
-      id: Type.String({ description: '底稿条目 id（draft_list 拿）' }),
+      unitId: Type.String({ description: '底稿条目 id（draft_list 拿）' }),
       text: Type.String({ description: `新文本（桥段就传整段，单句就传一句）。${MARKUP_HINT}` }),
       type: Type.Optional(Type.String({ description: '桥段类型（不改不传）' })),
-      speaker: Type.Optional(Type.String({ description: '改归哪位（主播卡 id）；不改不传' })),
+      personaId: Type.Optional(Type.String({ description: '改归哪位（主播卡 id）；不改不传' })),
       delivery: Type.Optional(Type.String({ description: '表演指示（不改不传）' })),
       rate: Type.Optional(Type.Number({ description: '语速倍率（不改不传）' })),
       pitch: Type.Optional(Type.Number({ description: '音调倍率（不改不传）' })),
@@ -276,10 +276,10 @@ export const draftTools = [
       const noPlan = requireProgram(ctx)
       if (noPlan) return noPlan
       const programId = activeProgramId(ctx)!
-      const existing = ctx.draftUnits.list(programId).find((u) => u.id === params.id.trim())
-      if (!existing) return `找不到底稿 ${params.id}（用 draft_list 拿正确的 id）`
-      const castVoice = resolveCastVoice(ctx.persona, params.speaker)
-      if (castVoice.error) return castVoice.error
+      const existing = ctx.draftUnits.list(programId).find((u) => u.id === params.unitId.trim())
+      if (!existing) return `找不到底稿 ${params.unitId}（用 draft_list 拿正确的 unitId）`
+      const programVoice = resolveCastVoice(ctx.persona, params.personaId)
+      if (programVoice.error) return programVoice.error
       ctx.draftUnits.save(
         {
           programId,
@@ -294,8 +294,8 @@ export const draftTools = [
             params.pauseAfterMs === undefined
               ? existing.pauseAfterMs
               : Math.max(0, Math.min(10000, Math.floor(Number(params.pauseAfterMs) || 0))),
-          presenterId: castVoice.presenterId ?? existing.presenterId,
-          voiceId: castVoice.voiceId ?? existing.voiceId,
+          personaId: programVoice.personaId ?? existing.personaId,
+          voiceId: programVoice.voiceId ?? existing.voiceId,
           source: existing.source,
           sources: existing.sources
         },
@@ -313,17 +313,17 @@ export const draftTools = [
     risk: 'write',
     expose: { agent: true, mcp: true },
     description:
-      '删一条底稿（说法过时/违规/不想再播，删掉不可恢复）。条目 id 从 draft_list 拿。' +
+      '删一条底稿（说法过时/违规/不想再播，删掉不可恢复）。unitId 从 draft_list 拿。' +
       '已经在池里没播的副本不受影响，要撤用 pool_revise 或等它播完；大批量删除用 draft_clear，别逐条调本工具。',
     parameters: Type.Object({
-      id: Type.String({ description: '底稿条目 id（draft_list 拿）' })
+      unitId: Type.String({ description: '底稿条目 id（draft_list 拿）' })
     }),
     handler: (ctx, params) => {
       const noPlan = requireProgram(ctx)
       if (noPlan) return noPlan
       const programId = activeProgramId(ctx)!
-      const existing = ctx.draftUnits.list(programId).find((u) => u.id === params.id.trim())
-      if (!existing) return `找不到底稿 ${params.id}（用 draft_list 拿正确的 id）`
+      const existing = ctx.draftUnits.list(programId).find((u) => u.id === params.unitId.trim())
+      if (!existing) return `找不到底稿 ${params.unitId}（用 draft_list 拿正确的 unitId）`
       ctx.draftUnits.remove(existing.id)
       return `已删底稿：「${existing.text}」`
     }

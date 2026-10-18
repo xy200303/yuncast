@@ -44,34 +44,3 @@ export function toSpeechText(display: string): string {
   return `${name}${joiner}${rest}`
 }
 
-/** 价格等数字是否转中文（实测某家 TTS 读不好时开启） */
-export function numberToChinese(text: string): string {
-  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
-  return text.replace(/\d+(\.\d+)?/g, (raw) => {
-    if (raw.includes('.')) {
-      const [int, dec] = raw.split('.')
-      return `${groupToChinese(int)}点${dec.split('').map((d) => digits[Number(d)] ?? d).join('')}`
-    }
-    return groupToChinese(raw)
-  })
-}
-
-function groupToChinese(int: string): string {
-  if (int.length > 6) return int
-  const digits = ['零', '一', '二', '三', '四', '五', '六', '七', '八', '九']
-  const units = ['', '十', '百', '千', '万', '十万']
-  const chars = int.split('').reverse()
-  let out = ''
-  let zero = false
-  chars.forEach((c, i) => {
-    const n = Number(c)
-    if (n === 0) {
-      zero = true
-      return
-    }
-    out = digits[n] + units[i] + (zero ? '零' : '') + out
-    zero = false
-  })
-  // 10-19 的中文习惯：一十五 → 十五
-  return out.replace(/^一十/, '十') || '零'
-}

@@ -8,7 +8,7 @@ import type { ProgramPlaybackService } from './ProgramPlaybackService'
  * 代码里不再出现 broadcastMode 的 if 分叉。新增播出方式 = 写一个策略 + 注册进 policyFor。
  *
  * 状态口径约定（每个策略只读自己的态，互不越界）：
- * - rolling（滚动直播）：文稿态 utterance.status（pending/synthesizing/ready）+ 段数硬上限
+ * - rolling（滚动直播）：文稿态 draftUnit.status（pending/synthesizing/ready）+ 段数硬上限
  * - prepared（预制节目）：资产态 rendered.status（播放门禁 playGate 汇总），音频一口气生成后复用
  * - improvised（即兴）：无底稿，水位与播出内容无关——say 出来多少池里就多少
  */
@@ -38,19 +38,19 @@ function rollingPolicy(pb: ProgramPlaybackService): BroadcastPolicy {
   return {
     autoReloadOnReady: true,
     allowsPoolTriggers: true,
-    load: (program) => pb.loadProgramUtterances(program.id),
+    load: (program) => pb.loadProgramDraftUnits(program.id),
     kickSynthesis: (program) => void pb.kickSynthesis(program.id),
     poolEmptyAction: (program) => {
       if (program.finishMode === 'stop') {
         // 「内容在路上」就等——区分「真播完」和「还在合成」
-        if (pb.hasIncomingUtterances(program.id)) return 'wait'
+        if (pb.hasIncomingDraftUnits(program.id)) return 'wait'
         return 'wrap-up'
       }
       // 首轮没播完 = 接着播（不是循环）；全播过了要到段数上限才允许循环重播
-      if (!pb.hasFreshUtterances(program.id) && !pb.atDraftCap(program.id)) return 'wait'
+      if (!pb.hasFreshDraftUnits(program.id) && !pb.atDraftCap(program.id)) return 'wait'
       return 'reload'
     },
-    reload: (program) => pb.loadProgramUtterances(program.id),
+    reload: (program) => pb.loadProgramDraftUnits(program.id),
     // 到顶了叫也写不进，循环闸门会接管，不白烧一轮 LLM
     shouldAutoWrite: (program) => !pb.atDraftCap(program.id)
   }

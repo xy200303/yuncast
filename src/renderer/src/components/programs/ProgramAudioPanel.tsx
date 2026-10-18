@@ -58,13 +58,13 @@ export function ProgramAudioPanel({
   const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
 
   const load = useCallback(async () => {
-    const [scripts, utterances, gateResult] = await Promise.all([
-      window.api.script.list(),
-      window.api.utterance.list(program.id),
+    const [scripts, draftUnits, gateResult] = await Promise.all([
+      window.api.program.plans(),
+      window.api.draftUnit.list(program.id),
       window.api.program.playGate(program.id)
     ])
-    const script: Script | null = scripts.find((s) => s.id === program.scriptId) ?? null
-    setUnits(listProgramAudioUnits(program, script, utterances))
+    const script: Script | null = scripts.find((s) => s.id === program.id) ?? null
+    setUnits(listProgramAudioUnits(program, script, draftUnits))
     setGate(gateResult)
   }, [program])
 
@@ -89,7 +89,7 @@ export function ProgramAudioPanel({
     setVoicePickOpen(false)
     setProducing(true)
     try {
-      if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+      if (rebuildAll) await window.api.draftUnit.clearAudio(program.id)
       const result = await window.api.program.produceAudio(program.id, voiceOverride)
       if (!result.ok) {
         toast.error('生成节目音频没能完成', { description: result.error })

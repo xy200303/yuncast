@@ -5,7 +5,6 @@ import type {
   AppConfig,
   AppInfo,
   UpdateStatus,
-  AudioBgmAction,
   AudioCommandResult,
   AudioEndPayload,
   AudioLevelPayload,
@@ -18,7 +17,7 @@ import type {
   DirectorConfig,
   DirectorTimelineEvent,
   DirectorTimelineReset,
-  KnowledgeFile,
+  MaterialFile,
   LiveComment,
   LaunchResult,
   McpConfig,
@@ -33,7 +32,6 @@ import type {
   PoolResult,
   PoolSayInput,
   PoolSnapshot,
-  PoolStatus,
   PreflightItem,
   ProduceAudioResult,
   ProducePlanInfo,
@@ -45,8 +43,8 @@ import type {
   ProgramExportResult,
   ProgramGateResult,
   ProgramInput,
-  Product,
-  ProductInput,
+  Material,
+  MaterialInput,
   Script,
   ScriptInput,
   LiveInboxEvent,
@@ -55,7 +53,6 @@ import type {
   SessionExportResult,
   SessionStats,
   PoolItem,
-  PoolLane,
   StatsGlobal,
   StatsQuery,
   TtsConnectionInput,
@@ -64,6 +61,7 @@ import type {
   UsageRecord,
   DraftUnit,
   DraftUnitInput,
+  ScriptScene,
   VoiceRecord,
   VoiceUsage,
   StreamStats,
@@ -107,18 +105,8 @@ const api = {
     say: (input: PoolSayInput) => ipcRenderer.invoke(IPC.poolSay, input) as Promise<PoolResult<PoolItem>>,
     insertNext: (input: Omit<PoolSayInput, 'lane'>) =>
       ipcRenderer.invoke(IPC.poolInsertNext, input) as Promise<PoolResult<PoolItem>>,
-    revise: (id: string, text: string) =>
-      ipcRenderer.invoke(IPC.poolRevise, id, text) as Promise<PoolResult<PoolItem>>,
     revoke: (id: string) => ipcRenderer.invoke(IPC.poolRevoke, id) as Promise<PoolResult>,
-    reorder: (ids: string[]) => ipcRenderer.invoke(IPC.poolReorder, ids) as Promise<PoolResult>,
-    clearLane: (lane: PoolLane) => ipcRenderer.invoke(IPC.poolClearLane, lane) as Promise<PoolResult>,
-    status: () => ipcRenderer.invoke(IPC.poolStatus) as Promise<PoolStatus>,
     recentPlayed: (n: number) => ipcRenderer.invoke(IPC.poolRecentPlayed, n) as Promise<PoolItem[]>,
-    /** 取第一个 ready 条目开始播放（主进程置 playing），无则 null */
-    next: () => ipcRenderer.invoke(IPC.poolNext) as Promise<PoolItem | null>,
-    markDone: (id: string) => ipcRenderer.invoke(IPC.poolMarkDone, id) as Promise<void>,
-    /** 播放中断：把正在播的这条退回 ready（恢复后从头重播） */
-    requeue: (id: string) => ipcRenderer.invoke(IPC.poolRequeue, id) as Promise<PoolResult>,
     snapshot: () => ipcRenderer.invoke(IPC.poolSnapshot) as Promise<PoolSnapshot>,
     /** 订阅池快照广播，返回取消订阅函数 */
     onSnapshot: (cb: (snapshot: PoolSnapshot) => void) => {
@@ -189,7 +177,6 @@ const api = {
       ipcRenderer.invoke(IPC.providersModels, providerId) as Promise<string[]>
   },
   agent: {
-    start: () => ipcRenderer.invoke(IPC.agentStart) as Promise<{ ok: boolean; error?: string }>,
     stop: () => ipcRenderer.invoke(IPC.agentStop) as Promise<void>,
     /** 打断当前这一轮生成（会话保留）；对话输入框的停止钮 */
     abort: () => ipcRenderer.invoke(IPC.agentAbort) as Promise<void>,
@@ -282,9 +269,6 @@ const api = {
       ipcRenderer.invoke(IPC.audioSetMasterVolume, volume) as Promise<AudioCommandResult>,
     /** 紧急静音：AI 两路（本机监听 + 推流）一起哑，麦克风人声不受影响 */
     setMuted: (muted: boolean) => ipcRenderer.invoke(IPC.audioSetMuted, muted) as Promise<AudioCommandResult>,
-    /** BGM（选文件 / 停止 / 音量）：本机监听与推流两侧都由主进程处理 */
-    setBgm: (action: AudioBgmAction, filePath?: string, volume?: number) =>
-      ipcRenderer.invoke(IPC.audioSetBgm, action, filePath, volume) as Promise<AudioCommandResult>,
     /** 停掉当前 AI 播报（跳过这条 / 紧急停止）：主进程掐断解码与排播，BGM 与推流不断 */
     stopAll: () => ipcRenderer.invoke(IPC.audioStopAll) as Promise<AudioCommandResult>,
     /** 试听：主进程把指定音频文件播到监听通道（aux 槽，不打断主槽播报；dev 下渲染层读不了 file://，统一走这里）。
@@ -383,22 +367,37 @@ const api = {
     }
   },
   knowledge: {
-    listProducts: () => ipcRenderer.invoke(IPC.knowledgeProductList) as Promise<Product[]>,
-    saveProduct: (input: ProductInput, id?: string) =>
-      ipcRenderer.invoke(IPC.knowledgeProductSave, input, id) as Promise<PoolResult<Product>>,
-    deleteProduct: (id: string) => ipcRenderer.invoke(IPC.knowledgeProductDelete, id) as Promise<PoolResult>,
+    listMaterials: () => ipcRenderer.invoke(IPC.knowledgeProductList) as Promise<Material[]>,
+    saveMaterial: (input: MaterialInput, id?: string) =>
+      ipcRenderer.invoke(IPC.knowledgeProductSave, input, id) as Promise<PoolResult<Material>>,
+    deleteMaterial: (id: string) => ipcRenderer.invoke(IPC.knowledgeProductDelete, id) as Promise<PoolResult>,
     /** 从抖音商城同步商品（连接器在线时；按 externalId 去重更新） */
     syncProducts: () =>
       ipcRenderer.invoke(IPC.knowledgeProductSync) as Promise<
         { ok: true; added: number; updated: number; total: number } | { ok: false; error: string }
       >,
-    listFiles: () => ipcRenderer.invoke(IPC.knowledgeFileList) as Promise<KnowledgeFile[]>,
+    listFiles: () => ipcRenderer.invoke(IPC.materialFileList) as Promise<MaterialFile[]>,
     /** 上传并解析资料文件；图片需带一句话描述 */
-    uploadFile: (filePath: string, description?: string) =>
-      ipcRenderer.invoke(IPC.knowledgeFileUpload, filePath, description) as Promise<
-        { ok: true; file: KnowledgeFile } | { ok: false; error: string }
+    uploadFile: (filePath: string, description?: string, materialId?: string) =>
+      ipcRenderer.invoke(IPC.knowledgeFileUpload, filePath, description, materialId) as Promise<
+        { ok: true; file: MaterialFile } | { ok: false; error: string }
       >,
-    deleteFile: (id: string) => ipcRenderer.invoke(IPC.knowledgeFileDelete, id) as Promise<PoolResult>
+    /** 给素材挂一条外部链接 */
+    attachUrl: (materialId: string, url: string, title?: string) =>
+      ipcRenderer.invoke(IPC.materialAttachUrl, materialId, url, title) as Promise<
+        { ok: true; file: MaterialFile } | { ok: false; error: string }
+      >,
+    deleteFile: (id: string) => ipcRenderer.invoke(IPC.materialFileDelete, id) as Promise<PoolResult>
+  },
+  ui: {
+    /** 主进程让界面切页（演示/录屏用） */
+    onNavigate: (cb: (page: string) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, page: string) => cb(String(page))
+      ipcRenderer.on(IPC.uiNavigate, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.uiNavigate, listener)
+      }
+    }
   },
   dialog: {
     /** 弹出文件选择框，取消返回 null */
@@ -453,7 +452,7 @@ const api = {
     /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播；opts.allowPartial = 预制节目「仅播放已完成部分」 */
     launch: (id: string, opts?: { allowPartial?: boolean }) =>
       ipcRenderer.invoke(IPC.programLaunch, id, opts) as Promise<LaunchResult>,
-    /** 统一音频生产入口：rolling=提前合成全部（立即返回，后台跑）；prepared=生成节目音频（跑完返回汇总，进度走 onAudioEvent / utterance.onEvent）。
+    /** 统一音频生产入口：rolling=提前合成全部（立即返回，后台跑）；prepared=生成节目音频（跑完返回汇总，进度走 onAudioEvent / draftUnit.onEvent）。
      *  voiceOverride = 声音选择弹窗里显式选的声音（本次合成冻结它，不改节目配置） */
     produceAudio: (id: string, voiceOverride?: ProduceVoiceOverride) =>
       ipcRenderer.invoke(IPC.programProduceAudio, id, voiceOverride) as Promise<ProduceAudioResult>,
@@ -461,10 +460,15 @@ const api = {
     producePlan: (id: string) => ipcRenderer.invoke(IPC.programProducePlan, id) as Promise<ProducePlanInfo>,
     /** 预制节目正式播放门禁：所有单元 ready + 文件存在 + 指纹一致才 ok；未通过时 failures 带原因，不静默跳过 */
     playGate: (id: string) => ipcRenderer.invoke(IPC.programPlayGate, id) as Promise<ProgramGateResult>,
+    /** 节目的编排（场景序列） */
+    scenes: (id: string) => ipcRenderer.invoke(IPC.programScenesGet, id) as Promise<ScriptScene[]>,
+    plans: () => ipcRenderer.invoke(IPC.programPlans) as Promise<Script[]>,
+    saveScenes: (id: string, scenes: ScriptScene[]) =>
+      ipcRenderer.invoke(IPC.programScenesSave, id, scenes) as Promise<{ ok: boolean; error?: string }>,
     /** 节目音频进度（单元总数/ready/synthesizing/pending/failed/stale） */
     audioProgress: (id: string) => ipcRenderer.invoke(IPC.programAudioProgress, id) as Promise<ProgramAudioProgress>,
     /** 预制节目按章跳播：装池提到队首并打断当前条目立即播；already=true 表示这章正在播 */
-    playUnit: (id: string, target: { kind: 'scene' | 'utterance'; id: string }) =>
+    playUnit: (id: string, target: { kind: 'scene' | 'draftUnit'; id: string }) =>
       ipcRenderer.invoke(IPC.programPlayUnit, id, target) as Promise<{
         ok: boolean
         title?: string
@@ -472,7 +476,7 @@ const api = {
         error?: string
       }>,
     /** 导入外部音频（预制节目）：主进程弹文件选择框（mp3/wav/m4a），挂到指定 Scene/DraftUnit；取消返回 ok:false */
-    importAudio: (id: string, target: { kind: 'scene' | 'utterance'; id: string }) =>
+    importAudio: (id: string, target: { kind: 'scene' | 'draftUnit'; id: string }) =>
       ipcRenderer.invoke(IPC.programImportAudio, id, target) as Promise<
         { ok: true; audioPath: string } | { ok: false; error: string }
       >,
@@ -502,23 +506,21 @@ const api = {
       }
     }
   },
-  utterance: {
+  draftUnit: {
     list: (programId: string) => ipcRenderer.invoke(IPC.draftUnitList, programId) as Promise<DraftUnit[]>,
     save: (input: DraftUnitInput, id?: string) =>
       ipcRenderer.invoke(IPC.draftUnitSave, input, id) as Promise<PoolResult<DraftUnit>>,
     remove: (id: string) => ipcRenderer.invoke(IPC.draftUnitDelete, id) as Promise<PoolResult>,
     clear: (programId: string, sceneId?: string) =>
-      ipcRenderer.invoke(IPC.utteranceClear, programId, sceneId) as Promise<PoolResult>,
+      ipcRenderer.invoke(IPC.draftUnitClear, programId, sceneId) as Promise<PoolResult>,
     /** 清空已合成音频（文稿保留；滚动段回待合成，预制资产摘除，可重新合成）。返回清掉的段数 */
     clearAudio: (programId: string) =>
-      ipcRenderer.invoke(IPC.utteranceClearAudio, programId) as Promise<PoolResult<number>>,
-    /** 批量预合成（异步启动，进度走 onEvent；id='' 表示批次结束） */
-    presynth: (programId: string) => ipcRenderer.invoke(IPC.utterancePresynth, programId) as Promise<{ ok: boolean }>,
-    onEvent: (cb: (utterance: DraftUnit) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, utterance: DraftUnit) => cb(utterance)
-      ipcRenderer.on(IPC.utteranceEvent, listener)
+      ipcRenderer.invoke(IPC.draftUnitClearAudio, programId) as Promise<PoolResult<number>>,
+    onEvent: (cb: (draftUnit: DraftUnit) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, draftUnit: DraftUnit) => cb(draftUnit)
+      ipcRenderer.on(IPC.draftUnitEvent, listener)
       return () => {
-        ipcRenderer.removeListener(IPC.utteranceEvent, listener)
+        ipcRenderer.removeListener(IPC.draftUnitEvent, listener)
       }
     }
   },
@@ -550,11 +552,6 @@ const api = {
   connector: {
     status: () => ipcRenderer.invoke(IPC.connectorStatus) as Promise<ConnectorStatus>,
     restart: () => ipcRenderer.invoke(IPC.connectorRestart) as Promise<ConnectorStatus>,
-    /** 出站动作口：调连接器工具（比如 get_room_stats） */
-    callTool: (name: string, args: Record<string, unknown> = {}) =>
-      ipcRenderer.invoke(IPC.connectorCallTool, name, args) as Promise<
-        { ok: true; text: string } | { ok: false; error: string }
-      >,
     /** 订阅连接器状态，返回取消订阅函数 */
     onStatus: (cb: (status: ConnectorStatus) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, status: ConnectorStatus) => cb(status)

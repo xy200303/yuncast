@@ -60,19 +60,11 @@ function errorMessage(error: unknown): string {
  * 实时合成开启后仍然预合成的话术类型：文本在入池时就已确定（剧本/暖场），
  * 提前合成好则播出零延迟；动态生成的回复类内容才值得为"最快首包"牺牲预合成。
  */
-/** 实时通道（双向 WS）的最小探针接口（避免与 TtsRealtimeService 强耦合，便于测试替身） */
-export interface RealtimeChannelProbe {
-  available(voiceId?: string): boolean
-  unavailableReason(voiceId?: string): string
-}
-
 const PRE_SYNTH_KINDS: PoolItem['source']['kind'][] = ['scene', 'filler']
 
 export class SpeechPool {
   /** 预合成任务的取消令牌（被挤出窗口时 abort） */
   private synthJobs = new Map<string, AbortController>()
-  /** 最近一次实时通道降级原因（诊断用） */
-  private lastRealtimeFallback = '' 
   private sweepTimer: ReturnType<typeof setInterval> | null = null
 
   /** 429/5xx/网络类临时错误：退避自动重试（3 次仍失败才停播） */
@@ -99,12 +91,7 @@ export class SpeechPool {
   constructor(
     private readonly storage: StorageService,
     private readonly tts: TtsService,
-    private readonly broadcast: (snapshot: PoolSnapshot) => void,
-    /** 实时通道（双向 WS）；协议未核对期间恒不可用，动态内容走 SSE 流式 */
-    private readonly realtime: RealtimeChannelProbe = {
-      available: () => false,
-      unavailableReason: () => '实时通道未接入'
-    }
+    private readonly broadcast: (snapshot: PoolSnapshot) => void
   ) {
     // 重启后上次留下的未播完条目全部作废——音频可能还在但播放上下文没了
     for (const item of this.storage.poolItemActive()) {
@@ -256,11 +243,11 @@ export class SpeechPool {
    * 不清的话，预制/单篇节目的「播完即停」永远等不到池空（池里还压着上一场的词），
    * 播完自己的内容会接着念别的节目的稿子——最难看的一种错位。没来源的现场话术（人工播报/导演 say）不动。
    */
-  dropForeignOrigins(allowedUtteranceIds: Set<string>): number {
+  dropForeignOrigins(allowedDraftUnitIds: Set<string>): number {
     let n = 0
     for (const item of this.storage.poolItemActive()) {
       const origin = item.originDraftUnitId
-      if (!origin || allowedUtteranceIds.has(origin)) continue
+      if (!origin || allowedDraftUnitIds.has(origin)) continue
       if (item.status === 'playing') continue
       this.cancelSynth(item.id)
       this.storage.poolItemUpdate(item.id, { status: 'skipped' })
@@ -377,7 +364,7 @@ export class SpeechPool {
   markFailed(id: string, error: string): void {
     const item = this.storage.poolItemGet(id)
     if (!item || item.status === 'done' || item.status === 'failed') return
-    console.error(`[AgentAnchor] 播报失败（${id}）: ${error}`)
+    console.error(`[YunCast] 播报失败（${id}）: ${error}`)
     this.storage.poolItemUpdate(id, { status: 'failed', error })
     this.refresh()
   }
@@ -492,10 +479,6 @@ export class SpeechPool {
         return false
       }
     })()
-    if (streamable && !this.realtime.available(item.voiceId || undefined)) {
-      // 真正的双向实时通道还没接（协议待核对），这里走 SSE 流式；记一次原因便于诊断
-      this.lastRealtimeFallback = this.realtime.unavailableReason(item.voiceId || undefined)
-    }
     if (streamable) {
       // 修订后的条目同样走这里：无需合成，只要文本已是新的（revise 已改），标 ready 即可
       this.clearRetry(item.id)
@@ -546,7 +529,7 @@ export class SpeechPool {
         const retryable = !SpeechPool.FATAL.test(raw) && SpeechPool.RETRYABLE.test(raw)
         if (retryable && attempts < 3) {
           const delay = SpeechPool.BACKOFF_MS[Math.min(attempts - 1, SpeechPool.BACKOFF_MS.length - 1)]
-          console.warn(`[AgentAnchor] TTS 合成失败（${item.id}，第 ${attempts} 次），${delay / 1000}s 后重试: ${message}`)
+          console.warn(`[YunCast] TTS 合成失败（${item.id}，第 ${attempts} 次），${delay / 1000}s 后重试: ${message}`)
           this.storage.poolItemUpdate(item.id, { status: 'pending' })
           this.retryAt.set(item.id, Date.now() + delay)
           const timer = setTimeout(() => {
@@ -557,7 +540,7 @@ export class SpeechPool {
           this.retryTimers.set(item.id, timer)
         } else {
           // 重试耗尽或不可重试：条目置 failed 并停播（onSynthHalt 接统一暂停），点「继续」时 retryFailed 重新合成
-          console.error(`[AgentAnchor] TTS 合成失败（${item.id}，第 ${attempts} 次，不再重试）:`, error)
+          console.error(`[YunCast] TTS 合成失败（${item.id}，第 ${attempts} 次，不再重试）:`, error)
           this.clearRetry(item.id)
           this.haltedIds.add(item.id)
           this.storage.poolItemUpdate(item.id, { status: 'failed', error: message })

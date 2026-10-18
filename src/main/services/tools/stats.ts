@@ -58,7 +58,7 @@ export const statsTools = [
             播出趋势: stats.trend,
             互动趋势: stats.interactionTrend,
             节目排行: stats.byProgram,
-            主播排行: stats.byPresenter,
+            主播排行: stats.byCast,
             评论热词: stats.commentWords.slice(0, 20),
             话术热词: stats.speechWords.slice(0, 20)
           },

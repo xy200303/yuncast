@@ -14,18 +14,11 @@ export const IPC = {
   // 话术池
   poolSay: 'pool:say',
   poolInsertNext: 'pool:insert-next',
-  poolRevise: 'pool:revise',
   poolRevoke: 'pool:revoke',
-  poolReorder: 'pool:reorder',
-  poolClearLane: 'pool:clear-lane',
-  poolStatus: 'pool:status',
   poolRecentPlayed: 'pool:recent-played',
   /** renderer → main：取第一个 ready 条目开始播放（主进程置 playing） */
-  poolNext: 'pool:next',
   /** renderer → main：播报完成回报 */
-  poolMarkDone: 'pool:mark-done',
   /** renderer → main：播放中断（暂停/急停）把这条退回 ready，等恢复重播 */
-  poolRequeue: 'pool:requeue',
   poolSnapshot: 'pool:snapshot',
   /** main → renderer：池快照广播 */
   poolSnapshotEvent: 'pool:snapshot-event',
@@ -55,7 +48,6 @@ export const IPC = {
   providersModels: 'providers:models',
 
   // 主播 Agent
-  agentStart: 'agent:start',
   agentStop: 'agent:stop',
   agentAbort: 'agent:abort',
   agentRestart: 'agent:restart',
@@ -107,7 +99,6 @@ export const IPC = {
   /** 渲染层 → 主进程：紧急静音（AI 两路一起哑；麦克风人声不受影响） */
   audioSetMuted: 'audio:set-muted',
   /** 渲染层 → 主进程：BGM（选文件 / 播放 / 停止 / 音量）；推流侧由混音器自己循环 */
-  audioSetBgm: 'audio:set-bgm',
   /** 渲染层 → 主进程：停掉当前 AI 播报（跳过这条 / 紧急停止；BGM 与推流不断） */
   audioStopAll: 'audio:stop-all',
   /** 渲染层 → 主进程：aux 槽播放指定音频文件（试听用；dev 下渲染层读不了 file://，统一走主进程出声） */
@@ -146,10 +137,11 @@ export const IPC = {
   knowledgeProductDelete: 'knowledge:product-delete',
   /** 从连接器同步商品（抖音商城绑定商品 → 知识条目，按 externalId 去重更新） */
   knowledgeProductSync: 'knowledge:product-sync',
-  knowledgeFileList: 'knowledge:file-list',
+  materialFileList: 'knowledge:file-list',
   /** 选文件 → 解析 → 入库，一步完成 */
+  materialAttachUrl: 'material:attach-url',
   knowledgeFileUpload: 'knowledge:file-upload',
-  knowledgeFileDelete: 'knowledge:file-delete',
+  materialFileDelete: 'knowledge:file-delete',
 
   // 触发器
   triggerList: 'trigger:list',
@@ -188,6 +180,13 @@ export const IPC = {
   programProducePlan: 'program:produce-plan',
   /** 预制节目正式播放门禁（docs/10 §7.8）：结构化结果，未通过不静默跳过 */
   programPlayGate: 'program:play-gate',
+  /** 节目的编排（场景序列）：读/存都按节目走，不再有独立剧本 */
+  programScenesGet: 'program:scenes-get',
+  /** 全部节目的编排视图（沿用 Script 形状，渲染层算音频单元用） */
+  programPlans: 'program:plans',
+  /** 让界面切到指定页（演示/录屏用：外部调用把直播台推到前台） */
+  uiNavigate: 'ui:navigate',
+  programScenesSave: 'program:scenes-save',
   /** 节目音频进度（单元总数/ready/synthesizing/failed/stale/pending） */
   programAudioProgress: 'program:audio-progress',
   /** 导入外部音频（§7.4）：主进程弹文件选择框，挂到指定 Scene/DraftUnit 的 rendered */
@@ -218,16 +217,15 @@ export const IPC = {
   sessionExport: 'session:export',
 
   // 话术库（节目底稿）
-  draftUnitList: 'utterance:list',
-  draftUnitSave: 'utterance:save',
-  draftUnitDelete: 'utterance:delete',
-  utteranceClear: 'utterance:clear',
+  draftUnitList: 'draft-unit:list',
+  draftUnitSave: 'draft-unit:save',
+  draftUnitDelete: 'draft-unit:delete',
+  draftUnitClear: 'draft-unit:clear',
   /** 只清已合成音频（文稿保留，回到待合成可重蒸） */
-  utteranceClearAudio: 'utterance:clear-audio',
-  /** 批量预合成（异步，进度走 utteranceEvent） */
-  utterancePresynth: 'utterance:presynth',
+  draftUnitClearAudio: 'draft-unit:clear-audio',
+  /** 批量预合成（异步，进度走 draftUnitEvent） */
   /** main → renderer：单条话术状态变化（预合成进度） */
-  utteranceEvent: 'utterance:event',
+  draftUnitEvent: 'draft-unit:event',
 
   // 系统对话框
   dialogPickFile: 'dialog:pick-file',
@@ -247,7 +245,6 @@ export const IPC = {
   /** main → renderer：连接器状态 */
   connectorStatusEvent: 'connector:status-event',
   /** 出站动作口：调连接器工具（CompanionBridge 并入） */
-  connectorCallTool: 'connector:call-tool',
 
   // 开放接口（MCP / CLI，设置 → 开放接口）
   mcpGet: 'mcp:get',

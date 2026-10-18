@@ -11,13 +11,6 @@ import {
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { cn } from '@/lib/utils'
 import { useAppStore } from '../stores/useAppStore'
@@ -39,8 +32,8 @@ const LAST_PICK_LEGACY_KEY = 'yuncast.voicePick.last'
 interface LastPick {
   modelValue: string
   voiceId: string
-  castVoiceA: string
-  castVoiceB: string
+  podcastVoiceA: string
+  podcastVoiceB: string
 }
 
 function readLastPick(): LastPick | null {
@@ -61,31 +54,31 @@ function readLastPick(): LastPick | null {
     return {
       modelValue: parsed.modelValue,
       voiceId: typeof parsed.voiceId === 'string' ? parsed.voiceId : '',
-      castVoiceA: typeof parsed.castVoiceA === 'string' ? parsed.castVoiceA : '',
-      castVoiceB: typeof parsed.castVoiceB === 'string' ? parsed.castVoiceB : ''
+      podcastVoiceA: typeof parsed.podcastVoiceA === 'string' ? parsed.podcastVoiceA : '',
+      podcastVoiceB: typeof parsed.podcastVoiceB === 'string' ? parsed.podcastVoiceB : ''
     }
   } catch {
     return null
   }
 }
 
-type PickMode = 'presenter' | 'other'
+type PickMode = 'persona' | 'other'
 
 /** 弹窗里「这次用什么声音」的草稿：确认时一起读、换节目/重开时整块重置，收在一处免得漏改某个字段 */
 interface PickDraft {
   mode: PickMode
   modelValue: string
   otherVoice: string
-  castVoiceA: string
-  castVoiceB: string
+  podcastVoiceA: string
+  podcastVoiceB: string
 }
 
 const EMPTY_PICK: PickDraft = {
-  mode: 'presenter',
+  mode: 'persona',
   modelValue: '',
   otherVoice: '',
-  castVoiceA: '',
-  castVoiceB: ''
+  podcastVoiceA: '',
+  podcastVoiceB: ''
 }
 
 type PickDraftAction =
@@ -100,8 +93,8 @@ function pickDraftReducer(draft: PickDraft, action: PickDraftAction): PickDraft 
       mode: 'other',
       modelValue: action.last.modelValue,
       otherVoice: action.last.voiceId,
-      castVoiceA: action.last.castVoiceA,
-      castVoiceB: action.last.castVoiceB
+      podcastVoiceA: action.last.podcastVoiceA,
+      podcastVoiceB: action.last.podcastVoiceB
     }
   }
   return { ...EMPTY_PICK, mode: action.mode }
@@ -141,7 +134,7 @@ export function VoicePickDialog({
   const [plan, setPlan] = useState<ProducePlanInfo | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
   const [draft, dispatchDraft] = useReducer(pickDraftReducer, EMPTY_PICK)
-  const { mode, modelValue, otherVoice, castVoiceA, castVoiceB } = draft
+  const { mode, modelValue, otherVoice, podcastVoiceA, podcastVoiceB } = draft
   const [rebuildAll, setRebuildAll] = useState(false)
   /** 播客模型的整期配乐（跟着这次合成选；默认沿用节目里存的历史值） */
   const [headMusic, setHeadMusic] = useState(true)
@@ -158,7 +151,7 @@ export function VoicePickDialog({
       .then(setPlan)
       .catch(() => setPlan(null))
       .finally(() => setPlanLoading(false))
-    void window.api.utterance
+    void window.api.draftUnit
       .list(program.id)
       .then((items) => {
         const set = new Set<string>()
@@ -172,10 +165,10 @@ export function VoicePickDialog({
     setHeadMusic(true)
     setTailMusic(false)
     const last = readLastPick()
-    if (last?.voiceId || last?.castVoiceA) {
+    if (last?.voiceId || last?.podcastVoiceA) {
       dispatchDraft({ type: 'remember', last })
     } else {
-      dispatchDraft({ type: 'reset', mode: 'presenter' })
+      dispatchDraft({ type: 'reset', mode: 'persona' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, program.id])
@@ -209,23 +202,23 @@ export function VoicePickDialog({
     let alive = true
     void window.api.persona.list().then((list) => {
       if (!alive) return
-      const first = program.presenterIds[0] ? (list.find((item) => item.id === program.presenterIds[0]) ?? null) : null
+      const first = program.personaIds[0] ? (list.find((item) => item.id === program.personaIds[0]) ?? null) : null
       setCastPersona(first)
     })
     return () => {
       alive = false
     }
-  }, [open, program.presenterIds])
+  }, [open, program.personaIds])
 
-  const presenterVoice = castPersona?.voiceId.trim() ?? ''
-  const presenterVoiceName = presenterVoice ? voiceDisplayName(voices, ttsProviders, presenterVoice) : ''
+  const programVoice = castPersona?.voiceId.trim() ?? ''
+  const programVoiceName = programVoice ? voiceDisplayName(voices, ttsProviders, programVoice) : ''
 
   /** 本次选定的声音（混音提醒比对用；播客/节目安排是多个，逐个比） */
   const chosenVoices = useMemo(() => {
-    if (mode === 'presenter') return presenterVoice ? [presenterVoice] : []
-    if (podcastMode) return [castVoiceA.trim(), castVoiceB.trim()].filter(Boolean)
+    if (mode === 'persona') return programVoice ? [programVoice] : []
+    if (podcastMode) return [podcastVoiceA.trim(), podcastVoiceB.trim()].filter(Boolean)
     return otherVoice.trim() ? [otherVoice.trim()] : []
-  }, [mode, presenterVoice, podcastMode, castVoiceA, castVoiceB, otherVoice])
+  }, [mode, programVoice, podcastMode, podcastVoiceA, podcastVoiceB, otherVoice])
 
   /** 混音提醒：已有成品里有任何一把嗓音不在本次选定集合里 */
   const mixingVoices = existingVoices.filter((voice) => !chosenVoices.includes(voice))
@@ -235,25 +228,25 @@ export function VoicePickDialog({
     !busy &&
     plan?.ok === true &&
     (plan.pendingSegments ?? 0) > 0 &&
-    (mode === 'presenter'
-      ? presenterVoice.length > 0
+    (mode === 'persona'
+      ? programVoice.length > 0
       : podcastMode
-        ? castVoiceA.trim().length > 0 && castVoiceB.trim().length > 0
+        ? podcastVoiceA.trim().length > 0 && podcastVoiceB.trim().length > 0
         : otherVoice.trim().length > 0)
 
   const confirm = async () => {
     if (!canConfirm) return
     let override: ProduceVoiceOverride | undefined
-    if (mode === 'presenter') {
+    if (mode === 'persona') {
       // 卡司嗓音：不传覆盖，后端按卡司第一张解析（节目不再存声音配置）
       override = undefined
     } else if (mode === 'other') {
       override = podcastMode
-        ? { castVoices: [castVoiceA.trim(), castVoiceB.trim()], useHeadMusic: headMusic, useTailMusic: tailMusic }
+        ? { podcastVoices: [podcastVoiceA.trim(), podcastVoiceB.trim()], useHeadMusic: headMusic, useTailMusic: tailMusic }
         : { voiceId: otherVoice.trim() }
       localStorage.setItem(
         LAST_PICK_KEY,
-        JSON.stringify({ modelValue, voiceId: otherVoice.trim(), castVoiceA: castVoiceA.trim(), castVoiceB: castVoiceB.trim() } satisfies LastPick)
+        JSON.stringify({ modelValue, voiceId: otherVoice.trim(), podcastVoiceA: podcastVoiceA.trim(), podcastVoiceB: podcastVoiceB.trim() } satisfies LastPick)
       )
     }
     await onConfirm(override, showMixingWarning && rebuildAll)
@@ -318,13 +311,13 @@ export function VoicePickDialog({
               <div className="flex flex-col gap-1.5">
                 <Label className="text-xs text-muted-foreground">声音</Label>
                 {optionRow(
-                  'presenter',
+                  'persona',
                   `卡司嗓音${castPersona?.name ? `（${castPersona.name}）` : ''}`,
-                  presenterVoiceName
-                    ? presenterVoiceName
+                  programVoiceName
+                    ? programVoiceName
                     : castPersona
                       ? '卡司还没选音色'
-                      : '未选主播：本节目没配卡司，逐段用 speaker 指定，或在下面选其他音色'
+                      : '未选主播：本节目没配卡司，逐段用 personaId 指定，或在下面选其他音色'
                 )}
                 {optionRow('other', '选择其他音色…', '换一把嗓音合成这一次，不改节目配置')}
               </div>
@@ -336,8 +329,8 @@ export function VoicePickDialog({
                     <div className="flex flex-col gap-2">
                       {(
                         [
-                          ['主持人 A', 'castVoiceA'],
-                          ['主持人 B', 'castVoiceB']
+                          ['主持人 A', 'podcastVoiceA'],
+                          ['主持人 B', 'podcastVoiceB']
                         ] as const
                       ).map(([label, field]) => (
                         <div key={label}>

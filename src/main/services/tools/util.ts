@@ -1,5 +1,5 @@
 import type { Program } from '../../../shared/types'
-import { UTTERANCE_STATUS_LABEL } from '../../../shared/types'
+import { DRAFT_UNIT_STATUS_LABEL } from '../../../shared/types'
 import type { PersonaService } from '../PersonaService'
 import type { ToolCtx } from './types'
 
@@ -19,45 +19,49 @@ export const MARKUP_HINT =
   '正文里用演法标记做单句级表演：<cot text=情绪>句子</cot> 给关键句套情绪（桥段至少挑一处：报价/悬念/反转句）、<fx>笑声</fx> 插音效、<pause>600</pause> 停顿；delivery 只整段语气，两者都要写。不支持的音色合成时自动剥掉标记，放心写'
 
 /**
- * 音色优先级：显式 voiceId > speaker 指定的主播卡嗓音。都没有返回 undefined（调用方必须报错，不兜底）。
- */
-/**
- * role → 主播卡：写稿时用 speaker 指定这句归谁。role 必须是**主播卡 id**（稳定寻址：改名不失效、
+ * personaId → 主播卡：写稿时用 personaId 指定这句归谁。personaId 必须是**主播卡 id**（稳定寻址：改名不失效、
  * 重名不歧义）；返回卡 id 与它当前音色。卡司里没有/没配音色都返回中文错误。
  */
 export function resolveCastVoice(
   persona: PersonaService,
-  role?: string
-): { presenterId?: string; voiceId?: string; error?: string } {
-  if (!role?.trim()) return {}
-  const key = role.trim()
-  const target = persona.programCast().find((p) => p.id === key)
+  personaId?: string
+): { personaId?: string; voiceId?: string; error?: string } {
+  if (!personaId?.trim()) return {}
+  const key = personaId.trim()
+  const target = persona.programPersonas().find((p) => p.id === key)
   if (!target) {
-    const names = persona.programCast().map((p) => `${p.name}（${p.id}）`).join('、') || '（节目还没配卡司）'
-    return { error: `卡司里没有「${role.trim()}」：现有 ${names}` }
+    const names = persona.programPersonas().map((p) => `${p.name}（${p.id}）`).join('、') || '（节目还没配卡司）'
+    return { error: `卡司里没有「${personaId.trim()}」：现有 ${names}` }
   }
   const voiceId = target.voiceId.trim()
   if (!voiceId) return { error: `卡司「${target.name}」还没选音色：到主播团给它配一个` }
-  return { presenterId: target.id, voiceId }
+  return { personaId: target.id, voiceId }
 }
 
+/**
+ * 音色优先级：显式 voiceId > personaId 指定的主播卡嗓音。都没有返回 undefined（调用方必须报错，不兜底）。
+ */
 export function resolveVoice(
   persona: PersonaService,
-  speaker?: string,
+  personaId?: string,
   voice?: string
 ): string | undefined {
   if (voice?.trim()) return voice.trim()
-  if (speaker?.trim()) {
-    const found = persona.list().find((p) => p.id === speaker.trim())
+  if (personaId?.trim()) {
+    const found = persona.list().find((p) => p.id === personaId.trim())
     if (found?.voiceId) return found.voiceId
   }
-  // 不兜底：没显式 voiceId 也没有 role 的嗓音就直接返回 undefined，调用方必须报错让 agent 补参数
+  // 兜底：节目卡司第一张的嗓音（speak 的工具描述一直承诺「不传 = 卡司第一张」，
+  // 代码这里以前直接返回 undefined，导致配了卡司的节目调 speak 还报「没配卡司」）
+  const castVoice = persona.programVoice()
+  if (castVoice.trim()) return castVoice.trim()
+  // 真没卡司也没显式指定：调用方必须报错让 agent 补参数（不瞎猜）
   return undefined
 }
 
 // ---------- 底稿/场景工具共用的小工具 ----------
 
-export const DRAFT_STATUS = UTTERANCE_STATUS_LABEL
+export const DRAFT_STATUS = DRAFT_UNIT_STATUS_LABEL
 
 export function activeProgram(ctx: ToolCtx): Program | null {
   return ctx.script.getActive().program ?? null

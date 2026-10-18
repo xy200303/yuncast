@@ -217,7 +217,7 @@ export function SessionsPage() {
                     </span>
                   </div>
                   <div className="mt-1 text-xs text-muted-foreground">
-                    导演：{session.directorModelDesc || '未记录'} · 卡司：{session.cast.map((item) => item.personaName).join('、') || '未记录'}
+                    导演：{session.directorModelDesc || '未记录'} · 卡司：{session.personas.map((item) => item.personaName).join('、') || '未记录'}
                   </div>
                   <div className="mt-1.5 flex items-center gap-3 text-xs text-muted-foreground">
                     <span>播出 {session.stats.played} 条</span>

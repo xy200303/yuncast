@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { History, Mic, Sparkles } from 'lucide-react'
+import { History, Sparkles } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAppStore } from '../../stores/useAppStore'
 import { audition, auditionTitle } from '../../lib/audition'
@@ -33,7 +33,7 @@ export function ImprovisedPanel() {
           status={<Sparkles className="size-4 shrink-0 text-primary" />}
           header={
             <>
-              <span className="truncate">{agent.castName ?? '主播'} · 现场发挥</span>
+              <span className="truncate">{agent.leadPersonaName ?? '主播'} · 现场发挥</span>
               {queuedCount > 0 && <span className="shrink-0">待播 {queuedCount} 条</span>}
             </>
           }

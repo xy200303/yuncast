@@ -58,7 +58,7 @@ export function ProgramGateDialog({
     setVoicePickOpen(false)
     setBusy('produce')
     try {
-      if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+      if (rebuildAll) await window.api.draftUnit.clearAudio(program.id)
       const result = await window.api.program.produceAudio(program.id, voiceOverride)
       if (!result.ok) {
         toast.error('生成节目音频没能完成', { description: result.error })

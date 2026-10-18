@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import { Type } from 'typebox'
 import { TTS_PROVIDER_SHORT, type VoiceRecord } from '../../../shared/types'
 import { defineTool, type ToolCtx } from './types'
+import { compareVoiceMetrics } from '../audio/voiceMetrics'
 
 /**
  * 音色域：音色库查/改名/改风格指令/删/克隆 + 外部合成。
@@ -104,8 +105,8 @@ export const voiceTools = [
           引用: {
             主播卡: usage.personas.map((p) => p.name),
             在节目卡司里: usage.programs.map((p) => p.name),
-            底稿条目数: usage.utteranceCount,
-            底稿示例: usage.utteranceSamples.map((s) => `「${s.programName}」${s.text.slice(0, 40)}`),
+            底稿条目数: usage.draftUnitCount,
+            底稿示例: usage.draftUnitSamples.map((s) => `「${s.programName}」${s.text.slice(0, 40)}`),
             未播队列条目数: queueRefs
           }
         },
@@ -192,7 +193,7 @@ export const voiceTools = [
         const msg = askConfirm(
           ctx,
           `删除音色「${voice.name}」（${TTS_PROVIDER_SHORT[voice.provider] ?? voice.provider} / ${voice.model}，${voiceStatusLabel(voice)}）：\n` +
-            `- 没有被主播/节目/队列引用；${usage.utteranceCount > 0 ? `底稿库里有 ${usage.utteranceCount} 条旧底稿用过它（不受影响，重播时按当前音色合成）` : '底稿库也没有引用'}\n` +
+            `- 没有被主播/节目/队列引用；${usage.draftUnitCount > 0 ? `底稿库里有 ${usage.draftUnitCount} 条旧底稿用过它（不受影响，重播时按当前音色合成）` : '底稿库也没有引用'}\n` +
             `- 已生成的音频文件保留\n不可恢复的是音色登记本身`
         )
         if (msg) return msg
@@ -264,8 +265,9 @@ export const voiceTools = [
     risk: 'write',
     expose: { agent: true, mcp: true },
     description:
-      '用「LLM 描述 + 本地 DSP 实测」校准克隆音色：先测目标样本（基频/语速/停顿/响度），再用当前音色合成一段探针、同样实测，算出应该调的 rate/pitch。' +
-      '返回两组数值与建议参数（rate/pitch 在 speak/draft_write/tts_synthesize 里传）；applyInstruction=true 时把解析出的新指令写进音色。' +
+      '克隆 AB 验收 + 参数校准：测目标样本（基频/语速/气声/停顿/响度），用**样本原话**让当前音色合成一遍并同样实测，' +
+      '给 0~100 的相似分与逐维差异，自动迭代出最贴的 rate/pitch（语速进 8% 容差就停）。' +
+      'applyInstruction=true 时把解析出的新指令写进音色；返回的 rate 就是该音色的"本速基准"（下次 speak/draft_write 传它）。' +
       'samplePath 本地文件会先上传临时文件站换公网直链。',
     parameters: Type.Object({
       voiceId: Type.String({ description: '音色库记录 id（voice_list 的 id）' }),
@@ -275,7 +277,15 @@ export const voiceTools = [
       instruction: Type.Optional(Type.String({ description: '本次合成用的指令（默认用音色上已有的）' })),
       rate: Type.Optional(Type.Number({ description: '本次合成语速倍率（默认 1.0）' })),
       pitch: Type.Optional(Type.Number({ description: '本次合成音调倍率（默认 1.0）' })),
-      applyInstruction: Type.Optional(Type.Boolean({ description: '把解析出的新指令写进音色（默认 false）' }))
+      applyInstruction: Type.Optional(Type.Boolean({ description: '把解析出的新指令写进音色（默认 false）' })),
+      useSampleText: Type.Optional(
+        Type.Boolean({
+          description: '用样本的原话做探针文本（默认 true，语速对比才严谨；false 用 text 或默认句）'
+        })
+      ),
+      autoTune: Type.Optional(
+        Type.Boolean({ description: '自动迭代：按建议 rate 再合一次并复测，直到语速进容差（默认 true，最多 2 轮）' })
+      )
     }),
     handler: async (ctx, params) => {
       if (!ctx.audioStyle) return '音频风格解析服务没接上'
@@ -290,28 +300,74 @@ export const voiceTools = [
       if (!analysis.ok) return `解析失败：${analysis.error}`
       const target = analysis.metrics
       if (!target) return '目标样本测量失败（可能是静音或格式不支持）'
-      const text = params.text?.trim() || '晚上好，欢迎收听今晚的节目，我们慢慢聊，不着急。'
-      const rate = params.rate ?? 1
-      const pitch = params.pitch ?? 1
+      // 探针文本优先用样本原话：不同字数的句子语速不可比（"你好"和"今晚我们慢慢聊"字/秒差一大截）
+      let text = params.text?.trim() ?? ''
+      const useSampleText = params.useSampleText !== false
+      if (!text && useSampleText) {
+        const heard = await ctx.audioStyle.transcribe({
+          samplePath: params.samplePath,
+          sampleUrl: params.sampleUrl
+        })
+        if (heard.ok && heard.text.trim()) text = heard.text.trim()
+      }
+      if (!text) text = '晚上好，欢迎收听今晚的节目，我们慢慢聊，不着急。'
+      // 探针文本里的演法标记会干扰测量（停顿/情绪不是音色本身），先剥掉
+      const plainText = text.replace(/<[^>]+>/g, '')
+      const chars = (plainText.match(/[一-鿿]/g) ?? []).length
       const instruction = params.instruction?.trim() || record.instruction || analysis.style
-      const probePath = await ctx.tts.synthesize(`calib-${Date.now()}`, text, record.voiceType, undefined, {
-        instruction,
-        rate,
-        pitch
-      })
-      const probe = await ctx.audioStyle.measure(probePath)
-      const chars = (text.match(/[一-鿿]/g) ?? []).length
-      const probeCps = probe.speechSeconds > 0 ? chars / probe.speechSeconds : 0
-      // 差不到 3%（音高）/ 5%（语速）就别调，避免来回抖动
-      const pitchRatio = target.f0Median && probe.f0Median ? target.f0Median / probe.f0Median : 1
+      let rate = params.rate ?? 1
+      const pitch = params.pitch ?? 1
+
+      const runProbe = async (): Promise<{ path: string; metrics: Awaited<ReturnType<typeof ctx.audioStyle.measure>>; cps: number }> => {
+        const path = await ctx.tts!.synthesize(`calib-${Date.now()}`, plainText, record.voiceType, undefined, {
+          instruction,
+          rate,
+          pitch
+        })
+        const metrics = await ctx.audioStyle!.measure(path)
+        const cps = metrics.speechSeconds > 0 ? chars / metrics.speechSeconds : 0
+        return { path, metrics, cps }
+      }
+
+      let probe = await runProbe()
+      const rateLimit = { min: 0.85, max: 1.3 }
+      const autoTune = params.autoTune !== false
+      let rounds = 1
+      let tunedRate: number | null = null
+      // 自动迭代：语速差超过 8% 就按比例再合一遍，最多 2 轮（每次合成都是真花钱，别无限试）
+      while (autoTune && rounds < 3 && target.charsPerSec > 0 && probe.cps > 0) {
+        const ratio = target.charsPerSec / probe.cps
+        if (Math.abs(ratio - 1) <= 0.08) break
+        const next = Math.min(rateLimit.max, Math.max(rateLimit.min, Number((rate * ratio).toFixed(2))))
+        if (next === rate) break
+        rate = next
+        tunedRate = next
+        probe = await runProbe()
+        rounds++
+      }
+
+      const comparison = compareVoiceMetrics(target, { ...probe.metrics, charsPerSec: Number(probe.cps.toFixed(2)) }, target.charsPerSec)
+      // 语速撞到 TTS 的 rate 上下限还差一截：别假装调好了，给可执行的补偿办法（补停顿）
+      const atRateEdge = rate <= rateLimit.min || rate >= rateLimit.max
+      const cpsGap = target.charsPerSec > 0 && probe.cps > 0 ? target.charsPerSec / probe.cps : 1
+      let speedNote = ''
+      if (Math.abs(cpsGap - 1) > 0.08) {
+        const sentences = Math.max(1, (plainText.match(/[。！？!?]/g) ?? []).length)
+        const needMs = Math.round((chars / target.charsPerSec - chars / probe.cps) / sentences * 1000)
+        const pctOff = Math.abs(Math.round((1 / cpsGap - 1) * 100))
+        const core = atRateEdge
+          ? `语速已到 rate ${rateLimit.min}~${rateLimit.max} 的边界（当前 ${rate}）仍差 ${pctOff}%：这个音色的本速和人声本来就差这么多，硬压会失真。`
+          : `语速还差 ${pctOff}%：把 rate 改到 ${Math.min(rateLimit.max, Math.max(rateLimit.min, Number((rate * cpsGap).toFixed(2))))} 再合成。`
+        speedNote =
+          core +
+          (needMs > 0
+            ? `\n    更好的补偿：正文每句后加 <pause>${Math.min(800, Math.max(120, needMs))}</pause> 把气口补回来（目标停顿 ${Math.round((target.silenceRatio ?? 0) * 100)}%，实测 ${Math.round((probe.metrics.silenceRatio ?? 0) * 100)}%）。`
+            : '')
+      }
+      const pitchRatio = target.f0Median && probe.metrics.f0Median ? target.f0Median / probe.metrics.f0Median : 1
       const pitchSuggestion =
         Math.abs(pitchRatio - 1) >= 0.03
           ? Math.min(1.1, Math.max(0.9, Number((pitchRatio * pitch).toFixed(2))))
-          : null
-      const rateRatio = target.charsPerSec > 0 && probeCps > 0 ? target.charsPerSec / probeCps : 1
-      const rateSuggestion =
-        Math.abs(rateRatio - 1) >= 0.05
-          ? Math.min(1.3, Math.max(0.85, Number((rateRatio * rate).toFixed(2))))
           : null
       if (params.applyInstruction && analysis.style) {
         const updated = ctx.voices?.update(record.id, { instruction: analysis.style })
@@ -321,15 +377,65 @@ export const voiceTools = [
         `${label}：时长 ${m.duration}s / 发声 ${m.speechSeconds}s / 停顿 ${Math.round(m.silenceRatio * 100)}% / ` +
         `语速 ${m.charsPerSec} 字每秒 / 基频中位 ${m.f0Median ?? '—'}Hz（${m.f0P10 ?? '—'}~${m.f0P90 ?? '—'}） / ` +
         `浊音占比 ${m.voicedRatio ?? '—'} / 起伏 ${m.energyStd ?? '—'}dB`
+      const dimLines = comparison.dims.map(
+        (d) =>
+          `- ${d.ok ? '✅' : '⚠️'} ${d.label}：目标 ${d.target ?? '—'} → 实测 ${d.actual ?? '—'}` +
+          `（${d.ok ? '在容差内' : d.hint}）`
+      )
       return [
-        `校准「${record.name}」（${analysis.model}）`,
+        `克隆验收「${record.name}」（${analysis.model}）· 相似分 ${comparison.score}/100 —— ${comparison.verdict}`,
         fmt(target, '目标样本'),
-        fmt({ ...probe, charCount: chars, charsPerSec: Number(probeCps.toFixed(2)) }, '当前合成'),
-        `建议：rate=${rateSuggestion ?? '保持'}，pitch=${pitchSuggestion ?? '保持'}（在下一次 speak/draft_write/tts_synthesize 里传，TTS 会钳制 0.85~1.3 / 0.9~1.1）`,
+        fmt({ ...probe.metrics, charCount: chars, charsPerSec: Number(probe.cps.toFixed(2)) }, `当前合成（rate=${rate}${rounds > 1 ? `，自动调过 ${rounds - 1} 轮` : ''}）`),
+        '',
+        '逐维对比：',
+        ...dimLines,
+        '',
+        `建议：rate=${rate}${tunedRate ? '（已自动试到这个值）' : ''}，pitch=${pitchSuggestion ?? '保持 1.0'}` +
+          `——rate 是这个音色的本速基准，之后 speak/draft_write 默认带它，只有要更急/更慢时才改`,
+        speedNote,
+        `探针文本（${chars} 字）：${plainText.slice(0, 60)}${plainText.length > 60 ? '…' : ''}`,
         analysis.style ? `解析出的指令：${analysis.style}${params.applyInstruction ? '（已写入音色）' : ''}` : ''
       ]
         .filter(Boolean)
         .join('\n')
+    }
+  }),
+
+  defineTool({
+    name: 'voice_transcribe',
+    label: '听音频转写',
+    domain: 'voice',
+    risk: 'read',
+    expose: { agent: true, mcp: true },
+    description:
+      '听一段人声，返回逐字转写 + 分句表演标注（每句什么语气/哪儿停顿/语速快慢）+ 整体听感。' +
+      '和 voice_analyze_style 的分工：那个只产出下给 TTS 的表演指令（明确不许复述原文），' +
+      '这个要的就是原文和现场演法，用来人工对照"复刻得像不像真人"、或从真人录音里提炼演法。' +
+      'samplePath 是本地文件时会先上传临时文件站换公网直链（样本短暂公开可访问）。',
+    parameters: Type.Object({
+      samplePath: Type.Optional(Type.String({ description: '本地样本音频路径（mp3/wav/m4a）' })),
+      sampleUrl: Type.Optional(Type.String({ description: '已有公网音频地址（和 samplePath 二选一）' })),
+      model: Type.Optional(Type.String({ description: '音频理解模型（默认读设置 → 音频理解里的模型）' }))
+    }),
+    handler: async (ctx, params) => {
+      if (!ctx.audioStyle) return '音频理解服务没接上'
+      const result = await ctx.audioStyle.transcribe({
+        samplePath: params.samplePath,
+        sampleUrl: params.sampleUrl,
+        model: params.model
+      })
+      if (!result.ok) return `转写失败：${result.error}`
+      const lines: string[] = [`转写（${result.model}，${result.text.length} 字）：`, result.text]
+      if (result.cues.length > 0) {
+        lines.push('', '分句演法：')
+        for (const cue of result.cues) {
+          lines.push(`- ${cue.line}${cue.pauseMs ? ` 〔停顿 ${cue.pauseMs}ms〕` : ''} → ${cue.delivery || '（未标注）'}`)
+        }
+      }
+      if (result.overall) lines.push('', `整体听感：${result.overall}`)
+      if (result.sampleUrl) lines.push('', `本次样本地址：${result.sampleUrl}（临时，过期失效）`)
+      lines.push('', '要落成合成参数：演法用 voice_update 的 instruction（或节目的 instruction），停顿写成正文里的 <pause>600</pause>，情绪用 <cot text=情绪>句子</cot>')
+      return lines.join('\n')
     }
   }),
 

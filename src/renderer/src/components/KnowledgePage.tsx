@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { ArrowDown, ArrowUp, BookOpen, Clapperboard, FileImage, FileText, Loader2, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
+import { BookOpen, FileImage, FileText, Loader2, Pencil, Plus, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { ENTRY_KINDS, ENTRY_KIND_LABEL } from '../../../shared/types'
-import type { EntryKind, KnowledgeFile, KnowledgeKind, Product, ProductInput, Script, ScriptInput, ScriptScene } from '../../../shared/types'
+import type { EntryKind, MaterialFile, KnowledgeKind, Material, MaterialInput } from '../../../shared/types'
 import { useAppStore } from '../stores/useAppStore'
 import { useDataRefresh } from '../lib/useDataRefresh'
 import { AssetStaleBanner } from './AssetStaleBanner'
@@ -40,33 +40,25 @@ const chipClass = (active: boolean) =>
 
 const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'webp', 'gif']
 
-/** 知识库：条目（商品/书籍/话题/自定义，价格护栏只认商品）+ 资料文件（解析入库参与检索） */
+/** 素材库：条目（商品/书籍/话题/自定义，价格护栏只认商品）+ 附件（解析入库参与检索） */
 export function KnowledgePage() {
-  const [products, setProducts] = useState<Product[]>([])
-  const [files, setFiles] = useState<KnowledgeFile[]>([])
-  const [scripts, setScripts] = useState<Script[]>([])
-  const [editing, setEditing] = useState<{ product?: Product } | null>(null)
-  const [editingScript, setEditingScript] = useState<{ script?: Script } | null>(null)
-  const [deleting, setDeleting] = useState<Product | null>(null)
-  const [deletingScript, setDeletingScript] = useState<Script | null>(null)
+  const [products, setProducts] = useState<Material[]>([])
+  const [files, setFiles] = useState<MaterialFile[]>([])
+  const [editing, setEditing] = useState<{ product?: Material } | null>(null)
+  const [deleting, setDeleting] = useState<Material | null>(null)
   /** 待删的文档/图片（删除走确认弹窗：文档是解析过的知识，删错就得重传重解析） */
-  const [deletingFile, setDeletingFile] = useState<KnowledgeFile | null>(null)
+  const [deletingFile, setDeletingFile] = useState<MaterialFile | null>(null)
   const [uploading, setUploading] = useState(false)
   const [imageDraft, setImageDraft] = useState<string | null>(null) // 待填描述的图片路径
-  const [tab, setTab] = useState<'products' | 'files' | 'scripts'>('products')
+  const [tab, setTab] = useState<'products' | 'files'>('products')
   const [kindFilter, setKindFilter] = useState<KindFilter>('all')
   const [syncing, setSyncing] = useState(false)
   const connector = useAppStore((s) => s.connector)
 
   const reload = useCallback(async () => {
-    const [p, f, s] = await Promise.all([
-      window.api.knowledge.listProducts(),
-      window.api.knowledge.listFiles(),
-      window.api.script.list()
-    ])
+    const [p, f] = await Promise.all([window.api.knowledge.listMaterials(), window.api.knowledge.listFiles()])
     setProducts(p)
     setFiles(f)
-    setScripts(s)
   }, [])
 
   useEffect(() => {
@@ -135,8 +127,8 @@ export function KnowledgePage() {
       <AssetStaleBanner />
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <BookOpen className="size-4 shrink-0 text-primary" />
-        <h1 className="shrink-0 text-sm font-medium">知识库</h1>
-        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">条目资料 · 文件资料包 · 剧本（主播答题的弹药库）</p>
+        <h1 className="shrink-0 text-sm font-medium">素材</h1>
+        <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">条目与附件（主播答题的弹药库）· 剧本单独管理</p>
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {tab === 'products' && (
             <Button variant="outline" size="sm" onClick={() => setEditing({})}>
@@ -150,12 +142,7 @@ export function KnowledgePage() {
               {uploading ? '解析中…' : '上传资料'}
             </Button>
           )}
-          {tab === 'scripts' && (
-            <Button variant="outline" size="sm" onClick={() => setEditingScript({})}>
-              <Plus />
-              新建剧本
-            </Button>
-          )}
+
         </div>
       </header>
 
@@ -163,8 +150,7 @@ export function KnowledgePage() {
         <div className="shrink-0 border-b px-4 pt-2">
           <TabsList variant="line">
             <TabsTrigger value="products" className="px-3">条目 · {products.length}</TabsTrigger>
-            <TabsTrigger value="files" className="px-3">资料文件 · {files.length}</TabsTrigger>
-            <TabsTrigger value="scripts" className="px-3">剧本 · {scripts.length}</TabsTrigger>
+            <TabsTrigger value="files" className="px-3">附件 · {files.length}</TabsTrigger>
           </TabsList>
         </div>
 
@@ -226,6 +212,12 @@ export function KnowledgePage() {
                     <p className="line-clamp-3 min-h-9 text-sm text-muted-foreground">
                       {product.sellingPoints || (product.kind === 'product' ? '（还没写卖点）' : '（还没写要点）')}
                     </p>
+                    {(() => {
+                      const count = files.filter((file) => file.materialId === product.id).length
+                      return count > 0 ? (
+                        <p className="mt-1 text-xs text-muted-foreground">附件 {count}</p>
+                      ) : null
+                    })()}
                     <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
                       <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditing({ product })}>
                         <Pencil />
@@ -276,89 +268,16 @@ export function KnowledgePage() {
           )}
         </TabsContent>
 
-        <TabsContent value="scripts" className="overflow-auto p-4">
-          {scripts.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-10 text-muted-foreground">
-              <Clapperboard className="size-8" strokeWidth={1.25} />
-              <p className="text-sm">剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾），节目绑定后主播按场推进</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-3 [&>*]:min-w-0 xl:grid-cols-3">
-              {scripts.map((script) => (
-                <Card key={script.id} className="group/card gap-2 py-3">
-                  <CardHeader className="px-4">
-                    <CardTitle className="min-w-0 flex-1 truncate text-sm">{script.title}</CardTitle>
-                  </CardHeader>
-                  <CardContent className="px-4">
-                    <p className="line-clamp-2 min-h-8 text-xs text-muted-foreground">{script.theme || '（没写主题）'}</p>
-                    <div className="mt-1 flex flex-wrap gap-1">
-                      {script.scenes.map((scene, i) => (
-                        <Badge key={scene.id} variant="outline" className="text-[11px]">
-                          {i + 1}.{scene.title}
-                        </Badge>
-                      ))}
-                    </div>
-                    <div className="mt-2 flex justify-end gap-1 opacity-0 group-hover/card:opacity-100">
-                      <Button variant="ghost" size="icon-sm" title="编辑" onClick={() => setEditingScript({ script })}>
-                        <Pencil />
-                      </Button>
-                      <Button variant="ghost" size="icon-sm" title="删除" onClick={() => setDeletingScript(script)}>
-                        <Trash2 />
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          )}
-        </TabsContent>
       </Tabs>
 
       <EntryDialog
         key={editing?.product?.id ?? 'new-entry'}
         open={editing !== null}
         product={editing?.product}
+        assets={files.filter((file) => file.materialId === (editing?.product?.id ?? ''))}
         onOpenChange={(open) => !open && setEditing(null)}
         onSaved={reload}
       />
-      <ScriptDialog
-        key={editingScript?.script?.id ?? 'new-script'}
-        open={editingScript !== null}
-        script={editingScript?.script}
-        onOpenChange={(open) => !open && setEditingScript(null)}
-        onSaved={reload}
-      />
-      <Dialog open={deletingScript !== null} onOpenChange={(open) => !open && setDeletingScript(null)}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle>删除剧本</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            确认删除「{deletingScript?.title}」？绑定了它的节目会自动解绑。
-          </p>
-          <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeletingScript(null)}>
-              取消
-            </Button>
-            <Button
-              variant="destructive"
-              onClick={() => {
-                const target = deletingScript
-                setDeletingScript(null)
-                if (!target) return
-                void window.api.script.remove(target.id).then(async (result) => {
-                  if (result.ok) {
-                    toast.success('已删除')
-                    await reload()
-                  } else toast.error('删除失败', { description: result.error })
-                })
-              }}
-            >
-              删除
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -378,7 +297,7 @@ export function KnowledgePage() {
                 const target = deleting
                 setDeleting(null)
                 if (!target) return
-                void window.api.knowledge.deleteProduct(target.id).then(async (result) => {
+                void window.api.knowledge.deleteMaterial(target.id).then(async (result) => {
                   if (result.ok) {
                     toast.success('已删除')
                     await reload()
@@ -469,11 +388,14 @@ const ENTRY_FIELD_LABEL: Record<EntryKind, { points: string; pointsPlaceholder: 
 function EntryDialog({
   open,
   product,
+  assets,
   onOpenChange,
   onSaved
 }: {
   open: boolean
-  product?: Product
+  product?: Material
+  /** 这条素材已挂的附件（文件/链接） */
+  assets: MaterialFile[]
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void>
 }) {
@@ -483,9 +405,43 @@ function EntryDialog({
     price: product?.price ?? 0,
     author: product?.meta.author ?? '',
     sellingPoints: product?.sellingPoints ?? '',
-    faq: product?.faq ?? ''
+    faq: product?.faq ?? '',
+    content: product?.content ?? ''
   })
   const [busy, setBusy] = useState(false)
+  const [linkUrl, setLinkUrl] = useState('')
+  const [assetsLocal, setAssetsLocal] = useState<MaterialFile[]>(assets)
+  useEffect(() => setAssetsLocal(assets), [assets])
+
+  const addLink = async () => {
+    if (!product || !linkUrl.trim()) return
+    const result = await window.api.knowledge.attachUrl(product.id, linkUrl.trim())
+    if (!result.ok) {
+      toast.error('挂链接失败', { description: result.error })
+      return
+    }
+    setLinkUrl('')
+    setAssetsLocal((prev) => [result.file, ...prev])
+    toast.success('链接已挂到这条素材')
+  }
+
+  const addFile = async () => {
+    if (!product) return
+    const path = await window.api.dialog.pickFile('资料文件', ['pdf', 'doc', 'docx', 'txt', 'md', 'png', 'jpg', 'jpeg', 'webp'])
+    if (!path) return
+    const result = await window.api.knowledge.uploadFile(path, undefined, product.id)
+    if (!result.ok) {
+      toast.error('上传失败', { description: result.error })
+      return
+    }
+    setAssetsLocal((prev) => [result.file, ...prev])
+    toast.success('已作为附件挂到这条素材')
+  }
+
+  const removeAsset = async (id: string) => {
+    const result = await window.api.knowledge.deleteFile(id)
+    if (result.ok) setAssetsLocal((prev) => prev.filter((item) => item.id !== id))
+  }
 
   const fieldLabel = ENTRY_FIELD_LABEL[kind]
 
@@ -496,10 +452,11 @@ function EntryDialog({
       if (form.author.trim()) meta.author = form.author.trim()
       else delete meta.author
     }
-    const input: ProductInput = {
+    const input: MaterialInput = {
       name: form.name,
       price: kind === 'product' ? form.price : 0,
       sellingPoints: form.sellingPoints,
+      content: form.content,
       faq: form.faq,
       kind,
       externalId: product?.externalId ?? '',
@@ -507,7 +464,7 @@ function EntryDialog({
     }
     setBusy(true)
     void window.api.knowledge
-      .saveProduct(input, product?.id)
+      .saveMaterial(input, product?.id)
       .then(async (result) => {
         if (result.ok) {
           toast.success(product ? '条目已更新' : '条目已创建')
@@ -583,6 +540,55 @@ function EntryDialog({
             )}
           </div>
           <div>
+            <Label className="mb-1">正文</Label>
+            <Textarea
+              value={form.content}
+              rows={3}
+              onChange={(e) => setForm({ ...form, content: e.target.value })}
+              placeholder="文章/讲稿/说明书正文都可以直接放这里；也可以只挂附件或链接"
+              className="resize-none"
+            />
+          </div>
+          <div>
+            <Label className="mb-1">附件（{assetsLocal.length}）</Label>
+            {product ? (
+              <div className="space-y-2">
+                <div className="flex gap-2">
+                  <Input
+                    value={linkUrl}
+                    onChange={(e) => setLinkUrl(e.target.value)}
+                    placeholder="贴链接：官网 / 文档 / 商品页"
+                  />
+                  <Button variant="outline" size="sm" onClick={() => void addLink()}>
+                    挂链接
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => void addFile()}>
+                    上传文件
+                  </Button>
+                </div>
+                {assetsLocal.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    还没有附件。节目只绑这一条素材，agent 需要时才读这里的附件。
+                  </p>
+                ) : (
+                  <div className="space-y-1">
+                    {assetsLocal.map((asset) => (
+                      <div key={asset.id} className="flex items-center gap-2 rounded border px-2 py-1 text-xs">
+                        <span className="shrink-0 text-muted-foreground">{asset.type === 'url' ? '链接' : '文件'}</span>
+                        <span className="min-w-0 flex-1 truncate">{asset.name}</span>
+                        <Button variant="ghost" size="icon-sm" title="解绑" onClick={() => void removeAsset(asset.id)}>
+                          <Trash2 />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">先保存这条素材，再给它挂附件</p>
+            )}
+          </div>
+          <div>
             <Label className="mb-1">{fieldLabel.points}</Label>
             <Textarea
               value={form.sellingPoints}
@@ -655,171 +661,6 @@ function ImageDescribeDialog({
             }}
           >
             入库
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/**
- * 草稿场景的本地 id：UI 新建的行还没有库里的 id，拿它当 key（稳定且唯一，不用下标）。
- * 提交前清回空串，落库 id 仍由后端按位置生成，和以前一致。
- */
-const DRAFT_SCENE_ID_PREFIX = 'draft-scene-'
-let draftSceneSeq = 0
-const blankScene = (title: string): ScriptScene => ({
-  id: `${DRAFT_SCENE_ID_PREFIX}${(draftSceneSeq += 1)}`,
-  title,
-  goal: '',
-  keyPoints: '',
-  estDurationMin: 5
-})
-
-/** 剧本编辑弹窗：剧本名/主题 + 场景序列（上下按钮排序，可增删） */
-function ScriptDialog({
-  open,
-  script,
-  onOpenChange,
-  onSaved
-}: {
-  open: boolean
-  script?: Script
-  onOpenChange: (open: boolean) => void
-  onSaved: () => Promise<void>
-}) {
-  const [title, setTitle] = useState(script?.title ?? '')
-  const [theme, setTheme] = useState(script?.theme ?? '')
-  const [scenes, setScenes] = useState<ScriptScene[]>(() => script?.scenes ?? [blankScene('开场')])
-  const [busy, setBusy] = useState(false)
-
-  const patchScene = (index: number, part: Partial<ScriptScene>) =>
-    setScenes((prev) => prev.map((s, i) => (i === index ? { ...s, ...part } : s)))
-  const moveScene = (index: number, dir: -1 | 1) =>
-    setScenes((prev) => {
-      const next = [...prev]
-      const target = index + dir
-      if (target < 0 || target >= next.length) return prev
-      ;[next[index], next[target]] = [next[target], next[index]]
-      return next
-    })
-
-  const submit = () => {
-    if (!title.trim() || busy) return
-    const input: ScriptInput = {
-      title,
-      theme,
-      scenes: scenes
-        .filter((s) => s.title.trim())
-        .map((s) => (s.id.startsWith(DRAFT_SCENE_ID_PREFIX) ? { ...s, id: '' } : s))
-    }
-    setBusy(true)
-    void window.api.script
-      .save(input, script?.id)
-      .then(async (result) => {
-        if (result.ok) {
-          toast.success(script ? '剧本已更新' : '剧本已创建')
-          onOpenChange(false)
-          await onSaved()
-        } else {
-          toast.error('保存失败', { description: result.error })
-        }
-      })
-      .finally(() => setBusy(false))
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{script ? '编辑剧本' : '新建剧本'}</DialogTitle>
-        </DialogHeader>
-        <div className="grid shrink-0 grid-cols-2 gap-3">
-          <div>
-            <Label className="mb-1">剧本名</Label>
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如：锅具专场标准流程" />
-          </div>
-          <div>
-            <Label className="mb-1">主题</Label>
-            <Input value={theme} onChange={(e) => setTheme(e.target.value)} placeholder="这场直播的内容方向" />
-          </div>
-        </div>
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mb-1 flex items-center justify-between">
-            <Label className="text-xs text-muted-foreground">场景序列（{scenes.length} 场）</Label>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-6 text-xs"
-              onClick={() => setScenes((prev) => [...prev, blankScene('')])}
-            >
-              <Plus className="size-3.5" />
-              加一场
-            </Button>
-          </div>
-          <div className="flex flex-col gap-2">
-            {scenes.map((scene, i) => (
-              <div key={scene.id} className="rounded-lg border bg-card p-2.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-5 shrink-0 text-center text-xs text-muted-foreground">{i + 1}</span>
-                  <Input
-                    value={scene.title}
-                    onChange={(e) => patchScene(i, { title: e.target.value })}
-                    placeholder="场景名（开场/痛点/讲解/互动/催单/收尾…）"
-                    className="h-7 text-xs"
-                  />
-                  <Input
-                    type="number"
-                    min={1}
-                    value={String(scene.estDurationMin)}
-                    onChange={(e) => patchScene(i, { estDurationMin: Number(e.target.value) || 5 })}
-                    title="预计分钟"
-                    className="h-7 w-16 shrink-0 text-xs"
-                  />
-                  <Button variant="ghost" size="icon-sm" title="上移" disabled={i === 0} onClick={() => moveScene(i, -1)}>
-                    <ArrowUp />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    title="下移"
-                    disabled={i === scenes.length - 1}
-                    onClick={() => moveScene(i, 1)}
-                  >
-                    <ArrowDown />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    title="删除这场"
-                    disabled={scenes.length === 1}
-                    onClick={() => setScenes((prev) => prev.filter((_, j) => j !== i))}
-                  >
-                    <Trash2 />
-                  </Button>
-                </div>
-                <Input
-                  value={scene.goal}
-                  onChange={(e) => patchScene(i, { goal: e.target.value })}
-                  placeholder="目标：这场要达成什么"
-                  className="mt-1.5 h-7 text-xs"
-                />
-                <Textarea
-                  value={scene.keyPoints}
-                  onChange={(e) => patchScene(i, { keyPoints: e.target.value })}
-                  placeholder="必讲要点，一行一条"
-                  className="mt-1.5 min-h-12 resize-none text-xs"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button disabled={!title.trim() || scenes.every((s) => !s.title.trim()) || busy} onClick={submit}>
-            保存
           </Button>
         </DialogFooter>
       </DialogContent>

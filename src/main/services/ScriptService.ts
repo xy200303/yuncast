@@ -4,7 +4,6 @@ import {
   type Program,
   type ProgramInput,
   type Script,
-  type ScriptInput,
   type ScriptScene
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
@@ -27,49 +26,54 @@ export class ScriptService {
    */
   onProgramsChanged: ((programId: string) => void) | null = null
 
+  /**
+   * 剧本被写后的统一通知：绑它的节目要做预制资产 stale 检测（onContentChanged），
+   * 界面刷新由 storage.onDataChanged('programs') 兜底，这里只负责「引擎侧要不要重算」
+   */
   constructor(private readonly storage: StorageService) {}
 
-  // ---------- 剧本 ----------
+  // ---------- 编排（Scenes，已并入节目：不再有独立剧本资产，UI/工具只认节目） ----------
 
-  listScripts(): Script[] {
-    return this.storage.scriptList()
-  }
-
-  getScript(id: string | null | undefined): Script | null {
-    if (!id) return null
-    return this.storage.scriptList().find((s) => s.id === id) ?? null
-  }
-
-  saveScript(input: ScriptInput, id?: string): Script {
-    if (!input.title.trim()) throw new Error('剧本名不能为空')
-    if (input.scenes.length === 0) throw new Error('剧本至少要有一场')
-    const existing = id ? this.getScript(id) : null
-    const script: Script = {
-      id: id ?? `sc-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
-      title: input.title.trim(),
-      theme: input.theme.trim(),
-      scenes: input.scenes.map((scene, i) => ({
-        ...scene,
-        id: scene.id || `scene-${i + 1}`,
-        estDurationMin: Math.max(1, scene.estDurationMin || 5)
-      })),
-      createdAt: existing?.createdAt ?? Date.now(),
-      updatedAt: Date.now()
+  /** 某节目的编排（场景序列）；节目还没编排过返回空数组（不是"剧本不存在"） */
+  /** 编排视图：给沿用 Script 形状的老调用方（音频单元、导出）用，id = 节目 id */
+  planOf(program: Program): Script {
+    return {
+      id: program.id,
+      title: `${program.name} · 编排`,
+      theme: program.theme,
+      scenes: program.plan.scenes,
+      createdAt: program.createdAt,
+      updatedAt: program.updatedAt
     }
-    this.storage.scriptSave(script)
-    return script
   }
 
-  deleteScript(id: string): void {
-    // 绑定该剧本的节目先解绑
-    for (const program of this.storage.programList()) {
-      if (program.scriptId === id) this.storage.programSave({ ...program, scriptId: null, updatedAt: Date.now() })
-    }
-    this.storage.scriptDelete(id)
+  getScript(programId: string | null | undefined): Script | null {
+    if (!programId) return null
+    const program = this.storage.programList().find((p) => p.id === programId)
+    return program ? this.planOf(program) : null
   }
 
-  // ---------- 节目 ----------
+  scenesOf(programId: string): ScriptScene[] {
+    return this.storage.programList().find((p) => p.id === programId)?.plan.scenes ?? []
+  }
 
+  /**
+   * 保存某节目的编排（场景序列）：节目没有编排载体时就地建一个，
+   * 名字固定为「节目名 · 编排」——用户不需要再给编排起名，也没有"剧本库"可去翻。
+   */
+  saveScenes(programId: string, scenes: ScriptScene[]): ScriptScene[] {
+    const program = this.storage.programList().find((p) => p.id === programId)
+    if (!program) throw new Error('节目不存在')
+    this.storage.programSave({ ...program, plan: { scenes }, updatedAt: Date.now() })
+    this.onContentChanged?.(programId)
+    this.onProgramsChanged?.(programId)
+    return scenes
+  }
+
+  /**
+   * 清理孤儿编排（一键迁移用）：没人引用的剧本导出成 JSON 后删除，返回 { exported, removed }。
+   * 自动建剧本留下的垃圾就是从这里清的。
+   */
   listPrograms(): Program[] {
     return this.storage.programList()
   }
@@ -92,10 +96,10 @@ export class ScriptService {
         : (input.enabledTriggerIds?.length
             ? [...new Set(input.enabledTriggerIds.map((t) => t.trim()).filter(Boolean))]
             : this.storage.triggerList().filter((t) => t.enabled).map((t) => t.id)),
-      presenterIds: [...new Set((input.presenterIds ?? []).map((p) => p.trim()).filter(Boolean))],
+      personaIds: [...new Set((input.personaIds ?? []).map((p) => p.trim()).filter(Boolean))],
       instruction: input.instruction?.trim() || undefined,
       language: input.language ?? existing?.language ?? 'auto',
-      scriptId: input.scriptId,
+      plan: input.plan ?? existing?.plan ?? { scenes: [] },
       currentSceneIdx: existing?.currentSceneIdx ?? 0,
       knowledgeScope: { ...DEFAULT_PROGRAM_KNOWLEDGE_SCOPE, ...input.knowledgeScope },
       createdAt: existing?.createdAt ?? Date.now(),
@@ -121,39 +125,21 @@ export class ScriptService {
    * 剧本元信息保存（save_script 工具的后端）：新建（允许空场景，场景后补）或改名/改主题。
    * 与 saveScript 分工：saveScript 是全场景编辑（UI 表单用，校验至少一场），这里只管名称/主题。
    */
-  saveScriptMeta(input: { title: string; theme?: string }, id?: string, expectedUpdatedAt?: number): Script {
-    if (!input.title.trim()) throw new Error('剧本名不能为空')
-    const existing = id ? this.getScript(id) : null
-    if (id && !existing) throw new Error('剧本不存在（可能已被删除）：用 list_scripts 拿正确的 id')
-    assertFresh(expectedUpdatedAt, existing?.updatedAt, `剧本「${existing?.title ?? ''}」`)
-    const script: Script = {
-      id: id ?? `sc-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
-      title: input.title.trim(),
-      theme: (input.theme ?? existing?.theme ?? '').trim(),
-      scenes: existing?.scenes ?? [],
-      createdAt: existing?.createdAt ?? Date.now(),
-      updatedAt: Date.now()
-    }
-    this.storage.scriptSave(script)
-    return script
-  }
-
-  /** 场景排序（reorder_scenes 工具的后端）：orderedIds 必须恰好是全部场景 id 的一个排列 */
-  reorderScenes(scriptId: string, orderedIds: string[], expectedUpdatedAt?: number): Script {
-    const script = this.getScript(scriptId)
-    if (!script) throw new Error('剧本不存在：用 list_scripts 拿正确的 id')
-    assertFresh(expectedUpdatedAt, script.updatedAt, `剧本「${script.title}」`)
+  /** 场景排序：orderedIds 必须恰好是全部场景 id 的一个排列 */
+  reorderScenes(programId: string, orderedIds: string[], expectedUpdatedAt?: number): Script {
+    const program = this.storage.programList().find((p) => p.id === programId)
+    if (!program) throw new Error('节目不存在')
+    assertFresh(expectedUpdatedAt, program.updatedAt, `节目「${program.name}」编排`)
+    const base = program.plan.scenes
     const ids = orderedIds.map((id) => id.trim()).filter(Boolean)
-    if (new Set(ids).size !== ids.length) throw new Error('顺序列表里有重复的场景 id')
-    if (ids.length !== script.scenes.length || !script.scenes.every((s) => ids.includes(s.id))) {
-      throw new Error(`顺序列表必须恰好包含全部 ${script.scenes.length} 个场景的 id（先用 get_script 拿当前场景列表）`)
+    if (ids.length !== base.length || !base.every((scene) => ids.includes(scene.id))) {
+      throw new Error(`顺序列表必须恰好包含全部 ${base.length} 个场景的 id（先用 scene_list 拿当前场景列表）`)
     }
-    const scenes = ids.map((id) => script.scenes.find((s) => s.id === id)!)
-    this.storage.scriptSave({ ...script, scenes, updatedAt: Date.now() })
-    return this.getScript(scriptId)!
+    const scenes = ids.map((id) => base.find((scene) => scene.id === id)!)
+    this.saveScenes(programId, scenes)
+    return this.getScript(programId)!
   }
 
-  /** 节目触发器绑定（set_program_triggers 工具的后端）：只存启用项，触发器定义在全局库；id 必须先存在于全局库 */
   setProgramTriggers(programId: string, triggerIds: string[], expectedUpdatedAt?: number): Program {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) throw new Error('节目不存在：用 list_programs 拿正确的 id')
@@ -166,6 +152,7 @@ export class ScriptService {
     }
     const next: Program = { ...program, enabledTriggerIds: ids, updatedAt: Date.now() }
     this.storage.programSave(next)
+    this.onProgramsChanged?.(programId)
     return next
   }
 
@@ -180,41 +167,39 @@ export class ScriptService {
   getActive(): { program: Program | null; script: Script | null } {
     const id = this.storage.getConfig().live.activeProgramId
     const program = id ? (this.storage.programList().find((p) => p.id === id) ?? null) : null
-    return { program, script: this.getScript(program?.scriptId) }
+    return { program, script: program ? this.planOf(program) : null }
   }
 
   // ---------- 场景推进（主播 advance_scene 工具的后端） ----------
 
   /** 当前场景（含进度），无剧本/无节目返回 null */
   currentScene(): { scene: ScriptScene; index: number; total: number } | null {
-    const { program, script } = this.getActive()
-    if (!program || !script || script.scenes.length === 0) return null
-    const index = Math.min(program.currentSceneIdx, script.scenes.length - 1)
-    return { scene: script.scenes[index], index, total: script.scenes.length }
+    const { program } = this.getActive()
+    const scenes = program?.plan.scenes ?? []
+    if (!program || scenes.length === 0) return null
+    const index = Math.min(program.currentSceneIdx, scenes.length - 1)
+    return { scene: scenes[index], index, total: scenes.length }
   }
 
   /** 推进到下一场景并落库；已经是最后一场返回 null（收尾/循环由主播自己判断） */
   advanceScene(): { scene: ScriptScene; index: number; total: number } | null {
-    const { program, script } = this.getActive()
-    if (!program || !script || script.scenes.length === 0) return null
+    const { program } = this.getActive()
+    const scenes = program?.plan.scenes ?? []
+    if (!program || scenes.length === 0) return null
     const next = program.currentSceneIdx + 1
-    if (next >= script.scenes.length) return null
+    if (next >= scenes.length) return null
     this.storage.programSetSceneIdx(program.id, next)
-    return { scene: script.scenes[next], index: next, total: script.scenes.length }
+    return { scene: scenes[next], index: next, total: scenes.length }
   }
 
   /** 跳转到指定场景（goto_scene 工具 / 直播台切场景按钮的后端）；越界返回 null */
   gotoScene(idx: number): { scene: ScriptScene; index: number; total: number } | null {
-    const { program, script } = this.getActive()
-    if (!program || !script || script.scenes.length === 0) return null
-    if (idx < 0 || idx >= script.scenes.length) return null
+    const { program } = this.getActive()
+    const scenes = program?.plan.scenes ?? []
+    if (!program || scenes.length === 0) return null
+    if (idx < 0 || idx >= scenes.length) return null
     this.storage.programSetSceneIdx(program.id, idx)
-    return { scene: script.scenes[idx], index: idx, total: script.scenes.length }
-  }
-
-  /** 场景进度复位（重新开播时可用） */
-  resetScene(programId: string): void {
-    this.storage.programSetSceneIdx(programId, 0)
+    return { scene: scenes[idx], index: idx, total: scenes.length }
   }
 
   // ---------- 预制音频（Scene.rendered，docs/10 §9.6） ----------
@@ -223,8 +208,13 @@ export class ScriptService {
    * 写/清某场景的整章预制音频引用（存在 scripts.scenes JSON 内）。
    * 走 storage 的专用通道（带 blob 引用钩子）；不动 updatedAt：预制产物更新不是用户编辑剧本，不该触发版本冲突误判。
    */
-  setSceneRendered(scriptId: string, sceneId: string, rendered: ScriptScene['rendered'] | null): void {
-    this.storage.scriptSetSceneRendered(scriptId, sceneId, rendered ?? null)
+  setSceneRendered(programId: string, sceneId: string, rendered: ScriptScene['rendered'] | null): void {
+    const program = this.storage.programList().find((p) => p.id === programId)
+    if (!program) return
+    const scenes = program.plan.scenes.map((scene) =>
+      scene.id === sceneId ? { ...scene, ...(rendered ? { rendered } : { rendered: undefined }) } : scene
+    )
+    this.storage.programSave({ ...program, plan: { scenes }, updatedAt: Date.now() })
   }
 
   // ---------- 主播自编剧本（create_scene/update_scene/remove_scene 工具的后端） ----------
@@ -233,33 +223,14 @@ export class ScriptService {
    * 确保节目绑着一本剧本：没绑就现场建一本「主播自编」并绑上。
    * 主播自己编排场景序列用——节目可以不预绑剧本，主播开播/备稿时自己搭架子。
    */
-  ensureProgramScript(programId: string): { program: Program; script: Script; created: boolean } {
-    const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    if (!program) throw new Error('节目不存在')
-    const bound = this.getScript(program.scriptId)
-    if (bound) return { program, script: bound, created: false }
-    const script: Script = {
-      id: `sc-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
-      title: `${program.name} · 主播自编`,
-      theme: program.theme,
-      scenes: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    }
-    this.storage.scriptSave(script)
-    this.storage.programSave({ ...program, scriptId: script.id, updatedAt: Date.now() })
-    return { program, script, created: true }
-  }
-
-  /** 加一场（position 省略 = 追加到末尾；序号从 1 数起）。返回新场景和全场序列 */
   appendScene(
     programId: string,
     scene: { title: string; goal: string; keyPoints: string; estDurationMin?: number },
     position?: number
   ): { script: Script; index: number; total: number } {
-    const { script } = this.ensureProgramScript(programId)
+    const script = this.getScript(programId)
     if (!scene.title.trim()) throw new Error('场景名不能为空')
-    const scenes = [...script.scenes]
+    const scenes: ScriptScene[] = [...(script?.scenes ?? [])]
     const insertAt =
       position === undefined
         ? scenes.length
@@ -276,9 +247,8 @@ export class ScriptService {
       keyPoints: scene.keyPoints.trim(),
       estDurationMin: Math.max(1, Math.round(scene.estDurationMin ?? 5))
     })
-    this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
-    this.onContentChanged?.(programId)
-    return { script: this.getScript(script.id)!, index: insertAt, total: scenes.length }
+    this.saveScenes(programId, scenes)
+    return { script: this.getScript(programId)!, index: insertAt, total: scenes.length }
   }
 
   /** 改某一场（序号从 1 数起）；只传要改的字段 */
@@ -287,10 +257,11 @@ export class ScriptService {
     index: number,
     patch: { title?: string; goal?: string; keyPoints?: string; estDurationMin?: number }
   ): { script: Script; index: number; total: number } {
-    const { script } = this.ensureProgramScript(programId)
+    const script = this.getScript(programId)
+    const base: ScriptScene[] = script?.scenes ?? []
     const i = Math.floor(index) - 1
-    if (i < 0 || i >= script.scenes.length) throw new Error(`没有第 ${index} 场（现在共 ${script.scenes.length} 场）`)
-    const scenes = script.scenes.map((s, at) =>
+    if (!script || i < 0 || i >= base.length) throw new Error(`没有第 ${index} 场（现在共 ${base.length} 场）`)
+    const scenes = base.map((s, at) =>
       at === i
         ? {
             ...s,
@@ -302,29 +273,25 @@ export class ScriptService {
           }
         : s
     )
-    this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
-    this.onContentChanged?.(programId)
-    return { script: this.getScript(script.id)!, index: i, total: scenes.length }
+    this.saveScenes(programId, scenes)
+    return { script: this.getScript(programId)!, index: i, total: scenes.length }
   }
 
   /** 删某一场（序号从 1 数起）；当前进度在被删场之后则回退一格 */
   removeScene(programId: string, index: number): { script: Script; total: number } {
-    const { program, script } = this.ensureProgramScript(programId)
+    const program = this.storage.programList().find((p) => p.id === programId)
+    const script = this.getScript(programId)
+    const base: ScriptScene[] = script?.scenes ?? []
     const i = Math.floor(index) - 1
-    if (i < 0 || i >= script.scenes.length) throw new Error(`没有第 ${index} 场（现在共 ${script.scenes.length} 场）`)
+    if (!program || i < 0 || i >= base.length) throw new Error(`没有第 ${index} 场（现在共 ${base.length} 场）`)
     // 被删场挂着预制音频的，释放 blob 引用（scriptSave 是通用整存，不过钩子，这里显式补）
-    const removedPath = script.scenes[i].rendered?.audioPath
-    if (removedPath) this.storage.onAudioPathChange?.('scene_rendered', script.scenes[i].id, removedPath, null)
-    const scenes = script.scenes.filter((_, at) => at !== i)
+    const removedPath = base[i].rendered?.audioPath
+    if (removedPath) this.storage.onAudioPathChange?.('scene_rendered', base[i].id, removedPath, null)
+    const scenes = base.filter((_, at) => at !== i)
     // 删到空剧本允许（主播自编可能推倒重来）：saveScript 校验至少要有一场，空序列直接落库
-    if (scenes.length === 0) {
-      this.storage.scriptSave({ ...script, scenes: [], updatedAt: Date.now() })
-    } else {
-      this.saveScript({ title: script.title, theme: script.theme, scenes }, script.id)
-    }
+    this.saveScenes(programId, scenes)
     if (program.currentSceneIdx > i) this.storage.programSetSceneIdx(programId, program.currentSceneIdx - 1)
-    this.onContentChanged?.(programId)
-    return { script: this.getScript(script.id)!, total: scenes.length }
+    return { script: this.getScript(programId)!, total: scenes.length }
   }
 }
 

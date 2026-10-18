@@ -109,3 +109,31 @@ export function oneLine(value: unknown, max: number): string {
   const flat = raw.replace(/\s+/g, ' ').trim()
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
 }
+
+/**
+ * 「最近动作」清单：压缩把旧消息吞掉后，模型只能看到摘要正文——它常常忘了自己刚做过什么，
+ * 于是回头把自己上一步的成果"撤掉"（实测发生过）。这里从旧消息尾部抽最近几次工具调用，
+ * 用代码拼一条清单附在摘要后面：不花 LLM 调用，也不会被摘要模型漏写。
+ */
+export function renderRecentActions(messages: AgentMessage[], limit = 6): string {
+  const calls: { name: string; args: string }[] = []
+  for (const message of messages) {
+    const m = message as { role?: string; content?: unknown }
+    if (!Array.isArray(m.content)) continue
+    for (const part of m.content as { type?: string; name?: string; arguments?: unknown }[]) {
+      if (part?.type !== 'toolCall') continue
+      let args = ''
+      try {
+        args = JSON.stringify(part.arguments ?? {})
+      } catch {
+        args = ''
+      }
+      calls.push({ name: String(part.name ?? ''), args })
+    }
+  }
+  if (calls.length === 0) return ''
+  return calls
+    .slice(-limit)
+    .map((call) => `- ${call.name}(${call.args.length > 160 ? `${call.args.slice(0, 160)}…` : call.args})`)
+    .join('\n')
+}

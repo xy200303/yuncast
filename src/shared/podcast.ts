@@ -78,12 +78,12 @@ function lastIndexOfAny(window: string, marks: string[]): number {
  * - 文稿段落的 voiceId 命中某个主持人音色 → 该主持人讲；
  * - 没标角色的段落 → 与上一轮交替（默认主持人 A 开场），对话感不断；
  * - 超过单轮上限的段落按句末标点拆成同一个人的连续几轮。
- * castVoices/speakers 顺序一致：[主持人 A, 主持人 B]；castVoices 是节目 cast 里的原始音色输入，
+ * podcastVoices/speakers 顺序一致：[主持人 A, 主持人 B]；podcastVoices 是节目 cast 里的原始音色输入，
  * speakers 是解析后的发音人 id（克隆音色 → speaker_id）。返回 null = 有第三种音色混入（§6.4 拒绝）。
  */
 export function buildPodcastTurns(
   lines: { voiceId: string; text: string }[],
-  castVoices: [string, string],
+  podcastVoices: [string, string],
   speakers: [string, string],
   maxCharsPerTurn: number
 ): PodcastTurn[] | null {
@@ -94,8 +94,8 @@ export function buildPodcastTurns(
     let who = -1
     if (voice) {
       // 原始输入与解析后的 speaker id 都算命中（cast 里可能一个写音色名一个写 speaker_id）
-      if (voice === castVoices[0] || voice === speakers[0]) who = 0
-      else if (voice === castVoices[1] || voice === speakers[1]) who = 1
+      if (voice === podcastVoices[0] || voice === speakers[0]) who = 0
+      else if (voice === podcastVoices[1] || voice === speakers[1]) who = 1
       else return null
     } else {
       who = prev === 0 ? 1 : 0

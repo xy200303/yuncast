@@ -854,15 +854,15 @@ onUnmounted(() => {
         <span class="eyebrow reveal"><i>05</i>产品自述</span>
         <h2 class="display reveal">产品自述</h2>
         <p class="lead reveal d1">
-          下面四段都是应用自己录的：一个节目一种形态。稿子存在底稿库，声音由应用自己合成，
-          开播后按编排顺序念出来——画面里写的就是耳朵里听到的。
+          下面四段都是应用自己录的：第一段是功能演示（旁白由应用自己合成），
+          后三段是三个节目各一段实录——画面里写的就是耳朵里听到的。
         </p>
         <div class="video-wrap reveal d2">
           <video
             ref="videoEl"
             class="video-player"
-            src="/demo.mp4"
-            poster="/demo-poster.jpg"
+            src="/demo-feature.mp4"
+            poster="/demo-feature.jpg"
             controls
             preload="none"
             playsinline
@@ -879,11 +879,11 @@ onUnmounted(() => {
           </figure>
         </div>
         <ul class="video-notes reveal d3">
-          <li>三段 50 秒短片对应三个节目：有声书（全部做好再播）、带货（边播边备）、跨境（English 多语言）</li>
+          <li><b>1 分 08 秒功能演示</b>：对话让导演写稿 → 一句话建节目 → 新建素材条目 → 建主播卡 → 回直播台接着播，全部在同一个窗口里完成；旁白由应用自身的语音合成生成</li>
+          <li><b>三段 50 秒节目实录</b>：有声书（全部做好再播）、带货（边播边备）、跨境（English 多语言）</li>
           <li>节目 = 配置 + 编排（场景序列）+ 卡司 + 素材范围；播到哪一场，左边话术池就高亮到哪一段</li>
           <li>素材是唯一挂料入口：条目里可以写正文、传附件、贴链接，主播需要时才读</li>
           <li>播完没内容会自动暂停（不是空转），新内容进池自动接着播</li>
-          <li>演示里的底稿、节目与评论是样例数据，用来展示流程</li>
           <li>想看每一步的细节说明，翻 <a :href="withBase('/guide/interface')">界面一览</a></li>
         </ul>
       </div>
@@ -1055,11 +1055,11 @@ $ npm run dev</code></pre>
         <header>
           <div>
             <strong>小云播客坊 · 功能演示</strong>
-            <span>1 分 44 秒 · 产品自述</span>
+            <span>1 分 08 秒 · 功能演示</span>
           </div>
           <button type="button" class="modal-close" aria-label="关闭" @click="closeVideo">✕</button>
         </header>
-        <video src="/demo.mp4" controls autoplay playsinline />
+        <video src="/demo-feature.mp4" controls autoplay playsinline />
       </div>
     </div>
   </div>

@@ -64,6 +64,29 @@ export const agentTools = [
   }),
 
   defineTool({
+    name: 'ui_show',
+    label: '切换界面',
+    domain: 'agent',
+    risk: 'read',
+    expose: { agent: true, mcp: true },
+    description:
+      '把应用界面切到指定页（live=直播台 / programs=节目 / personas=主播团 / knowledge=素材 / voices=音色 / sessions=场次 / stats=统计）。' +
+      '做演示、录屏、远程指导时用：外部调用切到直播台，观众就能看到话术队列在流动。只影响界面显示，不动任何数据。',
+    parameters: Type.Object({
+      page: Type.String({ description: '目标页面：live/programs/personas/knowledge/voices/sessions/stats' })
+    }),
+    handler: (_ctx, params) => {
+      const page = params.page.trim()
+      const allowed = ['live', 'programs', 'personas', 'knowledge', 'voices', 'sessions', 'stats']
+      if (!allowed.includes(page)) return `没有这个页面：${page}（可选 ${allowed.join(' / ')}）`
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.uiNavigate, page)
+      }
+      return `界面已切到「${page}」`
+    }
+  }),
+
+  defineTool({
     name: 'agent_chat',
     label: '和主播说话',
     domain: 'agent',
@@ -111,7 +134,7 @@ export const agentTools = [
       const cfg = ctx.storage.getConfig()
       const activeId = cfg.live.activeProgramId
       const active = activeId ? ctx.storage.programList().find((p) => p.id === activeId) : undefined
-      const cast = ctx.persona.programCast()
+      const personas = ctx.persona.programPersonas()
       const voiceLabel = (voiceId: string): string => {
         if (!voiceId.trim()) return '（未设置）'
         const found = ctx.voices?.list().find((v) => v.voiceType === voiceId.trim())
@@ -145,7 +168,7 @@ export const agentTools = [
       if (!cfg.director.modelConnectionId || !cfg.director.model) {
         suggestions.push('导演大脑还没配：让导演到设置 → 语言模型给导演选接入和模型（导演不配上不了工）')
       }
-      if (cast.length > 0 && cast.every((p) => !p.voiceId.trim())) {
+      if (personas.length > 0 && personas.every((p) => !p.voiceId.trim())) {
         suggestions.push('节目卡司里的主播卡都没选音色：写词时逐条 role 会报错，先用 voice_list 给卡配音色')
       }
       if (!ttsConnections.some((c) => c.可用)) {
@@ -159,7 +182,7 @@ export const agentTools = [
         suggestions.push('直推模式还没配推流地址/密钥：让导演到设置 → 接入 → 推流补齐')
       }
       if (status.assetsStale === 'prompt') {
-        suggestions.push('人设/剧本/手册在会话启动后改过：点直播台黄条的「立即应用」热更新即生效，不用重开会话')
+        suggestions.push('人设/编排/手册在会话启动后改过：点直播台黄条的「立即应用」热更新即生效，不用重开会话')
       } else if (status.assetsStale === 'brain') {
         suggestions.push('导演模型/接入在会话启动后改过：要重开会话才生效（点直播台黄条的「立即应用」，或下次开播自动应用）')
       }
@@ -181,18 +204,18 @@ export const agentTools = [
         导演: { 名称: cfg.director.name, 模型: cfg.director.model || '（未配大脑）' },
         节目卡司: (() => {
           const program = ctx.script.getActive().program
-          const ids = program?.presenterIds ?? []
+          const ids = program?.personaIds ?? []
           const members = ids
-            .map((id) => cast.find((p) => p.id === id))
+            .map((id) => personas.find((p) => p.id === id))
             .filter((p): p is NonNullable<typeof p> => Boolean(p))
           return members.length > 0
             ? {
                 成员: members.map((p) => `${p.name}（${voiceLabel(p.voiceId)}）`),
                 节目风格指令: program?.instruction || '（未配置）'
               }
-            : '（未配卡司：写词时必须逐条用 speaker 指定主播卡 id）'
+            : '（未配卡司：写词时必须逐条用 personaId 指定主播卡 id）'
         })(),
-        可用主播卡: cast.map((p) => `${p.name}（${p.id}）`),
+        可用主播卡: personas.map((p) => `${p.name}（${p.id}）`),
         语言模型接入: llmConnections,
         语音合成接入: ttsConnections,
         评论连接器: connector

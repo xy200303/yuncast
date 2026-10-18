@@ -22,10 +22,15 @@ const MULTIMODAL_URL =
 const DEFAULT_MODEL = 'qwen3.8-omni-flash'
 
 const DEFAULT_PROMPT =
-  '请听这段人声样本，输出一条可以直接下给语音合成模型的**表演指令**（不超过 100 字）。' +
-  '要求：用祈使句/第二人称来写（例如「用……的声音说」「语速……，句尾……」），' +
+  '请听这段人声样本，输出一个 JSON 对象（不要代码块、不要解释）：' +
+  '{"instruction":"不超过 100 字、可直接下给语音合成模型的表演指令，只写指令正文",' +
+  '"transcript":"这段音频说的话逐字转写（用于计算语速；听不清写「（听不清）」）",' +
+  '"rate":0.85 到 1.3 之间的建议语速倍率（和真人正常语速比，正常就给 1）,' +
+  '"pitch":0.9 到 1.1 之间的建议音调倍率}。' +
+  'instruction 的要求：用祈使句/第二人称写（「用……的声音说」「语速……，句尾……」），' +
   '依次覆盖音色（年龄感/亮度/厚薄/气声）、语速、语气与情绪浓度、句尾习惯、说话距离感；' +
-  '按真实直播/节目场景还原她的声音（正常发声位置与音量），不要因为有气声就写成耳语；只写指令正文，不要「这段音频…」「她听起来…」这类评测口吻，不要评价内容、不要复述原文、不要提节目或人名。'
+  '按真实直播/节目场景还原她的声音（正常发声位置与音量），不要因为有气声就写成耳语；' +
+  '不要「这段音频…」「她听起来…」这类评测口吻，不要提节目或人名。'
 
 export interface PersonaDraftResult {
   ok: boolean
@@ -76,6 +81,20 @@ export interface StyleAnalysisResult {
   /** 实际用的模型 */
   model: string
   /** 本次用的公网地址（本地文件上传后生成的临时链接） */
+  sampleUrl?: string
+  error?: string
+}
+
+/** 转写结果：逐字稿 + 分句表演标注（停顿/情绪/语速），供对照复刻"像不像真人" */
+export interface TranscriptResult {
+  ok: boolean
+  /** 转写正文（已去掉模型的口头解释） */
+  text: string
+  /** 分句标注：每句的语气、停顿、语速快慢（模型听出来的） */
+  cues: { line: string; delivery: string; pauseMs?: number }[]
+  /** 整体听感总结：音色/气声/情绪浓度/句尾习惯 */
+  overall?: string
+  model: string
   sampleUrl?: string
   error?: string
 }
@@ -201,6 +220,92 @@ export class AudioStyleService {
 
   /** 直接测一段本地音频的客观指标（校准工具用） */
   measure = measureVoice
+
+  /**
+   * 听音频 → 逐字转写 + 分句表演标注。
+   * 和 analyze 的区别：analyze 只产出「下给 TTS 的表演指令」，明确不许复述原文；
+   * 这条要的就是原文和"哪儿停顿/哪儿重/什么语气"，用来人工对照复刻像不像。
+   */
+  async transcribe(input: {
+    samplePath?: string
+    sampleUrl?: string
+    model?: string
+  }): Promise<TranscriptResult> {
+    const model = input.model?.trim() || this.storage.getConfig().audioStyle.model || DEFAULT_MODEL
+    const apiKey = this.bailianKey()
+    if (!apiKey) {
+      return {
+        ok: false,
+        text: '',
+        cues: [],
+        model,
+        error: configHint(this.storage) || '没有可用的阿里云百炼接入：到设置 → 语音合成配一条（音频理解复用它的密钥）'
+      }
+    }
+    let sampleUrl = input.sampleUrl?.trim() ?? ''
+    if (!sampleUrl) {
+      const path = input.samplePath?.trim() ?? ''
+      if (!path) return { ok: false, text: '', cues: [], model, error: '要转写得给音频：samplePath（本地文件）或 sampleUrl（公网地址）' }
+      const uploaded = await this.uploads.upload(path)
+      if (!uploaded.ok || !uploaded.url) {
+        return { ok: false, text: '', cues: [], model, error: `样本上传失败：${uploaded.error ?? '未知原因'}` }
+      }
+      sampleUrl = uploaded.url
+    }
+    const prompt =
+      '请听这段人声，做两件事，只输出一个 JSON 对象（不要代码块、不要解释）：' +
+      '1) text：逐字转写这段音频说的话，保留原有标点与语气词，不要改写、不要总结；' +
+      '2) cues：按句子拆分，每句给 {"line":"这一句原文","delivery":"这句怎么说：情绪/重音/气声/句尾处理/语速快慢，20 字内","pauseMs":这句之后的停顿毫秒（没停顿就省略）}；' +
+      '3) overall：整体听感，40 字内，只描述声音与说话方式（音色/气声比例/情绪浓度/句尾习惯/距离感），不要评价内容。' +
+      '严格按听到的写，听不清的地方用「（听不清）」，不要编。'
+    let res: Response
+    try {
+      res = await fetch(MULTIMODAL_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          input: { messages: [{ role: 'user', content: [{ audio: sampleUrl }, { text: prompt }] }] },
+          parameters: { temperature: 0.1, top_p: 0.7 }
+        }),
+        signal: AbortSignal.timeout(180_000)
+      })
+    } catch (error) {
+      return { ok: false, text: '', cues: [], model, sampleUrl, error: friendlyError(error) }
+    }
+    const raw = await res.text().catch(() => '')
+    if (!res.ok) return { ok: false, text: '', cues: [], model, sampleUrl, error: `百炼音频理解请求失败 ${res.status}: ${raw.slice(0, 200)}` }
+    let content = ''
+    try {
+      const data = JSON.parse(raw) as { output?: { choices?: { message?: { content?: { text?: string }[] | string } }[] } }
+      const c = data.output?.choices?.[0]?.message?.content
+      content = typeof c === 'string' ? c : (c ?? []).map((part) => part?.text ?? '').join('')
+    } catch {
+      return { ok: false, text: '', cues: [], model, sampleUrl, error: `百炼返回内容无法解析：${raw.slice(0, 160)}` }
+    }
+    const start = content.indexOf('{')
+    const end = content.lastIndexOf('}')
+    if (start < 0 || end <= start) return { ok: false, text: '', cues: [], model, sampleUrl, error: `解析结果不是 JSON：${content.slice(0, 160)}` }
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(content.slice(start, end + 1)) as Record<string, unknown>
+    } catch {
+      return { ok: false, text: '', cues: [], model, sampleUrl, error: `解析结果不是合法 JSON：${content.slice(0, 160)}` }
+    }
+    const text = typeof parsed.text === 'string' ? parsed.text.trim() : ''
+    const overall = typeof parsed.overall === 'string' ? parsed.overall.trim() : undefined
+    const cues = Array.isArray(parsed.cues)
+      ? (parsed.cues as Record<string, unknown>[])
+          .map((cue) => ({
+            line: typeof cue.line === 'string' ? cue.line.trim() : '',
+            delivery: typeof cue.delivery === 'string' ? cue.delivery.trim() : '',
+            ...(typeof cue.pauseMs === 'number' && Number.isFinite(cue.pauseMs) ? { pauseMs: Math.round(cue.pauseMs) } : {})
+          }))
+          .filter((cue) => cue.line)
+      : []
+    if (!text) return { ok: false, text: '', cues, model, sampleUrl, error: '模型没给转写正文' }
+    return { ok: true, text, cues, overall, model, sampleUrl }
+  }
 
   async analyze(input: {
     samplePath?: string

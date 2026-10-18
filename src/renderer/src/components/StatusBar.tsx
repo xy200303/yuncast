@@ -48,7 +48,7 @@ export function StatusBar() {
           setProgramVoice(null)
           return
         }
-        const castFirst = program.presenterIds[0]
+        const castFirst = program.personaIds[0]
         const personas = await window.api.persona.list()
         const voiceId = (castFirst ? personas.find((p) => p.id === castFirst)?.voiceId : '') ?? ''
         setProgramVoice({ name: program.name, voiceId: voiceId.trim(), hasCast: Boolean(castFirst) })
@@ -66,7 +66,7 @@ export function StatusBar() {
   const voice = programVoice?.voiceId
     ? voiceRouteSummary(voices, ttsProviders, ttsConnections, programVoice.voiceId)
     : null
-  const presenterText =
+  const castText =
     voice && !voice.broken
       ? `卡司嗓音 ${voice.voiceName}${voice.providerShort ? ` · ${voice.providerShort}` : ''}`
       : null
@@ -117,8 +117,8 @@ export function StatusBar() {
           </button>
         )}
         <Dot />
-        {presenterText ? (
-          <span title="卡司嗓音">{presenterText}</span>
+        {castText ? (
+          <span title="卡司嗓音">{castText}</span>
         ) : voice?.broken ? (
           <button
             type="button"
@@ -129,7 +129,7 @@ export function StatusBar() {
             卡司嗓音失效 → 去修复
           </button>
         ) : (
-          <span title={programVoice?.hasCast ? '卡司里的卡还没选音色' : '本节目没配卡司：合成时逐段用 speaker 指定'}>
+          <span title={programVoice?.hasCast ? '卡司里的卡还没选音色' : '本节目没配卡司：合成时逐段用 personaId 指定'}>
             {!programVoice ? '未选节目' : programVoice.hasCast ? '卡司没选音色' : '未选主播'}
           </span>
         )}

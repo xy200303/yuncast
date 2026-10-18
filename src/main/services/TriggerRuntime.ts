@@ -372,7 +372,7 @@ export class TriggerRuntime {
   }
 
   private drop(trigger: Trigger, reason: string): void {
-    console.error(`[AgentAnchor] 触发器「${trigger.name}」被拦截：${reason}`)
+    console.error(`[YunCast] 触发器「${trigger.name}」被拦截：${reason}`)
     this.bus.emit('trigger.dropped', { triggerId: trigger.id, name: trigger.name, reason }, 'system')
   }
 
@@ -388,7 +388,7 @@ export class TriggerRuntime {
       if (!text || text.includes('{{')) return // 模板渲染不完整（缺字段）就别播
       const voiceId = this.voiceProvider().trim()
       if (!voiceId) {
-        console.warn(`[AgentAnchor] 触发器「${trigger.name}」跳过：当前节目没配卡司嗓音（节目卡司里的卡都没选音色）`)
+        console.warn(`[YunCast] 触发器「${trigger.name}」跳过：当前节目没配卡司嗓音（节目卡司里的卡都没选音色）`)
         return
       }
       try {
@@ -400,7 +400,7 @@ export class TriggerRuntime {
           voiceId
         })
       } catch (error) {
-        console.error(`[AgentAnchor] 触发器「${trigger.name}」入池失败:`, error)
+        console.error(`[YunCast] 触发器「${trigger.name}」入池失败:`, error)
       }
       return
     }
@@ -411,7 +411,7 @@ export class TriggerRuntime {
     try {
       this.agent.pushTriggerEvent(trigger.name, prompt)
     } catch (error) {
-      console.error(`[AgentAnchor] 触发器「${trigger.name}」投递失败:`, error)
+      console.error(`[YunCast] 触发器「${trigger.name}」投递失败:`, error)
       this.bus.emit('trigger.dropped', { triggerId: trigger.id, name: trigger.name, reason: 'agent 不可用' }, 'system')
     }
   }

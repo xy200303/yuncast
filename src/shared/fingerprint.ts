@@ -40,7 +40,7 @@ export interface FingerprintSource {
 }
 
 /** 单段（DraftUnit）级文稿指纹：文本 + 表演指示 + 语速/音调（+ 节目级风格指令盐） */
-export function utteranceFingerprint(source: FingerprintSource, styleSalt = ''): string {
+export function draftUnitFingerprint(source: FingerprintSource, styleSalt = ''): string {
   return hash16(
     [source.text, source.delivery ?? '', source.rate ?? '', source.pitch ?? '', styleSalt].join('')
   )
@@ -50,6 +50,6 @@ export function utteranceFingerprint(source: FingerprintSource, styleSalt = ''):
  * 整章/整期（Scene）级文稿指纹：该章全部段落的段指纹按叙事顺序串联。
  * 任何一段的文本/演法变动、段序变动、增删段都会改变它。
  */
-export function sceneFingerprint(utterances: FingerprintSource[], styleSalt = ''): string {
-  return hash16(utterances.map((u) => utteranceFingerprint(u, styleSalt)).join(','))
+export function sceneFingerprint(draftUnits: FingerprintSource[], styleSalt = ''): string {
+  return hash16(draftUnits.map((u) => draftUnitFingerprint(u, styleSalt)).join(','))
 }

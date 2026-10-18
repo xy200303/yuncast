@@ -1,9 +1,8 @@
 import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, shell } from 'electron'
-import { setDefaultResultOrder } from 'node:dns'
 import { randomUUID } from 'node:crypto'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
-import { appendFileSync, existsSync, mkdirSync, readlinkSync, renameSync, symlinkSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readlinkSync, renameSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
@@ -97,14 +96,11 @@ import {
   type PoolResult,
   type PoolSayInput,
   type PoolSnapshot,
-  type ProductInput,
+  type MaterialInput,
   type ProgramExportOptions,
   type ProgramInput,
   type ProduceVoiceOverride,
-  type ScriptInput,
   type SessionExportOptions,
-  type PoolItem,
-  type PoolLane,
   type StatsQuery,
   type StreamStats,
   type TriggerInput,
@@ -112,6 +108,8 @@ import {
   type TtsProvider,
   type DraftUnit,
   type DraftUnitInput,
+  type ScriptScene,
+  type LaunchResult,
   type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
@@ -133,7 +131,6 @@ import { TempUploadService } from './services/TempUpload'
 import { AudioStyleService } from './services/AudioStyleService'
 import type { DataChangeScope } from '../shared/types'
 import { TtsStreamService } from './services/TtsStreamService'
-import { TtsRealtimeService } from './services/TtsRealtimeService'
 import { DraftUnitService } from './services/DraftUnitService'
 import { ProgramPlaybackService } from './services/ProgramPlaybackService'
 import { SessionRecorder } from './services/SessionRecorder'
@@ -172,7 +169,6 @@ let updater: UpdateService | null = null
 
 /** Windows 上标题栏覆盖层偶发把第一帧停在白底。显示后改一次尺寸让系统重画；画面仍是空的就重新加载。 */
 function recoverBlankWindow(win: BrowserWindow): void {
-  let shown = false
   let loaded = false
   let nudged = false
   let reloads = 0
@@ -180,7 +176,7 @@ function recoverBlankWindow(win: BrowserWindow): void {
   const reload = (why: string) => {
     if (win.isDestroyed() || reloads >= 2) return
     reloads += 1
-    console.error(`[AgentAnchor] 窗口没有画出来（${why}），重新加载`)
+    console.error(`[YunCast] 窗口没有画出来（${why}），重新加载`)
     setTimeout(() => {
       if (!win.isDestroyed()) win.webContents.reload()
     }, 200)
@@ -188,7 +184,6 @@ function recoverBlankWindow(win: BrowserWindow): void {
 
   const show = () => {
     if (win.isDestroyed()) return
-    shown = true
     if (!win.isVisible()) win.show()
     if (nudged || !loaded || process.platform !== 'win32') return
     nudged = true
@@ -323,7 +318,7 @@ function syncMcp(config: McpConfig): void {
   mcpApplied = signature
   void mcp?.apply(config).catch((error) => {
     // 端口被占等：状态（含 error）已经广播给设置页，这里只记日志
-    console.warn('[AgentAnchor] MCP 启动失败:', error instanceof Error ? error.message : error)
+    console.warn('[YunCast] MCP 启动失败:', error instanceof Error ? error.message : error)
   })
 }
 
@@ -356,9 +351,73 @@ function registerMcpIpc(storage: StorageService): void {
   ipcMain.handle(IPC.mcpState, (): McpRuntime => mcp?.state() ?? { running: false, port: storage.getConfig().mcp.port, clients: 0 })
 }
 
+/**
+ * 播报暂停/继续的唯一实现（IPC 按钮、MCP 外部接口、合成停播三条路共用，避免行为分叉）。
+ * 暂停 = 停播放循环 + 停主播产出（评论/触发器不派、speak 被拒）；
+ * 继续要把合成彻底失败的条目重新触发一次，否则它们永远停在 halted。
+ */
+function applyPlaybackPause(paused: boolean): void {
+  if (!paused) {
+    pool?.retryFailed()
+    autoPausedForDry = false // 恢复播报（不管谁点的）都清掉「因无内容自动暂停」标记
+  }
+  agent?.setSpeakingPaused(paused)
+  playback?.setRunning(!paused)
+}
+
+/**
+ * 「播完了就自动暂停」：池子见底、又没有在合成/没存货时，把播报停到「暂停」态，
+ * 而不是保持「播报中」空转（用户看到的就是一直显示在播、其实没声音）。
+ * 一旦有新内容进池（合成完成、主播补货、装载）自动继续；用户手动点过暂停则不会被自动继续。
+ */
+let autoPausedForDry = false
+
+let lastDryCheckAt = 0
+
+/**
+ * 池空就核对一次：没有在途内容（无合成中/无未播存货/无预制在出）就停在「暂停」态。
+ * 和 pool.empty 事件互补——启动即空、播完没人补货这类「没有从非空变空」的情况不会触发事件，
+ * 以前就那样一直显示"播报中"空转。
+ */
+function ensurePauseWhenDry(): void {
+  const now = Date.now()
+  if (now - lastDryCheckAt < 2000) return
+  lastDryCheckAt = now
+  if (autoPausedForDry) return
+  const status = agent?.status()
+  if (status?.state !== 'running' || status.live !== true) return
+  if (status.speakingPaused === true) return
+  if ((pool?.snapshot().items.length ?? 0) > 0) return
+  const programId = storageRef?.getConfig().live.activeProgramId
+  if (!programId || !playerRef || !storageRef) return
+  const program = storageRef.programList().find((item) => item.id === programId)
+  if (!program) return
+  const policy = policyFor(program, playerRef)
+  if (policy.poolEmptyAction(program) !== 'wait') return
+  const incoming =
+    playerRef.hasIncomingDraftUnits(programId) ||
+    playerRef.hasFreshDraftUnits(programId) ||
+    playerRef.hasIncomingRendered(programId)
+  if (incoming) return
+  autoPauseWhenDry()
+}
+
+function autoPauseWhenDry(): boolean {
+  if (agent?.status().speakingPaused === true) return false
+  applyPlaybackPause(true)
+  autoPausedForDry = true
+  console.log('[YunCast] 池空了且没有待播内容：自动暂停播报，等新内容进来再继续')
+  // 对话里留一条旁白：用户能看出"为什么停了"，主播也知道自己在等内容的空档
+  agent?.notifyTimeline('本场内容播完了，已自动暂停播报；有新内容（补稿/合成完成）会自动继续。')
+  return true
+}
+
 /** 池快照广播给所有窗口；顺带探测 pool.empty / pool.low（沿只发一次，恢复后可再发） */
 let poolWasEmpty = true
 let poolWasLow = false
+/** 模块级引用：池快照回调里要用（main() 里创建后赋上） */
+let storageRef: StorageService | null = null
+let playerRef: ProgramPlaybackService | null = null
 function broadcastPool(snapshot: PoolSnapshot): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(IPC.poolSnapshotEvent, snapshot)
@@ -367,7 +426,14 @@ function broadcastPool(snapshot: PoolSnapshot): void {
   playback?.kick()
   const remaining = snapshot.items.length
   const empty = remaining === 0
+  if (empty) ensurePauseWhenDry()
   if (empty && !poolWasEmpty) bus?.emit('pool.empty', {}, 'pool')
+  // 自动暂停后来了新内容（合成完成/主播补货/装载）：接着播，不用人点「继续」
+  if (!empty && autoPausedForDry) {
+    autoPausedForDry = false
+    applyPlaybackPause(false)
+    console.log('[YunCast] 有新内容进池：自动恢复播报')
+  }
   poolWasEmpty = empty
   // 低水位：还剩几段但不够播多久了，提前叫主播续写——等空了再叫必然冷场（写稿+合成要时间）
   const low = !empty && remaining <= POOL_LIMITS.lowWater
@@ -398,17 +464,17 @@ function broadcastDirectorTimeline(event: DirectorTimelineEvent | DirectorTimeli
 
 
 /** 话术库单条状态变化广播（预合成进度） */
-function broadcastUtterance(utterance: DraftUnit): void {
+function broadcastDraftUnit(draftUnit: DraftUnit): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(IPC.utteranceEvent, utterance)
+    if (!win.isDestroyed()) win.webContents.send(IPC.draftUnitEvent, draftUnit)
   }
 }
 
 /** 批量预合成结束：发一条特殊事件（id='' 表示批次结束，UI 刷新列表） */
-function broadcastUtteranceDone(programId: string): void {
+function broadcastDraftUnitDone(programId: string): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) {
-      win.webContents.send(IPC.utteranceEvent, {
+      win.webContents.send(IPC.draftUnitEvent, {
         id: '',
         programId,
         sceneId: '',
@@ -491,7 +557,6 @@ let audioCacheSweep: ReturnType<typeof setInterval> | null = null
 let connector: ConnectorService | null = null
 let voiceSvc: VoiceService | null = null
 let ttsStream: TtsStreamService | null = null
-let ttsRealtime: TtsRealtimeService | null = null
 let streamSvc: StreamService | null = null
 let pipeline: AudioPipeline | null = null
 let recorder: SessionRecorder | null = null
@@ -516,10 +581,64 @@ function resetStopWrap(): void {
   stopWrap = null
 }
 
+/**
+ * 开播的唯一实现：直播台按钮（IPC）、MCP 外部接口、主播 start_live 工具三条路共用。
+ * 副作用一次做完：开播事件只在「没在播 → 开播」时发一次（开播信号触发器靠它）、复位收尾状态、
+ * 0 就绪开播时顶一条低水位（引擎会续写，不冷场）。以前三处各抄一份，改一处漏两处。
+ */
+async function launchAndAnnounce(
+  player: ProgramPlaybackService,
+  programId: string,
+  opts: { allowPartial?: boolean; source: 'human' | 'agent' }
+): Promise<LaunchResult> {
+  const wasLive = agent?.status().live === true
+  const result = await player.launch(programId, { allowPartial: opts.allowPartial === true })
+  if (!result.ok) return result
+  if (!wasLive) bus?.emit('stream.started', {}, opts.source)
+  resetStopWrap()
+  if ((result.loaded ?? 0) === 0) {
+    bus?.emit('pool.low', { remaining: 0 }, 'system')
+    // 一条都没装进来，且没有在合成/没存货：直接停到「暂停」态等内容，别让界面显示在播却没声音
+    const incoming =
+      player.hasIncomingDraftUnits(programId) ||
+      player.hasFreshDraftUnits(programId) ||
+      player.hasIncomingRendered(programId)
+    if (!incoming) autoPauseWhenDry()
+  }
+  return result
+}
+
+/** 收播原因：手动结束 / 整轮播完自动收 / 急停。场记落库端 reasons 见 SessionRecorder */
+type EndProgramReason = 'manual' | 'auto_stop' | 'emergency'
+
+/**
+ * 收播的唯一实现：手动「结束节目」、整轮播完、紧急停止三条路都走这里。
+ * 一次做完全部收尾：停播放循环 → 停会话（先把复盘摘要写进场次）→ 收开播态 → 清池 → 场记收播 → 广播。
+ * 以前这三处各写一遍，急停那份不带主播产出状态、退出那份还漏了清池——状态撕裂都是那么来的。
+ */
+async function endProgram(reason: EndProgramReason): Promise<void> {
+  const wasLive = agent?.status().live ?? false
+  resetStopWrap()
+  playback?.setRunning(false)
+  if (reason === 'emergency') {
+    pipeline?.stopAll()
+    agent?.setSpeakingPaused(true)
+    await agent?.panic()
+  } else {
+    await agent?.stop()
+  }
+  if (!wasLive) return
+  agent?.setLiveActive(false)
+  pool?.clearAll(reason === 'emergency' ? '场次已紧急停止' : '场次已结束')
+  if (pool) pool.sessionId = null
+  recorder?.end(reason)
+  bus?.emit('stream.ended', {}, reason === 'manual' ? 'human' : 'system')
+}
+
 function finishRoundStop(programId: string): void {
   if (!stopWrap) {
     stopWrap = { programId, timer: null }
-    console.log('[AgentAnchor] 整轮播完（finishMode=stop）：通知主播收尾，说完收播')
+    console.log('[YunCast] 整轮播完（finishMode=stop）：通知主播收尾，说完收播')
     agent?.notifyProgramFinished()
     // 主播没接话（暂停中/生成失败等）就 2 分钟后兜底收播，节目不能挂在半空
     stopWrap.timer = setTimeout(() => finishRoundStop(programId), 120_000)
@@ -527,17 +646,8 @@ function finishRoundStop(programId: string): void {
     return
   }
   if (stopWrap.programId !== programId) return
-  resetStopWrap()
-  console.log('[AgentAnchor] finishMode=stop：收尾播完，节目结束')
-  agent?.setLiveActive(false)
-  // 收播清场：池里剩下的（收尾没播到的/插播/存货）全部作废，换节目不遗留
-  pool?.clearAll('场次已结束')
-  // 场记收播：自动收播（整轮播完不循环）
-  recorder?.end('auto_stop')
-  if (pool) pool.sessionId = null
-  bus?.emit('stream.ended', {}, 'system')
-  // 会话一并收掉：与手动「结束节目」同口径——live 会话有对话会先让主播自我复盘写进场次摘要
-  void agent?.stop()
+  console.log('[YunCast] finishMode=stop：收尾播完，节目结束')
+  void endProgram('auto_stop')
 }
 
 /** 池操作统一包一层：错误不抛给渲染进程，返回 { ok, error } 给 UI 提示（error 过错误翻译层，docs/REDESIGN 4.10） */
@@ -613,17 +723,8 @@ function registerIpc(
   ipcMain.handle(IPC.poolInsertNext, (_e, input: Omit<PoolSayInput, 'lane'>) =>
     guard(() => pool.insertNext(input))
   )
-  ipcMain.handle(IPC.poolRevise, (_e, id: string, text: string) =>
-    guard(() => pool.revise(id, text))
-  )
   ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
-  ipcMain.handle(IPC.poolReorder, (_e, ids: string[]) => guard(() => pool.reorder(ids)))
-  ipcMain.handle(IPC.poolClearLane, (_e, lane: PoolLane) => guard(() => pool.clearLane(lane)))
-  ipcMain.handle(IPC.poolStatus, () => pool.getStatus())
   ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) => pool.getRecentPlayed(n))
-  ipcMain.handle(IPC.poolNext, () => pool.next())
-  ipcMain.handle(IPC.poolMarkDone, (_e, id: string) => pool.markDone(id))
-  ipcMain.handle(IPC.poolRequeue, (_e, id: string) => guard(() => pool.requeue(String(id ?? ''))))
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 
   // ---------- TTS ----------
@@ -791,31 +892,9 @@ function registerIpc(
   ipcMain.handle(IPC.providersModels, (_e, providerId: string) => listProviderModels(String(providerId ?? '')))
 
   // ---------- 主播 Agent ----------
-  ipcMain.handle(IPC.agentStart, async () => {
-    try {
-      // 会话启停 ≠ 开播：开播事件（stream.started/ended）只走启动/结束节目那两条路
-      await agent.start()
-      return { ok: true }
-    } catch (error) {
-      return { ok: false, error: friendlyError(error) }
-    }
-  })
   ipcMain.handle(IPC.agentStop, async () => {
-    const statusBefore = agent.status()
-    resetStopWrap()
-    // 结束节目 = 收播：播放循环一起停（掐当前音频、正在播的退回 ready），随后池子整体清场
-    playback?.setRunning(false)
-    await agent.stop()
-    // 结束节目：开播态归引擎——就算 agent 早就没起来，这场也算收了
-    if (statusBefore.live) {
-      agent.setLiveActive(false)
-      // 收播清场：本场所有话术（含人工插播/导演现场话术）全部作废，换节目不遗留
-      pool.clearAll('场次已结束')
-      // 场记收播：手动「结束节目」
-      recorder?.end('manual')
-      if (pool) pool.sessionId = null
-      bus.emit('stream.ended', {}, 'human')
-    }
+    // 结束节目 = 收播（与整轮播完/急停同一条收尾路径）
+    await endProgram('manual')
   })
   // 打断当前这一轮生成（对话输入框的停止钮）：会话保留，下条指令照常来
   ipcMain.handle(IPC.agentAbort, () => agent.stopGeneration())
@@ -853,13 +932,8 @@ function registerIpc(
       }
     }
   }
-  // 统一开播控制里的「暂停」：停播报（主进程播放循环）+ 停主播产出（评论/触发器不派、say 被拒）
-  ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => {
-    const value = Boolean(paused)
-    if (!value) pool.retryFailed() // 点「继续」= 失败条目重新触发合成
-    agent.setSpeakingPaused(value)
-    playback?.setRunning(!value)
-  })
+  // 统一开播控制里的「暂停/继续」：唯一实现在下面 applyPlaybackPause
+  ipcMain.handle(IPC.playbackSetPaused, (_e, paused: boolean) => applyPlaybackPause(Boolean(paused)))
 
   // ---------- 导演对话 ----------
   // chat：无会话时自动按当前选中节目起 prep 会话再投递（选中节目即可开聊，不必先启动节目）
@@ -978,10 +1052,6 @@ function registerIpc(
     pipeline?.setMuted(Boolean(muted))
     return { ok: true }
   })
-  ipcMain.handle(IPC.audioSetBgm, async (_e, action: 'start' | 'stop' | 'volume', filePath?: string, volume?: number) => {
-    if (!pipeline) return { ok: false, error: '音频管线未初始化' }
-    return pipeline.setBgm(action, filePath ? String(filePath) : undefined, volume)
-  })
   ipcMain.handle(IPC.audioStopAll, () => {
     pipeline?.stopAll()
     return { ok: true }
@@ -1034,7 +1104,7 @@ function registerIpc(
       voiceSvc?.preview(String(id ?? '')) ?? { ok: false as const, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceUsage, (_e, id: string) =>
-    voiceSvc?.usage(String(id ?? '')) ?? { personas: [], programs: [], utteranceCount: 0, utteranceSamples: [] }
+    voiceSvc?.usage(String(id ?? '')) ?? { personas: [], programs: [], draftUnitCount: 0, draftUnitSamples: [] }
   )
   ipcMain.handle(IPC.voiceUploadSample, async (_e, bytes: Uint8Array, ext: string) => {
     if (!voiceSvc) return { ok: false, error: '音色服务未初始化' }
@@ -1048,12 +1118,12 @@ function registerIpc(
   ipcMain.handle(IPC.voiceUploadTemp, (_e, filePath: string) => tempUpload.upload(String(filePath ?? '')))
 
   // ---------- 知识库 ----------
-  ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listProducts())
-  ipcMain.handle(IPC.knowledgeProductSave, (_e, input: ProductInput, id?: string) =>
+  ipcMain.handle(IPC.knowledgeProductList, () => knowledge.listMaterials())
+  ipcMain.handle(IPC.knowledgeProductSave, (_e, input: MaterialInput, id?: string) =>
     guard(() => {
       // 价格变动发事件：腹稿修订链路（主播收到后自己决定 revise 池里没播的报价）
-      const before = id ? knowledge.listProducts().find((p) => p.id === id) : undefined
-      const saved = knowledge.saveProduct(input, id)
+      const before = id ? knowledge.listMaterials().find((p) => p.id === id) : undefined
+      const saved = knowledge.saveMaterial(input, id)
       if (before && before.price !== saved.price) {
         bus.emit(
           'product.price_changed',
@@ -1064,7 +1134,7 @@ function registerIpc(
       return saved
     })
   )
-  ipcMain.handle(IPC.knowledgeProductDelete, (_e, id: string) => guard(() => knowledge.deleteProduct(id)))
+  ipcMain.handle(IPC.knowledgeProductDelete, (_e, id: string) => guard(() => knowledge.deleteMaterial(id)))
   // 抖音商城同步：连接器在线时把绑定商品拉成知识条目（发现式找商品工具，按 externalId 去重更新）
   ipcMain.handle(IPC.knowledgeProductSync, async () => {
     try {
@@ -1077,15 +1147,22 @@ function registerIpc(
       return { ok: false, error: friendlyError(error) }
     }
   })
-  ipcMain.handle(IPC.knowledgeFileList, () => knowledge.listFiles())
-  ipcMain.handle(IPC.knowledgeFileUpload, async (_e, filePath: string, description?: string) => {
+  ipcMain.handle(IPC.materialFileList, () => knowledge.listFiles())
+  ipcMain.handle(IPC.knowledgeFileUpload, async (_e, filePath: string, description?: string, materialId?: string) => {
     try {
-      return { ok: true, file: await knowledge.uploadFile(String(filePath), description) }
+      return { ok: true, file: await knowledge.uploadFile(String(filePath), description, materialId) }
     } catch (error) {
       return { ok: false, error: friendlyError(error) }
     }
   })
-  ipcMain.handle(IPC.knowledgeFileDelete, (_e, id: string) => guard(() => knowledge.deleteFile(id)))
+  ipcMain.handle(IPC.materialAttachUrl, (_e, materialId: string, url: string, title?: string) => {
+    try {
+      return { ok: true, file: knowledge.attachUrl(String(materialId), String(url), title) }
+    } catch (error) {
+      return { ok: false, error: friendlyError(error) }
+    }
+  })
+  ipcMain.handle(IPC.materialFileDelete, (_e, id: string) => guard(() => knowledge.deleteFile(id)))
 
   // ---------- 触发器 ----------
   ipcMain.handle(IPC.triggerList, () => triggers.list())
@@ -1124,13 +1201,7 @@ function registerIpc(
   ipcMain.handle(IPC.statsSession, (_e, sessionId: string) => storage.statsSession(String(sessionId ?? '')))
 
   // ---------- 剧本 ----------
-  ipcMain.handle(IPC.scriptList, () => script.listScripts())
-  ipcMain.handle(IPC.scriptSave, (_e, input: ScriptInput, id?: string) =>
-    guard(() => script.saveScript(input, id))
-  )
-  ipcMain.handle(IPC.scriptDelete, (_e, id: string) => guard(() => script.deleteScript(id)))
-
-  // ---------- 节目 ----------
+    // ---------- 节目 ----------
   ipcMain.handle(IPC.programList, () => script.listPrograms())
   ipcMain.handle(IPC.programSave, (_e, input: ProgramInput, id?: string) =>
     guard(() => script.saveProgram(input, id))
@@ -1147,19 +1218,12 @@ function registerIpc(
   })
   // 开播预检与启动（docs/07 §8.5）：直播台唯一开播入口
   ipcMain.handle(IPC.programPreflight, (_e, id: string) => programPlayback.preflight(String(id ?? '')))
-  ipcMain.handle(IPC.programLaunch, async (_e, id: string, opts?: { allowPartial?: boolean }) => {
-    // 开播事件只在「没在播 → 开播」时发一次（开播信号触发器靠它）；重复开播/已在播不重复发
-    const wasLive = agent.status().live === true
-    const result = await programPlayback.launch(String(id ?? ''), {
-      allowPartial: opts?.allowPartial === true
+  ipcMain.handle(IPC.programLaunch, async (_e, id: string, opts?: { allowPartial?: boolean }) =>
+    launchAndAnnounce(programPlayback, String(id ?? ''), {
+      allowPartial: opts?.allowPartial === true,
+      source: 'human'
     })
-    if (result.ok && !wasLive) bus.emit('stream.started', {}, 'human')
-    // 新一轮开播：上一场可能停在「收尾中」状态，复位
-    if (result.ok) resetStopWrap()
-    // 0 就绪开播：底稿还在后台合成，开播空隙由引擎低水位续写顶上（pool.low → 主播现场编一段，不冷场）
-    if (result.ok && (result.loaded ?? 0) === 0) bus.emit('pool.low', { remaining: 0 }, 'system')
-    return result
-  })
+  )
   /** 切场景（直播台按钮）：跳场景 + 装载新场景话术库 */
   // 统一音频生产入口（docs/10 §7.5）：rolling=后台提前合成全部；prepared=同步跑完返回汇总。
   // voiceOverride = 声音选择弹窗（docs/REDESIGN 4.4）里用户显式选的声音，本次合成冻结它
@@ -1174,15 +1238,20 @@ function registerIpc(
   ipcMain.handle(IPC.programPlayGate, (_e, programId: string) =>
     programPlayback.playGate(String(programId ?? ''))
   )
+  ipcMain.handle(IPC.programPlans, () => script.listPrograms().map((program) => script.planOf(program)))
+  ipcMain.handle(IPC.programScenesGet, (_e, programId: string) => script.scenesOf(String(programId ?? '')))
+  ipcMain.handle(IPC.programScenesSave, (_e, programId: string, scenes: ScriptScene[]) =>
+    guard(() => script.saveScenes(String(programId ?? ''), scenes))
+  )
   ipcMain.handle(IPC.programAudioProgress, (_e, programId: string) =>
     programPlayback.audioProgress(String(programId ?? ''))
   )
   // 预制节目按段跳播（上一段/下一段/段点播）：装池提到队首，再打断当前条目让播放循环立即取它
   ipcMain.handle(
     IPC.programPlayUnit,
-    (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
+    (_e, programId: string, target: { kind: 'scene' | 'draftUnit'; id: string }) => {
       const result = programPlayback.playUnit(String(programId ?? ''), {
-        kind: target?.kind === 'scene' ? 'scene' : 'utterance',
+        kind: target?.kind === 'scene' ? 'scene' : 'draftUnit',
         id: String(target?.id ?? '')
       })
       if (result.ok && !result.already) pipeline?.stopAll()
@@ -1192,7 +1261,7 @@ function registerIpc(
   // 导入外部音频（§7.4）：主进程弹文件选择框，复制入 BlobStore（不动用户原文件）并挂到指定 Scene/DraftUnit 的 rendered
   ipcMain.handle(
     IPC.programImportAudio,
-    async (_e, programId: string, target: { kind: 'scene' | 'utterance'; id: string }) => {
+    async (_e, programId: string, target: { kind: 'scene' | 'draftUnit'; id: string }) => {
       const win = BrowserWindow.getFocusedWindow() ?? mainWindow
       if (!win) return { ok: false as const, error: '没有可用窗口' }
       const result = await dialog.showOpenDialog(win, {
@@ -1202,7 +1271,7 @@ function registerIpc(
       if (result.canceled || !result.filePaths[0]) return { ok: false as const, error: '已取消' }
       return draftUnits.importExternalAudio(
         String(programId ?? ''),
-        { kind: target?.kind === 'scene' ? 'scene' : 'utterance', id: String(target?.id ?? '') },
+        { kind: target?.kind === 'scene' ? 'scene' : 'draftUnit', id: String(target?.id ?? '') },
         result.filePaths[0]
       )
     }
@@ -1297,18 +1366,12 @@ function registerIpc(
     guard(() => draftUnits.save(input, id))
   )
   ipcMain.handle(IPC.draftUnitDelete, (_e, id: string) => guard(() => draftUnits.remove(id)))
-  ipcMain.handle(IPC.utteranceClear, (_e, programId: string, sceneId?: string) =>
+  ipcMain.handle(IPC.draftUnitClear, (_e, programId: string, sceneId?: string) =>
     guard(() => draftUnits.clear(String(programId), sceneId))
   )
-  ipcMain.handle(IPC.utteranceClearAudio, (_e, programId: string) =>
+  ipcMain.handle(IPC.draftUnitClearAudio, (_e, programId: string) =>
     guard(() => draftUnits.clearAudio(String(programId)))
   )
-  ipcMain.handle(IPC.utterancePresynth, async (_e, programId: string) => {
-    // 批量预合成：异步跑（带节目锁，主播改底稿触发的重合成共用同一条流水线），进度走 utteranceEvent
-    void draftUnits.kickSynthesis(String(programId))
-    return { ok: true }
-  })
-
   // ---------- 写稿：导演给当前节目写底稿 ----------
   ipcMain.handle(IPC.agentDraftStart, async (_e, programId: string) => {
     try {
@@ -1343,13 +1406,6 @@ function registerIpc(
     connector.restart()
     return connector.status()
   })
-  ipcMain.handle(IPC.connectorCallTool, async (_e, name: string, args: Record<string, unknown>) => {
-    try {
-      return { ok: true, text: await connector.callTool(String(name), args ?? {}) }
-    } catch (error) {
-      return { ok: false, error: friendlyError(error) }
-    }
-  })
 }
 
 const single = app.requestSingleInstanceLock()
@@ -1376,8 +1432,7 @@ if (!single) {
     linkCliToPath()
     const blobs = new BlobStoreService(storage)
     const tts = new TtsService(storage, blobs)
-    ttsRealtime = new TtsRealtimeService(storage, tts)
-    pool = new SpeechPool(storage, tts, broadcastPool, ttsRealtime)
+    pool = new SpeechPool(storage, tts, broadcastPool)
     pool.onWarmCache = (path) => blobs.warm(path)
     const prompts = new PromptTemplateService(storage)
     const persona = new PersonaService(storage)
@@ -1391,8 +1446,8 @@ if (!single) {
     recorder.fixUnfinished()
     // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
     const draftUnits = new DraftUnitService(storage, tts, persona, script, blobs)
-    draftUnits.onEvent = (u) => broadcastUtterance(u)
-    draftUnits.onBatchDone = (programId) => broadcastUtteranceDone(programId)
+    draftUnits.onEvent = (u) => broadcastDraftUnit(u)
+    draftUnits.onBatchDone = (programId) => broadcastDraftUnitDone(programId)
     // 预制音频资产变化广播（Scene/DraftUnit 的 rendered 更新，渲染层刷新节目音频进度）
     draftUnits.onRenderedEvent = (programId) => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -1401,14 +1456,6 @@ if (!single) {
     }
     // Agent 改场景（append/update/remove_scene）也触发预制音频的 stale 检测
     script.onContentChanged = (programId) => draftUnits.refreshRenderedStaleness(programId)
-    // 节目配置落库 → 刷新引擎侧事件接线：播出中改自动响应白名单/互动总闸立即生效
-    // 节目数据变更（保存/删除/切换，含 agent 与 MCP 路径）→ 广播给所有窗口，界面自己重拉列表
-    script.onProgramsChanged = () => {
-      agent?.refreshProgramGate()
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send(IPC.programChanged)
-      }
-    }
     agent = new AgentService(
       storage,
       pool,
@@ -1426,7 +1473,7 @@ if (!single) {
         mcp?.feedTimeline(event)
       }
     )
-    triggers = new TriggerRuntime(storage, bus, pool, agent, () => persona.castVoice())
+    triggers = new TriggerRuntime(storage, bus, pool, agent, () => persona.programVoice())
     // 节目事件接线：触发器白名单/动态事件总闸跟着当前节目走
     triggers.gateProvider = () => agent!.currentProgramGate()
     streamSvc = new StreamService(storage, broadcastStream)
@@ -1451,10 +1498,9 @@ if (!single) {
     // 合成彻底失败（退避重试耗尽，或 401/403 这类重试无意义的）：一条合不出来就停播——
     // 走统一暂停（播报停 + 主播产出停），点「继续」时 playbackSetPaused 里 retryFailed 重新触发合成
     pool.onSynthHalt = (item, error) => {
-      console.error(`[AgentAnchor] 合成彻底失败，停播等人处理（${item.id}）: ${error}`)
+      console.error(`[YunCast] 合成彻底失败，停播等人处理（${item.id}）: ${error}`)
       bus?.emit('speech.failed', { id: item.id, error, text: item.text.slice(0, 80) })
-      agent?.setSpeakingPaused(true)
-      playback?.setRunning(false)
+      applyPlaybackPause(true)
     }
 
     // 评论统一在 EventBus 收口：comment.new → 喂主播 + 广播评论流（任何事件源下游都无感知）
@@ -1494,6 +1540,12 @@ if (!single) {
     agent.getVoices = () => voiceSvc
     // agent/MCP 改人设卡：广播给所有窗口，界面即时刷新（不再依赖用户手动切页）
     knowledge.onChanged = (scope) => broadcastDataChanged('knowledge', scope)
+    // 存储层统一广播：剧本/触发器/场次/知识文件/配置这些「IPC 与 agent 都能改」的数据，
+    // 只认库真的变了这一个信号，界面不会再因为某条写路径忘了广播而停在旧数据上
+    storage.onDataChanged = (scope, detail) => {
+      if (scope === 'triggers') agent?.refreshProgramGate()
+      broadcastDataChanged(scope, detail)
+    }
     recorder.onChanged = () => broadcastDataChanged('sessions')
     draftUnits.onDraftChanged = (programId) => broadcastDataChanged('drafts', programId)
     persona.onChanged = (personaId) => {
@@ -1506,6 +1558,8 @@ if (!single) {
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
     const programPlayback = new ProgramPlaybackService(storage, script, persona, draftUnits, pool, agent, connector, streamSvc, tts)
+    storageRef = storage
+    playerRef = programPlayback
     programPlayback.recorder = recorder
     // 节目音频导出（docs/10 §8.3，P6）：进度逐单元广播；export_program 工具的确认卡用它出计划摘要
     const exporter = new ExportService(storage, script)
@@ -1551,20 +1605,11 @@ if (!single) {
       getConnector: () => connector,
       getTriggers: () => triggers,
       hooks: {
-        // 与 IPC.programLaunch 完全同口径：开播事件只发一次、收尾状态复位、0 就绪顶低水位
-        launchProgram: async (programId, allowPartial) => {
-          const wasLive = agent!.status().live === true
-          const result = await programPlayback.launch(programId, { allowPartial })
-          if (result.ok && !wasLive) bus!.emit('stream.started', {}, 'human')
-          if (result.ok) resetStopWrap()
-          if (result.ok && (result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
-          return result
-        },
+        // 与 IPC.programLaunch 同一条实现（launchAndAnnounce），不各写一份
+        launchProgram: (programId, allowPartial) =>
+          launchAndAnnounce(programPlayback, programId, { allowPartial, source: 'human' }),
         // 与 IPC.playbackSetPaused 同口径：停播报循环 + 停主播产出
-        setPaused: (paused) => {
-          agent!.setSpeakingPaused(paused)
-          playback?.setRunning(!paused)
-        },
+        setPaused: (paused) => applyPlaybackPause(paused),
         // 跳过当前这条：掐音频，播放循环按播完处理
         skipCurrent: () => pipeline?.stopAll()
       },
@@ -1574,36 +1619,29 @@ if (!single) {
     storage.onConfigChange((config) => syncMcp(config.mcp))
     syncMcp(storage.getConfig().mcp)
     // 就绪补装：直播中底稿每就绪一段就补装进池（播出策略决定接不接：rolling 接，prepared/improvised 不接）
-    const broadcastUtteranceOnly = draftUnits.onEvent
+    const broadcastDraftUnitOnly = draftUnits.onEvent
     draftUnits.onEvent = (u) => {
-      broadcastUtteranceOnly?.(u)
+      broadcastDraftUnitOnly?.(u)
       if (u.status !== 'ready' || !u.id) return
       if (storage.getConfig().live.activeProgramId !== u.programId) return
       const status = agent?.status()
       if (status?.state !== 'running' || status.live !== true) return
       const program = storage.programList().find((p) => p.id === u.programId)
       if (!program || !policyFor(program, programPlayback).autoReloadOnReady) return
-      const loaded = programPlayback.loadActiveSceneUtterances()
-      if (loaded > 0) console.log(`[AgentAnchor] 新就绪底稿补装 ${loaded} 条`)
+      const loaded = programPlayback.loadActiveSceneDraftUnits()
+      if (loaded > 0) console.log(`[YunCast] 新就绪底稿补装 ${loaded} 条`)
     }
     // 场景推进（advance_scene）后补装兜底（整库装载，正常早已装好；去重落空）
     agent.onSceneAdvanced = () => {
-      const loaded = programPlayback.loadActiveSceneUtterances()
-      if (loaded > 0) console.log(`[AgentAnchor] 场景推进补装话术 ${loaded} 条`)
+      const loaded = programPlayback.loadActiveSceneDraftUnits()
+      if (loaded > 0) console.log(`[YunCast] 场景推进补装话术 ${loaded} 条`)
     }
     // 主播自己开播（start_live 工具）：跟「启动节目」按钮走同一条 ProgramPlaybackService.launch，预检拦截如实回报
     agent.onGoLive = async () => {
       const programId = storage.getConfig().live.activeProgramId
       if (!programId) return '没有选中节目，开不了播'
-      // 开播事件只在「没在播 → 开播」时发一次（开播信号触发器靠它）
-      const wasLive = agent!.status().live === true
-      const result = await programPlayback.launch(programId)
+      const result = await launchAndAnnounce(programPlayback, programId, { source: 'agent' })
       if (!result.ok) return `开播被预检拦下了：${result.error}`
-      if (!wasLive) bus!.emit('stream.started', {}, 'agent')
-      // 新一轮开播：上一场可能停在「收尾中」状态，复位
-      resetStopWrap()
-      // 0 就绪开播：后台合成还没出活，开播空隙由引擎低水位续写顶上
-      if ((result.loaded ?? 0) === 0) bus!.emit('pool.low', { remaining: 0 }, 'system')
       return `已开播：装载 ${result.loaded} 条底稿，播出通道已打开，评论开始进来了`
     }
     // 水位事件统一走播出策略（broadcastPolicy.ts）：引擎只问策略要决策，不写模式分叉。
@@ -1637,34 +1675,31 @@ if (!single) {
           return
         case 'reload': {
           const loaded = policy.reload(program)
-          if (loaded > 0) console.log(`[AgentAnchor] 池见底，装回 ${loaded} 条继续播出`)
+          if (loaded > 0) console.log(`[YunCast] 池见底，装回 ${loaded} 条继续播出`)
           return
         }
-        case 'wait':
-          console.log('[AgentAnchor] 池空了但内容还在路上/等续写：允许冷场，不硬顶')
+        case 'wait': {
+          // 内容在路上（还在合成）→ 保持运行等它，别暂停；真没货了 → 自动暂停
+          const incoming =
+            programPlayback.hasIncomingDraftUnits(programId) ||
+            programPlayback.hasFreshDraftUnits(programId) ||
+            programPlayback.hasIncomingRendered(programId)
+          if (incoming) {
+            console.log('[YunCast] 池空了但内容还在路上：保持播报态等合成')
+            return
+          }
+          if (autoPauseWhenDry()) return
+          console.log('[YunCast] 池空了（已暂停）：等新内容或手动继续')
           return
+        }
         case 'ignore':
           return
       }
     })
     // 主播请示（ask_director）：AgentService 内部直接进对话时间线单通道（高亮卡片，不阻塞直播）
-    // 紧急停止总闸（emergency_stop 工具，安全优先直接执行）：掐所有声音 + 停播放循环 + 停会话 + 收开播态
+    // 紧急停止总闸（emergency_stop 工具，安全优先直接执行）：掐声音 + 收播，走统一收尾
     agent.onEmergencyStop = async () => {
-      pipeline?.stopAll()
-      playback?.setRunning(false)
-      agent?.setSpeakingPaused(true)
-      const wasLive = agent?.status().live ?? false
-      resetStopWrap()
-      await agent?.panic()
-      if (wasLive) {
-        agent?.setLiveActive(false)
-        // 收播清场：紧急停止同样不留存货
-        pool?.clearAll('场次已紧急停止')
-        // 场记收播：紧急停止
-        recorder?.end('emergency')
-        if (pool) pool.sessionId = null
-        bus?.emit('stream.ended', {}, 'system')
-      }
+      await endProgram('emergency')
     }
     // 播报控制（pause/resume/skip）：主播工具改播放状态，转给渲染进程的播放循环
     agent.onPlaybackControl = (action) => {
@@ -1687,7 +1722,7 @@ if (!single) {
         await blobs.migrateLegacyAudioCache()
         await blobs.migrateVoiceSamples()
         await blobs.migrateProgramAudio()
-        await blobs.migrateKnowledgeFiles()
+        await blobs.migrateMaterialFiles()
         await blobs.sweep()
       } catch (error) {
         console.warn('[BlobStore] 启动迁移失败:', error)

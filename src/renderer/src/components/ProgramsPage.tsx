@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
+import { ListOrdered } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -23,14 +24,15 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import { useAppStore } from '../stores/useAppStore'
 import {
   BROADCAST_MODE_LABELS,
   CONTENT_TYPE_LABELS,
-  type KnowledgeFile,
+  type MaterialFile,
   type LaunchResult,
   type ProduceVoiceOverride,
-  type Product,
+  type Material,
   type Program,
   type ProgramAudioProgress,
   type ProgramGateResult,
@@ -38,6 +40,7 @@ import {
 } from '../../../shared/types'
 import { ProgramDialog } from './programs/ProgramDialog'
 import { DraftUnitDialog } from './programs/DraftUnitDialog'
+import { ProgramScenesDialog } from './programs/ProgramScenesDialog'
 import { ProgramGateDialog } from './ProgramGateDialog'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { VoicePickDialog } from './VoicePickDialog'
@@ -49,10 +52,10 @@ import { resumeBroadcast } from '../audio/liveControl'
 type ProgramLibrary = {
   programs: Program[]
   scripts: Script[]
-  products: Product[]
-  files: KnowledgeFile[]
+  products: Material[]
+  files: MaterialFile[]
   /** 每个节目的底稿统计（卡片上显示） */
-  utteranceStats: Record<string, { total: number; ready: number }>
+  draftUnitStats: Record<string, { total: number; ready: number }>
   /** 预制节目的音频进度（卡片摘要与主操作判定用） */
   audioStats: Record<string, ProgramAudioProgress>
 }
@@ -62,7 +65,7 @@ const EMPTY_PROGRAM_LIBRARY: ProgramLibrary = {
   scripts: [],
   products: [],
   files: [],
-  utteranceStats: {},
+  draftUnitStats: {},
   audioStats: {}
 }
 
@@ -86,7 +89,7 @@ export function ProgramsPage() {
   const config = useAppStore((s) => s.config)
   const loadConfig = useAppStore((s) => s.loadConfig)
   const [library, dispatchLibrary] = useReducer(programLibraryReducer, EMPTY_PROGRAM_LIBRARY)
-  const { programs, scripts, products, files, utteranceStats, audioStats } = library
+  const { programs, scripts, products, files, draftUnitStats, audioStats } = library
   const [producingId, setProducingId] = useState('')
   /** 合成前的声音选择弹窗（docs/REDESIGN 4.4）：点「继续合成」先弹这个 */
   const [voicePicking, setVoicePicking] = useState<Program | null>(null)
@@ -95,6 +98,8 @@ export function ProgramsPage() {
   const [editing, setEditing] = useState<{ program?: Program } | null>(null)
   const [deleting, setDeleting] = useState<Program | null>(null)
   const [reviewing, setReviewing] = useState<Program | null>(null)
+  /** 编排编辑（场景序列）：编排属于节目，不再是独立剧本 */
+  const [planning, setPlanning] = useState<Program | null>(null)
   /** 导出弹窗（docs/10 §8.3/§11.6，P6） */
   const [exporting, setExporting] = useState<Program | null>(null)
 
@@ -103,14 +108,14 @@ export function ProgramsPage() {
   const reload = useCallback(async () => {
     const [p, s, pr, f] = await Promise.all([
       window.api.program.list(),
-      window.api.script.list(),
-      window.api.knowledge.listProducts(),
+      window.api.program.plans(),
+      window.api.knowledge.listMaterials(),
       window.api.knowledge.listFiles()
     ])
     const stats: Record<string, { total: number; ready: number }> = {}
     const audio: Record<string, ProgramAudioProgress> = {}
     for (const program of p) {
-      const list = await window.api.utterance.list(program.id)
+      const list = await window.api.draftUnit.list(program.id)
       stats[program.id] = { total: list.length, ready: list.filter((u) => u.status === 'ready').length }
       if (program.broadcastMode === 'prepared') {
         audio[program.id] = await window.api.program.audioProgress(program.id)
@@ -119,7 +124,7 @@ export function ProgramsPage() {
     // 列表与统计一起落地：分几次 setState 的话中间那几帧卡片会缺统计
     dispatchLibrary({
       type: 'loaded',
-      library: { programs: p, scripts: s, products: pr, files: f, utteranceStats: stats, audioStats: audio }
+      library: { programs: p, scripts: s, products: pr, files: f, draftUnitStats: stats, audioStats: audio }
     })
   }, [])
 
@@ -127,8 +132,9 @@ export function ProgramsPage() {
     void reload()
   }, [reload])
 
-  // agent / MCP 改了节目（新建/改名/删除/切换卡司）：广播到达就重拉
+  // agent / MCP 改了节目（新建/改名/删除/切换卡司/改剧本）：广播到达就重拉
   useEffect(() => window.api.program.onChanged(() => void reload()), [reload])
+  useDataRefresh(['programs', 'knowledge'], () => void reload())
 
   // 预制音频资产变化：刷新对应节目的音频摘要（合成进度实时反映到卡片上）
   useEffect(() => {
@@ -174,7 +180,7 @@ export function ProgramsPage() {
     setVoicePicking(null)
     setProducingId(program.id)
     try {
-      if (rebuildAll) await window.api.utterance.clearAudio(program.id)
+      if (rebuildAll) await window.api.draftUnit.clearAudio(program.id)
       const result = await window.api.program.produceAudio(program.id, voiceOverride)
       if (!result.ok) {
         toast.error('生成节目音频没能完成', { description: result.error })
@@ -250,7 +256,7 @@ export function ProgramsPage() {
           <div className="grid max-w-4xl grid-cols-2 gap-3 [&>*]:min-w-0">
             {programs.map((program) => {
               const active = program.id === activeProgramId
-              const stats = utteranceStats[program.id]
+              const stats = draftUnitStats[program.id]
               const audio = audioStats[program.id]
               const prepared = program.broadcastMode === 'prepared'
               const improvised = program.broadcastMode === 'improvised'
@@ -270,8 +276,8 @@ export function ProgramsPage() {
                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                       <Badge variant="secondary">{CONTENT_TYPE_LABELS[program.contentType]}</Badge>
                       <Badge variant="outline">{BROADCAST_MODE_LABELS[program.broadcastMode]}</Badge>
-                      {scriptName(program.scriptId) ? (
-                        <Badge variant="secondary">{scriptName(program.scriptId)}</Badge>
+                      {scriptName(program.id) ? (
+                        <Badge variant="secondary">{scriptName(program.id)}</Badge>
                       ) : (
                         <Badge variant="outline">未绑剧本</Badge>
                       )}
@@ -350,6 +356,10 @@ export function ProgramsPage() {
                           底稿库
                         </Button>
                       )}
+                      <Button variant="outline" size="sm" onClick={() => setPlanning(program)}>
+                        <ListOrdered />
+                        编排
+                      </Button>
                       <Button variant="ghost" size="icon-sm" title="配置" onClick={() => setEditing({ program })}>
                         <Pencil />
                       </Button>
@@ -368,6 +378,15 @@ export function ProgramsPage() {
         )}
       </div>
 
+      {planning && (
+        <ProgramScenesDialog
+          programId={planning.id}
+          programName={planning.name}
+          open={planning !== null}
+          onOpenChange={(open) => !open && setPlanning(null)}
+          onSaved={() => void reload()}
+        />
+      )}
       <ProgramDialog
         key={editing?.program?.id ?? 'new-program'}
         open={editing !== null}
@@ -381,7 +400,7 @@ export function ProgramsPage() {
       {reviewing && (
         <DraftUnitDialog
           program={reviewing}
-          script={scripts.find((s) => s.id === reviewing.scriptId) ?? null}
+          script={scripts.find((s) => s.id === reviewing.id) ?? null}
           open
           onOpenChange={(open) => {
             if (!open) setReviewing(null)

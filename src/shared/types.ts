@@ -223,14 +223,6 @@ export type TtsConnectionSafe = TtsConnection & {
   usableModels: string[]
 }
 
-/** 某家服务商是否已配好接入（有这条接入且必填项齐）：音色提示、筛选标记与预检都按它判断 */
-export function ttsProviderConfigured(
-  connections: TtsConnectionSafe[],
-  providerId: TtsProvider
-): boolean {
-  return connections.some((connection) => connection.providerId === providerId && connection.ready)
-}
-
 // ---------- LLM 配置（主播 Agent 的大脑） ----------
 
 export const LLM_PROVIDERS = ['deepseek', 'qwen', 'doubao', 'kimi', 'zai'] as const
@@ -756,7 +748,7 @@ export const POOL_LIMITS = {
 /** 底稿库装载进池的来源 id（限流走 library 档；不占主播自己的发言额度） */
 export const LIBRARY_SOURCE_ID = 'library'
 
-// ---------- 主播卡（Presenter：纯数据卡，没有人格大脑；想的事全归导演） ----------
+// ---------- 主播卡（Persona：纯数据卡，没有人格大脑；想的事全归导演） ----------
 
 export interface Persona {
   id: string
@@ -775,18 +767,6 @@ export interface Persona {
   updatedAt: number
 }
 
-export const DEFAULT_PERSONA: Omit<Persona, 'id' | 'updatedAt'> = {
-  name: '小陶',
-  personality:
-    '风趣幽默、出口成章的带货主播，爱把卖点编进押韵古诗和打油诗里，说起话来有书卷气但不掉书袋，逗乐为主、叫卖为辅，像说评书一样讲商品',
-  catchphrases: '诸位看官、正所谓、且听我说道说道、妙啊',
-  background:
-    '做了三年直播带货，自诩「直播界一枝笔」，酷爱诗词歌赋，讲商品随手拈来一段押韵，观众都说看她直播像听评书，既能长知识又能捡便宜',
-  taboos:
-    '不喊「家人们」这类烂大街的称呼（称诸位、各位朋友即可）；诗词点缀自然为主，不硬塞、不拽文到听不懂；不承诺绝对最低价；不贬低其它品牌；不谈论政治和隐私话题；不夸大功效',
-  voiceId: ''
-}
-
 // ---------- 主播 Agent 状态 ----------
 
 export type AgentRunState = 'stopped' | 'starting' | 'running' | 'error'
@@ -797,7 +777,7 @@ export interface AgentStatus {
   error?: string
   /** provider/model 展示用 */
   model?: string
-  castName?: string
+  leadPersonaName?: string
   /** 生成中预览：text_delta 累积的文本，入池即清空（提词器用） */
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
@@ -1010,9 +990,9 @@ export interface VoiceUsage {
   personas: VoiceUsagePersona[]
   programs: { id: string; name: string }[]
   /** 话术库条目数（可能很多，只给计数） */
-  utteranceCount: number
+  draftUnitCount: number
   /** 前几条话术示例（让人认出是哪批话术） */
-  utteranceSamples: { id: string; programName: string; text: string }[]
+  draftUnitSamples: { id: string; programName: string; text: string }[]
 }
 
 // ---------- 知识库（docs/01 §4） ----------
@@ -1031,7 +1011,12 @@ export const ENTRY_KIND_LABEL: Record<EntryKind, string> = {
   custom: '自定义'
 }
 
-export interface Product {
+/**
+ * 素材（Material）：知识库里唯一的主对象。
+ * 产品/书籍/话题/自定义条目都是它；上传的资料文件变成它的**附件**（MaterialFile），
+ * 不再和条目并列成一个独立列表——那样用户永远分不清"资料"和"素材"。
+ */
+export interface Material {
   id: string
   name: string
   /** 条目类型（product/book/topic/custom）；老库默认 product */
@@ -1042,6 +1027,8 @@ export interface Product {
   sellingPoints: string
   /** 问答/备注：商品=FAQ；其它类型=备注 */
   faq: string
+  /** 正文：文章/讲稿/说明书正文（与"附件""链接"并存，都可为空） */
+  content: string
   /** 外部来源 id（抖音商城商品 id 等）：同步时按它去重更新；空 = 本地手工条目 */
   externalId: string
   /** 各类型扩展字段（book.author / topic.guests…），JSON 对象 */
@@ -1049,7 +1036,7 @@ export interface Product {
   createdAt: number
 }
 
-export type ProductInput = Omit<Product, 'id' | 'createdAt' | 'kind' | 'externalId' | 'meta'> & {
+export type MaterialInput = Omit<Material, 'id' | 'createdAt' | 'kind' | 'externalId' | 'meta'> & {
   /** 缺省 product；书籍/话题/自定义条目录它 */
   kind?: EntryKind
   /** 外部来源 id（抖音同步）；缺省空 */
@@ -1061,8 +1048,15 @@ export type ProductInput = Omit<Product, 'id' | 'createdAt' | 'kind' | 'external
 export const KNOWLEDGE_KINDS = ['text', 'doc', 'pdf', 'image'] as const
 export type KnowledgeKind = (typeof KNOWLEDGE_KINDS)[number]
 
-export interface KnowledgeFile {
+/** 素材附件：挂在某个素材下的文件（PDF/图片/录音/文档），materialId 为空 = 还没归属 */
+export interface MaterialFile {
   id: string
+  /** 归属的素材 id；空串 = 暂未归属（资料页里可一键挂到某条目） */
+  materialId: string
+  /** file = 上传文件；url = 外部链接 */
+  type?: 'file' | 'url'
+  /** 外部链接（type=url） */
+  url?: string
   name: string
   kind: KnowledgeKind
   /** 解析出的文本；image 类型是用户填的一句话描述 */
@@ -1072,8 +1066,8 @@ export interface KnowledgeFile {
 }
 
 /** search_knowledge 的命中结果 */
-export interface KnowledgeHit {
-  source: 'product' | 'file'
+export interface MaterialHit {
+  source: 'material' | 'file'
   id: string
   name: string
   /** 命中片段（截断） */
@@ -1201,10 +1195,14 @@ export interface ScriptScene {
   rendered?: RenderedAudioRef
 }
 
+/**
+ * 编排视图（Script）：**不是**库里的资产，只是 program.plan.scenes 的派生形状，
+ * 给老调用方（音频单元划分、导出）沿用。id = 节目 id，title = 节目名 · 编排。
+ */
 export interface Script {
   id: string
   title: string
-  /** 剧本主题/方向 */
+  /** 主题/方向（沿用节目 theme） */
   theme: string
   scenes: ScriptScene[]
   createdAt: number
@@ -1215,13 +1213,15 @@ export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
 
 // ---------- 节目（Program，原场次升级：一场直播/一期播客/一本有声书都是一个节目） ----------
 
-/** 节目知识库范围：'*' = 全部，否则是 id 白名单 */
+/**
+ * 节目素材范围：'*' = 全部，否则素材 id 白名单。
+ * 节目只绑**素材条目**：条目带的附件（文件/链接/正文）由 agent 需要时自己去读，不再单独配白名单。
+ */
 export interface ProgramKnowledgeScope {
-  products: '*' | string[]
-  files: '*' | string[]
+  materials: '*' | string[]
 }
 
-export const DEFAULT_PROGRAM_KNOWLEDGE_SCOPE: ProgramKnowledgeScope = { products: '*', files: '*' }
+export const DEFAULT_PROGRAM_KNOWLEDGE_SCOPE: ProgramKnowledgeScope = { materials: '*' }
 
 /** 内容类型（UI 显示用 CONTENT_TYPE_LABELS；只影响 prompt/写稿任务书/界面文案，不限制播放导出） */
 export type ContentType = 'solo' | 'conversation' | 'reading' | 'roleplay'
@@ -1289,7 +1289,7 @@ export interface Program {
   /** 启用的全局触发器 id（触发器定义在全局触发器库，节目只存启用项） */
   enabledTriggerIds: string[]
   /** 节目卡司：主播卡 id 数组（告诉导演"你手下有哪些人设可用"）；空数组 = 导演自选 */
-  presenterIds: string[]
+  personaIds: string[]
   /**
    * 节目级风格指令（≤100 字）：整期默认演法，覆盖音色默认风格、低于 agent 逐条 delivery；
    * 进文稿指纹盐——改了它预制音频会判过期重合成。节目不再配「声音」，出镜与嗓音由卡司决定。
@@ -1297,7 +1297,8 @@ export interface Program {
   instruction?: string
   /** 节目语言（多语言播出）：影响写稿语言与 TTS 语种提示；auto = 自动 */
   language: ProgramLanguage
-  scriptId: string | null
+  /** 编排：节目的场次序列（有序、有进度、场景级音频）；不再是独立"剧本"资产 */
+  plan: { scenes: ScriptScene[] }
   knowledgeScope: ProgramKnowledgeScope
   /** 剧本推进进度（断播续播用），advance_scene 更新 */
   currentSceneIdx: number
@@ -1315,10 +1316,10 @@ export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
   finishMode: 'loop',
   allowLiveEvents: true,
   enabledTriggerIds: [],
-  presenterIds: [],
+  personaIds: [],
   instruction: '',
   language: 'auto',
-  scriptId: null,
+  plan: { scenes: [] },
   knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
 }
 
@@ -1353,7 +1354,7 @@ export const LIVE_EVENT_STATE_LABELS: Record<LiveEventState, string> = {
   expired: '已过期'
 }
 
-// ---------- 话术库（docs/07 §3 utterances：节目底稿库，与运行态 pool_items 分工） ----------
+// ---------- 话术库（docs/07 §3 draftUnits：节目底稿库，与运行态 pool_items 分工） ----------
 
 export type DraftUnitStatus = 'pending' | 'synthesizing' | 'ready' | 'failed'
 
@@ -1391,8 +1392,8 @@ export interface DraftUnit {
   /** 播完这段后的停顿毫秒（播放时调度，不进合成）：空 = 连续播 */
   pauseAfterMs?: number
   /** 这段归哪张主播卡（稳定寻址：改名/换音色不影响；空 = 合成时用卡司第一张） */
-  presenterId?: string
-  /** 写稿时的音色快照（presenterId 存在时以卡上当前音色为准），空 = 用卡司第一张 */
+  personaId?: string
+  /** 写稿时的音色快照（personaId 存在时以卡上当前音色为准），空 = 用卡司第一张 */
   voiceId: string
   audioPath: string | null
   /** 预合成时实际用的音色：装载进池前比对，音色改过则旧音频作废 */
@@ -1433,7 +1434,7 @@ export const BIT_TYPE_LABEL: Record<string, string> = Object.fromEntries(
 )
 
 /** 底稿合成状态的中文名（agent 工具的 list_drafts 与话术库 UI 共用一份，别各写各的） */
-export const UTTERANCE_STATUS_LABEL: Record<DraftUnitStatus, string> = {
+export const DRAFT_UNIT_STATUS_LABEL: Record<DraftUnitStatus, string> = {
   pending: '待合成',
   synthesizing: '合成中',
   ready: '就绪',
@@ -1482,7 +1483,7 @@ export interface ProgramAudioProgress {
 
 /** 门禁未通过单元的明细 */
 export interface ProgramGateFailure {
-  unitKind: 'scene' | 'utterance'
+  unitKind: 'scene' | 'draftUnit'
   unitId: string
   title: string
   status: RenderedAudioStatus | 'missing'
@@ -1541,11 +1542,11 @@ export interface ProducePlanInfo {
  * 合成时冻结进产物快照；节目本身不存任何声音配置。
  * - voiceId：单音色覆盖，值是完整可路由音色（克隆 voiceType / 目录音色 / 手动复合串「接入::模型::音色」），
  *   全部段落都用它（弹窗里明示「混音」风险，可勾全部重合成统一）；
- * - castVoices：播客双主持覆盖（顺序 = 主持人 A/B），两个音色必须路由到同一条接入、同一个播客模型。
+ * - podcastVoices：播客双主持覆盖（顺序 = 主持人 A/B），两个音色必须路由到同一条接入、同一个播客模型。
  */
 export interface ProduceVoiceOverride {
   voiceId?: string
-  castVoices?: [string, string]
+  podcastVoices?: [string, string]
   /**
    * 播客模型的整期配乐（不给就按服务商默认）。
    * 配乐只在「播客双人整期合成」这一条路线上有意义，所以它跟着录入弹窗里选，而不是存在节目上。
@@ -1615,7 +1616,7 @@ export interface ProgramExportPlan {
 /** 场次结束原因：空串 = 还在播（崩溃恢复时会补 'crash'） */
 export type BroadcastEndReason = '' | 'manual' | 'auto_stop' | 'emergency' | 'app_quit' | 'crash'
 
-export interface BroadcastSessionCastMember {
+export interface BroadcastSessionPersona {
   personaId: string
   personaName: string
   voiceDesc: string
@@ -1626,9 +1627,9 @@ export interface BroadcastSession {
   programId: string
   /** 开播时刻的 snapshot（节目后来改名/删除不影响历史场次显示） */
   programName: string
-  /** 开播时刻实际使用的导演大脑与卡司快照 */
+  /** 开播时刻实际使用的导演大脑与主播卡快照 */
   directorModelDesc: string
-  cast: BroadcastSessionCastMember[]
+  personas: BroadcastSessionPersona[]
   startedAt: number
   /** 0 = 还在播 */
   endedAt: number
@@ -1639,7 +1640,7 @@ export interface BroadcastSession {
   summary: string
 }
 
-/** 场次内事件：评论与直播事件的时间线镜像（话术播出事实在 speech_items.session_id） */
+/** 场次内事件：评论与直播事件的时间线镜像（话术播出事实在 pool_items.live_session_id） */
 export interface BroadcastEvent {
   id: string
   sessionId: string
@@ -1889,7 +1890,7 @@ export interface StatsGlobal {
   /** 节目排行：场次数 / 总时长（分钟）/ 场均评论 */
   byProgram: { programId: string; programName: string; sessions: number; minutes: number; avgComments: number }[]
   /** 主播排行：按场次卡司快照的 personaName 归集 */
-  byPresenter: { personaName: string; sessions: number; minutes: number }[]
+  byCast: { personaName: string; sessions: number; minutes: number }[]
   /** 全局评论热词 */
   commentWords: StatsHotWord[]
   /** 全局话术热词（实际播出的条目） */

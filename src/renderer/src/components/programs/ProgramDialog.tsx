@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ChevronLeft, ChevronRight, FileText, Package, Zap } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Package, Zap } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -14,40 +14,22 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { cn } from '@/lib/utils'
-import { useAppStore } from '../../stores/useAppStore'
 import {
   BROADCAST_MODE_LABELS,
   CONTENT_TYPE_LABELS,
   DEFAULT_PROGRAM_INPUT,
   PROGRAM_LANGUAGE_LABELS,
-  type BroadcastMode,
-  type ContentType,
-  type KnowledgeFile,
+  type MaterialFile,
   type Persona,
-  type Product,
+  type Material,
   type Program,
   type ProgramInput,
-  type ProgramLanguage,
   type Script,
   type Trigger
 } from '../../../../shared/types'
 
 /** 内容类型的一句话说明（docs/10 §4.1） */
-const CONTENT_TYPE_DESC: Record<ContentType, string> = {
-  solo: '一个主播从头讲到尾：带货、宣讲、陪聊都适合',
-  conversation: '几个人你一言我一语地聊，像播客对谈',
-  reading: '照着现成的稿子念：文章朗读、有声书',
-  roleplay: '主播分饰多角演剧本，每个角色可以有自己的声音'
-}
-
 /** 播出方式的一句话说明（docs/10 §4.2） */
-const BROADCAST_MODE_DESC: Record<BroadcastMode, string> = {
-  improvised: '主播看着直播间动态临场说，无需底稿',
-  rolling: '一边播前面的、一边合成后面的，可随时改稿插播',
-  prepared: '先把音频全部做好，再播放或导出，适合有声书、播客'
-}
-
 /** 事件分组（docs/10 §4.3）：按事件名前缀归到三组勾选项 */
 type EventGroup = 'live' | 'program' | 'business'
 
@@ -77,8 +59,8 @@ export function ProgramDialog({
   open: boolean
   program?: Program
   scripts: Script[]
-  products: Product[]
-  files: KnowledgeFile[]
+  products: Material[]
+  files: MaterialFile[]
   onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void>
 }) {
@@ -87,15 +69,15 @@ export function ProgramDialog({
       ? {
           name: program.name,
           theme: program.theme,
+          plan: program.plan,
           contentType: program.contentType,
           broadcastMode: program.broadcastMode,
           finishMode: program.finishMode,
           allowLiveEvents: program.allowLiveEvents,
           enabledTriggerIds: program.enabledTriggerIds,
-          presenterIds: program.presenterIds,
+          personaIds: program.personaIds,
           instruction: program.instruction ?? '',
           language: program.language ?? 'auto',
-          scriptId: program.scriptId,
           knowledgeScope: program.knowledgeScope
         }
       : { ...DEFAULT_PROGRAM_INPUT, knowledgeScope: { ...DEFAULT_PROGRAM_INPUT.knowledgeScope } }
@@ -112,9 +94,9 @@ export function ProgramDialog({
 
   const patch = (part: Partial<ProgramInput>) => setForm((prev) => ({ ...prev, ...part }))
 
-  const toggleScope = (kind: 'products' | 'files', id: string, checked: boolean) => {
+  const toggleScope = (kind: 'materials', id: string, checked: boolean) => {
     const current = form.knowledgeScope[kind]
-    const list = current === '*' ? (kind === 'products' ? products : files).map((x) => x.id) : [...current]
+    const list = current === '*' ? products.map((x) => x.id) : [...current]
     const next = checked ? [...new Set([...list, id])] : list.filter((x) => x !== id)
     patch({ knowledgeScope: { ...form.knowledgeScope, [kind]: next } })
   }
@@ -130,11 +112,11 @@ export function ProgramDialog({
     patch({ enabledTriggerIds: next })
   }
 
-  const togglePresenter = (id: string, checked: boolean) => {
+  const togglePersona = (id: string, checked: boolean) => {
     const next = checked
-      ? [...new Set([...form.presenterIds, id])]
-      : form.presenterIds.filter((x) => x !== id)
-    patch({ presenterIds: next })
+      ? [...new Set([...form.personaIds, id])]
+      : form.personaIds.filter((x) => x !== id)
+    patch({ personaIds: next })
   }
 
   const submit = () => {
@@ -197,128 +179,98 @@ export function ProgramDialog({
                 />
               </div>
               <div>
-                <Label className="mb-1">剧本 / 文章</Label>
+                <Label className="mb-1">主题 / 说明</Label>
+                <Textarea
+                  value={form.theme}
+                  rows={2}
+                  onChange={(e) => patch({ theme: e.target.value })}
+                  placeholder="这场直播讲什么、给谁看"
+                />
+              </div>
+            </div>
+
+            {/* 内容类型 / 播出方式 / 播完策略 / 语言 */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="mb-1">内容类型</Label>
                 <Select
-                  value={form.scriptId ?? 'none'}
-                  onValueChange={(v) => patch({ scriptId: v === 'none' ? null : v })}
+                  value={form.contentType}
+                  onValueChange={(value) => patch({ contentType: value as ProgramInput['contentType'] })}
                 >
-                  <SelectTrigger className="w-full">
+                  <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">不绑定（主播自己编）</SelectItem>
-                    {scripts.map((script) => (
-                      <SelectItem key={script.id} value={script.id}>
-                        {script.title}（{script.scenes.length} 场）
+                    {(Object.keys(CONTENT_TYPE_LABELS) as ProgramInput['contentType'][]).map((key) => (
+                      <SelectItem key={key} value={key}>
+                        {CONTENT_TYPE_LABELS[key]}
                       </SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
-                {scripts.length === 0 && (
-                  <p className="mt-1 text-xs text-muted-foreground">还没有剧本，去「知识库」页底部建一个；不绑主播也能自己编</p>
-                )}
               </div>
-            </div>
-
-            <div>
-              <Label className="mb-1.5">内容类型</Label>
-              <div className="grid grid-cols-2 gap-2">
-                {(Object.keys(CONTENT_TYPE_LABELS) as ContentType[]).map((type) => (
-                  <ChoiceCard
-                    key={type}
-                    selected={form.contentType === type}
-                    label={CONTENT_TYPE_LABELS[type]}
-                    desc={CONTENT_TYPE_DESC[type]}
-                    onClick={() => patch({ contentType: type })}
-                  />
-                ))}
-              </div>
-            </div>
-
-            <div>
-              <Label className="mb-1">主题与节目说明</Label>
-              <Textarea
-                value={form.theme}
-                onChange={(e) => patch({ theme: e.target.value })}
-                placeholder="这个节目播什么、什么氛围；会作为节目上下文交给导演"
-                className="min-h-16 resize-none"
-              />
-            </div>
-
-            {/* 节目级风格指令：整期默认演法（覆盖卡司嗓音的默认风格，agent 逐条演法优先） */}
-            <div>
-              <Label className="mb-1">节目风格指令（可选，≤100 字）</Label>
-              <Input
-                value={form.instruction ?? ''}
-                onChange={(e) => patch({ instruction: e.target.value })}
-                maxLength={100}
-                placeholder="年轻活泼的女性，语速较快，带货场景"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                整期默认演法：覆盖卡司嗓音的默认风格，agent 逐条指定的 delivery 优先。改动后已合成的预制音频会判过期，重新合成
-              </p>
-            </div>
-
-            {/* 播出语言（多语言节目/跨境电商） */}
-            <div>
-              <Label className="mb-1">播出语言</Label>
-              <Select
-                value={form.language ?? 'auto'}
-                onValueChange={(value) => patch({ language: value as ProgramLanguage })}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {(Object.keys(PROGRAM_LANGUAGE_LABELS) as ProgramLanguage[]).map((language) => (
-                    <SelectItem key={language} value={language}>
-                      {PROGRAM_LANGUAGE_LABELS[language]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <p className="mt-1 text-xs text-muted-foreground">
-                非中文节目：写稿要求用该语言撰写，合成时给 TTS 传语种提示（仅百炼 qwen3-tts 生效）；跨境电商/多语种播报用
-              </p>
-            </div>
-
-            {/* 播出方式 */}
-            <div>
-              <Label className="mb-1.5">播出方式</Label>
-              <div className="flex flex-col gap-2">
-                {(Object.keys(BROADCAST_MODE_LABELS) as BroadcastMode[]).map((mode) => (
-                  <ChoiceCard
-                    key={mode}
-                    selected={form.broadcastMode === mode}
-                    label={BROADCAST_MODE_LABELS[mode]}
-                    desc={BROADCAST_MODE_DESC[mode]}
-                    onClick={() => patch({ broadcastMode: mode })}
-                  />
-                ))}
-              </div>
-              {form.broadcastMode !== 'improvised' && (
-                <div className="mt-2 flex items-center gap-2">
-                  <Label className="shrink-0 text-xs text-muted-foreground">播完以后</Label>
-                  <div className="flex gap-2">
-                    {(
-                      [
-                        { id: 'stop', label: '播完停止' },
-                        { id: 'loop', label: '循环播放' }
-                      ] as const
-                    ).map((option) => (
-                      <Button
-                        key={option.id}
-                        type="button"
-                        size="sm"
-                        variant={form.finishMode === option.id ? 'secondary' : 'outline'}
-                        onClick={() => patch({ finishMode: option.id })}
-                      >
-                        {option.label}
-                      </Button>
+              <div>
+                <Label className="mb-1">播出方式</Label>
+                <Select
+                  value={form.broadcastMode}
+                  onValueChange={(value) => patch({ broadcastMode: value as ProgramInput['broadcastMode'] })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(BROADCAST_MODE_LABELS) as ProgramInput['broadcastMode'][]).map((key) => (
+                      <SelectItem key={key} value={key}>
+                        {BROADCAST_MODE_LABELS[key]}
+                      </SelectItem>
                     ))}
-                  </div>
-                </div>
-              )}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="mb-1">播完以后</Label>
+                <Select
+                  value={form.finishMode}
+                  onValueChange={(value) => patch({ finishMode: value as ProgramInput['finishMode'] })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="loop">循环播放</SelectItem>
+                    <SelectItem value="stop">播完停止</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="mb-1">播出语言</Label>
+                <Select
+                  value={form.language}
+                  onValueChange={(value) => patch({ language: value as ProgramInput['language'] })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(Object.keys(PROGRAM_LANGUAGE_LABELS) as ProgramInput['language'][]).map((key) => (
+                      <SelectItem key={key} value={key}>
+                        {PROGRAM_LANGUAGE_LABELS[key]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* 节目风格指令 */}
+            <div>
+              <Label className="mb-1">节目风格指令（≤100 字）</Label>
+              <Textarea
+                value={form.instruction ?? ''}
+                rows={2}
+                onChange={(e) => patch({ instruction: e.target.value })}
+                placeholder="整期默认演法：音色/语速/语气/句尾习惯；低于主播逐条的 delivery"
+              />
             </div>
 
             {/* 事件规则：一行摘要，点进栏内页勾选 */}
@@ -347,8 +299,8 @@ export function ProgramDialog({
                     {personaOptions.map((p) => (
                       <label key={p.id} className="flex min-w-0 items-center gap-1.5 text-xs">
                         <Checkbox
-                          checked={form.presenterIds.includes(p.id)}
-                          onCheckedChange={(v) => togglePresenter(p.id, v === true)}
+                          checked={form.personaIds.includes(p.id)}
+                          onCheckedChange={(v) => togglePersona(p.id, v === true)}
                         />
                         <span className="truncate">{p.name}</span>
                       </label>
@@ -356,9 +308,9 @@ export function ProgramDialog({
                   </div>
                 )}
                 <p className="mt-1.5 text-xs text-muted-foreground">
-                  {form.presenterIds.length === 0
+                  {form.personaIds.length === 0
                     ? '不选 = 导演自选：全部主播卡都是候选人'
-                    : `已选 ${form.presenterIds.length} 位：导演只在这些卡里挑人出镜`}
+                    : `已选 ${form.personaIds.length} 位：导演只在这些卡里挑人出镜`}
                 </p>
               </div>
             </div>
@@ -368,17 +320,9 @@ export function ProgramDialog({
               label="本节目可用商品"
               icon={<Package className="size-3.5" />}
               items={products.map((p) => ({ id: p.id, name: p.name }))}
-              value={form.knowledgeScope.products}
-              onToggle={(id, checked) => toggleScope('products', id, checked)}
+              value={form.knowledgeScope.materials}
+              onToggle={(id, checked) => toggleScope('materials', id, checked)}
               onAll={(all) => scopeAll('products', all)}
-            />
-            <ScopePicker
-              label="本节目可用资料文件"
-              icon={<FileText className="size-3.5" />}
-              items={files.map((f) => ({ id: f.id, name: f.name }))}
-              value={form.knowledgeScope.files}
-              onToggle={(id, checked) => toggleScope('files', id, checked)}
-              onAll={(all) => scopeAll('files', all)}
             />
           </div>
         )}
@@ -402,32 +346,6 @@ export function ProgramDialog({
   )
 }
 
-/** 单选卡片：标签 + 一句话说明 */
-function ChoiceCard({
-  selected,
-  label,
-  desc,
-  onClick
-}: {
-  selected: boolean
-  label: string
-  desc: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'rounded-lg border px-3 py-2 text-left transition-colors hover:bg-accent/40',
-        selected && 'border-primary/60 bg-primary/5'
-      )}
-    >
-      <p className="text-[13px] font-medium">{label}</p>
-      <p className="mt-0.5 text-xs leading-4 text-muted-foreground">{desc}</p>
-    </button>
-  )
-}
 
 /** 事件规则栏内页（docs/10 §11.4）：三组勾选项，勾选数据来自全局触发器库 */
 function EventsView({

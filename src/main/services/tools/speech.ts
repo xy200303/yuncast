@@ -4,8 +4,8 @@ import { defineTool } from './types'
 import { MARKUP_HINT, resolveVoice } from './util'
 
 const LANE_DESC = '车道：queue 排队顺序播（默认）/ next 当前这条播完就插播（回评论、急事用）/ interrupt 打断当前立刻说 / filler 垫底（没东西播时才轮到）'
-const SPEAKER_DESC = '这句是谁的词：填主播卡 id（persona_list 的 id / program_get「卡司」里的 id）。不传 = 卡司第一张；没配卡司时必须传'
-const VOICE_DESC = '直接指定音色 id（voice_list 返回的 voiceType）：一般不用传，用它就不看 speaker 的卡了'
+const PERSONA_DESC = '这句是谁的词：主播卡 id（persona_list 的 id / program_get「卡司」里的 id）。不传 = 卡司第一张；没配卡司时必须传'
+const VOICE_DESC = '直接指定音色 id（voice_list 返回的 voiceType）：一般不用传，用它就不看 personaId 指定的卡了'
 
 /**
  * 播报域：开口说话 + 话术池管理 + 播出控制。
@@ -23,7 +23,7 @@ export const speechTools = [
       '开口说话：排进话术池播出，会真的出声，直播间观众听得到。' +
       '回评论/过渡/互动用一句完整口语；完整桥段（故事/讲解，多句 150~350 字）整段一次传入，别拆成单句多次调（语气会断）。' +
       '内置主播注意：没开播或播报暂停时会被拒，备稿用 draft_add/draft_write。' +
-      '外部调用可用 speaker（主播卡 id）指定卡司里的哪张卡出声，或 voiceId 直接指定音色。返回队列条目 id，没播前想改用 pool_revise。',
+      '外部调用可用 personaId（主播卡 id）指定卡司里的哪张卡出声，或 voiceId 直接指定音色。返回队列条目 id，没播前想改用 pool_revise。',
     parameters: Type.Object({
       text: Type.String({ description: `要说的话：一句短评，或一整段桥段。${MARKUP_HINT}` }),
       lane: Type.Optional(
@@ -31,7 +31,7 @@ export const speechTools = [
           description: LANE_DESC
         })
       ),
-      speaker: Type.Optional(Type.String({ description: SPEAKER_DESC })),
+      personaId: Type.Optional(Type.String({ description: PERSONA_DESC })),
       voiceId: Type.Optional(Type.String({ description: VOICE_DESC })),
       delivery: Type.Optional(
         Type.String({ description: '表演指示（情绪/语气，一句话，如「压低声音像说悄悄话」）——会真的拿去控制合成语气，模型支持语气指令才生效' })
@@ -59,9 +59,9 @@ export const speechTools = [
         if (!ctx.isLiveActive?.()) return '还没开播：播出通道关着，备稿用 draft_write/draft_add 入库'
         if (ctx.getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
       }
-      const voiceId = resolveVoice(ctx.persona, params.speaker, params.voiceId)
+      const voiceId = resolveVoice(ctx.persona, params.personaId, params.voiceId)
       if (!voiceId) {
-        return '没指定谁说的，节目也没配卡司：speak 传 speaker（主播卡 id），或先给节目配卡司'
+        return '没指定谁说的，节目也没配卡司：speak 传 personaId（主播卡 id），或先给节目配卡司'
       }
       const lane = params.lane ?? 'queue'
       const pauseAfterMs =
@@ -101,7 +101,7 @@ export const speechTools = [
         sourceAgentId: ctx.caller === 'agent' ? 'anchor' : undefined,
         sourceKind: ctx.caller === 'agent' ? 'scene' : 'manual'
       })
-      return `已排进队列（条目 ${item.id}，车道 ${item.lane}）：「${params.text}」${params.speaker ? `（${params.speaker}）` : ''}${pauseAfterMs ? `，播完停 ${pauseAfterMs}ms` : ''}`
+      return `已排进队列（条目 ${item.id}，车道 ${item.lane}）：「${params.text}」${params.personaId ? `（${params.personaId}）` : ''}${pauseAfterMs ? `，播完停 ${pauseAfterMs}ms` : ''}`
     }
   }),
 
@@ -136,12 +136,12 @@ export const speechTools = [
     domain: 'speech',
     risk: 'read',
     expose: { agent: true, mcp: true },
-    description: '回看最近播出的 n 条话术，避免重复和自相矛盾。',
+    description: '回看最近播出的几条话术，避免重复和自相矛盾。',
     parameters: Type.Object({
-      n: Type.Optional(Type.Number({ description: '条数，默认 5', default: 5 }))
+      limit: Type.Optional(Type.Number({ description: '条数，默认 5', default: 5 }))
     }),
     handler: (ctx, params) => {
-      const played = ctx.pool.getRecentPlayed(params.n ?? 5)
+      const played = ctx.pool.getRecentPlayed(params.limit ?? 5)
       if (played.length === 0) return '还没有播过任何话术'
       return played.map((item, i) => `${i + 1}. ${item.text}`).join('\n')
     }
@@ -205,13 +205,13 @@ export const speechTools = [
     expose: { agent: true, mcp: true },
     description:
       '调整未播话术的播出顺序：把要排的条目 id 按想要的顺序传入，没传的未播条目按原顺序跟在后面。' +
-      '只对未播条目生效（在播/已播的不动）。条目 id 从 pool_status 拿。把某条提前 = 把它放 ids 第一个。',
+      '只对未播条目生效（在播/已播的不动）。itemId 从 pool_status 拿。把某条提前 = 把它放 itemIds 第一个。',
     parameters: Type.Object({
-      ids: Type.Array(Type.String(), { description: '未播条目 id 按新顺序排列（pool_status 拿 id）' })
+      itemIds: Type.Array(Type.String(), { description: '未播条目 id 按新顺序排列（pool_status 拿 id）' })
     }),
     handler: (ctx, params) => {
-      const given = params.ids.map((id) => id.trim()).filter(Boolean)
-      if (given.length === 0) return 'ids 是空的：把 pool_status 里的未播条目 id 按新顺序传进来'
+      const given = params.itemIds.map((id) => id.trim()).filter(Boolean)
+      if (given.length === 0) return 'itemIds 是空的：把 pool_status 里的未播条目 id 按新顺序传进来'
       const activeIds = ctx.pool
         .snapshot()
         .items.filter((i) => i.status !== 'playing')
@@ -276,11 +276,11 @@ export const speechTools = [
     description:
       '标记直播间动态批次的处理结果：回过的标 handled，不想理的标 ignored。不标也行——5 分钟后自动过期，不会再提醒。事件 id 在每批动态列表每条的 [方括号] 里。',
     parameters: Type.Object({
-      ids: Type.Array(Type.String(), { description: '动态 id 列表（批次里每条的 [le-xxx]）' }),
+      eventIds: Type.Array(Type.String(), { description: '动态 id 列表（批次里每条的 [le-xxx]）' }),
       state: Type.Union([Type.Literal('handled'), Type.Literal('ignored')], {
         description: 'handled=已回应，ignored=不理'
       })
     }),
-    handler: (ctx, params) => ctx.markLiveEvents?.(params.ids, params.state) ?? '收件箱没接上'
+    handler: (ctx, params) => ctx.markLiveEvents?.(params.eventIds, params.state) ?? '收件箱没接上'
   })
 ]

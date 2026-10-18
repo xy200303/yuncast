@@ -281,11 +281,11 @@ export function VoicesPage() {
               {usages[deleting.id].programs.map((item) => (
                 <p key={item.id}>节目「{item.name}」的卡司里</p>
               ))}
-              {usages[deleting.id].utteranceCount > 0 && (
+              {usages[deleting.id].draftUnitCount > 0 && (
                 <p>
-                  话术库 {usages[deleting.id].utteranceCount} 条
-                  {usages[deleting.id].utteranceSamples[0]
-                    ? `（例如：${usages[deleting.id].utteranceSamples[0].text.slice(0, 20)}…）`
+                  话术库 {usages[deleting.id].draftUnitCount} 条
+                  {usages[deleting.id].draftUnitSamples[0]
+                    ? `（例如：${usages[deleting.id].draftUnitSamples[0].text.slice(0, 20)}…）`
                     : ''}
                 </p>
               )}
@@ -323,12 +323,12 @@ function usageSummary(usage: VoiceUsage): string {
   const parts: string[] = []
   if (usage.personas.length) parts.push(`${usage.personas.length} 张主播卡`)
   if (usage.programs.length) parts.push(`${usage.programs.length} 个节目`)
-  if (usage.utteranceCount) parts.push(`${usage.utteranceCount} 条话术`)
+  if (usage.draftUnitCount) parts.push(`${usage.draftUnitCount} 条话术`)
   return parts.length > 0 ? `被 ${parts.join(' · ')}使用` : '还没被主播卡 / 节目 / 话术使用'
 }
 
 function usageCount(usage: VoiceUsage): number {
-  return usage.personas.length + usage.programs.length + usage.utteranceCount
+  return usage.personas.length + usage.programs.length + usage.draftUnitCount
 }
 
 /** 编辑音色（显示名 + 风格指令；复刻标识与绑定不动） */

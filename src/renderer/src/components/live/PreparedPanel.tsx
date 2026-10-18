@@ -10,7 +10,6 @@ import {
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
-import { cn } from '@/lib/utils'
 import { useAppStore } from '../../stores/useAppStore'
 import {
   formatDurationMs,
@@ -20,7 +19,6 @@ import {
 } from '../../lib/audioUnits'
 import { audition } from '../../lib/audition'
 import type { DraftUnit, Persona, Program, Script } from '../../../../shared/types'
-import { stripSpeechTags } from '../../../../shared/speechTags'
 import { ContentItem, ContentList } from './ContentItem'
 import { Button } from '@/components/ui/button'
 
@@ -39,26 +37,23 @@ export function PreparedPanel({ program }: { program: Program }) {
   const pool = useAppStore((s) => s.pool)
   const [units, setUnits] = useState<ProgramAudioUnit[]>([])
   const [drafts, setDrafts] = useState<DraftUnit[]>([])
-  const [castList, setCastList] = useState<Persona[]>([])
+  const [personaList, setCastList] = useState<Persona[]>([])
   const [busy, setBusy] = useState(false)
-  /** 超长段落的折叠状态（默认展开：播的是全文，别一进来就藏） */
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
-
   const load = useCallback(async () => {
-    const [scripts, utterances] = await Promise.all([
-      window.api.script.list(),
-      window.api.utterance.list(program.id)
+    const [scripts, draftUnits] = await Promise.all([
+      window.api.program.plans(),
+      window.api.draftUnit.list(program.id)
     ])
-    const script: Script | null = scripts.find((s) => s.id === program.scriptId) ?? null
-    setUnits(listProgramAudioUnits(program, script, utterances))
-    setDrafts(utterances)
+    const script: Script | null = scripts.find((s) => s.id === program.id) ?? null
+    setUnits(listProgramAudioUnits(program, script, draftUnits))
+    setDrafts(draftUnits)
   }, [program])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  // 主播卡名单：章内段落按 presenter_id 汇总出「谁读这一章」
+  // 主播卡名单：章内段落按 persona_id 汇总出「谁读这一章」
   useEffect(() => {
     if (!('api' in window)) return
     void window.api.persona.list().then(setCastList)
@@ -75,7 +70,7 @@ export function PreparedPanel({ program }: { program: Program }) {
     })
   }, [program.id, load])
 
-  /** 这一章/这一段由谁读：汇总段落的 presenter_id → 卡名 */
+  /** 这一章/这一段由谁读：汇总段落的 persona_id → 卡名 */
   const chapterWho = (unit: ProgramAudioUnit): string => {
     const members =
       unit.kind === 'scene'
@@ -84,7 +79,7 @@ export function PreparedPanel({ program }: { program: Program }) {
     const names = [
       ...new Set(
         members
-          .map((d) => (d.presenterId ? castList.find((p) => p.id === d.presenterId)?.name : ''))
+          .map((d) => (d.personaId ? personaList.find((p) => p.id === d.personaId)?.name : ''))
           .filter((name): name is string => Boolean(name))
       )
     ]

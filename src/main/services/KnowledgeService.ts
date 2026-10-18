@@ -4,11 +4,11 @@ import { randomUUID } from 'node:crypto'
 import mammoth from 'mammoth'
 import { PDFParse } from 'pdf-parse'
 import type {
-  KnowledgeFile,
-  KnowledgeHit,
+  MaterialFile,
+  MaterialHit,
   KnowledgeKind,
-  Product,
-  ProductInput,
+  Material,
+  MaterialInput,
   ProgramKnowledgeScope
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
@@ -70,45 +70,68 @@ export class KnowledgeService {
 
   // ---------- 知识条目（商品/书籍/话题/自定义；商品是价格护栏数据源） ----------
 
-  listProducts(): Product[] {
-    return this.storage.productList()
+  listMaterials(): Material[] {
+    return this.storage.materialList()
   }
 
-  saveProduct(input: ProductInput, id?: string): Product {
+  saveMaterial(input: MaterialInput, id?: string): Material {
     const name = input.name.trim()
     if (!name) throw new Error('条目名称不能为空')
-    const product: Product = {
+    const product: Material = {
       id: id ?? `pd-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       name,
       kind: input.kind ?? 'product',
       price: input.kind === 'product' || input.price > 0 ? input.price : 0,
       sellingPoints: input.sellingPoints.trim(),
       faq: input.faq.trim(),
+      content: (input.content ?? '').trim(),
       externalId: input.externalId?.trim() ?? '',
       meta: input.meta ?? {},
-      createdAt: id ? (this.storage.productList().find((p) => p.id === id)?.createdAt ?? Date.now()) : Date.now()
+      createdAt: id ? (this.storage.materialList().find((p) => p.id === id)?.createdAt ?? Date.now()) : Date.now()
     }
-    this.storage.productSave(product)
+    this.storage.materialSave(product)
     this.onChanged?.('entries')
     return product
   }
 
-  deleteProduct(id: string): void {
-    this.storage.productDelete(id)
+  deleteMaterial(id: string): void {
+    this.storage.materialDelete(id)
     this.onChanged?.('entries')
   }
 
   // ---------- 资料文件 ----------
 
-  listFiles(): KnowledgeFile[] {
-    return this.storage.knowledgeFileList()
+  listFiles(): MaterialFile[] {
+    return this.storage.materialFileList()
   }
 
   /**
    * 上传资料文件：解析入库。
    * 图片第一版不做 vision——content 存用户填的一句话描述（检索照样能命中）。
    */
-  async uploadFile(filePath: string, description?: string): Promise<KnowledgeFile> {
+  /** 给素材挂一条外部链接（官网/文档/商品页）：agent 需要时按名称与标题去检索，不主动抓正文 */
+  attachUrl(materialId: string, url: string, title?: string): MaterialFile {
+    const clean = url.trim()
+    if (!/^https?:\/\//i.test(clean)) throw new Error('链接要以 http:// 或 https:// 开头')
+    const material = this.storage.materialList().find((item) => item.id === materialId)
+    if (!material) throw new Error('素材不存在（可能已被删除）')
+    const file: MaterialFile = {
+      id: `kf-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
+      materialId,
+      type: 'url',
+      url: clean,
+      name: title?.trim() || clean.replace(/^https?:\/\//i, '').slice(0, 60),
+      kind: 'text',
+      content: '',
+      filePath: '',
+      createdAt: Date.now()
+    }
+    this.storage.materialFileInsert(file)
+    this.onChanged?.('files')
+    return file
+  }
+
+  async uploadFile(filePath: string, description?: string, materialId?: string): Promise<MaterialFile> {
     const kind = kindFromPath(filePath)
     let content: string
     if (kind === 'image') {
@@ -124,21 +147,22 @@ export class KnowledgeService {
       tier: 'asset',
       move: false
     })
-    const file: KnowledgeFile = {
+    const file: MaterialFile = {
       id: `kf-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
+      materialId: materialId?.trim() ?? '',
       name: basename(filePath),
       kind,
       content: content.slice(0, 20000),
       filePath: put.path,
       createdAt: Date.now()
     }
-    this.storage.knowledgeFileInsert(file)
+    this.storage.materialFileInsert(file)
     return file
   }
 
   deleteFile(id: string): void {
-    const file = this.storage.knowledgeFileList().find((item) => item.id === id)
-    this.storage.knowledgeFileDelete(id)
+    const file = this.storage.materialFileList().find((item) => item.id === id)
+    this.storage.materialFileDelete(id)
     // blob 附件：删行的钩子已解除引用，没别的资料共用同一文件才删（asset 档只能显式删）
     const hash = file ? this.blobs.hashForPath(file.filePath) : null
     if (hash) void this.blobs.deleteIfUnreferenced(hash)
@@ -162,21 +186,21 @@ export class KnowledgeService {
   // ---------- 检索（主播工具的数据源） ----------
 
   /** 关键词检索商品 + 资料文件，按命中评分排序。scope：当前节目的知识范围（'*' = 全库；id 数组 = 只查这些条目/文件） */
-  searchKnowledge(query: string, limit = 3, scope?: ProgramKnowledgeScope): KnowledgeHit[] {
+  searchKnowledge(query: string, limit = 3, scope?: ProgramKnowledgeScope): MaterialHit[] {
     const terms = tokenize(query)
     if (terms.size === 0) return []
     const normalized = query.toLowerCase().replace(/[\s\p{P}\p{S}]/gu, '')
 
-    const scored: { hit: KnowledgeHit; score: number }[] = []
-    for (const product of this.storage.productList()) {
-      if (scope && scope.products !== '*' && !scope.products.includes(product.id)) continue
+    const scored: { hit: MaterialHit; score: number }[] = []
+    for (const product of this.storage.materialList()) {
+      if (scope && scope.materials !== '*' && !scope.materials.includes(product.id)) continue
       const haystack = `${product.name}\n${product.sellingPoints}\n${product.faq}`.toLowerCase()
       let score = normalized.includes(product.name.toLowerCase()) ? 100 : 0
       for (const term of terms) if (haystack.includes(term)) score += term.length
       if (score > 0) {
         scored.push({
           hit: {
-            source: 'product',
+            source: 'material',
             id: product.id,
             name: product.name,
             snippet: snippetAround(`${product.sellingPoints}\n${product.faq}`, terms),
@@ -187,8 +211,8 @@ export class KnowledgeService {
         })
       }
     }
-    for (const file of this.storage.knowledgeFileList()) {
-      if (scope && scope.files !== '*' && !scope.files.includes(file.id)) continue
+    for (const file of this.storage.materialFileList()) {
+      if (scope && file.materialId && scope.materials !== '*' && !scope.materials.includes(file.materialId)) continue
       const haystack = `${file.name}\n${file.content}`.toLowerCase()
       let score = normalized.includes(file.name.toLowerCase()) ? 50 : 0
       for (const term of terms) if (haystack.includes(term)) score += term.length
@@ -213,8 +237,8 @@ export class KnowledgeService {
   /** 价格护栏：主播报价只能出自这里（只有「商品」类型的条目参与，且限在 scope 范围内）。不传名字返回全部商品价格表。 */
   checkPrice(productName?: string, scope?: ProgramKnowledgeScope): { name: string; price: number; sellingPoints: string }[] {
     const products = this.storage
-      .productList()
-      .filter((p) => p.kind === 'product' && (!scope || scope.products === '*' || scope.products.includes(p.id)))
+      .materialList()
+      .filter((p) => p.kind === 'product' && (!scope || scope.materials === '*' || scope.materials.includes(p.id)))
     if (!productName?.trim()) return products.map(({ name, price, sellingPoints }) => ({ name, price, sellingPoints }))
     const keyword = productName.trim().toLowerCase()
     return products
@@ -245,18 +269,19 @@ export class KnowledgeService {
     if (items.length === 0) throw new Error(`连接器返回的商品列表是空的或格式不认识（${raw.slice(0, 100)}）`)
     let added = 0
     let updated = 0
-    const existing = this.storage.productList()
+    const existing = this.storage.materialList()
     for (const item of items) {
       const dup = item.externalId
         ? existing.find((p) => p.externalId === item.externalId)
         : existing.find((p) => !p.externalId && p.name === item.name)
-      this.saveProduct(
+      this.saveMaterial(
         {
           name: item.name,
           kind: 'product',
           price: item.price,
           sellingPoints: item.sellingPoints,
           faq: dup?.faq ?? '',
+          content: dup?.content ?? '',
           externalId: item.externalId,
           meta: { 来源: '抖音商城', ...(dup?.meta ?? {}) }
         },

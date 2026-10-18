@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { EChart } from '@/components/EChart'
 import { WordCloud } from '@/components/WordCloud'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import { useAppStore } from '../stores/useAppStore'
 import { voiceDisplayName } from '../lib/voice'
 import {
@@ -95,10 +96,15 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
   const [programId, setProgramId] = useState('')
   const [stats, setStats] = useState<StatsGlobal | null>(null)
   const [loadError, setLoadError] = useState('')
+  /** 数据变更广播触发的重拉（只用来让下面的查询 effect 重跑） */
+  const [reloadTick, setReloadTick] = useState(0)
 
   useEffect(() => {
     void window.api.program.list().then(setPrograms)
   }, [])
+
+  // 场次/节目变化（agent、MCP、其他窗口删场次或改节目）→ 统计自己重拉
+  useDataRefresh(['sessions', 'programs'], () => setReloadTick((n) => n + 1))
 
   useEffect(() => {
     const load = () => {
@@ -115,7 +121,7 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
     // 直播在跑时场次/互动持续增长，15s 轮询让图表自己往前走（页面常驻挂载，靠轮询而不是重进刷新）
     const timer = setInterval(load, 15_000)
     return () => clearInterval(timer)
-  }, [range, programId])
+  }, [range, programId, reloadTick])
 
   const trendOption = useMemo(() => {
     if (!stats) return {}
@@ -179,7 +185,7 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
     }
   }, [stats])
 
-  const byPresenterOption = useMemo(() => {
+  const byCastOption = useMemo(() => {
     if (!stats) return {}
     return {
       tooltip: { trigger: 'axis' as const },
@@ -189,12 +195,12 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
       yAxis: {
         type: 'category' as const,
         inverse: true,
-        data: stats.byPresenter.map((entry) => entry.personaName),
+        data: stats.byCast.map((entry) => entry.personaName),
         axisLabel: { fontSize: 10 }
       },
       series: [
-        { name: '场次数', type: 'bar' as const, data: stats.byPresenter.map((entry) => entry.sessions), itemStyle: { color: '#c2693f' } },
-        { name: '时长（分钟）', type: 'bar' as const, data: stats.byPresenter.map((entry) => entry.minutes), itemStyle: { color: '#4f7fa8' } }
+        { name: '场次数', type: 'bar' as const, data: stats.byCast.map((entry) => entry.sessions), itemStyle: { color: '#c2693f' } },
+        { name: '时长（分钟）', type: 'bar' as const, data: stats.byCast.map((entry) => entry.minutes), itemStyle: { color: '#4f7fa8' } }
       ]
     }
   }, [stats])
@@ -292,10 +298,10 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
                   )}
                 </ChartCard>
                 <ChartCard title="主播排行">
-                  {stats.byPresenter.length === 0 ? (
+                  {stats.byCast.length === 0 ? (
                     <EmptyChart text="场次没有卡司快照（老场次不记主播）" />
                   ) : (
-                    <EChart option={byPresenterOption} className="mt-1 h-52 w-full" />
+                    <EChart option={byCastOption} className="mt-1 h-52 w-full" />
                   )}
                 </ChartCard>
               </div>

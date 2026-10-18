@@ -12,7 +12,7 @@ import type {
   DraftUnit,
   DraftUnitInput
 } from '../../shared/types'
-import { stableHash, programStyleSalt, utteranceFingerprint, sceneFingerprint } from '../../shared/fingerprint'
+import { stableHash, programStyleSalt, draftUnitFingerprint, sceneFingerprint } from '../../shared/fingerprint'
 import { buildPodcastTurns } from '../../shared/podcast'
 import { findCloneVoice, parseManualVoice } from '../../shared/voiceProvider'
 import type { StorageService } from './StorageService'
@@ -20,7 +20,7 @@ import type { BlobStoreService } from './BlobStoreService'
 import type { TtsService } from './TtsService'
 import type { PersonaService } from './PersonaService'
 import type { ScriptService } from './ScriptService'
-import { findTtsCatalogVoice, getTtsProvider, ttsModelBlocker, ttsModelCapabilities, ttsModelSpec } from './providers/registry'
+import { findTtsCatalogVoice, ttsModelCapabilities } from './providers/registry'
 import { getFfmpegPath } from './stream/ffmpeg/bin'
 import { listAudioUnits, narrativeOrder, type AudioUnit } from './programUnits'
 
@@ -32,7 +32,7 @@ const CHARS_PER_SECOND = 4.5
 
 /**
  * 节目话术库（docs/07 §3 draftUnits）+ 节目音频统一生产入口（docs/10 §7.5）。
- * 与运行态 speech_items 分工：开播时按轮播规则从这里取件入池；
+ * 与运行态 pool_items 分工：开播时按轮播规则从这里取件入池；
  * 直播中的改写不回写底稿（复盘采纳才回写，source='adopted'）。
  *
  * P4 起这里同时是 capability 驱动的节目音频生产入口：
@@ -49,7 +49,7 @@ export class DraftUnitService {
   /** 底稿变更（写/改/删/清空，含 agent 路径）：index.ts 接上 → 广播 { scope:'drafts', programId } */
   onDraftChanged: ((programId: string) => void) | null = null
 
-  /** 单条状态变化广播（index.ts 接 broadcastUtterance；预合成与底稿改后重合成共用） */
+  /** 单条状态变化广播（index.ts 接 broadcastDraftUnit；预合成与底稿改后重合成共用） */
   onEvent: ((u: DraftUnit) => void) | null = null
   /** 一批合成结束广播（id='' 的特殊事件，UI 整体刷新） */
   onBatchDone: ((programId: string) => void) | null = null
@@ -107,7 +107,7 @@ export class DraftUnitService {
   saveMany(
     programId: string,
     sceneId: string,
-    items: { text: string; bitType?: string; delivery?: string; rate?: number; pitch?: number; pauseAfterMs?: number; presenterId?: string; voiceId?: string; sources?: DraftUnit['sources'] }[]
+    items: { text: string; bitType?: string; delivery?: string; rate?: number; pitch?: number; pauseAfterMs?: number; personaId?: string; voiceId?: string; sources?: DraftUnit['sources'] }[]
   ): DraftUnit[] {
     const existing = this.storage.draftUnitList(programId).filter((u) => u.sceneId === sceneId)
     let variantIdx = existing.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
@@ -124,7 +124,7 @@ export class DraftUnitService {
           rate: item.rate,
           pitch: item.pitch,
           pauseAfterMs: item.pauseAfterMs,
-          presenterId: item.presenterId?.trim() || undefined,
+          personaId: item.personaId?.trim() || undefined,
           voiceId: item.voiceId?.trim() ?? '',
           source: 'initial',
           sources: item.sources ?? []
@@ -141,7 +141,7 @@ export class DraftUnitService {
       ? (this.storage.draftUnitList(input.programId).find((u) => u.id === id) ?? null)
       : null
     const textChanged = existing !== null && existing.text !== input.text.trim()
-    const utterance: DraftUnit = {
+    const draftUnit: DraftUnit = {
       id: id ?? `ut-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       programId: input.programId,
       sceneId: input.sceneId,
@@ -154,7 +154,7 @@ export class DraftUnitService {
       rate: input.rate ?? existing?.rate,
       pitch: input.pitch ?? existing?.pitch,
       pauseAfterMs: input.pauseAfterMs ?? existing?.pauseAfterMs,
-      presenterId: input.presenterId?.trim() || existing?.presenterId,
+      personaId: input.personaId?.trim() || existing?.personaId,
       voiceId: input.voiceId ?? '',
       audioPath: textChanged ? null : (existing?.audioPath ?? null),
       status: textChanged ? 'pending' : (existing?.status ?? 'pending'),
@@ -165,10 +165,10 @@ export class DraftUnitService {
       sources: input.sources ?? [],
       createdAt: existing?.createdAt ?? Date.now()
     }
-    this.storage.draftUnitSave(utterance)
+    this.storage.draftUnitSave(draftUnit)
     this.refreshRenderedStaleness(input.programId)
     this.onDraftChanged?.(input.programId)
-    return utterance
+    return draftUnit
   }
 
   remove(id: string): void {
@@ -216,7 +216,7 @@ export class DraftUnitService {
       }
     }
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    const script = program ? this.script.getScript(program.scriptId) : null
+    const script = program ? this.script.getScript(program.id) : null
     for (const scene of script?.scenes ?? []) {
       if (scene.rendered && !scene.rendered.external) {
         doomed.push(scene.rendered.audioPath)
@@ -230,7 +230,7 @@ export class DraftUnitService {
   }
 
   /**
-   * 预制音频 stale 检测（docs/10 §15.6）：文稿（utterance.text/delivery/rate/pitch 或章内段落集合）
+   * 预制音频 stale 检测（docs/10 §15.6）：文稿（draftUnit.text/delivery/rate/pitch 或章内段落集合）
    * 变了则对应 rendered.sourceFingerprint 与当前指纹不一致 → 置 'stale'（不删文件）；
    * 改回来（指纹重新一致）则从 stale 恢复 ready。改稿入口（save/saveMany/remove/clear/
    * ScriptService 的场景编辑回调）都会走到这里。
@@ -243,14 +243,14 @@ export class DraftUnitService {
     for (const u of all) {
       const rendered = u.rendered
       if (!rendered) continue
-      const match = rendered.sourceFingerprint === utteranceFingerprint(u, styleSalt)
+      const match = rendered.sourceFingerprint === draftUnitFingerprint(u, styleSalt)
       if (rendered.status === 'ready' && !match) {
         this.storage.draftUnitSetRendered(u.id, { ...rendered, status: 'stale' })
       } else if (rendered.status === 'stale' && match) {
         this.storage.draftUnitSetRendered(u.id, { ...rendered, status: 'ready' })
       }
     }
-    const script = this.script.getScript(program.scriptId)
+    const script = this.script.getScript(program.id)
     if (!script) return
     for (const scene of script.scenes) {
       const rendered = scene.rendered
@@ -301,14 +301,14 @@ export class DraftUnitService {
     const pending = this.storage
       .draftUnitList(programId)
       .filter((u) => u.status === 'pending' || u.status === 'failed')
-    // 合成用的音色：弹窗显式选的声音 > 段落指定的卡（presenterId）> 段落音色快照 > 目标节目的卡司第一张
+    // 合成用的音色：弹窗显式选的声音 > 段落指定的卡（personaId）> 段落音色快照 > 目标节目的卡司第一张
     const explicit = voiceOverride?.voiceId?.trim() ?? ''
     const voiceOf = (u: DraftUnit) => {
       if (explicit) return explicit
-      const byPresenter = u.presenterId
-        ? (this.persona.list().find((p) => p.id === u.presenterId)?.voiceId.trim() ?? '')
+      const cardVoice = u.personaId
+        ? (this.persona.list().find((p) => p.id === u.personaId)?.voiceId.trim() ?? '')
         : ''
-      return byPresenter || u.voiceId.trim() || this.persona.castVoiceOf(programId) || ''
+      return cardVoice || u.voiceId.trim() || this.persona.programVoiceOf(programId) || ''
     }
 
     let done = 0
@@ -398,9 +398,9 @@ export class DraftUnitService {
       const pending = all.filter((u) => u.status === 'pending' || u.status === 'failed')
       const ready = all.filter((u) => u.status === 'ready').length
       const totalChars = pending.reduce((sum, u) => sum + u.text.length, 0)
-      const cast = this.persona.programCast()
-      const first = cast[0]
-      const voice = this.persona.castVoice()
+      const personas = this.persona.programPersonas()
+      const first = personas[0]
+      const voice = this.persona.programVoice()
       return {
         ok: true,
         segments: all.length,
@@ -414,7 +414,7 @@ export class DraftUnitService {
           : '卡司里的主播卡都还没选音色'
       }
     }
-    const script = this.script.getScript(program.scriptId)
+    const script = this.script.getScript(program.id)
     const units = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
     if (units.length === 0) return { ok: false, error: '节目还没有文稿：先让主播写稿，再生成节目音频' }
     let frozen: FrozenSnapshot
@@ -463,7 +463,7 @@ export class DraftUnitService {
    * 拼接失败降级为只保留段级 rendered，error 里说明。单段失败不中断整批。
    */
   private async producePrepared(program: Program, voiceOverride?: ProduceVoiceOverride): Promise<ProduceAudioResult> {
-    const script = this.script.getScript(program.scriptId)
+    const script = this.script.getScript(program.id)
     const units = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
     const base: ProduceAudioResult = {
       ok: false,
@@ -522,7 +522,7 @@ export class DraftUnitService {
       }
       writeUnitRendered(unit, pending)
       try {
-        if (unit.kind === 'utterance') {
+        if (unit.kind === 'draftUnit') {
           const u = unit.draftUnits[0]
           await pace(voices[0])
           const audioPath = await this.synthesizeWithRetry(u, voices[0], synthRetries)
@@ -555,7 +555,7 @@ export class DraftUnitService {
     route: PodcastRouteInfo,
     base: ProduceAudioResult
   ): Promise<ProduceAudioResult> {
-    const script = this.script.getScript(program.scriptId)
+    const script = this.script.getScript(program.id)
     const writeUnitRendered = (unit: AudioUnit, rendered: RenderedAudioRef) => {
       if (unit.kind === 'scene' && script) this.script.setSceneRendered(script.id, unit.id, rendered)
       else this.storage.draftUnitSetRendered(unit.id, rendered)
@@ -580,10 +580,10 @@ export class DraftUnitService {
       }
       const turns = buildPodcastTurns(
         unit.draftUnits.map((u) => ({
-          voiceId: (u.presenterId ? this.persona.list().find((p) => p.id === u.presenterId)?.voiceId.trim() : '') || u.voiceId,
+          voiceId: (u.personaId ? this.persona.list().find((p) => p.id === u.personaId)?.voiceId.trim() : '') || u.voiceId,
           text: u.text
         })),
-        route.castVoices,
+        route.podcastVoices,
         route.speakers,
         route.maxCharsPerTurn
       )
@@ -593,7 +593,7 @@ export class DraftUnitService {
           status: 'failed',
           ttsConnectionId: route.connectionId,
           ttsModelId: route.modelId,
-          voiceOrCastFingerprint: route.castFingerprint,
+          voiceOrCastFingerprint: route.voicePairFingerprint,
           sourceFingerprint: unit.fingerprint,
           error: '这一章没有可合成的文稿'
         })
@@ -605,7 +605,7 @@ export class DraftUnitService {
         status: 'synthesizing',
         ttsConnectionId: route.connectionId,
         ttsModelId: route.modelId,
-        voiceOrCastFingerprint: route.castFingerprint,
+        voiceOrCastFingerprint: route.voicePairFingerprint,
         sourceFingerprint: unit.fingerprint
       }
       writeUnitRendered(unit, pending)
@@ -641,11 +641,11 @@ export class DraftUnitService {
    * 三人以上内容，produce 前明确拒绝（不合成、不降级）。返回 null = 通过。
    */
   private podcastContentIssue(units: AudioUnit[], route: PodcastRouteInfo): string | null {
-    const known = new Set([...route.castVoices, ...route.speakers])
+    const known = new Set([...route.podcastVoices, ...route.speakers])
     for (const unit of units) {
       for (const u of unit.draftUnits) {
-        const cardVoice = u.presenterId
-          ? (this.persona.list().find((p) => p.id === u.presenterId)?.voiceId ?? '').trim()
+        const cardVoice = u.personaId
+          ? (this.persona.list().find((p) => p.id === u.personaId)?.voiceId ?? '').trim()
           : ''
         const voice = cardVoice || u.voiceId.trim()
         if (voice && !known.has(voice)) {
@@ -659,7 +659,7 @@ export class DraftUnitService {
     return null
   }
 
-  /** 播客发音人解析：cast 里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id；手动复合串取音色段） */
+  /** 播客发音人解析：卡司里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id；手动复合串取音色段） */
   private resolvePodcastSpeaker(voiceId: string): string {
     const voice = voiceId.trim()
     const clone = findCloneVoice(this.storage.listVoices(), voice)
@@ -710,15 +710,15 @@ export class DraftUnitService {
       // 段音频已有就绪产物（滚动预合成/上次生产）且**演法指纹一致**才复用：
       // 只改 delivery/rate/pitch 而不改文本时，旧音频必须重合成，否则新演法永远不生效
       const segmentFresh =
-        u.rendered?.status === 'ready' && u.rendered.sourceFingerprint === utteranceFingerprint(u, styleSalt)
+        u.rendered?.status === 'ready' && u.rendered.sourceFingerprint === draftUnitFingerprint(u, styleSalt)
       if (segmentFresh && u.status === 'ready' && u.audioPath && existsSync(u.audioPath)) {
         segmentPaths.push(u.audioPath)
-        if (u.rendered?.status !== 'ready' || u.rendered.sourceFingerprint !== utteranceFingerprint(u, styleSalt)) {
+        if (u.rendered?.status !== 'ready' || u.rendered.sourceFingerprint !== draftUnitFingerprint(u, styleSalt)) {
           this.storage.draftUnitSetRendered(u.id, {
             audioPath: u.audioPath,
             status: 'ready',
             ...segmentSnapshot,
-            sourceFingerprint: utteranceFingerprint(u, styleSalt)
+            sourceFingerprint: draftUnitFingerprint(u, styleSalt)
           })
         }
         continue
@@ -733,7 +733,7 @@ export class DraftUnitService {
           audioPath,
           status: 'ready',
           ...segmentSnapshot,
-          sourceFingerprint: utteranceFingerprint(u, styleSalt)
+          sourceFingerprint: draftUnitFingerprint(u, styleSalt)
         })
         this.onEvent?.({ ...u, status: 'ready', audioPath, synthVoice: voice })
         segmentPaths.push(audioPath)
@@ -744,7 +744,7 @@ export class DraftUnitService {
           audioPath: '',
           status: 'failed',
           ...segmentSnapshot,
-          sourceFingerprint: utteranceFingerprint(u, styleSalt),
+          sourceFingerprint: draftUnitFingerprint(u, styleSalt),
           error: message.slice(0, 200)
         })
         this.onEvent?.({ ...u, status: 'failed', error: message })
@@ -766,7 +766,7 @@ export class DraftUnitService {
   /**
    * 冻结声音快照（§9.6）：开始预制合成时把弹窗里的显式覆盖（优先）或节目卡司解析成具体接入/模型/音色，
    * 连同音色（或角色表）指纹一起写进每个单元的 rendered；之后换卡司/改音色不改写已有产物。
-   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：castVoices（播客双主持）> voiceId（单音色）> 卡司第一张。
+   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：podcastVoices（播客双主持）> voiceId（单音色）> 卡司第一张。
    */
   /** 音色级风格指令也进指纹：改 instruction 等于换了演法，预制音频要判过期重合成 */
   private voiceStyleSalt(voices: string[]): string {
@@ -778,8 +778,8 @@ export class DraftUnitService {
 
   private resolveFrozenSnapshot(program: Program, override?: ProduceVoiceOverride): FrozenSnapshot {
     // 弹窗显式覆盖：播客双主持（两个音色必须路由到同一条接入、同一个播客模型）
-    if (override?.castVoices) {
-      const [voiceA, voiceB] = override.castVoices.map((voice) => voice.trim())
+    if (override?.podcastVoices) {
+      const [voiceA, voiceB] = override.podcastVoices.map((voice) => voice.trim())
       if (!voiceA || !voiceB) throw new Error('播客双主持要选好两个音色：回到合成声音弹窗把两位主持人都选上')
       const routeA = this.tts.routeForVoice(voiceA)
       const routeB = this.tts.routeForVoice(voiceB)
@@ -791,7 +791,7 @@ export class DraftUnitService {
         throw new Error(`模型「${routeA.model.label}」不是双人播客模型：回到合成声音弹窗换成 Podcast 模型或单音色`)
       }
       const speakers: [string, string] = [this.resolvePodcastSpeaker(voiceA), this.resolvePodcastSpeaker(voiceB)]
-      const castFingerprint = stableHash(this.voiceStyleSalt(override.castVoices))
+      const voicePairFingerprint = stableHash(this.voiceStyleSalt(override.podcastVoices))
       // 配乐：弹窗里选了就按这次选的，没给就走服务商默认
       const useHeadMusic = override.useHeadMusic ?? true
       const useTailMusic = override.useTailMusic ?? false
@@ -800,8 +800,8 @@ export class DraftUnitService {
           connectionId: routeA.connection.id,
           modelId: routeA.modelId,
           speakers,
-          castVoices: [voiceA, voiceB],
-          castFingerprint,
+          podcastVoices: [voiceA, voiceB],
+          voicePairFingerprint,
           maxCharsPerTurn: caps.maxCharsPerTurn ?? 300,
           useHeadMusic,
           useTailMusic
@@ -812,7 +812,7 @@ export class DraftUnitService {
         snapshotFor: () => ({
           ttsConnectionId: routeA.connection.id,
           ttsModelId: routeA.modelId,
-          voiceOrCastFingerprint: castFingerprint
+          voiceOrCastFingerprint: voicePairFingerprint
         }),
         modelDesc: `Podcast 双人合成 · ${routeA.model.label}（${routeA.connection.name}）`,
         voiceDesc:
@@ -837,13 +837,13 @@ export class DraftUnitService {
       }
     }
     // 跟随节目卡司：卡司第一张的音色路由决定接入/模型；播客模型要求恰好两个卡司音色
-    const castCards = this.persona.programCastOf(program.id).filter((p) => p.voiceId.trim())
-    const firstVoice = castCards[0]?.voiceId.trim() ?? ''
+    const personaCards = this.persona.programPersonasOf(program.id).filter((p) => p.voiceId.trim())
+    const firstVoice = personaCards[0]?.voiceId.trim() ?? ''
     if (firstVoice) {
       const firstRoute = this.tts.routeForVoice(firstVoice)
       const caps = ttsModelCapabilities(firstRoute.model)
       if (caps.kind === 'podcast') {
-        const voices = castCards.map((p) => p.voiceId.trim())
+        const voices = personaCards.map((p) => p.voiceId.trim())
         if (voices.length < caps.maxSpeakers) {
           throw new Error(
             `「${firstRoute.model.label}」是双人播客模型，需要 ${caps.maxSpeakers} 个卡司音色：在节目卡司里配两张卡并都选好音色`
@@ -855,7 +855,7 @@ export class DraftUnitService {
           throw new Error('两位主持人的音色要走同一条接入、同一个播客模型：回卡司里换音色')
         }
         const speakers: [string, string] = [this.resolvePodcastSpeaker(voiceA), this.resolvePodcastSpeaker(voiceB)]
-        const castFingerprint = stableHash(this.voiceStyleSalt([voiceA, voiceB]))
+        const voicePairFingerprint = stableHash(this.voiceStyleSalt([voiceA, voiceB]))
         const useHeadMusic = override?.useHeadMusic ?? true
         const useTailMusic = override?.useTailMusic ?? false
         return {
@@ -863,8 +863,8 @@ export class DraftUnitService {
             connectionId: firstRoute.connection.id,
             modelId: firstRoute.modelId,
             speakers,
-            castVoices: [voiceA, voiceB],
-            castFingerprint,
+            podcastVoices: [voiceA, voiceB],
+            voicePairFingerprint,
             maxCharsPerTurn: caps.maxCharsPerTurn ?? 300,
             useHeadMusic,
             useTailMusic
@@ -875,7 +875,7 @@ export class DraftUnitService {
           snapshotFor: () => ({
             ttsConnectionId: firstRoute.connection.id,
             ttsModelId: firstRoute.modelId,
-            voiceOrCastFingerprint: castFingerprint
+            voiceOrCastFingerprint: voicePairFingerprint
           }),
           modelDesc: `Podcast 双人合成 · ${firstRoute.model.label}（${firstRoute.connection.name}）`,
           voiceDesc:
@@ -887,10 +887,10 @@ export class DraftUnitService {
     // 跟随节目卡司：快照取卡司第一张音色路由出的接入/模型（只用于填充快照，不形成永久绑定）
     return {
       voiceFor: (u) => {
-        const byPresenter = u.presenterId
-          ? (this.persona.list().find((p) => p.id === u.presenterId)?.voiceId.trim() ?? '')
+        const cardVoice = u.personaId
+          ? (this.persona.list().find((p) => p.id === u.personaId)?.voiceId.trim() ?? '')
           : ''
-        const voice = byPresenter || u.voiceId.trim() || this.persona.castVoiceOf(program.id)
+        const voice = cardVoice || u.voiceId.trim() || this.persona.programVoiceOf(program.id)
         if (!voice) throw new Error('文稿没有可用音色：卡司没选音色（先在合成弹窗里选一个）')
         return voice
       },
@@ -904,10 +904,10 @@ export class DraftUnitService {
       },
       modelDesc: '跟随节目卡司（卡司第一张的音色路由）',
       voiceDesc: (() => {
-        const cast = this.persona.programCastOf(program.id)
-        const voice = this.persona.castVoiceOf(program.id)
+        const personas = this.persona.programPersonasOf(program.id)
+        const voice = this.persona.programVoiceOf(program.id)
         if (!voice) return '卡司里的主播卡都还没选音色'
-        return `卡司第一张（${cast[0]?.name ?? '—'}）的音色：${this.voiceDisplayName(voice)}`
+        return `卡司第一张（${personas[0]?.name ?? '—'}）的音色：${this.voiceDisplayName(voice)}`
       })()
     }
   }
@@ -955,7 +955,7 @@ export class DraftUnitService {
    */
   async importExternalAudio(
     programId: string,
-    target: { kind: 'scene' | 'utterance'; id: string },
+    target: { kind: 'scene' | 'draftUnit'; id: string },
     sourcePath: string
   ): Promise<{ ok: true; audioPath: string } | { ok: false; error: string }> {
     try {
@@ -969,14 +969,14 @@ export class DraftUnitService {
       const styleSalt = programStyleSalt(program)
       let fingerprint: string
       if (target.kind === 'scene') {
-        const script = this.script.getScript(program.scriptId)
+        const script = this.script.getScript(program.id)
         const scene = script?.scenes.find((s) => s.id === target.id)
         if (!script || !scene) return { ok: false, error: '场景不存在（节目没绑剧本或场景已删）' }
         fingerprint = sceneFingerprint(narrativeOrder(all.filter((u) => u.sceneId === scene.id)), styleSalt)
       } else {
-        const utterance = all.find((u) => u.id === target.id)
-        if (!utterance) return { ok: false, error: '文稿段落不存在（可能已删）' }
-        fingerprint = utteranceFingerprint(utterance, styleSalt)
+        const draftUnit = all.find((u) => u.id === target.id)
+        if (!draftUnit) return { ok: false, error: '文稿段落不存在（可能已删）' }
+        fingerprint = draftUnitFingerprint(draftUnit, styleSalt)
       }
 
       const put = await this.blobs.putFile(sourcePath, ext.replace(/^\./, ''), { move: false })
@@ -991,7 +991,7 @@ export class DraftUnitService {
         external: true
       }
       if (target.kind === 'scene') {
-        this.script.setSceneRendered(this.script.getScript(program.scriptId)!.id, target.id, rendered)
+        this.script.setSceneRendered(this.script.getScript(program.id)!.id, target.id, rendered)
       } else {
         this.storage.draftUnitSetRendered(target.id, rendered)
         const updated = this.storage.draftUnitGet(target.id)
@@ -1037,7 +1037,7 @@ export class DraftUnitService {
       }
       try {
         // delivery（agent 写的表演指示）+ 语速/音调随这次合成发出去——演法真正落到声音上
-        return await this.tts.synthesize(`utterance-${u.id}`, u.text, voice || undefined, signal, {
+        return await this.tts.synthesize(`draftUnit-${u.id}`, u.text, voice || undefined, signal, {
           instruction: u.delivery || undefined,
           rate: u.rate,
           pitch: u.pitch
@@ -1061,9 +1061,9 @@ interface PodcastRouteInfo {
   modelId: string
   /** 发给模型的两个发音人 id（顺序 = 主持人 A/B） */
   speakers: [string, string]
-  /** cast 里的原始音色输入（文稿段落 voiceId 匹配用） */
-  castVoices: [string, string]
-  castFingerprint: string
+  /** 卡司里的原始音色输入（文稿段落 voiceId 匹配用） */
+  podcastVoices: [string, string]
+  voicePairFingerprint: string
   maxCharsPerTurn: number
   useHeadMusic: boolean
   useTailMusic: boolean

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { BroadcastEndReason, BroadcastSession, BroadcastSessionCastMember, LiveEvent } from '../../shared/types'
+import type { BroadcastEndReason, BroadcastSession, BroadcastSessionPersona, LiveEvent } from '../../shared/types'
 import { listEventTypes, type EventBus } from './EventBus'
 import type { StorageService } from './StorageService'
 
@@ -36,7 +36,7 @@ export class SessionRecorder {
   begin(
     programId: string,
     programName: string,
-    snapshot: { directorModelDesc: string; cast: BroadcastSessionCastMember[] }
+    snapshot: { directorModelDesc: string; personas: BroadcastSessionPersona[] }
   ): string {
     if (this.activeId) this.end('crash')
     const session: BroadcastSession = {
@@ -44,7 +44,7 @@ export class SessionRecorder {
       programId,
       programName,
       directorModelDesc: snapshot.directorModelDesc,
-      cast: snapshot.cast,
+      personas: snapshot.personas,
       startedAt: Date.now(),
       endedAt: 0,
       endReason: '',

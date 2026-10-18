@@ -112,45 +112,6 @@ export function systemVoiceUsable(
   }
 }
 
-// ---------- 克隆音色的归属（按 接入 · 模型 分组） ----------
-
-export interface CloneVoiceGroup {
-  key: string
-  provider: TtsProvider
-  connectionLabel: string
-  model: string
-  modelLabel: string
-  ready: boolean
-  voices: VoiceRecord[]
-}
-
-/** 克隆音色按「接入 · 模型」分组：克隆音色只吃它自己那条接入和那个模型 */
-export function groupCloneVoices(
-  voices: VoiceRecord[],
-  connections: TtsConnectionSafe[],
-  catalog: CatalogModel[]
-): CloneVoiceGroup[] {
-  const groups = new Map<string, CloneVoiceGroup>()
-  for (const voice of voices) {
-    const connection = connections.find((item) => item.id === voice.connectionId)
-    const key = `${voice.connectionId || voice.provider}::${voice.model}`
-    if (!groups.has(key)) {
-      const spec = catalog.find((entry) => entry.provider === voice.provider && entry.model.id === voice.model)
-      groups.set(key, {
-        key,
-        provider: voice.provider,
-        connectionLabel: connection?.name ?? `${TTS_PROVIDER_SHORT[voice.provider]}（原接入已删除）`,
-        model: voice.model,
-        modelLabel: spec?.model.label ?? voice.model,
-        ready: Boolean(connection?.ready),
-        voices: []
-      })
-    }
-    groups.get(key)?.voices.push(voice)
-  }
-  return [...groups.values()]
-}
-
 /**
  * 克隆音色的可用性提示。克隆音色只吃「克隆时那条接入 + 那个模型」，绑定不跨接入、也不跨模型：
  * 没有回退（没有默认接入可回退），接入没了就是合不出声，得把接入加回来或用现有接入重新克隆。

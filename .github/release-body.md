@@ -1,27 +1,21 @@
-## 0.3.1
+## 0.3.2
 
-收尾版：数据库文件名与结构迁移都归到产品名下，并修掉一个只在全新安装上出现的问题。
+**修复版：安装版语音合成全线失败的问题。如果你装过 0.3.0 / 0.3.1，请直接升级到这一版。**
 
-### 数据库文件跟随产品名
+### 致命修复：打包版找不到 ffmpeg
 
-- `userData/agentanchor.db` → `userData/yuncast.db`：升级后首次启动自动改名，`-wal` / `-shm` 一起搬，数据一行不动
-- 改名失败（旧版进程还占着文件）时退回老文件名继续用，下次启动再搬——不会因为改名起不来
-
-### 迁移改由 umzug 统管，一个版本一个文件
-
-- 结构迁移从 `StorageService` 里 300 多行的 `migratePrograms()` 拆到 `src/main/db/migrations/`：`0001-programize` … `0015-material-content`，清单集中在 `migrations/index.ts`
-- 执行器 `src/main/db/migrator.ts` 用 umzug：整批一个事务、失败整体回滚；执行明细落 `_migrations` 表，同时回写 `PRAGMA user_version` 便于排查
-- 老库按 `user_version` 做基线：第一次跑新迁移器时把历史迁移登记为已执行，只补跑之后的版本，不会在长好的库上重放建表 / 改名
-- 迁移改成升序执行（原先 7→6→5→15→14→12 是手工顺序）：`v12` 把 `products` 改名成 `materials`，`v15` 才给它补正文列，顺序一错老库就漏列
-- **修掉一个只在全新安装上出现的问题**：v4 无条件断言改名后的表存在，空库里根本没有这些表——升级上来的老库没事，新机器会直接起不来
-- `src/main/db/` 不依赖 Electron，可以脱离应用单跑；新增 `node scripts/db-migrate-check.mjs`，四个场景（全新库 / 现役库副本 / v11 老库 / v3 老库）一条命令验完
-
-### 其他
-
-- 全仓术语打平到最终命名：剧本 → 编排、知识库 → 素材。应用内开播预检的「去绑剧本 / 节目没绑定剧本 / 剧本里没有场景」改成编排口径，导演提示词同步；官网与文档一并改
-- 官网版本徽标与更新日志补齐；功能演示换成真实操作 + 克隆音色配音（1 分 08 秒），hero 循环片、封面与 README 动图一起重做
+- **现象**：装好的应用第一次合成就报「音频解码失败：spawn …\app.asar\node_modules\ffmpeg-static\ffmpeg.exe ENOENT」，所有段全部失败，等于出不了声
+- **原因**：`ffmpeg-static` 返回的是「依赖里的位置」，打包后这个位置落在 `app.asar` 归档里。归档不是目录，`spawn` 它必然 ENOENT，而二进制其实被 electron-builder 解到了旁边的 `app.asar.unpacked`
+- **修复**：统一在 `getFfmpegPath()` 里把 `app.asar` 段换成 `app.asar.unpacked` 再校验文件存在；Windows / macOS / Linux 同一套处理，三种路径形态都验过（含带引号、带空格、中文用户名）
+- 启动日志新增一行 `[YunCast] ffmpeg: <实际路径>`，以后这类问题一眼可见
+- 为什么一直没被发现：只有**安装版**受影响，`npm run dev` 跑源码时 `node_modules` 是真实目录，一直是好的
 
 ### 升级说明
 
-- 直接覆盖安装即可。首次启动会：① 把老库改名成 `yuncast.db`；② 建立 `_migrations` 表并按 `user_version` 登记历史迁移（这一步只登记，不改表）
-- 想回退到 0.3.0：把 `yuncast.db` 改回 `agentanchor.db` 即可，结构没有变化
+- 直接覆盖安装，数据与配置不受影响（数据库仍是 `yuncast.db`）
+- 装完后可看启动日志里的 ffmpeg 行确认指向 `app.asar.unpacked`；能正常合成即修复
+
+### 已知事项
+
+- macOS 未公证构建，首次打开需右键「打开」；这与本次修复无关
+- Linux 的 deb / AppImage 若出现 `EACCES`（而非 ENOENT），说明打包时丢了执行位，请反馈

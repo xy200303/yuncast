@@ -83,8 +83,17 @@ const tracks = [
 /** 更新日志：只写仓库里查得到的事实（与 CHANGELOG.md 对齐） */
 const changelog = [
   {
-    v: 'v0.3.1',
+    v: 'v0.3.2',
     when: '最新',
+    items: [
+      '修复安装版语音合成全线失败：ffmpeg 被打进 app.asar，spawn 必然 ENOENT',
+      '改为解析到 app.asar.unpacked 再校验存在，三端同一套处理',
+      '启动日志打印实际 ffmpeg 路径，这类问题一眼可见'
+    ]
+  },
+  {
+    v: 'v0.3.1',
+    when: '维护版',
     items: [
       '数据库文件改名 yuncast.db：升级首次启动自动搬（含 -wal/-shm），数据一行不动',
       '结构迁移交给 umzug：一个版本一个文件，执行明细落 _migrations，失败整体回滚',
@@ -665,8 +674,8 @@ onUnmounted(() => {
         target="_blank"
         rel="noreferrer"
       >
-        <span class="notice-tag">v0.3.1</span>
-        <span class="notice-text">刚发布：数据库改名与迁移重构，修全新安装无法启动 · 查看更新说明</span>
+        <span class="notice-tag">v0.3.2</span>
+        <span class="notice-text">修复安装版语音合成全线失败（ffmpeg 路径）· 装过的请升级</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">

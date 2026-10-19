@@ -1,5 +1,17 @@
 # 更新日志
 
+## 0.3.2（2026-10-18）
+
+**修复版：安装版（三端）语音合成全线失败的问题。**
+
+### 致命修复：打包版找不到 ffmpeg
+
+- 现象：装好的应用第一次合成就报「音频解码失败：spawn …\app.asar\node_modules\ffmpeg-static\ffmpeg.exe ENOENT」，所有段都失败，等于不能出声
+- 原因：`ffmpeg-static` 返回的是依赖里的位置，打包后落在 `app.asar` 归档里；归档不是目录，`spawn` 它必然 ENOENT。二进制其实被 electron-builder 解到了旁边的 `app.asar.unpacked`
+- 修复：统一在 `getFfmpegPath()` 里把 `app.asar` 换成 `app.asar.unpacked` 再校验存在性；Windows / macOS / Linux 同一个处理（三种路径形态都验过）
+- 启动日志新增一行 `[YunCast] ffmpeg: <实际路径>`，这类问题以后一眼可见
+- 影响范围说明：只有**安装版**受影响，`npm run dev` 跑源码一直是好的，所以自测时没暴露
+
 ## 0.3.1（2026-10-18）
 
 这一版是收尾版：把数据库文件名与迁移都归到产品名下，顺手修掉一个只在全新安装上出现的问题。

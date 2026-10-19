@@ -1,6 +1,6 @@
 {
   "name": "yuncast",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "小云播客坊 YunCast - AI 直播工作台（智能主播 · 节目制作与播出）",
   "main": "out/main/index.js",
   "license": "MIT",

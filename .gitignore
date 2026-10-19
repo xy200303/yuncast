@@ -45,3 +45,6 @@ docs/demo/product-silent.mp4
 docs/demo/live-marks-*.json
 docs/demo/live-audiolog-*.json
 cli/dist/
+
+# 临时分析/构建产物（别误提交，之前一次 276MB 的 asar 就栽在这）
+.tmp-*

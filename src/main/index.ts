@@ -145,6 +145,7 @@ import { PlaybackLoop } from './services/audio/PlaybackLoop'
 import { McpService } from './services/McpService'
 import { EventHub } from './services/EventHub'
 import { RecordingService } from './services/RecordingService'
+import { getFfmpegPath } from './services/stream/ffmpeg/bin'
 
 // 固定到 %APPDATA%\YunCast。必须在 ready 之前设置，
 // 否则开发时和打包后目录名不一致，配置会看起来"丢了"。
@@ -1716,6 +1717,13 @@ if (!single) {
 
     // 定时节拍：5 分钟一跳
     timerInterval = setInterval(() => bus?.emit('timer.interval', {}, 'timer'), 5 * 60_000)
+
+    // ffmpeg 是合成/导出/推流的硬依赖，路径错了整条链全哑——启动就把解析结果打出来，出问题一眼能看见
+    try {
+      console.log(`[YunCast] ffmpeg: ${getFfmpegPath()}`)
+    } catch (error) {
+      console.warn('[YunCast] ffmpeg 不可用:', error instanceof Error ? error.message : error)
+    }
 
     // BlobStore：启动清临时区 → 异步迁移老目录（audio-cache / voices / program-audio / 知识库附件，不阻塞窗口）→ 之后每 30 分钟 GC
     void blobs.sweepTmp()

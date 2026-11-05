@@ -15,6 +15,10 @@ export const IPC = {
   poolSay: 'pool:say',
   poolInsertNext: 'pool:insert-next',
   poolRevoke: 'pool:revoke',
+  /** 改未播条目的文本（作废旧音频，重新合成） */
+  poolRevise: 'pool:revise',
+  /** 把某条未播话术提到队首（等价「从此处播」前的排队动作） */
+  poolPromote: 'pool:promote',
   poolRecentPlayed: 'pool:recent-played',
   /** renderer → main：取第一个 ready 条目开始播放（主进程置 playing） */
   /** renderer → main：播报完成回报 */

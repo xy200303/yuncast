@@ -725,6 +725,14 @@ function registerIpc(
     guard(() => pool.insertNext(input))
   )
   ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
+  ipcMain.handle(IPC.poolRevise, (_e, id: string, text: string) => guard(() => pool.revise(id, text)))
+  // 提到队首：只动未播条目的顺序（正在播的不受影响）
+  ipcMain.handle(IPC.poolPromote, (_e, id: string) =>
+    guard(() => {
+      const ids = pool.snapshot().items.map((item) => item.id).filter((itemId) => itemId !== id)
+      pool.reorder([id, ...ids])
+    })
+  )
   ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) => pool.getRecentPlayed(n))
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 

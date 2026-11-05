@@ -5,30 +5,19 @@ import {
   Bot,
   Brain,
   CheckCircle2,
-  CircleAlert,
   Check,
   ChevronDown,
   ChevronRight,
   Copy,
-  Clapperboard,
-  Clock,
-  Coffee,
-  Hand,
-  Heart,
   Loader2,
   Megaphone,
-  MessageCircle,
-  MessagesSquare,
-  Mic,
   MoreHorizontal,
   Paperclip,
   Play,
-  Radio,
   RefreshCw,
   SendHorizontal,
   Sparkles,
   Square,
-  Volume2,
   Wrench,
   X,
   XCircle,
@@ -59,13 +48,13 @@ import { VoicePickDialog } from '@/components/VoicePickDialog'
 import { useAppStore, type NavPage, type SettingsPaneId } from '../stores/useAppStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
-import { audition, auditionTitle } from '../lib/audition'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { CommentList } from './live/CommentList'
 import { EventStream } from './live/EventStream'
 import { ImprovisedPanel } from './live/ImprovisedPanel'
 import { NowPlayingBar } from './live/NowPlayingBar'
 import { PreparedPanel } from './live/PreparedPanel'
+import { CardStream } from './live/CardStream'
 import type {
   Persona,
   ChatEntry,
@@ -77,41 +66,7 @@ import type {
   ProduceVoiceOverride,
   ProgramGateResult,
   PoolItem,
-  PoolLane,
-  PoolSourceKind,
-  PoolItemStatus
 } from '../../../shared/types'
-import { stripSpeechTags } from '../../../shared/speechTags'
-import { ContentItem, ContentList } from './live/ContentItem'
-
-const LANE_LABEL: Record<PoolLane, string> = {
-  interrupt: '打断',
-  next: '下一条',
-  normal: '常规',
-  filler: '垫底'
-}
-
-const STATUS_LABEL: Record<PoolItemStatus, string> = {
-  pending: '待合成',
-  synthesizing: '合成中',
-  ready: '就绪',
-  playing: '播报中',
-  done: '已播',
-  interrupted: '被打断',
-  skipped: '已撤销',
-  failed: '失败',
-  expired: '已过期'
-}
-
-const SOURCE_LABEL: Record<PoolSourceKind, string> = {
-  scene: '剧情',
-  reply: '回复',
-  interact: '互动',
-  announce: '公告',
-  filler: '暖场',
-  manual: '手动',
-  reaction: '捧场'
-}
 
 /** 预检「去修复」深链：按检查项 code 跳到对应设置栏目或页面（docs/REDESIGN 4.5） */
 const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page?: NavPage }> = {
@@ -210,38 +165,14 @@ export function LivePage() {
               「接下来」内容按 broadcastMode 填充（prepared=章节列表 / improvised=实况 / rolling=话术池队列）。
               节目关了直播间动态（allowLiveEvents=false）时不出 Tabs，直接放「接下来」内容 */}
           {(() => {
+            // 本场卡片流：已播历史 + 未播队列同一条流（docs/12 第八节）
             const upNext =
               broadcastMode === 'prepared' && activeProgram ? (
                 <PreparedPanel program={activeProgram} />
               ) : broadcastMode === 'improvised' ? (
                 <ImprovisedPanel />
               ) : (
-                <ContentList className="group/list p-3">
-                  {groups.length === 0 && pool.failed.length === 0 ? (
-                    <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
-                      <Radio className="size-10" strokeWidth={1.25} />
-                      <p className="text-sm">话术池是空的——按 Ctrl+J 唤起导演说点什么，或用底部「⋯」里的人工播报</p>
-                    </div>
-                  ) : (
-                    <>
-                      {groups.flatMap((group) => group.items.map((item) => <QueueRow key={item.id} item={item} personaList={personaList} />))}
-                      {pool.failed.length > 0 && (
-                        <div className="mt-2 flex flex-col gap-1.5">
-                          <p className="px-1 text-xs text-muted-foreground">合成失败（5 分钟内）</p>
-                          {pool.failed.map((item) => (
-                            <ContentItem
-                              key={item.id}
-                              status={<CircleAlert className="size-4 shrink-0 text-red-600" />}
-                              header={<span className="truncate text-destructive">合成失败</span>}
-                              meta={item.error ? <span title={item.error}>{item.error}</span> : undefined}
-                              text={item.text}
-                            />
-                          ))}
-                        </div>
-                      )}
-                    </>
-                  )}
-                </ContentList>
+                <CardStream personas={personaList} />
               )
             if (!allowLiveEvents) return upNext
             return (
@@ -809,121 +740,6 @@ const TimelineLine = memo(function TimelineLine({
 })
 
 /** 话轮卡片头：图标 + 颜色区分，不放原始 id/hash 这类机器串 */
-const SOURCE_ICON: Record<PoolSourceKind, typeof Clapperboard> = {
-  scene: Clapperboard,
-  reply: MessageCircle,
-  interact: MessagesSquare,
-  announce: Megaphone,
-  filler: Coffee,
-  manual: Hand,
-  reaction: Heart
-}
-
-/** lane 颜色（常规是默认不露头，减少噪音；其余用色点区分） */
-const LANE_DOT: Partial<Record<PoolLane, string>> = {
-  interrupt: 'bg-red-500',
-  next: 'bg-blue-500',
-  filler: 'bg-amber-400'
-}
-
-/** 状态图标：文字徽标太吵，队列行改用图标 + 颜色（含义放 title） */
-function StatusIcon({ status }: { status: PoolItemStatus }) {
-  switch (status) {
-    case 'playing':
-      return <Volume2 className="size-4 shrink-0 animate-pulse text-primary" />
-    case 'ready':
-      return <CheckCircle2 className="size-4 shrink-0 text-emerald-600" />
-    case 'synthesizing':
-      return <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
-    default:
-      return <Clock className="size-4 shrink-0 text-muted-foreground/50" />
-  }
-}
-
-/** 长文本阈值：超过则默认折叠几行，给「展开全文」——段一眼看全，文章不撑爆列表 */
-const LONG_TEXT_CHARS = 160
-
-/** 点正文 = 试听这条（docs/11 第二部分：aux 槽出声，不动话术池/队列/推流） */
-function auditionSpeech(item: PoolItem): void {
-  if (!item.audioPath) {
-    toast.warning('这段还没合成', { description: '等它合成好，点正文就能听' })
-    return
-  }
-  audition.toggle({ key: `speech:${item.id}`, title: auditionTitle(item.text), audioPath: item.audioPath })
-}
-
-/** 队列条目（滚动模式）：外观与预制/即兴共用 ContentItem，这里只负责填槽 */
-function QueueRow({ item, personaList }: { item: PoolItem; personaList: Persona[] }) {
-  const voices = useAppStore((s) => s.voices)
-  const playing = item.status === 'playing'
-  const canRevoke = item.status === 'pending' || item.status === 'synthesizing' || item.status === 'ready'
-  const SourceIcon = SOURCE_ICON[item.source.kind]
-  // voiceId 是合成路由的内部标识（克隆音色 speaker_id 等），显示成人能读懂的音色名
-  const voiceName = item.voiceId ? (voices.find((v) => v.voiceType === item.voiceId)?.name ?? '角色音色') : ''
-  // 主播身份：按音色反查卡（多主播节目一眼看出这段是谁的）
-  const personaName = item.voiceId ? (personaList.find((p) => p.voiceId === item.voiceId)?.name ?? '') : ''
-  const whoLabel = personaName && voiceName ? `${personaName} · ${voiceName}` : personaName || voiceName
-  return (
-    <ContentItem
-      current={playing}
-      status={<StatusIcon status={item.status} />}
-      loading={item.status === 'synthesizing'}
-      header={
-        <>
-          {LANE_DOT[item.lane] && (
-            <span className="flex shrink-0 items-center gap-1 font-medium text-foreground">
-              <span className={cn('size-1.5 rounded-full', LANE_DOT[item.lane])} />
-              {LANE_LABEL[item.lane]}
-            </span>
-          )}
-          <span className="flex shrink-0 items-center gap-1" title={STATUS_LABEL[item.status]}>
-            <SourceIcon className="size-3" />
-            {SOURCE_LABEL[item.source.kind]}
-          </span>
-          {item.replyTo && <span className="truncate">回复 @{item.replyTo.author}</span>}
-        </>
-      }
-      meta={
-        whoLabel ? (
-          <span className="flex items-center gap-1" title={whoLabel}>
-            <Mic className="size-3" />
-            {whoLabel}
-          </span>
-        ) : undefined
-      }
-      actions={
-        canRevoke ? (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="opacity-0 transition-opacity group-hover/list:opacity-100"
-            title="撤销这条"
-            onClick={() => {
-              void window.api.pool.revoke(item.id).then((result) => {
-                if (result.ok) toast.success('已撤销')
-                else toast.error('撤销失败', { description: result.error })
-              })
-            }}
-          >
-            <X />
-          </Button>
-        ) : undefined
-      }
-      text={item.text}
-      onTextClick={() => auditionSpeech(item)}
-      longTextThreshold={LONG_TEXT_CHARS}
-      title={
-        item.speechText && item.speechText !== item.text
-          ? `${stripSpeechTags(item.text)}
-
-实际念的是：${stripSpeechTags(item.speechText)}`
-          : stripSpeechTags(item.text)
-      }
-    />
-  )
-}
-
-/** 时间戳（工具调用行里统一用等宽小字，不抢视线） */
 function clock(ts: number): string {
   return new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
 }

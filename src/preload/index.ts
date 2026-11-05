@@ -106,6 +106,10 @@ const api = {
     insertNext: (input: Omit<PoolSayInput, 'lane'>) =>
       ipcRenderer.invoke(IPC.poolInsertNext, input) as Promise<PoolResult<PoolItem>>,
     revoke: (id: string) => ipcRenderer.invoke(IPC.poolRevoke, id) as Promise<PoolResult>,
+    /** 改未播条目的文本：旧音频作废、重新合成（播过的不能改） */
+    revise: (id: string, text: string) => ipcRenderer.invoke(IPC.poolRevise, id, text) as Promise<PoolResult>,
+    /** 把某条提到队首（只影响未播顺序） */
+    promote: (id: string) => ipcRenderer.invoke(IPC.poolPromote, id) as Promise<PoolResult>,
     recentPlayed: (n: number) => ipcRenderer.invoke(IPC.poolRecentPlayed, n) as Promise<PoolItem[]>,
     snapshot: () => ipcRenderer.invoke(IPC.poolSnapshot) as Promise<PoolSnapshot>,
     /** 订阅池快照广播，返回取消订阅函数 */

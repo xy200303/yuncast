@@ -11,6 +11,7 @@ import { migration as personaIdPrefix } from './0011-persona-id-prefix'
 import { migration as materials } from './0012-materials'
 import { migration as planIntoPrograms } from './0014-plan-into-programs'
 import { migration as materialContent } from './0015-material-content'
+import { migration as liveSessionConfig } from './0016-live-session-config'
 
 /**
  * 迁移清单（按 version 升序执行）。
@@ -29,7 +30,8 @@ export const migrations: Migration[] = [
   personaIdPrefix,
   materials,
   planIntoPrograms,
-  materialContent
+  materialContent,
+  liveSessionConfig
 ]
 
 /** 最新结构版本：等于清单里最大的 version */

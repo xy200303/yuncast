@@ -50,9 +50,10 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
   const db = new DatabaseSync(join(work, 'fresh.db'))
   db.exec('PRAGMA journal_mode = WAL')
   const report = await runMigrations(db)
-  check('执行了全部迁移', report.applied.length === 12, report.applied.join(','))
-  check('结构版本最新', report.version === 15 && userVersion(db) === 15, `user_version=${userVersion(db)}`)
-  check('执行记录落表', migrationRows(db) === 12, `_migrations=${migrationRows(db)}`)
+  const total = report.applied.length
+  check('执行了全部迁移', total >= 13, report.applied.join(','))
+  check('结构版本最新', report.version === 16 && userVersion(db) === 16, `user_version=${userVersion(db)}`)
+  check('执行记录落表', migrationRows(db) === total, `_migrations=${migrationRows(db)}`)
   check('迁移器不建业务表（由 init 建表兜底）', !tableExists(db, 'programs'))
   const again = await runMigrations(db)
   check('再跑一次是空转', again.applied.length === 0, again.applied.join(','))
@@ -74,10 +75,13 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
     before.close()
     const db = new DatabaseSync(copyPath)
     const report = await runMigrations(db)
-    check('已有库不重复迁移', report.applied.length === 0, report.applied.join(','))
-    check('版本保持不变', userVersion(db) === beforeVersion, `user_version=${userVersion(db)}`)
+    // 现役库可能正好停在上一版：允许补跑 0016 这一条，但不能再跑历史迁移
+    check('只补跑比现役库新的迁移', report.applied.every((name) => name === '0016-live-session-config'), report.applied.join(','))
+    check('版本抬到最新', userVersion(db) === 16, `user_version=${userVersion(db)}`)
     check('业务数据没动', db.prepare('SELECT COUNT(*) c FROM programs').get().c === beforePrograms)
-    check('基线登记了历史迁移', migrationRows(db) === 12, `_migrations=${migrationRows(db)}`)
+    check('基线登记完整', migrationRows(db) >= 13, `_migrations=${migrationRows(db)}`)
+    const againReport = await runMigrations(db)
+    check('再跑一次是空转', againReport.applied.length === 0, againReport.applied.join(','))
     db.close()
   }
 }
@@ -109,8 +113,10 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
     INSERT INTO products (id, name) VALUES ('prod-1', '保温杯');
   `)
   const report = await runMigrations(db)
-  check('基线后只补跑新迁移', report.applied.join(',') === '0012-materials,0014-plan-into-programs,0015-material-content', report.applied.join(','))
-  check('结构版本抬到最新', userVersion(db) === 15)
+  check('基线后只补跑新迁移', report.applied.join(',') === '0012-materials,0014-plan-into-programs,0015-material-content,0016-live-session-config', report.applied.join(','))
+  check('结构版本抬到最新', userVersion(db) === 16)
+  check('底稿加上了中文对照列', columns(db, 'draft_units').has('text_zh'))
+  check('建立本场配置表', tableExists(db, 'session_configs'))
   check('products → materials', tableExists(db, 'materials') && !tableExists(db, 'products'))
   check('改名后仍补上正文列（顺序敏感）', columns(db, 'materials').has('content'))
   check('附件表挂到条目上', columns(db, 'material_files').has('material_id') && columns(db, 'material_files').has('url'))
@@ -154,7 +160,7 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
   check(
     '从 v4 一路抬到最新',
     report.applied.join(',') ===
-      '0004-rename-tables,0005-persona-columns,0006-drop-model-profile,0007-program-instruction,0010-naming,0011-persona-id-prefix,0012-materials,0014-plan-into-programs,0015-material-content',
+      '0004-rename-tables,0005-persona-columns,0006-drop-model-profile,0007-program-instruction,0010-naming,0011-persona-id-prefix,0012-materials,0014-plan-into-programs,0015-material-content,0016-live-session-config',
     report.applied.join(',')
   )
   check('表名改造：agents/utterances/speech_items', ['personas', 'draft_units', 'pool_items'].every((t) => tableExists(db, t)) && !tableExists(db, 'agents'))
@@ -165,7 +171,8 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
   check('presenter_ids → persona_ids', columns(db, 'programs').has('persona_ids'))
   check('卡司里的旧 id 前缀改写', program.persona_ids.includes('persona-1'), program.persona_ids)
   check('场次卡司列 cast → personas', columns(db, 'live_sessions').has('personas') && !columns(db, 'live_sessions').has('cast'))
-  check('结构版本抬到最新', userVersion(db) === 15)
+  check('结构版本抬到最新', userVersion(db) === 16)
+  check('主播的默认音色建议已回填', columns(db, 'personas').has('default_voice_id'))
   db.close()
 }
 

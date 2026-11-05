@@ -762,8 +762,11 @@ export interface Persona {
   background: string
   /** 内容红线（写这张卡的台词时绝不能碰的话题/承诺） */
   taboos: string
-  /** 音色（火山 voice_type / 百炼 voice，或手动音色的 `接入::模型::音色` 复合串）：必选，没选预检会拦下 */
+  /** 音色（火山 voice_type / 百炼 voice，或手动音色的 `接入::模型::音色` 复合串）。
+   *  v16 起它降级为「默认音色建议」：真正用哪把嗓子在开播配置里定（docs/12 第十一节）。 */
   voiceId: string
+  /** 默认音色建议（= 迁移前的 voiceId）；开播弹窗预填用，不再是必填校验 */
+  defaultVoiceId?: string
   updatedAt: number
 }
 
@@ -1395,6 +1398,8 @@ export interface DraftUnit {
   personaId?: string
   /** 写稿时的音色快照（personaId 存在时以卡上当前音色为准），空 = 用卡司第一张 */
   voiceId: string
+  /** 中文对照（外语节目的播出稿才需要）：只用于显示，不参与合成 */
+  textZh?: string
   audioPath: string | null
   /** 预合成时实际用的音色：装载进池前比对，音色改过则旧音频作废 */
   synthVoice?: string

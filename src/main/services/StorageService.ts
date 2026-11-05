@@ -2883,15 +2883,15 @@ export class StorageService {
     this.db
       .prepare(
         `INSERT INTO draft_units (id, program_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, pause_after_ms, persona_id, voice_id, audio_path,
-                                 status, error, source, sources, rendered, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 status, error, source, sources, rendered, created_at, text_zh)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
            text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
            rate = excluded.rate, pitch = excluded.pitch, pause_after_ms = excluded.pause_after_ms,
            persona_id = excluded.persona_id, voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
-           sources = excluded.sources, rendered = excluded.rendered`
+           sources = excluded.sources, rendered = excluded.rendered, text_zh = excluded.text_zh`
       )
       .run(
         u.id,
@@ -2913,7 +2913,8 @@ export class StorageService {
         u.source,
         JSON.stringify(u.sources),
         u.rendered ? JSON.stringify(u.rendered) : null,
-        u.createdAt
+        u.createdAt,
+        u.textZh ?? ''
       )
     this.onAudioPathChange?.('draft_unit', u.id, oldAudioPath, u.audioPath ?? null)
   }
@@ -3025,6 +3026,7 @@ function rowToDraftUnit(r: Record<string, unknown>): DraftUnit {
     pauseAfterMs: num(r.pause_after_ms),
     personaId: str(r.persona_id) || undefined,
     voiceId: str(r.voice_id),
+    textZh: str(r.text_zh) || undefined,
     audioPath: str(r.audio_path) || null,
     synthVoice: str(r.synth_voice),
     status: (str(r.status) || 'pending') as DraftUnit['status'],

@@ -74,14 +74,25 @@ export class ProgramPlaybackService {
     const items: PreflightItem[] = []
     const cfg = this.storage.getConfig()
 
-    // ① 卡司：出谁由节目卡司决定（没配卡司 = 导演逐条用 personaId 指定）
-    const personas = this.persona.programPersonasOf(programId)
+    // ① 卡司：以**本场配置**为准（开播弹窗里选的人）；没有本场配置才退回节目里的建议卡司
+    const allPersonas = this.persona.list()
+    const latestConfig = this.storage.sessionConfigLatest(programId)
+    const sessionCast = (latestConfig?.personaVoices ?? [])
+      .map((pair) => allPersonas.find((persona) => persona.id === pair.personaId))
+      .filter((persona): persona is NonNullable<typeof persona> => Boolean(persona))
+    const personas = sessionCast.length > 0 ? sessionCast : this.persona.programPersonasOf(programId)
+    const voiceOf = (id: string): string => {
+      const override = latestConfig?.personaVoices.find((pair) => pair.personaId === id)?.voiceId
+      return override || allPersonas.find((persona) => persona.id === id)?.voiceId || ''
+    }
+    const voiceless = personas.filter((persona) => !voiceOf(persona.id)).map((persona) => persona.name)
     items.push({
-      level: 'ok',
+      level: voiceless.length > 0 ? 'warn' : 'ok',
       label:
         personas.length > 0
-          ? `卡司：${personas.map((p) => p.name).join('、')}（没配嗓音的卡写词时会报错，先用 voice_list 配上）`
-          : '卡司：导演自选（未配卡司，写词时逐条用 personaId 指定）'
+          ? `卡司：${personas.map((p) => p.name).join('、')}${sessionCast.length > 0 ? '（本场选择）' : ''}`
+          : '卡司：导演自选（未配卡司，写词时逐条用 personaId 指定）',
+      detail: voiceless.length > 0 ? `这些主播还没定嗓音：${voiceless.join('、')}，写词时会报错` : undefined
     })
 
     // ② 导演大脑的凭据（模型解析和开播时用的完全是同一处逻辑）。

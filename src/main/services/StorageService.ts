@@ -1548,15 +1548,17 @@ export class StorageService {
    * 返回回卷条数；0 = 没有可回卷的（需要重新装库）。
    */
   /**
-   * 循环回卷：把本场已播/被打断的条目重置回就绪（同一批行、音频不动）。
-   * 顺序一并恢复成装载时的稿子顺序：清掉 sort_order，让排序回落到 created_at。
+   * 循环回卷：把本场已播/被打断的**稿子条目**重置回就绪（同一批行、音频不动）。
+   * 只回卷带 queue_seq 的（= 从稿子装载进池的）；现场插话、评论回复、触发词这类一次性内容不复播。
+   * 顺序一并恢复成装载时的稿子顺序：清掉 sort_order，让排序回落到 queue_seq。
    * 「上一段/仅播此条」写进去的临时队首只在当轮有效——否则播完一轮就再也回不到第一段。
    */
   poolRewind(sessionId: string, scriptId: string): number {
     const result = this.db
       .prepare(
         `UPDATE pool_items SET status = 'ready', played_at = NULL, sort_order = NULL
-          WHERE live_session_id = ? AND script_id = ? AND status IN ('done', 'interrupted')`
+          WHERE live_session_id = ? AND script_id = ? AND queue_seq IS NOT NULL
+            AND status IN ('done', 'interrupted')`
       )
       .run(sessionId, scriptId)
     return Number((result as { changes?: number }).changes ?? 0)

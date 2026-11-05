@@ -160,6 +160,7 @@ export class SpeechPool {
       id: `sp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       sessionId: this.sessionId ?? DEFAULT_SESSION_ID,
       text,
+      textZh: input.textZh?.trim() || undefined,
       turnId: input.turnId?.trim() || `turn-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       seq: input.seq ?? 0,
       voiceId: input.voiceId?.trim() ?? '',

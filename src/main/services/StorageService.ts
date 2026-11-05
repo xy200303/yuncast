@@ -133,6 +133,7 @@ interface PoolItemRow {
   id: unknown
   live_session_id: unknown
   text: unknown
+  text_zh?: unknown
   turn_id: unknown
   seq: unknown
   persona_id: unknown
@@ -214,6 +215,7 @@ function rowToItem(row: PoolItemRow): PoolItem {
     id: str(row.id),
     sessionId: str(row.live_session_id),
     text: str(row.text),
+    textZh: str(row.text_zh) || undefined,
     turnId: str(row.turn_id),
     seq: num(row.seq) ?? 0,
     voiceId: str(row.voice_id),
@@ -1589,8 +1591,8 @@ export class StorageService {
         `INSERT INTO pool_items
          (id, live_session_id, text, turn_id, seq, voice_id, source_actor_id, source_kind, lane,
           dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, rate, pitch, emotion, emotion_scale, language_type, pause_after_ms, stream,
-          origin_draft_unit_id, error, sort_order, created_at, played_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          origin_draft_unit_id, error, sort_order, created_at, played_at, text_zh)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -1620,7 +1622,8 @@ export class StorageService {
         item.error ?? null,
         item.sortOrder ?? null,
         item.createdAt,
-        item.playedAt ?? null
+        item.playedAt ?? null,
+        item.textZh ?? ''
       )
     if (item.audioPath) this.onAudioPathChange?.('pool_item', item.id, null, item.audioPath)
   }

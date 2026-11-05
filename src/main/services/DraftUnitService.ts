@@ -107,7 +107,18 @@ export class DraftUnitService {
   saveMany(
     programId: string,
     sceneId: string,
-    items: { text: string; bitType?: string; delivery?: string; rate?: number; pitch?: number; pauseAfterMs?: number; personaId?: string; voiceId?: string; sources?: DraftUnit['sources'] }[]
+    items: {
+      text: string
+      textZh?: string
+      bitType?: string
+      delivery?: string
+      rate?: number
+      pitch?: number
+      pauseAfterMs?: number
+      personaId?: string
+      voiceId?: string
+      sources?: DraftUnit['sources']
+    }[]
   ): DraftUnit[] {
     const existing = this.storage.draftUnitList(programId).filter((u) => u.sceneId === sceneId)
     let variantIdx = existing.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
@@ -119,6 +130,7 @@ export class DraftUnitService {
           sceneId,
           variantIdx: variantIdx++,
           text: item.text.trim(),
+          textZh: item.textZh?.trim() || undefined,
           bitType: item.bitType?.trim() ?? '',
           delivery: item.delivery?.trim() ?? '',
           rate: item.rate,

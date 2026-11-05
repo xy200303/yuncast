@@ -631,6 +631,8 @@ export interface PoolItem {
   id: string
   sessionId: string
   text: string
+  /** 中文对照（外语节目用）：只用于显示，不参与合成 */
+  textZh?: string
   /** 话轮：同一批连续条目原子播出，排序时不被插队拆开 */
   turnId: string
   /** 话轮内顺序 */
@@ -679,6 +681,8 @@ export interface PoolItem {
 /** say / insert_next 的入参 */
 export interface PoolSayInput {
   text: string
+  /** 中文对照（外语节目）：只显示，不进 TTS */
+  textZh?: string
   voiceId?: string
   /** 现场表演指示（情绪/语气，一句话）：模型支持语气指令时随合成发出去 */
   delivery?: string

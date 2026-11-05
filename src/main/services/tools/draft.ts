@@ -190,6 +190,12 @@ export const draftTools = [
         Type.Object({
           type: Type.String({ description: '桥段类型（见工具描述），自定义类型也行' }),
           text: Type.String({ description: `桥段全文：多句连续口语，150~350 字，有铺垫有落点。${MARKUP_HINT}` }),
+          textZh: Type.Optional(
+            Type.String({
+              description:
+                '中文对照：当本节目语言不是中文时必填（播出用外语，这里给这句的中文意思，界面上贴在原文下面）。中文节目不用填'
+            })
+          ),
           personaId: Type.Optional(
             Type.String({ description: '这段归哪位：主播卡 id（persona_list / program_get 卡司里的 id）；双主持/多角色节目逐段指定，不传 = 卡司第一张' })
           ),
@@ -227,6 +233,7 @@ export const draftTools = [
         params.sceneId.trim(),
         params.items.map((item, index) => ({
           text: item.text,
+          textZh: item.textZh?.trim() || undefined,
           bitType: item.type,
           personaId: podcastVoices[index].personaId,
           voiceId: podcastVoices[index].voiceId,

@@ -81,6 +81,7 @@ export function CardStream({ personas }: { personas: Persona[] }) {
         id: draft.id,
         sessionId: '',
         text: draft.text,
+        textZh: draft.textZh,
         turnId: '',
         seq: draft.seq,
         voiceId: draft.voiceId ?? '',
@@ -176,8 +177,7 @@ export function CardStream({ personas }: { personas: Persona[] }) {
           const dim = row.played
           const speaker = speakerOf(item)
           const text = stripSpeechTags(item.text)
-          // 双语对照字段随 v2 迁移加（textZh）；现在一律没有
-          const translation: string | undefined = undefined
+          const translation = item.textZh?.trim() || undefined
           const isEditing = editing?.id === item.id
           const fromUnit = item.source.kind === 'scene'
           // 只有"没有正文的纯标题"才降级成提示条（场景名/节奏标记那种）；

@@ -15,7 +15,7 @@ import { useAppStore } from '../../stores/useAppStore'
 import { mergeRows, useLiveStore, type CardRow } from '../../stores/useLiveStore'
 import { audition, auditionTitle } from '../../lib/audition'
 import { stripSpeechTags } from '../../../../shared/speechTags'
-import type { Persona, PoolItem, PoolItemStatus } from '../../../../shared/types'
+import type { DraftUnit, Persona, PoolItem, PoolItemStatus } from '../../../../shared/types'
 
 /**
  * 本场卡片流（docs/12 第七、八、十节）：
@@ -54,19 +54,47 @@ export function CardStream({ personas }: { personas: Persona[] }) {
   const density = useLiveStore((s) => s.density)
   const displayMode = useLiveStore((s) => s.displayMode)
   const loadHistory = useLiveStore((s) => s.loadHistory)
-  // 换节目就重拉历史：历史按节目隔离，否则会混进上一场别的节目的残留
-  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const setDensity = useLiveStore((s) => s.setDensity)
   const setDisplayMode = useLiveStore((s) => s.setDisplayMode)
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
+  const live = useAppStore((s) => s.agent.live === true)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
+  /** 未开播时展示的是「节目底稿」= 还没播的内容，状态一律未播/待合成 */
+  const [drafts, setDrafts] = useState<DraftUnit[]>([])
   const [busyId, setBusyId] = useState('')
 
-  // 进页面拉一次历史；池里出现"已播"变化时补拉（开播后第一批播完就能看见）
+  // 开播中才拉历史；未开播时展示底稿（未播），不显示上一场的"已播"
   useEffect(() => {
-    void loadHistory()
-  }, [loadHistory, activeProgramId, pool.items.length])
+    if (live) void loadHistory()
+  }, [live, loadHistory, activeProgramId, pool.items.length])
 
-  const rows = useMemo(() => mergeRows(history, pool.items), [history, pool.items])
+  useEffect(() => {
+    if (live || !activeProgramId) {
+      setDrafts([])
+      return
+    }
+    void window.api.draftUnit.list(activeProgramId).then(setDrafts)
+  }, [live, activeProgramId])
+
+  const rows = useMemo<CardRow[]>(() => {
+    if (live) return mergeRows(history, pool.items)
+    // 未开播：底稿就是待播内容（结束本场后自动回到这里，不会停在"已播"）
+    return drafts.map((draft) => ({
+      item: {
+        id: draft.id,
+        sessionId: '',
+        text: draft.text,
+        turnId: '',
+        seq: draft.seq,
+        voiceId: draft.voiceId ?? '',
+        source: { agentId: 'draft', kind: 'manual' },
+        lane: 'normal',
+        status: (draft.rendered?.status === 'ready' ? 'ready' : 'pending') as PoolItemStatus,
+        audioPath: draft.rendered?.audioPath
+      } as PoolItem,
+      played: false
+    }))
+  }, [live, history, pool.items, drafts])
   const speakerOf = (item: PoolItem): { name: string; color: string } => {
     // 说话人靠音色反查（条目上现只有 voiceId 快照；personaId 随资产解耦一起进）
     const index = personas.findIndex((persona) => persona.voiceId && persona.voiceId === item.voiceId)
@@ -106,7 +134,7 @@ export function CardStream({ personas }: { personas: Persona[] }) {
     <div className={cn('flex min-h-0 flex-1 flex-col', density === 'compact' ? 'gap-1.5 p-2' : 'gap-2.5 p-3')}>
       <div className="flex shrink-0 items-center gap-2 pb-1 text-[11px] text-muted-foreground">
         <span>
-          {rows.length} 段 · 已播 {history.length}
+          {rows.length} 段 · {live ? `已播 ${history.length}` : '未开播'}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -192,7 +220,13 @@ export function CardStream({ personas }: { personas: Persona[] }) {
                   <span className="rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">章节</span>
                 )}
                 <span className="tabular-nums">{String(index + 1).padStart(2, '0')}</span>
-                <span className="truncate">{STATUS_TEXT[item.status]}</span>
+                <span className="truncate">
+                  {!live
+                    ? item.status === 'ready'
+                      ? '未播 · 有音频'
+                      : '未播'
+                    : STATUS_TEXT[item.status]}
+                </span>
                 {ready && <span className="tabular-nums">{mmss(estimateMs(text))}</span>}
                 {playing && <span className="text-primary">◉ 在播</span>}
                 <div className="ml-auto flex shrink-0 items-center gap-1">

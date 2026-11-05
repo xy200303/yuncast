@@ -141,9 +141,18 @@ export function LaunchConfigDialog({
     })
   }, [open, program])
 
+  /** 本场实际出镜的主播：开播配置里选中的那些（不再是节目里写死的卡司） */
   const cast = useMemo(
-    () => (program?.personaIds ?? []).map((id) => personas.find((persona) => persona.id === id)).filter(Boolean) as Persona[],
-    [program, personas]
+    () =>
+      config.personaVoices
+        .map((pair) => personas.find((persona) => persona.id === pair.personaId))
+        .filter(Boolean) as Persona[],
+    [config.personaVoices, personas]
+  )
+  /** 还没选进来的候选主播（可从"加主播"里挑） */
+  const candidates = useMemo(
+    () => personas.filter((persona) => !config.personaVoices.some((pair) => pair.personaId === persona.id)),
+    [personas, config.personaVoices]
   )
 
   if (!program) return null
@@ -219,42 +228,75 @@ export function LaunchConfigDialog({
             <div className="flex items-center gap-4">
               <span className="w-16 shrink-0 text-[12.5px] text-muted-foreground">主播</span>
               <div className="min-w-0 flex-1 space-y-1.5">
-                {cast.length === 0 ? (
-                  <p className="text-[12.5px] text-muted-foreground">本节目还没配卡司</p>
-                ) : (
-                  cast.map((persona) => {
-                    const picked = config.personaVoices.find((pair) => pair.personaId === persona.id)?.voiceId ?? ''
-                    return (
-                      <div key={persona.id} className="flex items-center gap-2">
-                        <i className="size-1.5 shrink-0 rounded-full bg-primary" />
-                        <span className="w-14 shrink-0 truncate text-[12.5px]">{persona.name}</span>
-                        <select
-                          value={picked}
-                          onChange={(event) =>
-                            setConfig({
-                              ...config,
-                              personaVoices: config.personaVoices.some((pair) => pair.personaId === persona.id)
-                                ? config.personaVoices.map((pair) =>
-                                    pair.personaId === persona.id ? { ...pair, voiceId: event.target.value } : pair
-                                  )
-                                : [...config.personaVoices, { personaId: persona.id, voiceId: event.target.value }]
-                            })
-                          }
-                          className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-[12.5px]"
-                        >
-                          <option value="">默认（主播卡上的音色）</option>
-                          {voices.map((voice) => (
-                            <option key={voice.id} value={voice.voiceType || voice.id}>
-                              {voice.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-                    )
-                  })
+                {cast.map((persona) => {
+                  const picked = config.personaVoices.find((pair) => pair.personaId === persona.id)?.voiceId ?? ''
+                  return (
+                    <div key={persona.id} className="flex items-center gap-2">
+                      <i className="size-1.5 shrink-0 rounded-full bg-primary" />
+                      <span className="w-14 shrink-0 truncate text-[12.5px]">{persona.name}</span>
+                      <select
+                        value={picked}
+                        onChange={(event) =>
+                          setConfig({
+                            ...config,
+                            personaVoices: config.personaVoices.map((pair) =>
+                              pair.personaId === persona.id ? { ...pair, voiceId: event.target.value } : pair
+                            )
+                          })
+                        }
+                        className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-[12.5px]"
+                      >
+                        <option value="">默认（主播卡上的音色）</option>
+                        {voices.map((voice) => (
+                          <option key={voice.id} value={voice.voiceType || voice.id}>
+                            {voice.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+                        onClick={() =>
+                          setConfig({
+                            ...config,
+                            personaVoices: config.personaVoices.filter((pair) => pair.personaId !== persona.id)
+                          })
+                        }
+                      >
+                        移出
+                      </button>
+                    </div>
+                  )
+                })}
+                {candidates.length > 0 && (
+                  <div className="flex items-center gap-2 pt-0.5">
+                    <span className="w-14 shrink-0" />
+                    <select
+                      value=""
+                      onChange={(event) => {
+                        const persona = personas.find((item) => item.id === event.target.value)
+                        if (!persona) return
+                        setConfig({
+                          ...config,
+                          personaVoices: [
+                            ...config.personaVoices,
+                            { personaId: persona.id, voiceId: persona.defaultVoiceId || persona.voiceId || '' }
+                          ]
+                        })
+                      }}
+                      className="h-7 min-w-0 flex-1 rounded-md border border-dashed border-border bg-background px-2 text-[12.5px] text-muted-foreground"
+                    >
+                      <option value="">＋ 加主播</option>
+                      {candidates.map((persona) => (
+                        <option key={persona.id} value={persona.id}>
+                          {persona.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 )}
                 <p className="text-[11.5px] leading-relaxed text-muted-foreground/80">
-                  只影响本场装进池的条目，不改主播卡本身。
+                  出镜人选与嗓子都在这里定，只影响本场；节目里配的卡司只作为默认勾选。
                 </p>
               </div>
             </div>

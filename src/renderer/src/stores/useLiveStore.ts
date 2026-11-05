@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { PoolItem } from '../../../shared/types'
+import type { DraftUnit, PoolItem } from '../../../shared/types'
 
 /**
  * 直播台（工作台）的界面状态。
@@ -40,6 +40,8 @@ function writePrefs(prefs: Prefs): void {
 
 interface LiveState {
   /** 已播条目（新→旧，展示时再倒过来） */
+  /** 未开播时展示的底稿（开播前就是"待播内容"） */
+  drafts: DraftUnit[]
   history: PoolItem[]
   historyLoading: boolean
   displayMode: DisplayMode
@@ -48,9 +50,12 @@ interface LiveState {
   setDensity: (density: Density) => void
   /** 拉最近已播（切回直播台/开播后调用；失败不抛，界面按空历史处理） */
   loadHistory: (count?: number) => Promise<void>
+  /** 拉节目底稿（未开播时卡片流与水位条都看它） */
+  loadDrafts: (programId: string) => Promise<void>
 }
 
 export const useLiveStore = create<LiveState>((set, get) => ({
+  drafts: [],
   history: [],
   historyLoading: false,
   ...readPrefs(),
@@ -61,6 +66,17 @@ export const useLiveStore = create<LiveState>((set, get) => ({
   setDensity: (density) => {
     set({ density })
     writePrefs({ displayMode: get().displayMode, density })
+  },
+  loadDrafts: async (programId) => {
+    if (!('api' in window) || !programId) {
+      set({ drafts: [] })
+      return
+    }
+    try {
+      set({ drafts: await window.api.draftUnit.list(programId) })
+    } catch {
+      set({ drafts: [] })
+    }
   },
   loadHistory: async (count = 30) => {
     if (!('api' in window)) return

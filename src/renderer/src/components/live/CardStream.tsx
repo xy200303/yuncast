@@ -15,7 +15,7 @@ import { useAppStore } from '../../stores/useAppStore'
 import { mergeRows, useLiveStore, type CardRow } from '../../stores/useLiveStore'
 import { audition, auditionTitle } from '../../lib/audition'
 import { stripSpeechTags } from '../../../../shared/speechTags'
-import type { DraftUnit, Persona, PoolItem, PoolItemStatus } from '../../../../shared/types'
+import type { Persona, PoolItem, PoolItemStatus } from '../../../../shared/types'
 
 /**
  * 本场卡片流（docs/12 第七、八、十节）：
@@ -59,8 +59,9 @@ export function CardStream({ personas }: { personas: Persona[] }) {
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const live = useAppStore((s) => s.agent.live === true)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
-  /** 未开播时展示的是「节目底稿」= 还没播的内容，状态一律未播/待合成 */
-  const [drafts, setDrafts] = useState<DraftUnit[]>([])
+  /** 未开播时展示的是「节目底稿」= 还没播的内容，状态一律未播/待合成（放 store，水位条也要用） */
+  const drafts = useLiveStore((s) => s.drafts)
+  const loadDrafts = useLiveStore((s) => s.loadDrafts)
   const [busyId, setBusyId] = useState('')
 
   // 开播中才拉历史；未开播时展示底稿（未播），不显示上一场的"已播"
@@ -69,12 +70,8 @@ export function CardStream({ personas }: { personas: Persona[] }) {
   }, [live, loadHistory, activeProgramId, pool.items.length])
 
   useEffect(() => {
-    if (live || !activeProgramId) {
-      setDrafts([])
-      return
-    }
-    void window.api.draftUnit.list(activeProgramId).then(setDrafts)
-  }, [live, activeProgramId])
+    void loadDrafts(live ? '' : activeProgramId)
+  }, [live, activeProgramId, loadDrafts])
 
   const rows = useMemo<CardRow[]>(() => {
     if (live) return mergeRows(history, pool.items)

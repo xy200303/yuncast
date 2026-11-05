@@ -55,6 +55,7 @@ import { ImprovisedPanel } from './live/ImprovisedPanel'
 import { NowPlayingBar } from './live/NowPlayingBar'
 import { PreparedPanel } from './live/PreparedPanel'
 import { CardStream } from './live/CardStream'
+import { WaterBar } from './live/WaterBar'
 import type {
   Persona,
   ChatEntry,
@@ -203,6 +204,8 @@ export function LivePage() {
               </Tabs>
             )
           })()}
+          {/* 水位条：还能撑多久、缓冲有没有见底（docs/12 第九节） */}
+          <WaterBar />
           {/* NowPlayingBar 吸底（docs/REDESIGN 4.6）：节目选择在左槽、启动/传输/结束在中槽、急停音量⋯在右槽 */}
           <NowPlayingBar
             program={activeProgram}

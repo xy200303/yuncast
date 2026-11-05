@@ -82,5 +82,14 @@ export function mergeRows(history: PoolItem[], queue: PoolItem[]): CardRow[] {
   const played = [...history].reverse().map((item) => ({ item, played: true }))
   // 历史与队列理论上不重叠，但播完那一刻两者可能各有一份：按 id 去重，队列优先
   const seen = new Set(queue.map((item) => item.id))
-  return [...played.filter((row) => !seen.has(row.item.id)), ...queue.map((item) => ({ item, played: false }))]
+  const rows: CardRow[] = []
+  for (const row of played) {
+    if (seen.has(row.item.id)) continue
+    // 同一段话在相邻场次里各播过一次：内容一样就只留最近的一条，历史不至于像复读
+    const prev = rows.at(-1)
+    if (prev && prev.item.text.trim() === row.item.text.trim()) continue
+    rows.push(row)
+  }
+  rows.push(...queue.map((item) => ({ item, played: false })))
+  return rows
 }

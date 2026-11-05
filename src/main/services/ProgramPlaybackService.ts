@@ -446,8 +446,11 @@ export class ProgramPlaybackService {
         continue
       }
       try {
+        // 卡片 = 合成单位：章级单元就把整章正文装进 text（以前只装 unit.title，
+        // 结果直播台里一个"原文朗读"标题占一张卡、正文空白）。标题只在找不到正文时兜底。
+        const unitText = unit.draftUnits.map((u) => u.text).join('\n').trim() || unit.title
         this.pool.say({
-          text: unit.title,
+          text: unitText,
           lane: 'normal',
           sourceKind: 'scene',
           sourceAgentId: LIBRARY_SOURCE_ID,

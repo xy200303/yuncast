@@ -154,49 +154,16 @@ export function CardStream({ personas }: { personas: Persona[] }) {
           // 双语对照字段随 v2 迁移加（textZh）；现在一律没有
           const translation: string | undefined = undefined
           const isEditing = editing?.id === item.id
-          // 预制节目按"章/整段"入池：text 存的是单元标题，音频是整章渲染产物。
-          // 它不是一句台词，界面上按章节条渲染，不占一整张正文卡。
-          const isChapter = item.source.kind === 'scene'
-          if (isChapter) {
+          const fromUnit = item.source.kind === 'scene'
+          // 只有"没有正文的纯标题"才降级成提示条（场景名/节奏标记那种）；
+          // 合成单位是整章时它本身就有一大段正文，照常出卡片。
+          const isMarker = fromUnit && text.trim().length <= 24 && !/[。！？.!?]/.test(text)
+          if (isMarker) {
             return (
-              <div
-                key={item.id}
-                className={cn(
-                  'flex items-center gap-2 rounded-[10px] border border-dashed border-black/[0.10] bg-[#fbfbfa] px-3 py-2 text-[12px]',
-                  dim && 'text-foreground/45'
-                )}
-              >
-                <span className="shrink-0 text-muted-foreground">章节</span>
-                <span className="min-w-0 flex-1 truncate">{text}</span>
-                <span className="shrink-0 text-muted-foreground">整章音频</span>
-                {row.played && <span className="shrink-0 text-muted-foreground">已播</span>}
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon-sm" title="更多">
-                      <MoreHorizontal />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-40">
-                    <DropdownMenuItem
-                      disabled={!item.audioPath}
-                      onSelect={() =>
-                        item.audioPath &&
-                        audition.toggle({ key: `pool:${item.id}`, title: auditionTitle(text), audioPath: item.audioPath })
-                      }
-                    >
-                      <Play /> 试听整章
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      disabled={row.played || playing}
-                      onSelect={async () => {
-                        const result = await window.api.pool.promote(item.id)
-                        if (!result.ok) toast.error('操作失败', { description: result.error })
-                      }}
-                    >
-                      <Clock3 /> 提到队首
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+              <div key={item.id} className="flex items-center gap-2 py-1 pl-1 text-[12px] text-muted-foreground">
+                <span className="h-px w-4 bg-border" />
+                <span className={cn('truncate', dim && 'opacity-60')}>{text}</span>
+                <span className="h-px flex-1 bg-border/60" />
               </div>
             )
           }
@@ -220,6 +187,9 @@ export function CardStream({ personas }: { personas: Persona[] }) {
                     <i className="size-1.5 rounded-full" style={{ background: speaker.color }} />
                     <span className="text-foreground/70">{speaker.name}</span>
                   </span>
+                )}
+                {fromUnit && (
+                  <span className="rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">章节</span>
                 )}
                 <span className="tabular-nums">{String(index + 1).padStart(2, '0')}</span>
                 <span className="truncate">{STATUS_TEXT[item.status]}</span>

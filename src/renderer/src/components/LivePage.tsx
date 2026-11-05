@@ -56,6 +56,7 @@ import { NowPlayingBar } from './live/NowPlayingBar'
 import { PreparedPanel } from './live/PreparedPanel'
 import { CardStream } from './live/CardStream'
 import { WaterBar } from './live/WaterBar'
+import { LaunchConfigDialog, type LaunchConfig } from './live/LaunchConfigDialog'
 import type {
   Persona,
   ChatEntry,
@@ -88,6 +89,54 @@ export function LivePage() {
   const [inboxEvents, setInboxEvents] = useState<LiveInboxEvent[]>([])
   /** 节目控制（选择/启动/暂停/结束 + 预检与门禁弹窗）：activeProgram 也由它给，只有一处真值 */
   const programControl = useProgramLauncher()
+
+  /** 开播配置确认：语言/收尾写回节目，勾了"清空重合成"就先清音频，然后进原有预检流程 */
+  const applyLaunchConfig = async (config: LaunchConfig): Promise<void> => {
+    const program = programControl.activeProgram
+    if (!program) return
+    programControl.setLaunchConfigOpen(false)
+    const patch = { language: config.language, finishMode: config.finishMode } as const
+    if (patch.language !== program.language || patch.finishMode !== program.finishMode) {
+      const saved = await window.api.program.save(
+        {
+          name: program.name,
+          theme: program.theme,
+          contentType: program.contentType,
+          broadcastMode: program.broadcastMode,
+          finishMode: patch.finishMode,
+          allowLiveEvents: program.allowLiveEvents,
+          enabledTriggerIds: program.enabledTriggerIds,
+          personaIds: program.personaIds,
+          instruction: program.instruction,
+          language: patch.language,
+          plan: program.plan,
+          knowledgeScope: program.knowledgeScope
+        },
+        program.id
+      )
+      if (!saved.ok) {
+        toast.error('保存配置失败', { description: saved.error })
+        return
+      }
+    }
+    if (config.rebuildAudio) {
+      const cleared = await window.api.draftUnit.clearAudio(program.id)
+      if (!cleared.ok) {
+        toast.error('清空音频失败', { description: cleared.error })
+        return
+      }
+      toast.message('已清空本节目音频', { description: `共 ${cleared.item ?? 0} 段，开播后按当前音色重新合成` })
+    }
+    programControl.openPreflight()
+  }
+  const [draftCounts, setDraftCounts] = useState({ draft: 0, ready: 0 })
+  useEffect(() => {
+    const programId = programControl.activeProgram?.id
+    if (!programControl.launchConfigOpen || !programId) return
+    void window.api.draftUnit.list(programId).then((list) => {
+      setDraftCounts({ draft: list.length, ready: list.filter((unit) => unit.rendered?.status === 'ready').length })
+    })
+  }, [programControl.launchConfigOpen, programControl.activeProgram?.id])
   const activeProgram = programControl.activeProgram
   // 主播卡名单：队列行按音色反查卡名，多主播节目显示身份
   const [personaList, setCastList] = useState<Persona[]>([])
@@ -227,6 +276,15 @@ export function LivePage() {
         </section>
         {/* 预检 / 开播确认 / 结束确认 / 底稿 / 声音选择 / 预制门禁：都挂在页面根部 */}
         {programControl.dialogs}
+        <LaunchConfigDialog
+          open={programControl.launchConfigOpen}
+          program={activeProgram}
+          personas={personaList}
+          draftCount={draftCounts.draft}
+          readyCount={draftCounts.ready}
+          onCancel={() => programControl.setLaunchConfigOpen(false)}
+          onConfirm={(config: LaunchConfig) => void applyLaunchConfig(config)}
+        />
     </div>
   )
 }
@@ -252,6 +310,8 @@ function useProgramLauncher() {
   const [voicePickOpen, setVoicePickOpen] = useState(false)
   /** 「结束本场」二次确认：收场是不可逆的重操作，跟「暂停」分开 */
   const [stopAsk, setStopAsk] = useState(false)
+  /** 开播配置弹窗开合（点「启动节目」先过这一屏） */
+  const [launchConfigOpen, setLaunchConfigOpen] = useState(false)
 
   /**
    * 节目列表 + 卡司列表。页面是常驻不卸载的（App 用显隐切页），所以不能只在挂载时拉一次——
@@ -442,8 +502,8 @@ function useProgramLauncher() {
     <Button
       size="sm"
       disabled={busy || checking}
-      onClick={() => void openPreflight()}
-      title="预检并启动这一场（先看开播确认，再出声）"
+      onClick={() => setLaunchConfigOpen(true)}
+      title="先配这一场：语言 / 主播 / 音频 / 合成时机，再预检开播"
     >
       {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
       启动节目
@@ -615,7 +675,19 @@ function useProgramLauncher() {
     </>
   )
 
-  return { programs, activeProgram, running, picker, launchAction, endAction, dialogs, patchProgram }
+  return {
+    programs,
+    activeProgram,
+    running,
+    picker,
+    launchAction,
+    endAction,
+    dialogs,
+    patchProgram,
+    openPreflight,
+    launchConfigOpen,
+    setLaunchConfigOpen
+  }
 }
 
 /**

@@ -323,6 +323,13 @@ export class ProgramPlaybackService {
    * 预制节目先过正式播放门禁（缺项返回结构化 gate，不静默跳过；
    * opts.allowPartial = 用户选了「仅播放已完成部分」）。
    */
+  /** 本场音色覆盖：personaId → voiceId（开播配置里逐个主播选的，只影响这一场装进池的条目） */
+  private voiceOverrides = new Map<string, string>()
+
+  setVoiceOverrides(pairs: { personaId: string; voiceId: string }[]): void {
+    this.voiceOverrides = new Map(pairs.filter((pair) => pair.personaId && pair.voiceId).map((pair) => [pair.personaId, pair.voiceId]))
+  }
+
   async launch(programId: string, opts?: { allowPartial?: boolean }): Promise<LaunchResult> {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return { ok: false, error: '节目不存在' }
@@ -335,6 +342,9 @@ export class ProgramPlaybackService {
         return { ok: false, error: `正在播出《${current?.name ?? '另一个节目'}》，先结束当前场次再开播新节目` }
       }
     }
+    // 本场配置里的"主播→音色"优先于卡上默认音色（资产不动，只在这次开播生效）
+    const latestConfig = this.storage.sessionConfigLatest(programId)
+    if (latestConfig) this.setVoiceOverrides(latestConfig.personaVoices)
     const blocked = this.preflight(programId).filter((item) => item.level === 'block')
     if (blocked.length > 0) {
       return { ok: false, error: `预检未通过：${blocked.map((item) => item.label).join('；')}` }
@@ -512,10 +522,11 @@ export class ProgramPlaybackService {
 
     let loaded = 0
     for (const u of ready) {
-      // 口径与生产一致：卡 id（personaId）→ 卡上的当前音色 > 段落音色快照 > 卡司第一张
-      const cardVoice = u.personaId
-        ? (this.persona.list().find((p) => p.id === u.personaId)?.voiceId ?? '').trim()
-        : ''
+      // 口径：本场覆盖（开播配置逐个选的）> 卡上默认音色 > 段落音色快照 > 卡司第一张
+      const overrideVoice = u.personaId ? this.voiceOverrides.get(u.personaId) ?? '' : ''
+      const cardVoice =
+        overrideVoice ||
+        (u.personaId ? (this.persona.list().find((p) => p.id === u.personaId)?.voiceId ?? '').trim() : '')
       const voice = cardVoice || (this.persona.resolveProgramVoice(u.voiceId) ?? '')
       const reusable = Boolean(u.audioPath) && (u.synthVoice ?? '') === voice
       try {

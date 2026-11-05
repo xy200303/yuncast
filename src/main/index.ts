@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
 import { BRAND_DISPLAY } from '../shared/brand'
-import { POOL_LIMITS } from '../shared/types'
+import { POOL_LIMITS, type SessionConfig } from '../shared/types'
 
 /** 崩溃现场日志（无声退出排查）：追加写 userData/crash.log，只记事件类型不带业务数据 */
 function crashNote(kind: string, detail: string): void {
@@ -746,6 +746,12 @@ function registerIpc(
     guard(() => pool.insertNext(input))
   )
   ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
+  ipcMain.handle(IPC.sessionConfigSave, (_e, config: SessionConfig) => {
+    storage.sessionConfigSave(config)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.sessionConfigLatest, (_e, programId: string) => storage.sessionConfigLatest(programId))
+
   ipcMain.handle(IPC.poolRevise, (_e, id: string, text: string) => guard(() => pool.revise(id, text)))
   // 提到队首：只动未播条目的顺序（正在播的不受影响）
   ipcMain.handle(IPC.poolPromote, (_e, id: string) =>

@@ -16,6 +16,9 @@ export const IPC = {
   poolInsertNext: 'pool:insert-next',
   poolRevoke: 'pool:revoke',
   /** 改未播条目的文本（作废旧音频，重新合成） */
+  /** 本场配置：开播弹窗确认后落库（docs/12） */
+  sessionConfigSave: 'session-config:save',
+  sessionConfigLatest: 'session-config:latest',
   poolRevise: 'pool:revise',
   /** 把某条未播话术提到队首（等价「从此处播」前的排队动作） */
   poolPromote: 'pool:promote',

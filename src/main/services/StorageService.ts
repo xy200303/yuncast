@@ -17,6 +17,7 @@ import {
   type BroadcastEndReason,
   type BroadcastEvent,
   type BroadcastSession,
+  type SessionConfig,
   type UsageBucket,
   type UsageDashboard,
   type MaterialFile,
@@ -808,6 +809,46 @@ export class StorageService {
 
   timelineClear(programId: string): void {
     this.db.prepare('DELETE FROM director_timeline WHERE program_id = ?').run(programId)
+  }
+
+  // ---------- 本场配置（docs/12） ----------
+
+  sessionConfigSave(config: SessionConfig): void {
+    this.db
+      .prepare(
+        `INSERT INTO session_configs (id, program_id, language, preset, synth_mode, end_mode, audio_policy, persona_voices, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        config.id,
+        config.programId,
+        config.language,
+        config.preset,
+        config.synthMode,
+        config.endMode,
+        config.audioPolicy,
+        JSON.stringify(config.personaVoices),
+        config.createdAt
+      )
+  }
+
+  /** 最近一次本场配置（开播弹窗预填用） */
+  sessionConfigLatest(programId: string): SessionConfig | null {
+    const row = this.db
+      .prepare('SELECT * FROM session_configs WHERE program_id = ? ORDER BY created_at DESC LIMIT 1')
+      .get(programId) as Record<string, unknown> | undefined
+    if (!row) return null
+    return {
+      id: str(row.id),
+      programId: str(row.program_id),
+      language: (str(row.language) || 'auto') as SessionConfig['language'],
+      preset: str(row.preset),
+      synthMode: (str(row.synth_mode) || 'async') as SessionConfig['synthMode'],
+      endMode: (str(row.end_mode) || 'loop') as SessionConfig['endMode'],
+      audioPolicy: (str(row.audio_policy) || 'reuse') as SessionConfig['audioPolicy'],
+      personaVoices: parseJson(row.persona_voices, []),
+      createdAt: num(row.created_at) ?? 0
+    }
   }
 
   // ---------- 音色库（M8） ----------

@@ -64,6 +64,7 @@ import type {
   LiveComment,
   LiveInboxEvent,
   Program,
+  VoiceRecord,
   PreflightItem,
   ProduceVoiceOverride,
   ProgramGateResult,
@@ -119,6 +120,18 @@ export function LivePage() {
         return
       }
     }
+    // 本场配置落库：主播→音色只在这一场生效（引擎装池时按它覆盖卡上默认音色）
+    await window.api.sessionConfig.save({
+      id: `sc-${program.id}-${Date.now()}`,
+      programId: program.id,
+      language: config.language,
+      preset: '',
+      synthMode: config.synthMode,
+      endMode: config.finishMode,
+      audioPolicy: config.rebuildAudio ? 'rebuild' : 'reuse',
+      personaVoices: config.personaVoices,
+      createdAt: Date.now()
+    })
     if (config.rebuildAudio) {
       const cleared = await window.api.draftUnit.clearAudio(program.id)
       if (!cleared.ok) {
@@ -130,6 +143,12 @@ export function LivePage() {
     programControl.openPreflight()
   }
   const [draftCounts, setDraftCounts] = useState({ draft: 0, ready: 0 })
+  /** 开播配置里逐个主播选音色用的音色库 */
+  const [voiceList, setVoiceList] = useState<VoiceRecord[]>([])
+  useEffect(() => {
+    if (!('api' in window)) return
+    void window.api.voice.list().then(setVoiceList)
+  }, [])
   useEffect(() => {
     const programId = programControl.activeProgram?.id
     if (!programControl.launchConfigOpen || !programId) return
@@ -280,6 +299,7 @@ export function LivePage() {
           open={programControl.launchConfigOpen}
           program={activeProgram}
           personas={personaList}
+          voices={voiceList}
           draftCount={draftCounts.draft}
           readyCount={draftCounts.ready}
           onCancel={() => programControl.setLaunchConfigOpen(false)}

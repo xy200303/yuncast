@@ -724,6 +724,24 @@ export interface PoolSnapshot {
   failed: PoolItem[]
 }
 
+/** 本场（一次开播）的绑定配置：资产是静态的，人、嗓子、语言都只在这里定（docs/12） */
+export interface SessionConfig {
+  id: string
+  programId: string
+  language: ProgramLanguage
+  /** 播出预设（带货/有声书/闲聊…），空 = 自定义 */
+  preset: string
+  /** 合成时机：预合成 / 边播边合 / 实时流式 */
+  synthMode: 'pre' | 'async' | 'realtime'
+  /** 收尾方式 */
+  endMode: 'loop' | 'stop'
+  /** 音频策略：复用已有 / 清空重合成 */
+  audioPolicy: 'reuse' | 'rebuild'
+  /** 主播 → 音色（逐人指定；同一主播多节目可不同嗓子） */
+  personaVoices: { personaId: string; voiceId: string }[]
+  createdAt: number
+}
+
 /** 池操作统一返回形状（IPC 层不抛异常，错误信息给 UI 用） */
 export type PoolResult<T = undefined> =
   | ({ ok: true } & (T extends undefined ? object : { item: T }))

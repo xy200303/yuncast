@@ -3,7 +3,7 @@ import { AlertTriangle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import type { Persona, Program, ProgramLanguage } from '../../../../shared/types'
+import type { Persona, Program, ProgramLanguage, VoiceRecord } from '../../../../shared/types'
 
 /**
  * 开播配置（docs/12 第五节）：点「启动节目」先过这一屏，每次都必须确认。
@@ -22,6 +22,8 @@ export interface LaunchConfig {
   finishMode: 'loop' | 'stop'
   synthMode: SynthMode
   rebuildAudio: boolean
+  /** 主播 → 音色：只在本场生效，不改主播卡 */
+  personaVoices: { personaId: string; voiceId: string }[]
 }
 
 const LANGUAGES: { value: ProgramLanguage; label: string }[] = [
@@ -102,6 +104,7 @@ export function LaunchConfigDialog({
   open,
   program,
   personas,
+  voices,
   draftCount,
   readyCount,
   onCancel,
@@ -110,6 +113,7 @@ export function LaunchConfigDialog({
   open: boolean
   program: Program | null
   personas: Persona[]
+  voices: VoiceRecord[]
   draftCount: number
   readyCount: number
   onCancel: () => void
@@ -119,7 +123,8 @@ export function LaunchConfigDialog({
     language: program?.language ?? 'auto',
     finishMode: program?.finishMode === 'stop' ? 'stop' : 'loop',
     synthMode: 'async',
-    rebuildAudio: false
+    rebuildAudio: false,
+    personaVoices: []
   })
 
   useEffect(() => {
@@ -128,7 +133,11 @@ export function LaunchConfigDialog({
       language: program.language,
       finishMode: program.finishMode === 'stop' ? 'stop' : 'loop',
       synthMode: 'async',
-      rebuildAudio: false
+      rebuildAudio: false,
+      personaVoices: (program.personaIds ?? []).map((id) => {
+        const persona = personas.find((item) => item.id === id)
+        return { personaId: id, voiceId: persona?.defaultVoiceId || persona?.voiceId || '' }
+      })
     })
   }, [open, program])
 
@@ -206,22 +215,49 @@ export function LaunchConfigDialog({
             )}
           </Row>
 
-          <div className="flex items-center gap-2 border-t border-border/60 py-3 text-[12.5px]">
-            <span className="w-16 shrink-0 text-muted-foreground">主播</span>
-            {cast.length === 0 ? (
-              <span className="text-muted-foreground">本节目还没配卡司</span>
-            ) : (
-              <span className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-                {cast.map((persona) => (
-                  <span key={persona.id} className="flex items-center gap-1.5">
-                    <i className="size-1.5 rounded-full bg-primary" />
-                    <span className="text-foreground/80">{persona.name}</span>
-                  </span>
-                ))}
-                <span className="truncate">· 沿用已绑音色</span>
-              </span>
-            )}
-            <span className="ml-auto shrink-0 text-[11px] text-muted-foreground/60">逐人换音色 · 待解耦</span>
+          <div className="border-t border-border/60 py-3">
+            <div className="flex items-center gap-4">
+              <span className="w-16 shrink-0 text-[12.5px] text-muted-foreground">主播</span>
+              <div className="min-w-0 flex-1 space-y-1.5">
+                {cast.length === 0 ? (
+                  <p className="text-[12.5px] text-muted-foreground">本节目还没配卡司</p>
+                ) : (
+                  cast.map((persona) => {
+                    const picked = config.personaVoices.find((pair) => pair.personaId === persona.id)?.voiceId ?? ''
+                    return (
+                      <div key={persona.id} className="flex items-center gap-2">
+                        <i className="size-1.5 shrink-0 rounded-full bg-primary" />
+                        <span className="w-14 shrink-0 truncate text-[12.5px]">{persona.name}</span>
+                        <select
+                          value={picked}
+                          onChange={(event) =>
+                            setConfig({
+                              ...config,
+                              personaVoices: config.personaVoices.some((pair) => pair.personaId === persona.id)
+                                ? config.personaVoices.map((pair) =>
+                                    pair.personaId === persona.id ? { ...pair, voiceId: event.target.value } : pair
+                                  )
+                                : [...config.personaVoices, { personaId: persona.id, voiceId: event.target.value }]
+                            })
+                          }
+                          className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-[12.5px]"
+                        >
+                          <option value="">默认（主播卡上的音色）</option>
+                          {voices.map((voice) => (
+                            <option key={voice.id} value={voice.voiceType || voice.id}>
+                              {voice.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )
+                  })
+                )}
+                <p className="text-[11.5px] leading-relaxed text-muted-foreground/80">
+                  只影响本场装进池的条目，不改主播卡本身。
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 

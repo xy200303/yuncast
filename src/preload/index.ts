@@ -37,6 +37,7 @@ import type {
   ProducePlanInfo,
   ProduceVoiceOverride,
   Program,
+  SessionConfig,
   ProgramAudioProgress,
   ProgramExportOptions,
   ProgramExportProgress,
@@ -120,6 +121,10 @@ const api = {
         ipcRenderer.removeListener(IPC.poolSnapshotEvent, listener)
       }
     }
+  },
+  sessionConfig: {
+    save: (config: SessionConfig) => ipcRenderer.invoke(IPC.sessionConfigSave, config) as Promise<{ ok: boolean }>,
+    latest: (programId: string) => ipcRenderer.invoke(IPC.sessionConfigLatest, programId) as Promise<SessionConfig | null>
   },
   tts: {
     /** 测试发音：用指定的接入 + 模型合成一小段（voice 空 → 模型目录第一个音色或该接入 + 模型的克隆音色） */

@@ -154,6 +154,53 @@ export function CardStream({ personas }: { personas: Persona[] }) {
           // 双语对照字段随 v2 迁移加（textZh）；现在一律没有
           const translation: string | undefined = undefined
           const isEditing = editing?.id === item.id
+          // 预制节目按"章/整段"入池：text 存的是单元标题，音频是整章渲染产物。
+          // 它不是一句台词，界面上按章节条渲染，不占一整张正文卡。
+          const isChapter = item.source.kind === 'scene'
+          if (isChapter) {
+            return (
+              <div
+                key={item.id}
+                className={cn(
+                  'flex items-center gap-2 rounded-[10px] border border-dashed border-black/[0.10] bg-[#fbfbfa] px-3 py-2 text-[12px]',
+                  dim && 'text-foreground/45'
+                )}
+              >
+                <span className="shrink-0 text-muted-foreground">章节</span>
+                <span className="min-w-0 flex-1 truncate">{text}</span>
+                <span className="shrink-0 text-muted-foreground">整章音频</span>
+                {row.played && <span className="shrink-0 text-muted-foreground">已播</span>}
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon-sm" title="更多">
+                      <MoreHorizontal />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-40">
+                    <DropdownMenuItem
+                      disabled={!item.audioPath}
+                      onSelect={() =>
+                        item.audioPath &&
+                        audition.toggle({ key: `pool:${item.id}`, title: auditionTitle(text), audioPath: item.audioPath })
+                      }
+                    >
+                      <Play /> 试听整章
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={row.played || playing}
+                      onSelect={async () => {
+                        const result = await window.api.pool.promote(item.id)
+                        if (!result.ok) toast.error('操作失败', { description: result.error })
+                      }}
+                    >
+                      <Clock3 /> 提到队首
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )
+          }
+
           return (
             <div
               key={item.id}

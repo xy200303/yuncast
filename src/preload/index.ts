@@ -19,6 +19,7 @@ import type {
   DirectorConfig,
   DirectorTimelineEvent,
   DirectorTimelineReset,
+  DraftBriefParams,
   MaterialFile,
   LiveComment,
   LaunchResult,
@@ -208,9 +209,10 @@ const api = {
     /** 应用改动后的资产：mode = hot（热更新，会话没断）/ cold（模型变了，重开会话） */
     restart: () => ipcRenderer.invoke(IPC.agentRestart) as Promise<{ ok: boolean; mode?: 'hot' | 'cold'; error?: string }>,
     status: () => ipcRenderer.invoke(IPC.agentStatus) as Promise<AgentStatus>,
-    /** 写稿：派导演给该节目写底稿（直播台看过程，随时可插话改口径） */
-    draftStart: (programId: string) =>
-      ipcRenderer.invoke(IPC.agentDraftStart, programId) as Promise<{ ok: boolean; error?: string }>,
+    /** 写稿：派导演给该节目写底稿（直播台看过程，随时可插话改口径）。
+     *  params = 界面当下选的语言/风格/形态/收尾：随任务书传给导演，改了语言立刻生效 */
+    draftStart: (programId: string, params?: DraftBriefParams) =>
+      ipcRenderer.invoke(IPC.agentDraftStart, programId, params) as Promise<{ ok: boolean; error?: string }>,
     /** 暂停/恢复主播产出（统一开播控制里的暂停：停播报 + 停生成） */
     setSpeakingPaused: (paused: boolean) =>
       ipcRenderer.invoke(IPC.playbackSetPaused, paused) as Promise<void>,

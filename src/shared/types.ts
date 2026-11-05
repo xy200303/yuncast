@@ -841,6 +841,18 @@ export interface SessionConfig {
 /** 新建本场配置的入参：界面只给内容，id/createdAt 由主进程分配 */
 export type SessionConfigInput = Omit<SessionConfig, 'id' | 'createdAt'>
 
+/**
+ * 写稿任务书随调用带上的现场参数（语言/风格/形态/收尾）。
+ * 这些值拼在 system prompt 里，而 system prompt 在会话出生时组装——用户中途改语言，
+ * 旧会话看不到。所以每次叫导演写稿都把当前值随任务书传过去，以任务书为准。
+ */
+export interface DraftBriefParams {
+  language?: ProgramLanguage
+  instruction?: string
+  contentType?: ContentType
+  endMode?: SessionEndMode
+}
+
 export const DEFAULT_SESSION_CONFIG: Omit<SessionConfigInput, 'programId'> = {
   language: 'Chinese',
   contentType: 'solo',

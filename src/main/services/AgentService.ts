@@ -14,6 +14,8 @@ import {
 import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate'
 import {
   broadcastModeOf,
+  CONTENT_TYPE_LABELS,
+  PROGRAM_LANGUAGE_LABELS,
   type AgentStatus,
   type BroadcastMode,
   type ChatEntry,
@@ -21,6 +23,7 @@ import {
   type DirectorTimelineEntry,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
+  type DraftBriefParams,
   type LiveComment,
   type PlaybackControlAction,
   type Program,
@@ -831,7 +834,7 @@ export class AgentService {
    * 没开播时播出通道关着，产出只走 write_bits 进底稿库。切到目标节目（没开播，安全），
    * 没会话就就位，然后派写稿任务书；直播中拒绝。
    */
-  async startDrafting(programId: string): Promise<void> {
+  async startDrafting(programId: string, params?: DraftBriefParams): Promise<void> {
     const program = this.storage.programList().find((p) => p.id === programId)
     if (!program) throw new Error('剧本不存在')
     // 无限生成的本场没有底稿概念：不进写稿模式，给一句能照做的提示（备料走知识库）
@@ -851,12 +854,46 @@ export class AgentService {
     if (this.assetsStale() !== 'none') await this.applyAssets()
     const brief = this.script.getScript(program.id)
     if (!brief) throw new Error('编排读取失败')
-    this.directorSay(this.composeDraftBrief(brief))
+    this.directorSay(this.composeDraftBrief(brief, params ?? this.storedBriefParams(program.id)))
+  }
+
+  /** 界面没传参数时的兜底：本场最近一次保存的配置（语言/风格/形态/收尾都在里面） */
+  private storedBriefParams(programId: string): DraftBriefParams {
+    const session = this.storage.sessionConfigLatest(programId)
+    if (!session) return {}
+    return {
+      language: session.language,
+      instruction: session.instruction,
+      contentType: session.contentType,
+      endMode: session.endMode
+    }
+  }
+
+  /**
+   * 本次写作参数（语言/形态/风格/收尾）：**每份任务书都带一份当前值**。
+   * system prompt 里也有一份，但它在会话出生时组装——用户中途切语言，旧会话看不到；
+   * 参数随任务书走，切项目、切语言后下一次写稿一定按新的来。
+   */
+  private draftParamsBlock(params: DraftBriefParams): string {
+    const language = params.language ?? 'auto'
+    const languageLine =
+      language === 'auto'
+        ? '- 播出语言：自动识别（跟内容本身的语言走）'
+        : `- 播出语言：${PROGRAM_LANGUAGE_LABELS[language]}——正文（含 speak 的台词）必须用该语言写，标点也用该语言的标点；中文只放 textZh（给导演看的对照）`
+    const lines = [
+      languageLine,
+      `- 内容形式：${CONTENT_TYPE_LABELS[params.contentType ?? 'solo']}`,
+      params.instruction?.trim() ? `- 本场风格：${params.instruction.trim()}` : '',
+      params.endMode === 'stop'
+        ? '- 收尾：播完最后一场就道别下播，closer 段写一段收尾'
+        : '- 收尾：循环返场（返场不返词，同一要点换角度重讲）'
+    ].filter(Boolean)
+    return `\n\n# 本次写作参数（以这里为准：和你记忆里的旧配置、旧稿不一致时，按这里改）\n${lines.join('\n')}`
   }
 
   /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走导演手册（user.draft_brief）；
-   *  末尾附本场卡司名单——写谁的词要钻进谁的人设，导演得先知道手上有哪些主播 */
-  private composeDraftBrief(script: Script): string {
+   *  末尾附本场写作参数与卡司名单——写谁的词要钻进谁的人设，导演得先知道手上有哪些主播 */
+  private composeDraftBrief(script: Script, params: DraftBriefParams): string {
     const scenes =
       script.scenes.length === 0
         ? '  （还没有场景——先按节目主题用 create_scene 把场次搭出来，再逐场写）'
@@ -867,7 +904,7 @@ export class AgentService {
                 `目标：${scene.goal}；要点：${scene.keyPoints.replace(/\n/g, '；')}`
             )
             .join('\n')
-    return this.prompts.render('user.draft_brief', { scenes })
+    return this.prompts.render('user.draft_brief', { scenes }) + this.draftParamsBlock(params)
   }
 
   /** 任务书末尾的卡司段：本场配了卡司就点名，没配就报备稿可用名单 */

@@ -547,9 +547,17 @@ function useProgramLauncher() {
   const startDraft = (): void => {
     if (!activeProgramId || !activeProgram) return
     useAppStore.getState().openAgentPanel({ kind: 'draft', programId: activeProgramId })
-    void window.api.agent.draftStart(activeProgramId).then((result) => {
-      if (!result.ok) toast.error('导演没能开始写稿', { description: result.error })
-    })
+    // 顶栏当下选的参数随任务书发过去：会话里的 system prompt 可能是切换语言之前生的
+    void window.api.agent
+      .draftStart(activeProgramId, {
+        language: session?.language,
+        instruction: session?.instruction,
+        contentType: session?.contentType,
+        endMode: session?.endMode
+      })
+      .then((result) => {
+        if (!result.ok) toast.error('导演没能开始写稿', { description: result.error })
+      })
   }
 
   const switchProgram = async (id: string): Promise<void> => {

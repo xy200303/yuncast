@@ -87,6 +87,7 @@ import {
   type DirectorConfig,
   type DirectorTimelineEvent,
   type DirectorTimelineReset,
+  type DraftBriefParams,
   type LiveComment,
   type McpConfig,
   type McpRuntime,
@@ -1486,9 +1487,9 @@ function registerIpc(
     }
   )
   // ---------- 写稿：导演给当前节目写底稿 ----------
-  ipcMain.handle(IPC.agentDraftStart, async (_e, programId: string) => {
+  ipcMain.handle(IPC.agentDraftStart, async (_e, programId: string, params?: DraftBriefParams) => {
     try {
-      await agent.startDrafting(String(programId))
+      await agent.startDrafting(String(programId), params)
       return { ok: true }
     } catch (error) {
       return { ok: false, error: friendlyError(error) }

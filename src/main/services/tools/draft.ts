@@ -11,7 +11,9 @@ import {
   sceneTitleOf,
   currentSceneId,
   bitTypeMonotony,
-  resolveVoice
+  resolveVoice,
+  languageMismatch,
+  languageMismatchOf
 } from './util'
 
 /**
@@ -133,6 +135,8 @@ export const draftTools = [
       const capped = draftCapHit(ctx)
       if (capped) return capped
       if (!params.textZh.trim()) return 'textZh 必填：播出文本和中文对照都要给（中文节目填与 text 相同的内容）'
+      const wrongLanguage = languageMismatch(ctx, params.text)
+      if (wrongLanguage) return wrongLanguage
       const programId = activeProgramId(ctx)!
       const sceneId = params.sceneId?.trim() ?? currentSceneId(ctx)
       const siblings = ctx.draftUnits.list(programId).filter((u) => u.sceneId === sceneId)
@@ -212,6 +216,11 @@ export const draftTools = [
       if (missing >= 0) {
         return `第 ${missing + 1} 段缺 textZh：每段都要同时给播出文本和中文对照（中文节目填与 text 相同的内容）`
       }
+      const wrongLanguage = languageMismatchOf(
+        ctx,
+        params.items.map((item) => item.text)
+      )
+      if (wrongLanguage) return `第 ${wrongLanguage.index + 1} 段：${wrongLanguage.message}`
       const programId = activeProgramId(ctx)!
       const defaultVoice = resolveVoice(ctx, programId, undefined) ?? ''
       const saved = ctx.draftUnits.saveMany(
@@ -269,6 +278,8 @@ export const draftTools = [
       const programId = activeProgramId(ctx)!
       const existing = ctx.draftUnits.list(programId).find((u) => u.id === params.unitId.trim())
       if (!existing) return `找不到底稿 ${params.unitId}（用 draft_list 拿正确的 unitId）`
+      const wrongLanguage = languageMismatch(ctx, params.text)
+      if (wrongLanguage) return wrongLanguage
       ctx.draftUnits.save(
         {
           programId,

@@ -1,5 +1,6 @@
-import type { Program } from '../../../shared/types'
-import { DRAFT_UNIT_STATUS_LABEL } from '../../../shared/types'
+import type { Program, ProgramLanguage } from '../../../shared/types'
+import { DRAFT_UNIT_STATUS_LABEL, PROGRAM_LANGUAGE_LABELS } from '../../../shared/types'
+import { stripSpeechTags } from '../../../shared/speechTags'
 import type { ToolCtx } from './types'
 
 /**
@@ -84,5 +85,67 @@ export function bitTypeMonotony(types: string[]): string | null {
   const first = types[0].trim()
   if (!first) return null
   if (types.every((t) => t.trim() === first)) return `这批 ${types.length} 段全是「${first}」类型`
+  return null
+}
+
+/** 某种文字的出现次数（正字法检查用） */
+function countScript(text: string, pattern: RegExp): number {
+  return (text.match(pattern) ?? []).length
+}
+
+/**
+ * 播出语言正字法：正文（剥掉 <cot>/<fx>/<pause> 后）是不是本场语言的文字。
+ * 中文节目看汉字；日语必须有假名（纯汉字段落就是中文稿）；拉丁语系看拉丁字母占比。
+ */
+function matchesLanguage(language: ProgramLanguage, text: string): boolean {
+  const cjk = countScript(text, /[\u3400-\u9fff]/g)
+  const kana = countScript(text, /[\u3040-\u30ff]/g)
+  const latin = countScript(text, /[A-Za-z]/g)
+  switch (language) {
+    case 'Japanese':
+      return kana >= 2 && kana / Math.max(1, kana + cjk) >= 0.1
+    case 'Korean':
+      return countScript(text, /[\uac00-\ud7af\u1100-\u11ff]/g) >= 2
+    case 'Russian':
+      return countScript(text, /[\u0400-\u04ff]/g) >= 2
+    case 'Thai':
+      return countScript(text, /[\u0e00-\u0e7f]/g) >= 2
+    case 'Khmer':
+      return countScript(text, /[\u1780-\u17ff]/g) >= 2
+    case 'Lao':
+      return countScript(text, /[\u0e80-\u0eff]/g) >= 2
+    case 'Burmese':
+      return countScript(text, /[\u1000-\u109f]/g) >= 2
+    default:
+      // 英/德/法/意/西/葡/印尼/马来/菲律宾：拉丁字母为主
+      return latin > 0 && latin / Math.max(1, latin + cjk) >= 0.6
+  }
+}
+
+/**
+ * 写稿语言闸：本场语言不是 auto 时，正文必须是该语言的文字，否则拒收。
+ * 提示词写了规矩，但模型会从旧稿/存档文件里搬原文——中文稿混进日语节目只有代码能拦住。
+ * 返回 null = 通过；有返回值 = 给模型看的拒收原因。
+ */
+export function languageMismatch(ctx: ToolCtx, text: string): string | null {
+  const programId = activeProgramId(ctx)
+  if (!programId) return null
+  const language = ctx.storage.sessionConfigLatest(programId)?.language ?? 'auto'
+  // 中文/自动不设闸：模型本来就倾向写中文，中英夹杂的商品名也正常，别误伤
+  if (language === 'auto' || language === 'Chinese') return null
+  if (matchesLanguage(language, stripSpeechTags(text))) return null
+  const label = PROGRAM_LANGUAGE_LABELS[language] ?? language
+  return `这段不是${label}：本场播出语言是「${label}」，正文必须用${label}写（中文只放 textZh 做对照）。请整段用${label}重写后再入库`
+}
+
+/** 多条一起查（draft_write 一批）：返回第几段不合格 + 原因 */
+export function languageMismatchOf(
+  ctx: ToolCtx,
+  texts: string[]
+): { index: number; message: string } | null {
+  for (let i = 0; i < texts.length; i++) {
+    const message = languageMismatch(ctx, texts[i])
+    if (message) return { index: i, message }
+  }
   return null
 }

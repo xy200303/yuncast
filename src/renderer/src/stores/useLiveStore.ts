@@ -15,7 +15,8 @@ import type { PoolItem } from '../../../shared/types'
 export type DisplayMode = 'target' | 'zh' | 'both'
 export type Density = 'comfortable' | 'compact'
 
-const PREFS_KEY = 'yuncast.live.prefs:v1'
+// v2：默认改成「双显」，换键让老用户也吃到新默认（旧 v1 里存的 target 不再生效）
+const PREFS_KEY = 'yuncast.live.prefs:v2'
 
 type Prefs = { displayMode: DisplayMode; density: Density }
 
@@ -26,7 +27,7 @@ function readPrefs(): Prefs {
   } catch {
     // 没存过或存坏了：用默认
   }
-  return { displayMode: 'target', density: 'comfortable' }
+  return { displayMode: 'both', density: 'comfortable' }
 }
 
 function writePrefs(prefs: Prefs): void {

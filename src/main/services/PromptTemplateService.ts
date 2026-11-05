@@ -159,6 +159,9 @@ const DEFAULT_PROMPTS = {
     description: '写稿任务开场派给导演的写稿任务。变量：{{scenes}}',
     content: `直播前备稿：为这场直播写口播底稿，逐场景创作：
 {{scenes}}
+
+先问清楚再动笔：商品/服务是什么、价格与优惠、卖给谁、想要什么风格、这场大概播多久。任何一项不清楚，先在对话里把缺的一起问用户（一次问完，别挤牙膏），等回答再写；用户明确说"你定"就按项目简介和素材自己拿主意。
+每条底稿必须同时给两份文本：text（按本场播出语言写，观众听到的）和 textZh（中文对照；本场就是中文时填与 text 相同的内容）。draft_write / draft_add 少 textZh 会被拒绝。
 场景不够用或结构不对，先用 scene_create 把节目编排搭起来再动笔。
 写多少由你自己判断：能撑起整场、节奏有起伏就停，别灌水凑数；底稿库有硬上限（成本闸），写满 draft_write 会拒。
 怎么编排你说了算，只有几条底线：
@@ -397,7 +400,7 @@ ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 
   private programEventLines(session: SessionConfig | null): string {
     const lines: string[] = []
     if (!session) {
-      lines.push('- 本场还没配置：开播前在开播配置里定主播、嗓子、语言与互动开关')
+      lines.push('- 本场还没配置：开播前在开播配置里定音色、语言与互动开关')
       return `\n${lines.join('\n')}`
     }
     if (!session.allowLiveEvents) {

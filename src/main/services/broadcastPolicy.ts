@@ -52,7 +52,7 @@ function rollingPolicy(pb: ProgramPlaybackService, session: SessionConfig): Broa
       if (!pb.hasFreshDraftUnits(program.id) && !pb.atDraftCap(program.id)) return 'wait'
       return 'reload'
     },
-    reload: (program) => pb.loadProgramDraftUnits(program.id),
+    reload: (program) => pb.rewindPool() || pb.loadProgramDraftUnits(program.id),
     // 到顶了叫也写不进，循环闸门会接管，不白烧一轮 LLM
     shouldAutoWrite: (program) => !pb.atDraftCap(program.id)
   }
@@ -73,7 +73,7 @@ function preparedPolicy(pb: ProgramPlaybackService, session: SessionConfig): Bro
       }
       return 'reload'
     },
-    reload: (program) => pb.reloadPreparedUnits(program.id),
+    reload: (program) => pb.rewindPool() || pb.reloadPreparedUnits(program.id),
     shouldAutoWrite: () => false
   }
 }

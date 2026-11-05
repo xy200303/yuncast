@@ -37,6 +37,7 @@ import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
 import type { DraftUnitService } from './DraftUnitService'
 import { buildAgentTools } from './tools/catalog'
+import { killRunningCommands } from './tools/shell'
 import type { ToolCtx } from './tools/types'
 import { LiveEventInbox, type LiveInboxEvent } from './LiveEventInbox'
 import { prepareLlmModel, resolveModelForDirector, streamLlmModel } from './llmModel'
@@ -381,6 +382,8 @@ export class AgentService {
 
   /** 打断当前这一轮生成（会话保留，下条指令照常来）；没在生成就是空操作 */
   stopGeneration(): void {
+    // 工具也在跑（bash 命令等）：中断生成时一起掐掉，否则「暂停」停不住这一步
+    killRunningCommands()
     this.session?.abort()
     // 中断不会有正常的收尾事件：思考/文本条目就地定稿，别让时间线卡在「思考中…」
     this.flushText()

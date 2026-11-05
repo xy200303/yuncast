@@ -14,6 +14,13 @@ const TITLEBAR_H = 36
 
 type FloatRect = { x: number; y: number; width: number; height: number }
 
+/** 面板上下文只存「这块工作台是干什么的」，标题现算——存死标题切项目后会留着上一个项目的名字 */
+const CONTEXT_LABEL: Record<string, string> = {
+  draft: '底稿工作台',
+  live: '直播场控',
+  general: '导演工作台'
+}
+
 /** 浮窗位置钳制：顶部让开标题栏，底部/右侧不出屏 */
 function clampRect(rect: FloatRect): FloatRect {
   const width = Math.max(360, Math.min(window.innerWidth - 16, rect.width))
@@ -169,7 +176,7 @@ export function AgentPanel() {
       </header>
       {context && (
         <div className="flex shrink-0 items-center gap-2 border-b bg-muted/30 px-3 py-1.5 text-xs">
-          <span className="min-w-0 flex-1 truncate">{context.label}</span>
+          <span className="min-w-0 flex-1 truncate">{CONTEXT_LABEL[context.kind]}</span>
           <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setContext(null)} title="移除上下文">
             <X className="size-3.5" />
           </button>

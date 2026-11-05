@@ -107,6 +107,10 @@ export const draftTools = [
       '现场临时编的好桥段值得记；想现在就播直接用 speak，别用它。返回入库确认和归属场景。',
     parameters: Type.Object({
       text: Type.String({ description: `底稿文本（桥段就整段，单句就一句）。${MARKUP_HINT}` }),
+      textZh: Type.String({
+        description:
+          '中文对照（必填）：播出语言不是中文时给这句的准确中文翻译；中文节目就填与 text 相同的内容。界面上贴在原文下面'
+      }),
       type: Type.Optional(
         Type.String({
           description:
@@ -128,6 +132,7 @@ export const draftTools = [
       if (noPlan) return noPlan
       const capped = draftCapHit(ctx)
       if (capped) return capped
+      if (!params.textZh.trim()) return 'textZh 必填：播出文本和中文对照都要给（中文节目填与 text 相同的内容）'
       const programId = activeProgramId(ctx)!
       const sceneId = params.sceneId?.trim() ?? currentSceneId(ctx)
       const siblings = ctx.draftUnits.list(programId).filter((u) => u.sceneId === sceneId)
@@ -137,6 +142,7 @@ export const draftTools = [
         sceneId,
         variantIdx,
         text: params.text,
+        textZh: params.textZh.trim(),
         bitType: params.type?.trim() ?? '',
         delivery: params.delivery?.trim() ?? '',
         rate: params.rate,
@@ -173,12 +179,10 @@ export const draftTools = [
         Type.Object({
           type: Type.String({ description: '桥段类型（见工具描述），自定义类型也行' }),
           text: Type.String({ description: `桥段全文：多句连续口语，150~350 字，有铺垫有落点。${MARKUP_HINT}` }),
-          textZh: Type.Optional(
-            Type.String({
-              description:
-                '中文对照：当本节目语言不是中文时必填（播出用外语，这里给这句的中文意思，界面上贴在原文下面）。中文节目不用填'
-            })
-          ),
+          textZh: Type.String({
+            description:
+              '中文对照（必填）：播出语言不是中文时给准确中文翻译；中文节目填与 text 相同的内容。界面上贴在原文下面'
+          }),
           delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
           rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
           pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
@@ -204,6 +208,10 @@ export const draftTools = [
       if (noPlan) return noPlan
       const capped = draftCapHit(ctx)
       if (capped) return capped
+      const missing = params.items.findIndex((item) => !item.textZh?.trim())
+      if (missing >= 0) {
+        return `第 ${missing + 1} 段缺 textZh：每段都要同时给播出文本和中文对照（中文节目填与 text 相同的内容）`
+      }
       const programId = activeProgramId(ctx)!
       const defaultVoice = resolveVoice(ctx, programId, undefined) ?? ''
       const saved = ctx.draftUnits.saveMany(

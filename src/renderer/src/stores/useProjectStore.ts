@@ -73,6 +73,8 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
 
 /** 进入工作区：配置里的「当前节目」跟着项目走，直播台一进来就是它；页面回到直播台 */
 async function enterWorkspace(): Promise<void> {
+  // 导演面板挂的是上一个项目的节目：切项目就摘掉，别让旧项目的标题/上下文带过来
+  useAppStore.getState().setAgentPanelContext(null)
   await useAppStore.getState().loadConfig()
   useAppStore.getState().setPage('live')
 }

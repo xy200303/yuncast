@@ -1475,6 +1475,16 @@ function registerIpc(
   ipcMain.handle(IPC.draftUnitClearAudio, (_e, programId: string) =>
     guard(() => draftUnits.clearAudio(String(programId)))
   )
+  ipcMain.handle(
+    IPC.draftUnitSynthesize,
+    async (_e, id: string, voiceId?: string, params?: { delivery?: string; rate?: number; pitch?: number }) => {
+      try {
+        return await draftUnits.synthesizeOne(String(id), voiceId ? String(voiceId) : undefined, params)
+      } catch (error) {
+        return { ok: false, error: friendlyError(error) }
+      }
+    }
+  )
   // ---------- 写稿：导演给当前节目写底稿 ----------
   ipcMain.handle(IPC.agentDraftStart, async (_e, programId: string) => {
     try {

@@ -492,7 +492,7 @@ export class ProgramPlaybackService {
     const session = this.storage.sessionConfigLatest(program.id)
     const units = listAudioUnits(program, script, this.draftUnits.list(program.id), session)
     let loaded = 0
-    for (const unit of units) {
+    units.forEach((unit, index) => {
       const rendered = unit.rendered
       const usable =
         rendered?.status === 'ready' &&
@@ -501,7 +501,7 @@ export class ProgramPlaybackService {
       if (!usable) {
         // 门禁已过（完整播放）时不该走到这；部分播放就跳过未完成单元
         if (!allowPartial) console.warn(`[YunCast] 预制单元不可播，跳过：${unit.title}`)
-        continue
+        return
       }
       try {
         // 卡片 = 合成单位：章级单元就把整章正文装进 text（以前只装 unit.title，
@@ -516,6 +516,8 @@ export class ProgramPlaybackService {
           dedupeKey: `rendered:${unit.kind}:${unit.id}`,
           audioPath: rendered!.audioPath,
           originDraftUnitId: unit.kind === 'draftUnit' ? unit.id : undefined,
+          // 稿子位置写死在条目上：播放/循环都用它排，不依赖入池时间
+          queueSeq: index,
           // 章级单元：章后停顿取章内最后一段的配置（章内段间停顿已烘进合并音频，轮不到播放层）
           pauseAfterMs: narrativeOrder(unit.draftUnits).at(-1)?.pauseAfterMs
         })
@@ -524,7 +526,7 @@ export class ProgramPlaybackService {
         // 池满/单条不合规都不该炸开播：记一笔继续装下一条
         console.error(`[YunCast] 预制音频装载失败（${unit.id}）:`, error)
       }
-    }
+    })
     return loaded
   }
 
@@ -571,7 +573,7 @@ export class ProgramPlaybackService {
     )
 
     let loaded = 0
-    for (const u of ready) {
+    ready.forEach((u, index) => {
       // 口径：段落音色快照 > 本场默认音色
       const voice = u.voiceId.trim() || (this.storage.sessionConfigLatest(program.id)?.voiceId ?? '').trim()
       const reusable = Boolean(u.audioPath) && (u.synthVoice ?? '') === voice
@@ -587,6 +589,7 @@ export class ProgramPlaybackService {
           sourceAgentId: LIBRARY_SOURCE_ID,
           dedupeKey: `ut:${u.id}`,
           originDraftUnitId: u.id,
+          queueSeq: index,
           pauseAfterMs: u.pauseAfterMs,
           audioPath: reusable ? (u.audioPath ?? undefined) : undefined
         })
@@ -595,7 +598,7 @@ export class ProgramPlaybackService {
         // 池满/单条不合规都不该炸开播：记一笔继续装下一条
         console.error(`[YunCast] 话术装载失败（${u.id}）:`, error)
       }
-    }
+    })
     return loaded
   }
 
@@ -655,6 +658,11 @@ export class ProgramPlaybackService {
       return { ok: false, error: friendlyError(error) }
     }
     return { ok: true, title: unit.title }
+  }
+
+  /** 循环先回卷已有条目；没有可回卷的才重新装库 */
+  rewindPool(): number {
+    return this.pool.rewind()
   }
 
   /** 节目可自动轮播的底稿（就绪 + 非 closer）：不分场景整库装载——剧本场景只约束写稿范式，不做播放分区 */

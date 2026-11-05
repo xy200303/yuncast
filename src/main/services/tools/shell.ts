@@ -60,6 +60,14 @@ function buildInvocation(command: string): { file: string; args: string[] } {
   return { file: '/bin/sh', args: ['-lc', command] }
 }
 
+/** 正在跑的命例子进程：暂停/急停/中断生成时统一掐掉，别让工具在后台继续跑 */
+const runningCommands = new Set<ChildProcess>()
+
+export function killRunningCommands(): void {
+  for (const child of runningCommands) killTree(child)
+  runningCommands.clear()
+}
+
 /** 超时杀整棵进程树：npm/python 这类会再拉起子进程，只杀父进程会留下孤儿 */
 function killTree(child: ChildProcess): void {
   if (!child.pid) return
@@ -179,13 +187,18 @@ function run(ctx: ToolCtx, params: { command: string; cwd?: string; timeoutSec?:
       )
     }
 
+    runningCommands.add(child)
     child.on('error', (error) => {
       if (settled) return
       settled = true
+      runningCommands.delete(child)
       clearTimeout(timer)
       done(`命令没起来：${error.message}`)
     })
-    child.on('close', finish)
+    child.on('close', (code, signal) => {
+      runningCommands.delete(child)
+      finish(code, signal)
+    })
   })
 }
 

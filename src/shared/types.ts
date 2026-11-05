@@ -670,8 +670,10 @@ export interface PoolItem {
   originDraftUnitId?: string
   /** 合成/播放失败原因 */
   error?: string
-  /** reorder 手动指定的顺序（优先级高于 createdAt） */
+  /** reorder / 上一段 这类临时插队的锚点：只在当轮有效，循环回卷时清掉 */
   sortOrder?: number
+  /** 稿子位置（装载时按底稿顺序写死，不改）：播放顺序的正统来源，回卷后回到它 */
+  queueSeq?: number
   /** 播完这条后的停顿毫秒（播放时调度，不进合成）：undefined/0 = 连续播；段内停顿用 <pause> 演法标记 */
   pauseAfterMs?: number
   createdAt: number
@@ -707,6 +709,8 @@ export interface PoolSayInput {
   originDraftUnitId?: string
   /** 手动指定的播出锚点（精确插队用；不传按入池时间排） */
   sortOrder?: number
+  /** 稿子位置：装载话术库时按底稿顺序写入，播放排序优先用它 */
+  queueSeq?: number
   /** 播完这条后的停顿毫秒（播放时调度）：不传 = 连续播 */
   pauseAfterMs?: number
   /** 已预合成的音频文件（话术库预合成产物）：带上即置 ready，不再重复合成 */
@@ -1366,6 +1370,15 @@ export type ProgramLanguage =
   | 'Italian'
   | 'Spanish'
   | 'Portuguese'
+  // 东南亚
+  | 'Thai'
+  | 'Vietnamese'
+  | 'Indonesian'
+  | 'Malay'
+  | 'Filipino'
+  | 'Khmer'
+  | 'Lao'
+  | 'Burmese'
 
 export const PROGRAM_LANGUAGE_LABELS: Record<ProgramLanguage, string> = {
   auto: '自动识别',
@@ -1378,7 +1391,15 @@ export const PROGRAM_LANGUAGE_LABELS: Record<ProgramLanguage, string> = {
   Russian: 'Русский（俄语）',
   Italian: 'Italiano（意大利语）',
   Spanish: 'Español（西班牙语）',
-  Portuguese: 'Português（葡萄牙语）'
+  Portuguese: 'Português（葡萄牙语）',
+  Thai: 'ภาษาไทย（泰语）',
+  Vietnamese: 'Tiếng Việt（越南语）',
+  Indonesian: 'Bahasa Indonesia（印尼语）',
+  Malay: 'Bahasa Melayu（马来语）',
+  Filipino: 'Filipino（菲律宾语）',
+  Khmer: 'ខ្មែរ（高棉语）',
+  Lao: 'ລາວ（老挝语）',
+  Burmese: 'မြန်မာ（缅甸语）'
 }
 
 /**

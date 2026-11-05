@@ -92,28 +92,70 @@ export const useLiveStore = create<LiveState>((set, get) => ({
   }
 }))
 
-/** 本场卡片流的一行：历史在前（旧→新）、队列在后 */
+/** 本场卡片流的一行：位置固定跟着稿子，播放状态跟着池 */
 export type CardRow = {
   item: PoolItem
   played: boolean
-  /** 未开播时的底稿行带着说话人（池条目只存音色快照，靠本场 cast 反查） */
-  personaId?: string
   /** 未开播时这一行对应的话术库条目（改稿改它，不是改话术池） */
   draft?: DraftUnit
 }
 
-export function mergeRows(history: PoolItem[], queue: PoolItem[]): CardRow[] {
-  const played = [...history].reverse().map((item) => ({ item, played: true }))
-  // 历史与队列理论上不重叠，但播完那一刻两者可能各有一份：按 id 去重，队列优先
-  const seen = new Set(queue.map((item) => item.id))
-  const rows: CardRow[] = []
-  for (const row of played) {
-    if (seen.has(row.item.id)) continue
-    // 同一段话在相邻场次里各播过一次：内容一样就只留最近的一条，历史不至于像复读
-    const prev = rows.at(-1)
-    if (prev && prev.item.text.trim() === row.item.text.trim()) continue
-    rows.push(row)
+/**
+ * 稿子位置：卡片流按它排序，播放怎么跳（上一段/循环）都不会改写列表顺序。
+ * 章级条目（预制场景单元）落在该章第一段的位置。
+ */
+function scriptRanks(drafts: DraftUnit[]): { byDraft: Map<string, number>; byScene: Map<string, number> } {
+  const byDraft = new Map<string, number>()
+  const byScene = new Map<string, number>()
+  drafts.forEach((draft, index) => {
+    byDraft.set(draft.id, index)
+    if (draft.sceneId && !byScene.has(draft.sceneId)) byScene.set(draft.sceneId, index)
+  })
+  return { byDraft, byScene }
+}
+
+/** 一条池条目的稿子位置；-1 = 稿子里找不到（现场插话、评论回复这类） */
+function rankOf(
+  item: PoolItem,
+  ranks: { byDraft: Map<string, number>; byScene: Map<string, number> }
+): number {
+  if (item.originDraftUnitId) {
+    const index = ranks.byDraft.get(item.originDraftUnitId)
+    if (index !== undefined) return index
   }
-  rows.push(...queue.map((item) => ({ item, played: false })))
-  return rows
+  const key = item.dedupeKey ?? ''
+  if (key.startsWith('rendered:scene:')) {
+    const index = ranks.byScene.get(key.slice('rendered:scene:'.length))
+    if (index !== undefined) return index
+  }
+  return -1
+}
+
+/** 去重键：同一段稿子在「已播历史」和「未播队列」里各出现一次时只留一条（队列优先） */
+function rowKey(item: PoolItem): string {
+  return item.dedupeKey || item.originDraftUnitId || item.id
+}
+
+/**
+ * 本场卡片流：历史 + 队列合成一列，按稿子顺序排。
+ * 以前按「历史在前、队列在后」拼，播完一轮回卷后同一批稿子会重新出现在下面、序号整体改写；
+ * 现在位置只由稿子决定，循环/上一段只改这一行的状态。
+ */
+export function mergeRows(history: PoolItem[], queue: PoolItem[], drafts: DraftUnit[] = []): CardRow[] {
+  const ranks = scriptRanks(drafts)
+  const rows = new Map<string, CardRow>()
+  for (const item of [...history, ...queue]) {
+    const key = rowKey(item)
+    const next: CardRow = { item, played: item.status === 'done' }
+    const prev = rows.get(key)
+    // 队列里还有这条（没播完/刚回卷）就以队列为准，历史那份是上一轮的
+    if (!prev || prev.played) rows.set(key, next)
+  }
+  const anchor = (row: CardRow): number => {
+    const index = rankOf(row.item, ranks)
+    return index < 0 ? Number.MAX_SAFE_INTEGER : index
+  }
+  return [...rows.values()].sort(
+    (a, b) => anchor(a) - anchor(b) || a.item.createdAt - b.item.createdAt
+  )
 }

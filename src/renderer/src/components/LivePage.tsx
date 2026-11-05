@@ -8,6 +8,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  Eraser,
   Loader2,
   Paperclip,
   Play,
@@ -15,6 +16,7 @@ import {
   SendHorizontal,
   Sparkles,
   Square,
+  Trash2,
   Wrench,
   X,
   XCircle
@@ -47,7 +49,7 @@ import { CardStream } from './live/CardStream'
 import { LaunchConfigDialog, type LaunchConfig } from './live/LaunchConfigDialog'
 import { WorkbenchTopBar, type DrawerTab } from './live/WorkbenchTopBar'
 import { WorkbenchDrawer } from './live/WorkbenchDrawer'
-import { CONTENT_TYPE_LABELS } from '../../../shared/types'
+import { CONTENT_TYPE_LABELS, llmReady } from '../../../shared/types'
 import type {
   ChatEntry,
   DirectorMessage,
@@ -78,6 +80,10 @@ export function LivePage() {
   const pool = useAppStore((s) => s.pool)
   /** 主区标签：接下来（卡片流）/ 评论流 / 事件流——常驻可切换 */
   const [mainTab, setMainTab] = useState<'pool' | 'comments' | 'events'>('pool')
+  /** 清空确认：稿子 / 音频 */
+  const [confirmClear, setConfirmClear] = useState<'drafts' | 'audio' | null>(null)
+  const [clearing, setClearing] = useState(false)
+  const [synthing, setSynthing] = useState(false)
   /** 工作台抽屉：剧本大纲 / 章节 / 互动（docs/12 §7，平时不占版面） */
   const [drawer, setDrawer] = useState<DrawerTab | null>(null)
   const [manualOpen, setManualOpen] = useState(false)
@@ -90,51 +96,138 @@ export function LivePage() {
   const loadHistory = useLiveStore((s) => s.loadHistory)
   const loadDrafts = useLiveStore((s) => s.loadDrafts)
   const agentLive = useAppStore((s) => s.agent.live === true)
-  const agentBusy = useAppStore((s) => s.agent.busy === true)
   const activeId = useAppStore((s) => s.config.live.activeProgramId)
   const poolSize = useAppStore((s) => s.pool.items.length)
   useEffect(() => {
     if (agentLive) void loadHistory()
   }, [agentLive, loadHistory, activeId, poolSize])
   useEffect(() => {
-    void loadDrafts(agentLive ? '' : activeId)
-  }, [agentLive, activeId, loadDrafts])
+    // 开播后也要留着：卡片流按稿子顺序排位置，没有底稿就只能按播放历史排（循环后顺序会跳）
+    void loadDrafts(activeId)
+  }, [activeId, loadDrafts])
   // 导演写稿是一段一段入库的：本剧本的底稿变了就重拉，卡片流不用手动刷新
   useDataRefresh(['drafts'], (_scope, detail) => {
-    if (agentLive) return
     if (detail && detail !== activeId) return
     void loadDrafts(activeId)
   })
 
-  /** 开播配置确认：本场绑定落库（不写回节目/主播卡）；清空重合成先清音频，再进预检 */
-  const applyLaunchConfig = async (config: LaunchConfig): Promise<void> => {
+  /** 本场配置落库（写稿/合成/播放三段共用）：只存配置，不做动作 */
+  const persistLaunchConfig = async (config: LaunchConfig): Promise<boolean> => {
     const program = programControl.activeProgram
-    if (!program) return
-    programControl.setLaunchConfigOpen(false)
+    if (!program) return false
     const saved = await window.api.sessionConfig.save({ ...config, programId: program.id })
     if (!saved.ok) {
       toast.error('本场配置没保存', { description: saved.error })
-      return
+      return false
     }
     programControl.setSession(saved.config)
     if (config.audioPolicy === 'rebuild') {
       const cleared = await window.api.draftUnit.clearAudio(program.id)
       if (!cleared.ok) {
         toast.error('清空音频失败', { description: cleared.error })
-        return
+        return false
       }
       toast.message('已清空本节目音频', { description: `共 ${cleared.item ?? 0} 段，开播后按本场音色重新合成` })
     }
-    programControl.openPreflight()
+    return true
+  }
+
+  /** 写稿：存配置 → 让导演按项目写（不合成、不开播） */
+  const writeFromConfig = async (config: LaunchConfig): Promise<void> => {
+    const state = useAppStore.getState()
+    if (!llmReady(state.connections, state.config.director)) {
+      toast.error('还没有配置导演模型', { description: '先去 设置 → 语言模型 配一个接入，再让导演写稿' })
+      state.openSettings('llm')
+      return
+    }
+    const program = programControl.activeProgram
+    if (program && writeBrief.trim() !== program.theme) {
+      await window.api.program.save(
+        {
+          name: program.name,
+          theme: writeBrief.trim(),
+          plan: program.plan,
+          knowledgeScope: program.knowledgeScope
+        },
+        program.id
+      )
+    }
+    if (!(await persistLaunchConfig(config))) return
+    programControl.setLaunchConfigOpen(false)
+    programControl.startDraft()
+  }
+
+  /** 合成：存配置 → 批量合成未就绪的段落（后台跑） */
+  const synthesizeFromConfig = async (config: LaunchConfig): Promise<void> => {
+    const program = programControl.activeProgram
+    const state = useAppStore.getState()
+    if (!state.ttsConnections.some((connection) => connection.ready)) {
+      toast.error('还没有可用的语音合成接入', { description: '先去 设置 → 语音合成 配一个接入，再合成音频' })
+      state.openSettings('tts')
+      return
+    }
+    if (!program || !(await persistLaunchConfig(config))) return
+    programControl.setLaunchConfigOpen(false)
+    const result = await window.api.program.produceAudio(program.id)
+    if (!result.ok) toast.error('合成没能开始', { description: result.error })
+    else toast.success('已开始批量合成', { description: '进度显示在卡片上' })
+  }
+
+  /** 播放：存配置 → 开播 */
+  const applyLaunchConfig = async (config: LaunchConfig): Promise<void> => {
+    if (!(await persistLaunchConfig(config))) return
+    programControl.setLaunchConfigOpen(false)
+    void programControl.start()
   }
   const [draftCounts, setDraftCounts] = useState({ draft: 0, ready: 0 })
+  /** 写稿要求：跟随项目简介，开写前存回项目 */
+  const [writeBrief, setWriteBrief] = useState('')
+  useEffect(() => {
+    setWriteBrief(programControl.activeProgram?.theme ?? '')
+  }, [programControl.activeProgram?.id])
+
+  /** 下一步：没稿 → 写稿；没音频 → 合成；都齐 → 播放 */
+  const nextStep: 'write' | 'synth' | 'play' =
+    draftCounts.draft === 0 ? 'write' : draftCounts.ready === 0 ? 'synth' : 'play'
+  const primaryLaunchAction = (
+    <Button
+      size="sm"
+      disabled={!programControl.activeProgram}
+      onClick={() => programControl.openLaunchConfig(nextStep)}
+      title={
+        nextStep === 'write'
+          ? '本场还没有稿子：先让导演按项目写一版'
+          : nextStep === 'synth'
+            ? '稿子写好了还没有音频：先选音色、合成一段试听'
+            : '稿子和音频都就绪：确认播放方式后开播'
+      }
+    >
+      <Play />
+      {nextStep === 'write' ? '写稿' : nextStep === 'synth' ? '合成' : '启动直播'}
+    </Button>
+  )
   useEffect(() => {
     const programId = programControl.activeProgram?.id
-    if (!programControl.launchConfigOpen || !programId) return
-    void window.api.draftUnit.list(programId).then((list) => {
-      setDraftCounts({ draft: list.length, ready: list.filter((unit) => unit.rendered?.status === 'ready').length })
+    if (!programId) {
+      setDraftCounts({ draft: 0, ready: 0 })
+      return
+    }
+    const load = () =>
+      void window.api.draftUnit.list(programId).then((list) => {
+        setDraftCounts({
+          draft: list.length,
+          ready: list.filter((unit) => unit.rendered?.status === 'ready').length
+        })
+      })
+    load()
+    // 写稿/合成一有结果就刷新：步骤条能自动走完一项进下一项
+    // 合成状态变化（单段/批量）也要让卡片流跟着变：刷新计数 + 刷新底稿列表
+    const off = window.api.draftUnit.onEvent(() => {
+      load()
+      void loadDrafts(programId)
     })
-  }, [programControl.launchConfigOpen, programControl.activeProgram?.id])
+    return () => off()
+  }, [programControl.activeProgram?.id, programControl.launchConfigOpen])
   const activeProgram = programControl.activeProgram
 
   // 评论订阅提到页面层（抽屉里要显示条数），保持最近 100 条
@@ -224,30 +317,39 @@ export function LivePage() {
             size="sm"
             variant="ghost"
             className="ml-auto h-7 gap-1 px-2 text-xs"
-            disabled={!programControl.activeProgram || programControl.running || agentBusy}
-            title={
-              !programControl.activeProgram
-                ? '先打开一个项目：场次和稿子都在项目里'
-                : programControl.running
-                  ? '直播中不能写稿：先结束本场'
-                  : agentBusy
-                    ? '导演正在写：写完这一段或先停掉再派新的'
-                    : '让导演按项目安排写底稿，过程在导演对话里'
-            }
-            onClick={programControl.startDraft}
+            disabled={!programControl.activeProgram || programControl.running}
+            title="打开写稿配置，让导演按项目写一版"
+            onClick={() => programControl.openLaunchConfig('write')}
           >
             <Sparkles className="size-3.5" />
             生成底稿
           </Button>
+          <span className="mx-1 h-4 w-px bg-border" />
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 px-2 text-xs"
+            disabled={!programControl.activeProgram || programControl.running || draftCounts.draft === 0}
+            title={draftCounts.draft === 0 ? '还没有稿子' : '清空本场全部底稿（不可恢复）'}
+            onClick={() => setConfirmClear('drafts')}
+          >
+            <Eraser className="size-3.5" />
+            清空稿子
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 gap-1 px-2 text-xs"
+            disabled={!programControl.activeProgram || programControl.running || draftCounts.ready === 0}
+            title={draftCounts.ready === 0 ? '还没有已合成的音频' : '清空本场已合成的音频（文稿保留）'}
+            onClick={() => setConfirmClear('audio')}
+          >
+            <Trash2 className="size-3.5" />
+            清空音频
+          </Button>
         </div>
         <TabsContent value="pool" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
-          <CardStream
-            onGenerate={
-              programControl.activeProgram && !programControl.running && !agentBusy
-                ? programControl.startDraft
-                : undefined
-            }
-          />
+          <CardStream />
         </TabsContent>
         <TabsContent value="comments" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
           <CommentList comments={comments} />
@@ -262,7 +364,7 @@ export function LivePage() {
       <div className="shrink-0 border-t bg-card/60">
         <NowPlayingBar
           program={activeProgram}
-          launchAction={programControl.launchAction}
+          launchAction={primaryLaunchAction}
           endAction={programControl.endAction}
         />
       </div>
@@ -281,6 +383,50 @@ export function LivePage() {
 
       {/* 预检 / 开播确认 / 结束确认 / 底稿 / 声音选择 / 预制门禁：都挂在页面根部 */}
       {programControl.dialogs}
+      <Dialog open={confirmClear !== null} onOpenChange={(next) => !next && !clearing && setConfirmClear(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{confirmClear === 'drafts' ? '清空稿子？' : '清空音频？'}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {confirmClear === 'drafts'
+              ? '会删掉本场全部底稿（含已合成音频），不可恢复。已经开播的场次记录不受影响。'
+              : '只删已合成的音频，文稿保留；之后可以按当前音色重新合成。'}
+          </p>
+          <DialogFooter className="gap-2 sm:justify-end">
+            <Button variant="ghost" disabled={clearing} onClick={() => setConfirmClear(null)}>
+              取消
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={clearing}
+              onClick={() => {
+                const id = programControl.activeProgram?.id
+                if (!id || !confirmClear) return
+                setClearing(true)
+                const run =
+                  confirmClear === 'drafts'
+                    ? window.api.draftUnit.clear(id)
+                    : window.api.draftUnit.clearAudio(id)
+                void run
+                  .then(async (result) => {
+                    if (!result.ok) {
+                      toast.error('清空失败', { description: result.error })
+                      return
+                    }
+                    toast.success(confirmClear === 'drafts' ? '已清空稿子' : '已清空音频')
+                    await loadDrafts(id)
+                    setConfirmClear(null)
+                  })
+                  .finally(() => setClearing(false))
+              }}
+            >
+              {clearing ? <Loader2 className="animate-spin" /> : <Trash2 />}
+              清空
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <ManualBroadcastDialog open={manualOpen} onOpenChange={setManualOpen} />
       <LaunchConfigDialog
         open={programControl.launchConfigOpen}
@@ -289,7 +435,13 @@ export function LivePage() {
         session={programControl.session}
         draftCount={draftCounts.draft}
         readyCount={draftCounts.ready}
+        defaultTab={programControl.launchTab}
+        launching={programControl.busy}
+        brief={writeBrief}
+        onBriefChange={setWriteBrief}
         onCancel={() => programControl.setLaunchConfigOpen(false)}
+        onWrite={(config: LaunchConfig) => void writeFromConfig(config)}
+        onSynthesize={(config: LaunchConfig) => void synthesizeFromConfig(config)}
         onConfirm={(config: LaunchConfig) => void applyLaunchConfig(config)}
       />
     </div>
@@ -322,6 +474,8 @@ function useProgramLauncher() {
   const [stopAsk, setStopAsk] = useState(false)
   /** 开播配置弹窗开合（点「启动节目」先过这一屏） */
   const [launchConfigOpen, setLaunchConfigOpen] = useState(false)
+  /** 开播配置打开时落在哪一段（写稿 / 合成 / 播放） */
+  const [launchTab, setLaunchTab] = useState<'write' | 'synth' | 'play'>('write')
 
   /**
    * 节目列表 + 卡司列表。页面是常驻不卸载的（App 用显隐切页），所以不能只在挂载时拉一次——
@@ -392,7 +546,7 @@ function useProgramLauncher() {
 
   const startDraft = (): void => {
     if (!activeProgramId || !activeProgram) return
-    useAppStore.getState().openAgentPanel({ kind: 'draft', label: `底稿工作台 · ${activeProgram.name}`, programId: activeProgramId })
+    useAppStore.getState().openAgentPanel({ kind: 'draft', programId: activeProgramId })
     void window.api.agent.draftStart(activeProgramId).then((result) => {
       if (!result.ok) toast.error('导演没能开始写稿', { description: result.error })
     })
@@ -491,7 +645,7 @@ function useProgramLauncher() {
       size="sm"
       disabled={busy || checking}
       onClick={() => setLaunchConfigOpen(true)}
-      title="先配这一场：语言 / 音色 / 音频 / 合成时机，再预检开播"
+      title="先配这一场：写稿 / 合成 / 播放，再预检开播"
     >
       {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
       启动直播
@@ -518,104 +672,6 @@ function useProgramLauncher() {
 
   const dialogs = (
     <>
-      {/* 开播预检（docs/07 §8.5）：阻断项拦住开播，警告项自己判断 */}
-      <Dialog
-        open={checks !== null}
-        onOpenChange={(open) => {
-          if (!open) setChecks(null)
-        }}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>开播确认{activeProgram ? ` · ${activeProgram.name}` : ''}</DialogTitle>
-          </DialogHeader>
-          {activeProgram && (
-            <div className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-2">
-              <div><span className="text-muted-foreground">导演：</span>{director.name} · {director.model || '未配置大脑'}</div>
-              <div><span className="text-muted-foreground">音色：</span>{'按本场配置'}</div>
-              <div>
-                <span className="text-muted-foreground">形态：</span>
-                {session ? CONTENT_TYPE_LABELS[session.contentType] : '未配置'}
-              </div>
-              <div>
-                <span className="text-muted-foreground">播出：</span>
-                {session
-                  ? `${session.contentSource === 'infinite' ? '无限生成' : '本场话术'} · ${
-                      session.synthMode === 'pre' ? '预合成' : session.synthMode === 'realtime' ? '实时' : '边播边合'
-                    }`
-                  : '未配置'}
-              </div>
-              <div><span className="text-muted-foreground">互动：</span>{session?.allowLiveEvents ? '开启' : '关闭'} · {session?.enabledTriggerIds.length ?? 0} 个自动响应</div>
-            </div>
-          )}
-          {activeProgram && session && (
-            <AutoResponsePicker
-              programId={activeProgram.id}
-              session={session}
-              compact
-              onSaved={setSession}
-            />
-          )}
-          <div className="max-h-72 space-y-2 overflow-y-auto">
-            {(checks ?? []).map((item) => (
-              <div key={item.code ?? item.label} className="flex items-start gap-2 rounded-md border p-2">
-                {item.level === 'ok' ? (
-                  <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600" />
-                ) : item.level === 'warn' ? (
-                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-500" />
-                ) : (
-                  <XCircle className="mt-0.5 size-4 shrink-0 text-red-600" />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm">{item.label}</p>
-                  {item.detail && <p className="text-xs text-muted-foreground">{item.detail}</p>}
-                </div>
-                {item.code && PREFLIGHT_FIX[item.code] && item.level !== 'ok' && (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 shrink-0 px-2 text-xs"
-                    onClick={() => goFix(item.code!)}
-                  >
-                    {PREFLIGHT_FIX[item.code].label} →
-                  </Button>
-                )}
-              </div>
-            ))}
-          </div>
-          {blocked && (
-            <p className="text-xs text-red-600">
-              有阻断项：按提示处理完再开播（点右侧「去修复」直达对应设置）。
-            </p>
-          )}
-          <DialogFooter className="gap-2 sm:justify-end">
-            <Button variant="outline" onClick={() => setChecks(null)}>
-              先去处理
-            </Button>
-            {presynthShort && session?.contentSource === 'script' && session?.synthMode !== 'pre' && (
-              <Button variant="outline" onClick={startPresynth}>
-                <AudioWaveform />
-                提前合成全部
-              </Button>
-            )}
-            {draftEmpty && (
-              <Button variant="outline" onClick={goGenerate}>
-                <Sparkles />
-                去生成底稿
-              </Button>
-            )}
-            <Button variant="outline" disabled={checking} onClick={() => void runPreflight()}>
-              {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-              重新预检
-            </Button>
-            <Button disabled={blocked || busy} onClick={() => void start()}>
-              {busy ? <Loader2 className="animate-spin" /> : <Play />}
-              确认开播
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
       {/* 结束本场二次确认：收场是不可逆的重操作，和「暂停」区分开 */}
       <Dialog open={stopAsk} onOpenChange={setStopAsk}>
         <DialogContent className="sm:max-w-sm">
@@ -692,6 +748,17 @@ function useProgramLauncher() {
     openPreflight,
     launchConfigOpen,
     setLaunchConfigOpen,
+    launchTab,
+    openLaunchConfig: (tab: 'write' | 'synth' | 'play') => {
+      setLaunchTab(tab)
+      setLaunchConfigOpen(true)
+      void runPreflight()
+    },
+    checks,
+    checking,
+    runPreflight,
+    start,
+    busy,
     session,
     setSession,
     triggerList,
@@ -1215,7 +1282,11 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
   const runQuickCommand = (text: string): boolean => {
     if (/^(暂停|暂停播报|停一下)$/.test(text)) {
       pauseBroadcast()
-      toast.message('播报已暂停', { description: '主播也停了产出，池里的内容保留，恢复后继续播' })
+      // 正在生成/跑工具时连这一轮一起打断，否则「暂停」停不住正在执行的命令
+      if (agent.busy) void window.api.agent.abort()
+      toast.message('播报已暂停', {
+        description: agent.busy ? '正在执行的那一步也停了；池里的内容保留，恢复后继续播' : '池里的内容保留，恢复后继续播'
+      })
       return true
     }
     if (/^(恢复|继续|恢复播报|继续播报)$/.test(text)) {

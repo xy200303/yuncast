@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Clock3, MoreHorizontal, Pencil, Play, SkipForward, Sparkles, Trash2, TriangleAlert } from 'lucide-react'
+import { AudioWaveform, Clock3, MoreHorizontal, Pencil, Play, SkipForward, Trash2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,7 +10,11 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { cn } from '@/lib/utils'
+import { ContentText } from '@/components/ContentText'
 import { useAppStore } from '../../stores/useAppStore'
 import { mergeRows, useLiveStore, type CardRow } from '../../stores/useLiveStore'
 import { audition, auditionTitle } from '../../lib/audition'
@@ -48,7 +52,7 @@ function mmss(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
-export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
+export function CardStream() {
   const pool = useAppStore((s) => s.pool)
   const history = useLiveStore((s) => s.history)
   const density = useLiveStore((s) => s.density)
@@ -60,12 +64,19 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
   /** 未开播时展示的是「节目底稿」= 还没播的内容，状态一律未播/待合成（放 store，水位条也要用） */
   const drafts = useLiveStore((s) => s.drafts)
   const [busyId, setBusyId] = useState('')
+  /** 单独合成：当前选中的底稿行 + 音色 */
+  const [synthRow, setSynthRow] = useState<CardRow | null>(null)
+  const [synthVoice, setSynthVoice] = useState('')
+  const [synthDelivery, setSynthDelivery] = useState('')
+  const [synthRate, setSynthRate] = useState('')
+  const [synthPitch, setSynthPitch] = useState('')
+  const [synthBusy, setSynthBusy] = useState(false)
 
   const rows = useMemo<CardRow[]>(() => {
     // 失败条目单独一路：它们既不在未播队列里，也不该被"未开播就只看底稿"藏起来
     const failedRows: CardRow[] = pool.failed.map((item) => ({ item, played: false }))
     if (live) {
-      const base = mergeRows(history, pool.items)
+      const base = mergeRows(history, pool.items, drafts)
       const seen = new Set(base.map((row) => row.item.id))
       return [...base, ...failedRows.filter((row) => !seen.has(row.item.id))]
     }
@@ -82,8 +93,13 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
         voiceId: draft.voiceId ?? '',
         source: { agentId: 'draft', kind: 'manual' },
         lane: 'normal',
-        status: (draft.rendered?.status === 'ready' ? 'ready' : 'pending') as PoolItemStatus,
-        audioPath: draft.rendered?.audioPath
+        // 合成状态以底稿自身为准（rendered 是预制资产，不是单段合成结果）
+        status: (draft.status === 'ready' && draft.audioPath
+          ? 'ready'
+          : draft.status === 'failed'
+            ? 'failed'
+            : 'pending') as PoolItemStatus,
+        audioPath: draft.audioPath ?? draft.rendered?.audioPath
       } as PoolItem,
       played: false,
       draft
@@ -132,12 +148,6 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
       <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-xs text-muted-foreground">
         <span className="text-sm">本场还没有话术</span>
         <span>让导演按项目安排逐段写稿，写完可以逐段试听、改稿，再统一合成</span>
-        {!live && onGenerate && (
-          <Button size="sm" variant="outline" onClick={onGenerate}>
-            <Sparkles />
-            生成底稿
-          </Button>
-        )}
       </div>
     )
   }
@@ -151,7 +161,7 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
     >
       <div className="flex shrink-0 items-center gap-2 pb-1 text-[11px] text-muted-foreground">
         <span>
-          {rows.length} 段 · {live ? `已播 ${history.length}` : '未开播'}
+          {rows.length} 段 · {live ? `已播 ${rows.filter((row) => row.played).length}` : '未开播'}
         </span>
         <div className="ml-auto flex items-center gap-1">
           <button
@@ -196,7 +206,8 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
           const dim = row.played
           const speaker = speakerOf(row)
           const text = stripSpeechTags(item.text)
-          const translation = item.textZh?.trim() || undefined
+          // 译文只用于显示：老数据里可能带着 <cot>/<pause> 标记，渲染前剥掉
+          const translation = item.textZh?.trim() ? stripSpeechTags(item.textZh.trim()) : undefined
           const isEditing = editing?.id === item.id
           const fromUnit = item.source.kind === 'scene'
           // 只有"没有正文的纯标题"才降级成提示条（场景名/节奏标记那种）；
@@ -237,11 +248,20 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
                 )}
                 <span className="tabular-nums">{String(index + 1).padStart(2, '0')}</span>
                 <span className="truncate">
-                  {!live
-                    ? item.status === 'ready'
-                      ? '未播 · 有音频'
-                      : '未播'
-                    : STATUS_TEXT[item.status]}
+                  {!live ? (
+                    item.status === 'ready' ? (
+                      <span className="inline-flex items-center gap-1">
+                        <span className="size-1.5 rounded-full bg-emerald-500" />
+                        未播 · 已合成
+                      </span>
+                    ) : item.status === 'failed' ? (
+                      <span className="text-amber-600">未播 · 合成失败</span>
+                    ) : (
+                      '未播 · 待合成'
+                    )
+                  ) : (
+                    STATUS_TEXT[item.status]
+                  )}
                 </span>
                 {ready && <span className="tabular-nums">{mmss(estimateMs(text))}</span>}
                 {playing && <span className="text-primary">◉ 在播</span>}
@@ -298,6 +318,20 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
                       >
                         <Clock3 /> 从此处播
                       </DropdownMenuItem>
+                      {row.draft && (
+                        <DropdownMenuItem
+                          disabled={synthBusy}
+                          onSelect={() => {
+                            setSynthRow(row)
+                            setSynthVoice(row.draft?.voiceId ?? '')
+                            setSynthDelivery(row.draft?.delivery ?? '')
+                            setSynthRate(row.draft?.rate !== undefined ? String(row.draft.rate) : '')
+                            setSynthPitch(row.draft?.pitch !== undefined ? String(row.draft.pitch) : '')
+                          }}
+                        >
+                          <AudioWaveform /> 单独合成
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem disabled={row.played || playing} onSelect={() => setEditing({ id: item.id, text })}>
                         <Pencil /> 改稿
                       </DropdownMenuItem>
@@ -336,14 +370,22 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
                 </div>
               ) : (
                 <>
-                  <p
-                    className={cn(
-                      'mt-1.5 whitespace-pre-wrap text-[15px] leading-[1.75]',
-                      dim && 'text-foreground/45'
-                    )}
-                  >
-                    {displayMode === 'zh' ? (translation || '—') : text}
-                  </p>
+                  {displayMode === 'zh' ? (
+                    <p
+                      className={cn(
+                        'mt-1.5 whitespace-pre-wrap text-[15px] leading-[1.75]',
+                        dim && 'text-foreground/45'
+                      )}
+                    >
+                      {translation || '—'}
+                    </p>
+                  ) : (
+                    // 演法标记按 chip 渲染：<cot> 情绪小标、<pause> 停顿、<fx> 音效
+                    <ContentText
+                      text={item.text}
+                      className={cn('mt-1.5 whitespace-pre-wrap', dim && 'text-foreground/45')}
+                    />
+                  )}
                   {displayMode !== 'target' && translation && displayMode === 'both' && (
                     <p className="mt-1.5 border-l-2 border-[#c9d4ea] pl-2 text-[13px] leading-[1.7] text-foreground/60">
                       {translation}
@@ -376,6 +418,90 @@ export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
           )
         })}
       </div>
+
+      {/* 单独合成：一段一个声音，试听满意再批量 */}
+      <Dialog open={synthRow !== null} onOpenChange={(next) => !next && !synthBusy && setSynthRow(null)}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>合成这一段</DialogTitle>
+          </DialogHeader>
+          <p className="max-h-24 overflow-y-auto rounded-md bg-muted/40 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
+            {synthRow ? stripSpeechTags(synthRow.item.text) : ''}
+          </p>
+          <div className="space-y-1.5">
+            <p className="text-[12px] text-muted-foreground">音色（留空 = 本场默认）</p>
+            <UnifiedVoicePicker
+              voiceId={synthVoice}
+              onPick={setSynthVoice}
+              emptyLabel="本场默认音色"
+              placeholder="选择音色"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <p className="text-[12px] text-muted-foreground">表演指示（情绪/语气/哪里停顿，一句话）</p>
+            <Textarea
+              value={synthDelivery}
+              rows={2}
+              placeholder="如：压低声音像说悄悄话，报价格前停一拍"
+              onChange={(event) => setSynthDelivery(event.target.value)}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <p className="text-[12px] text-muted-foreground">语速（1.0 基准，0.85~1.3）</p>
+              <Input
+                value={synthRate}
+                inputMode="decimal"
+                placeholder="默认"
+                onChange={(event) => setSynthRate(event.target.value)}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <p className="text-[12px] text-muted-foreground">音调（1.0 基准，0.9~1.1）</p>
+              <Input
+                value={synthPitch}
+                inputMode="decimal"
+                placeholder="默认"
+                onChange={(event) => setSynthPitch(event.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" disabled={synthBusy} onClick={() => setSynthRow(null)}>
+              取消
+            </Button>
+            <Button
+              disabled={synthBusy}
+              onClick={async () => {
+                if (!synthRow?.draft) return
+                setSynthBusy(true)
+                const result = await window.api.draftUnit.synthesize(
+                  synthRow.draft.id,
+                  synthVoice.trim() || undefined,
+                  {
+                    delivery: synthDelivery.trim(),
+                    rate: synthRate.trim() ? Number(synthRate) : undefined,
+                    pitch: synthPitch.trim() ? Number(synthPitch) : undefined
+                  }
+                )
+                setSynthBusy(false)
+                if (!result.ok) {
+                  toast.error('合成失败', { description: result.error })
+                  return
+                }
+                toast.success('这一段合成好了', { description: '点卡片左边的播放试听' })
+                void useLiveStore.getState().loadDrafts(synthRow.draft.programId)
+                setSynthRow(null)
+              }}
+            >
+              <AudioWaveform />
+              {synthBusy ? '合成中…' : '开始合成'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

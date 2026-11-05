@@ -34,6 +34,12 @@ export function StatusBar() {
   const directorText = llmOk
     ? `导演 ${config.director.name}（${providerLabel(llmProviders, directorConnection?.providerId ?? '')}）`
     : null
+  /** 接入选了、模型也在，但凭据不全：这是"未就绪"，不是"没配置" */
+  const directorConfigured = Boolean(
+    config.director.modelConnectionId &&
+      directorConnection &&
+      directorConnection.models.includes(config.director.model ?? '')
+  )
 
   // 本场卡司：取本场配置里主主播的嗓音；没配就照实说明
   const [programVoice, setProgramVoice] = useState<{ name: string; voiceId: string; hasCast: boolean } | null>(null)
@@ -65,7 +71,7 @@ export function StatusBar() {
     : null
   const castText =
     voice && !voice.broken
-      ? `卡司嗓音 ${voice.voiceName}${voice.providerShort ? ` · ${voice.providerShort}` : ''}`
+      ? `音色 ${voice.voiceName}${voice.providerShort ? ` · ${voice.providerShort}` : ''}`
       : null
 
   /**
@@ -103,6 +109,15 @@ export function StatusBar() {
       <div className="ml-auto flex min-w-0 items-center gap-2.5">
         {directorText ? (
           <span title="导演大脑（这场谁在指挥）">{directorText}</span>
+        ) : directorConfigured ? (
+          <button
+            type="button"
+            className="text-amber-600 hover:underline"
+            title="接入和模型都选了，但凭据不完整：点这里检查 API Key"
+            onClick={() => openSettings('llm')}
+          >
+            导演接入未就绪 → 去检查
+          </button>
         ) : (
           <button
             type="button"
@@ -115,7 +130,7 @@ export function StatusBar() {
         )}
         <Dot />
         {castText ? (
-          <span title="卡司嗓音">{castText}</span>
+          <span title="本场音色">{castText}</span>
         ) : voice?.broken ? (
           <button
             type="button"
@@ -123,7 +138,7 @@ export function StatusBar() {
             title={`${voice.broken}（点这里去设置 → 语音合成）`}
             onClick={() => openSettings('tts')}
           >
-            卡司嗓音失效 → 去修复
+            音色失效 → 去修复
           </button>
         ) : (
           <span title="本项目还没选音色：开播前在开播配置里定">

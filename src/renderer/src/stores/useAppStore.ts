@@ -44,7 +44,6 @@ export type SettingsPaneId =
 
 export interface AgentPanelContext {
   kind: 'draft' | 'live' | 'general'
-  label: string
   programId?: string
 }
 

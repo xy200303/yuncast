@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite'
  *
  * 版本走 `PRAGMA user_version`：老项目打开时按需迁移；比当前 app 新的库拒绝打开。
  */
-export const PROJECT_SCHEMA_VERSION = 5
+export const PROJECT_SCHEMA_VERSION = 6
 
 export type ProjectMeta = {
   id: string
@@ -75,6 +75,7 @@ const CONTENT_DDL = `
     audio_path TEXT,
     error TEXT,
     sort_order INTEGER,
+    queue_seq INTEGER,
     created_at INTEGER NOT NULL,
     played_at INTEGER,
     text_zh TEXT NOT NULL DEFAULT ''
@@ -200,6 +201,7 @@ const CONTENT_COLUMNS: [string, string, string][] = [
   ['pool_items', 'emotion', 'TEXT'],
   ['pool_items', 'emotion_scale', 'REAL'],
   ['pool_items', 'pause_after_ms', 'INTEGER'],
+  ['pool_items', 'queue_seq', 'INTEGER'],
   ['live_sessions', 'summary', "TEXT NOT NULL DEFAULT ''"],
   ['live_sessions', 'director_model_desc', "TEXT NOT NULL DEFAULT ''"],
   ['live_sessions', 'personas', "TEXT NOT NULL DEFAULT '[]'"]
@@ -274,6 +276,18 @@ export function openProjectDatabase(file: string, options: { create?: boolean } 
         ).run(String(row.name ?? ''), String(row.theme ?? ''), scenes, Number(row.current_scene_idx ?? 0))
       }
       db.exec('DROP TABLE scripts')
+    }
+    // 中文/自动语言的项目：老底稿缺译文就用原文补齐（译文栏不再显示空白）
+    try {
+      const row = db
+        .prepare("SELECT language FROM session_configs LIMIT 1")
+        .get() as { language?: string } | undefined
+      const language = row?.language ?? 'auto'
+      if (language === 'Chinese' || language === 'auto') {
+        db.exec("UPDATE draft_units SET text_zh = text WHERE text_zh = ''")
+      }
+    } catch {
+      // 表还没建/字段缺失就跳过
     }
     // 本场配置改成「一个项目一行」：老库多行快照只留最新一行，再补唯一索引
     if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_configs'").get()) {

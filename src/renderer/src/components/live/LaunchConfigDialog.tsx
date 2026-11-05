@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, Star, X } from 'lucide-react'
+import { AlertTriangle, AudioWaveform, Check, Play, Sparkles, Star, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { cn } from '@/lib/utils'
 import {
@@ -120,7 +121,13 @@ export function LaunchConfigDialog({
   draftCount,
   readyCount,
   onCancel,
-  onConfirm
+  onConfirm,
+  onWrite,
+  onSynthesize,
+  defaultTab = 'write',
+  brief = '',
+  onBriefChange,
+  launching = false
 }: {
   open: boolean
   program: Program | null
@@ -130,10 +137,27 @@ export function LaunchConfigDialog({
   readyCount: number
   onCancel: () => void
   onConfirm: (config: LaunchConfig) => void
+  /** 写稿：存配置后让导演写一版（不合成、不开播） */
+  onWrite?: (config: LaunchConfig) => void
+  /** 合成：存配置后批量合成未就绪的段落 */
+  onSynthesize?: (config: LaunchConfig) => void
+  /** 打开时落在哪一段：写稿 / 合成 / 播放（由直播台按当前进度决定） */
+  defaultTab?: 'write' | 'synth' | 'play'
+  /** 写稿要求（商品/卖点/受众/风格），存到项目简介里，导演按它写稿 */
+  brief?: string
+  onBriefChange?: (value: string) => void
+  launching?: boolean
 }) {
   const [config, setConfig] = useState<LaunchConfig>(() =>
     program ? prefill(session) : { ...DEFAULT_SESSION_CONFIG }
   )
+  const [tab, setTab] = useState<'write' | 'synth' | 'play'>(defaultTab)
+  // 打开时按真实进度落位：稿子还没写就一定从「写稿」开始；写好了就跳到「合成」/「播放」
+  useEffect(() => {
+    if (!open) return
+    const progress = draftCount === 0 ? 'write' : readyCount === 0 ? 'synth' : 'play'
+    setTab(defaultTab === 'write' && progress !== 'write' ? progress : defaultTab)
+  }, [open, defaultTab, draftCount, readyCount])
 
   useEffect(() => {
     if (!open || !program) return
@@ -155,6 +179,18 @@ export function LaunchConfigDialog({
     })
   }
 
+  useEffect(() => {
+    if (!open) return
+    if (tab === 'write' && draftCount > 0) setTab('synth')
+    else if (tab === 'synth' && readyCount > 0) setTab('play')
+  }, [open, tab, draftCount, readyCount])
+
+  const steps: { id: 'write' | 'synth' | 'play'; label: string; done: boolean }[] = [
+    { id: 'write', label: '写稿', done: draftCount > 0 },
+    { id: 'synth', label: '合成', done: readyCount > 0 },
+    { id: 'play', label: '播放', done: false }
+  ]
+
   if (!program) return null
 
   return (
@@ -169,25 +205,43 @@ export function LaunchConfigDialog({
           </p>
         </DialogHeader>
 
-        <Tabs defaultValue="basic" className="flex min-h-0 flex-1 flex-col gap-0">
+        <Tabs value={tab} onValueChange={(value) => setTab(value as typeof tab)} className="flex min-h-0 flex-1 flex-col gap-0">
           <div className="shrink-0 border-b px-7">
-            <TabsList className="w-full justify-start gap-1">
-              <TabsTrigger value="basic" className="text-[12.5px]">
-                基本
-              </TabsTrigger>
-              <TabsTrigger value="broadcast" className="text-[12.5px]">
-                播出
-              </TabsTrigger>
-              <TabsTrigger value="voice" className="text-[12.5px]">
-                声音
-              </TabsTrigger>
-              <TabsTrigger value="interaction" className="text-[12.5px]">
-                互动
-              </TabsTrigger>
-            </TabsList>
+            <div className="flex items-center justify-center gap-3 py-3">
+              {steps.map((step, index) => {
+                const active = tab === step.id
+                return (
+                  <div key={step.id} className="flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => setTab(step.id)}
+                      className={cn(
+                        'flex min-w-0 items-center gap-2 rounded-md px-1.5 py-1 transition-colors',
+                        active ? 'text-foreground' : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      <span
+                        className={cn(
+                          'flex size-5 shrink-0 items-center justify-center rounded-full border text-[11px] font-medium',
+                          step.done
+                            ? 'border-emerald-500/60 bg-emerald-500/10 text-emerald-600'
+                            : active
+                              ? 'border-primary bg-primary text-primary-foreground'
+                              : 'border-border text-muted-foreground'
+                        )}
+                      >
+                        {step.done ? <Check className="size-3" /> : index + 1}
+                      </span>
+                      <span className={cn('truncate text-[12.5px]', active && 'font-medium')}>{step.label}</span>
+                    </button>
+                    {index < steps.length - 1 && <span className="h-px w-20 shrink-0 bg-border" />}
+                  </div>
+                )
+              })}
+            </div>
           </div>
 
-          <TabsContent value="basic" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
+          <TabsContent value="write" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
             <div className="flex flex-col gap-5">
               <Field label="预设" hint="只负责套「内容来源 / 合成时机 / 收尾」三个开关，套完仍可逐项改">
                 <Select
@@ -245,6 +299,18 @@ export function LaunchConfigDialog({
                 </Select>
               </Field>
 
+              <Field
+                label="写稿要求"
+                hint="商品/服务、卖点、卖给谁、想要什么风格；不清楚的导演会在对话里再问你"
+              >
+                <Textarea
+                  value={brief}
+                  rows={4}
+                  placeholder="比如：卖保温杯，59.9，送爸妈/送同事；风格温暖实在，别喊麦；这场大约 40 分钟"
+                  onChange={(event) => onBriefChange?.(event.target.value)}
+                />
+              </Field>
+
               <Field label="本场风格" hint="≤100 字，低于卡片上逐条的演法">
                 <Input
                   value={config.instruction}
@@ -254,20 +320,25 @@ export function LaunchConfigDialog({
                 />
               </Field>
             </div>
-          </TabsContent>
+                    </TabsContent>
 
-          <TabsContent value="broadcast" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
+          <TabsContent value="synth" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
             <div className="flex flex-col gap-5">
-              <Field label="内容来源">
-                <Segmented
-                  value={config.contentSource}
-                  options={[
-                    { value: 'script', label: '本场话术' },
-                    { value: 'infinite', label: '边播边无限生成' }
-                  ]}
-                  onChange={(contentSource) => patch({ contentSource })}
+<div className="flex flex-col gap-4">
+              <p className="text-[12px] text-muted-foreground">
+                本场默认音色；段落可以在写稿时单独覆盖。没选音色时新内容没法合成，存量音频照播。
+              </p>
+              <Field label="默认音色">
+                <UnifiedVoicePicker
+                  voiceId={config.voiceId}
+                  onPick={(voiceId) => patch({ voiceId })}
+                  emptyLabel="未选音色"
+                  placeholder="选择音色"
                 />
               </Field>
+            </div>
+<div className="flex flex-col gap-5">
+              
 
               <Field
                 label="合成时机"
@@ -290,17 +361,7 @@ export function LaunchConfigDialog({
                 />
               </Field>
 
-              <Field label="收尾">
-                <Segmented
-                  value={config.endMode}
-                  options={[
-                    { value: 'stop', label: '一遍播完' },
-                    { value: 'loop', label: '循环返场' },
-                    { value: 'forever', label: '一直播' }
-                  ]}
-                  onChange={(endMode) => patch({ endMode })}
-                />
-              </Field>
+              
 
               <Field label="音频策略">
                 <Segmented
@@ -319,26 +380,33 @@ export function LaunchConfigDialog({
                 )}
               </Field>
             </div>
-          </TabsContent>
+            </div>
+                    </TabsContent>
 
-          <TabsContent value="voice" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
-            <div className="flex flex-col gap-4">
-              <p className="text-[12px] text-muted-foreground">
-                本场默认音色；段落可以在写稿时单独覆盖。没选音色时新内容没法合成，存量音频照播。
-              </p>
-              <Field label="默认音色">
-                <UnifiedVoicePicker
-                  voiceId={config.voiceId}
-                  onPick={(voiceId) => patch({ voiceId })}
-                  emptyLabel="未选音色"
-                  placeholder="选择音色"
+          <TabsContent value="play" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
+            <div className="flex flex-col gap-5">
+<Field label="内容来源">
+                <Segmented
+                  value={config.contentSource}
+                  options={[
+                    { value: 'script', label: '本场话术' },
+                    { value: 'infinite', label: '边播边无限生成' }
+                  ]}
+                  onChange={(contentSource) => patch({ contentSource })}
                 />
               </Field>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="interaction" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
-            <div className="flex flex-col gap-4">
+<Field label="收尾">
+                <Segmented
+                  value={config.endMode}
+                  options={[
+                    { value: 'stop', label: '一遍播完' },
+                    { value: 'loop', label: '循环返场' },
+                    { value: 'forever', label: '一直播' }
+                  ]}
+                  onChange={(endMode) => patch({ endMode })}
+                />
+              </Field>
+<div className="flex flex-col gap-4">
               <label className="flex items-center gap-2 text-[13px]">
                 <Checkbox
                   checked={config.allowLiveEvents}
@@ -367,14 +435,31 @@ export function LaunchConfigDialog({
                 </div>
               )}
             </div>
-          </TabsContent>
+            </div>
+                    </TabsContent>
+
         </Tabs>
 
         <div className="flex shrink-0 items-center justify-end gap-2 border-t px-7 py-3">
           <Button variant="ghost" onClick={onCancel}>
             取消
           </Button>
-          <Button onClick={() => onConfirm(config)}>确认并预检 →</Button>
+          {tab === 'write' ? (
+            <Button disabled={launching || !onWrite} onClick={() => onWrite?.(config)}>
+              <Sparkles />
+              开始写稿
+            </Button>
+          ) : tab === 'synth' ? (
+            <Button disabled={launching || !onSynthesize} onClick={() => onSynthesize?.(config)}>
+              <AudioWaveform />
+              开始合成
+            </Button>
+          ) : (
+            <Button disabled={launching} onClick={() => onConfirm(config)}>
+              <Play />
+              确认开播
+            </Button>
+          )}
         </div>
       </DialogContent>
     </Dialog>

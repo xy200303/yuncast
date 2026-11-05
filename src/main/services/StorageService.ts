@@ -159,6 +159,7 @@ interface PoolItemRow {
   origin_draft_unit_id: unknown
   error: unknown
   sort_order: unknown
+  queue_seq: unknown
   created_at: unknown
   played_at: unknown
 }
@@ -183,7 +184,15 @@ const PROGRAM_LANGUAGES: ProgramLanguage[] = [
   'Russian',
   'Italian',
   'Spanish',
-  'Portuguese'
+  'Portuguese',
+  'Thai',
+  'Vietnamese',
+  'Indonesian',
+  'Malay',
+  'Filipino',
+  'Khmer',
+  'Lao',
+  'Burmese'
 ]
 
 function programLanguageOf(value: unknown): ProgramLanguage {
@@ -242,6 +251,7 @@ function rowToItem(row: PoolItemRow): PoolItem {
     originDraftUnitId: str(row.origin_draft_unit_id) || undefined,
     error: str(row.error) || undefined,
     sortOrder: num(row.sort_order),
+    queueSeq: num(row.queue_seq),
     createdAt: num(row.created_at) ?? 0,
     playedAt: num(row.played_at)
   }
@@ -1408,8 +1418,8 @@ export class StorageService {
         `INSERT INTO pool_items
          (id, live_session_id, script_id, text, turn_id, seq, voice_id, source_actor_id, source_kind, lane,
           dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, rate, pitch, emotion, emotion_scale, pause_after_ms, stream,
-          origin_draft_unit_id, error, sort_order, created_at, played_at, text_zh)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          origin_draft_unit_id, error, sort_order, queue_seq, created_at, played_at, text_zh)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
@@ -1438,6 +1448,7 @@ export class StorageService {
         item.originDraftUnitId ?? null,
         item.error ?? null,
         item.sortOrder ?? null,
+        item.queueSeq ?? null,
         item.createdAt,
         item.playedAt ?? null,
         item.textZh ?? ''
@@ -1530,6 +1541,44 @@ export class StorageService {
   }
 
   /** 按 dedupeKey 找未播条目（去重合并用）。playing 也算「在池里」：正在播的不能重装，否则一段话在队列里出现两次 */
+  /**
+   * 循环回卷：把本场已播/被打断的条目重置回就绪（同一批行、音频不动）。
+   * 同时按上一轮的实际播出顺序重编号：下一轮严格从第一段重来，
+   * 不依赖入库时可能为空或错位的 sort_order（否则回卷后会从中间某段开始）。
+   * 返回回卷条数；0 = 没有可回卷的（需要重新装库）。
+   */
+  /**
+   * 循环回卷：把本场已播/被打断的条目重置回就绪（同一批行、音频不动）。
+   * 顺序一并恢复成装载时的稿子顺序：清掉 sort_order，让排序回落到 created_at。
+   * 「上一段/仅播此条」写进去的临时队首只在当轮有效——否则播完一轮就再也回不到第一段。
+   */
+  poolRewind(sessionId: string, scriptId: string): number {
+    const result = this.db
+      .prepare(
+        `UPDATE pool_items SET status = 'ready', played_at = NULL, sort_order = NULL
+          WHERE live_session_id = ? AND script_id = ? AND status IN ('done', 'interrupted')`
+      )
+      .run(sessionId, scriptId)
+    return Number((result as { changes?: number }).changes ?? 0)
+  }
+
+  /** 按 dedupeKey 找最近一条（含已播）：上一段回退时复用同一行，不新增条目 */
+  poolItemFindByDedupeKey(dedupeKey: string, sessionId: string): PoolItem | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM pool_items WHERE dedupe_key = ? AND live_session_id = ? ORDER BY created_at DESC LIMIT 1`
+      )
+      .get(dedupeKey, sessionId)
+    return row ? rowToItem(row as unknown as PoolItemRow) : null
+  }
+
+  /** 单条回退：重置为就绪并排到队首（不改文本、不改音频） */
+  poolItemRewind(id: string, sortOrder: number): void {
+    this.db
+      .prepare(`UPDATE pool_items SET status = 'ready', played_at = NULL, sort_order = ? WHERE id = ?`)
+      .run(sortOrder, id)
+  }
+
   poolItemFindActiveByDedupeKey(dedupeKey: string): PoolItem | null {
     const row = this.db
       .prepare(
@@ -1605,7 +1654,7 @@ export class StorageService {
     this.db
       .prepare(
         `INSERT INTO live_sessions (id, script_id, program_name, director_model_desc, started_at, ended_at, end_reason, stats, summary)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         session.id,
@@ -2681,7 +2730,7 @@ export class StorageService {
       .prepare(
         `INSERT INTO draft_units (id, script_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, pause_after_ms, voice_id, audio_path,
                                  status, error, source, sources, rendered, created_at, text_zh)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
            text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,

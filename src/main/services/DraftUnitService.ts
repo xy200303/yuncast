@@ -18,6 +18,7 @@ import { stableHash, programStyleSalt, draftUnitFingerprint, sceneFingerprint } 
 import { buildPodcastTurns } from '../../shared/podcast'
 import { findCloneVoice, parseManualVoice } from '../../shared/voiceProvider'
 import type { StorageService } from './StorageService'
+import { stripSpeechTags } from '../../shared/speechTags'
 import type { BlobStoreService } from './BlobStoreService'
 import type { TtsService } from './TtsService'
 import type { ScriptService } from './ScriptService'
@@ -160,6 +161,9 @@ export class DraftUnitService {
       // 创作序号：编辑保留原序号；新增自动排到场景末尾（装池按它恢复叙事顺序）
       seq: input.seq ?? existing?.seq ?? this.storage.draftUnitNextSeq(input.programId, input.sceneId),
       text: input.text.trim(),
+      // 中文对照：draft_add / 手动编辑也要带上；没给就沿用原来的
+      // 译文是显示用文本：剥掉演法标记，别把 <cot>/<pause> 带进译文栏
+      textZh: input.textZh?.trim() ? stripSpeechTags(input.textZh.trim()) : existing?.textZh,
       bitType: input.bitType?.trim() ?? existing?.bitType ?? '',
       delivery: input.delivery?.trim() ?? existing?.delivery ?? '',
       rate: input.rate ?? existing?.rate,
@@ -294,6 +298,49 @@ export class DraftUnitService {
       void rm(path, { force: true })
         .then(() => console.log(`[话术库] 底稿删除，孤儿音频一并清掉：${path}`))
         .catch(() => undefined)
+    }
+  }
+
+  /**
+   * 单独合成一段（卡片上的「单独合成」）：试听/改稿后只重做这一段。
+   * voice 显式给了就用它，否则段落音色快照，再否则本场默认音色。
+   */
+  async synthesizeOne(
+    id: string,
+    voice?: string,
+    overrides?: { delivery?: string; rate?: number; pitch?: number }
+  ): Promise<{ ok: boolean; error?: string }> {
+    const found = this.storage.draftUnitGet(id)
+    if (!found) return { ok: false, error: '底稿不存在' }
+    // 弹窗里的表演参数属于这一段：先落库，再按新参数合成（下一批/重播也用它）
+    const unit =
+      overrides === undefined
+        ? found
+        : (() => {
+            const next = {
+              ...found,
+              delivery: overrides.delivery ?? found.delivery,
+              rate: overrides.rate,
+              pitch: overrides.pitch
+            }
+            this.storage.draftUnitSave(next)
+            return next
+          })()
+    const resolved =
+      (voice ?? '').trim() || unit.voiceId.trim() || this.defaultVoice(unit.programId)
+    if (!resolved) return { ok: false, error: '这段没有可用音色：先选一个，或设置本场默认音色' }
+    this.storage.draftUnitSetAudio(unit.id, 'synthesizing', unit.audioPath)
+    this.onEvent?.({ ...unit, status: 'synthesizing' })
+    try {
+      const path = await this.synthesizeWithRetry(unit, resolved, this.storage.getConfig().tts.synthRetries)
+      this.storage.draftUnitSetAudio(unit.id, 'ready', path, undefined, resolved)
+      this.onEvent?.({ ...unit, status: 'ready', audioPath: path, synthVoice: resolved })
+      return { ok: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      this.storage.draftUnitSetAudio(unit.id, 'failed', null, message.slice(0, 200))
+      this.onEvent?.({ ...unit, status: 'failed', error: message })
+      return { ok: false, error: message }
     }
   }
 

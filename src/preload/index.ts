@@ -531,6 +531,12 @@ const api = {
     /** 清空已合成音频（文稿保留；滚动段回待合成，预制资产摘除，可重新合成）。返回清掉的段数 */
     clearAudio: (programId: string) =>
       ipcRenderer.invoke(IPC.draftUnitClearAudio, programId) as Promise<PoolResult<number>>,
+    /** 单独合成一段：voiceId 不传就用段落音色 / 本场默认 */
+    synthesize: (
+      id: string,
+      voiceId?: string,
+      params?: { delivery?: string; rate?: number; pitch?: number }
+    ) => ipcRenderer.invoke(IPC.draftUnitSynthesize, id, voiceId, params) as Promise<{ ok: boolean; error?: string }>,
     onEvent: (cb: (draftUnit: DraftUnit) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, draftUnit: DraftUnit) => cb(draftUnit)
       ipcRenderer.on(IPC.draftUnitEvent, listener)

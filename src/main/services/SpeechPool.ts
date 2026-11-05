@@ -34,6 +34,11 @@ const LANE_RANK: Record<PoolLane, number> = {
 }
 
 /** 播放顺序：lane → 话轮锚点（组内最早条目）→ 话轮内 seq */
+/** 播放锚点：临时插队（sortOrder）> 稿子位置（queueSeq）> 入池时间 */
+export function queueAnchor(item: PoolItem): number {
+  return item.sortOrder ?? item.queueSeq ?? item.createdAt
+}
+
 function orderedForPlay(items: PoolItem[]): PoolItem[] {
   const groups = new Map<string, PoolItem[]>()
   for (const item of items) {
@@ -42,10 +47,9 @@ function orderedForPlay(items: PoolItem[]): PoolItem[] {
     if (group) group.push(item)
     else groups.set(key, [item])
   }
-  const keyOf = (item: PoolItem) => item.sortOrder ?? item.createdAt
   const anchored = [...groups.values()].map((group) => {
     group.sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt)
-    return { lane: group[0].lane, anchor: Math.min(...group.map(keyOf)), group }
+    return { lane: group[0].lane, anchor: Math.min(...group.map(queueAnchor)), group }
   })
   anchored.sort((a, b) => LANE_RANK[a.lane] - LANE_RANK[b.lane] || a.anchor - b.anchor)
   return anchored.flatMap((entry) => entry.group)
@@ -190,6 +194,7 @@ export class SpeechPool {
       pauseAfterMs: input.pauseAfterMs,
       originDraftUnitId: input.originDraftUnitId,
       sortOrder: input.sortOrder,
+      queueSeq: input.queueSeq,
       // 场次装载：库里的预合成音频直接复用，开播零延迟（未预合成才进合成窗口）
       audioPath: input.audioPath?.trim() || undefined,
       status: input.audioPath?.trim() ? 'ready' : 'pending',
@@ -253,7 +258,7 @@ export class SpeechPool {
     const item = active.find((entry) => entry.id === id)
     if (!item) throw new Error('这条不在未播队列里（可能已经播过）')
     if (item.status === 'playing') return
-    const minAnchor = Math.min(...active.map((entry) => entry.sortOrder ?? entry.createdAt))
+    const minAnchor = Math.min(...active.map((entry) => queueAnchor(entry)))
     this.storage.poolItemUpdate(id, { lane: 'next', sortOrder: minAnchor - 1 })
     this.refresh()
   }
@@ -370,12 +375,34 @@ export class SpeechPool {
    */
   jumpTo(dedupeKey: string): boolean {
     const item = this.storage.poolItemFindActiveByDedupeKey(dedupeKey)
-    if (!item || item.status === 'playing') return false
+    if (item && item.status !== 'playing') {
+      const active = this.activeItems()
+      const minAnchor = Math.min(...active.map((entry) => queueAnchor(entry)))
+      this.storage.poolItemUpdate(item.id, { sortOrder: minAnchor - 1 })
+      this.refresh()
+      return true
+    }
+    // 已播完的章节：回退同一行（清 played_at、排到队首），不重新入池
+    if (!this.sessionId) return false
+    const played = this.storage.poolItemFindByDedupeKey(dedupeKey, this.sessionId)
+    if (!played?.audioPath) return false
     const active = this.activeItems()
-    const minAnchor = Math.min(...active.map((entry) => entry.sortOrder ?? entry.createdAt))
-    this.storage.poolItemUpdate(item.id, { sortOrder: minAnchor - 1 })
+    const minAnchor = active.length
+      ? Math.min(...active.map((entry) => queueAnchor(entry)))
+      : Date.now()
+    this.storage.poolItemRewind(played.id, minAnchor - 1)
     this.refresh()
     return true
+  }
+
+  /** 循环回卷：本场已播条目全部重置为就绪，播放循环从头取（不新建、不重合成） */
+  rewind(): number {
+    if (!this.sessionId) return 0
+    const scriptId = this.storage.getConfig().live.activeProgramId
+    if (!scriptId) return 0
+    const count = this.storage.poolRewind(this.sessionId, scriptId)
+    if (count > 0) this.refresh()
+    return count
   }
 
   /** 播报完成回报 */

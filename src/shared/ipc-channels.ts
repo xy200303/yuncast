@@ -248,6 +248,8 @@ export const IPC = {
   draftUnitClear: 'draft-unit:clear',
   /** 只清已合成音频（文稿保留，回到待合成可重蒸） */
   draftUnitClearAudio: 'draft-unit:clear-audio',
+  /** 单独合成一段（卡片上的「单独合成」） */
+  draftUnitSynthesize: 'draft-unit:synthesize',
   /** 批量预合成（异步，进度走 draftUnitEvent） */
   /** main → renderer：单条话术状态变化（预合成进度） */
   draftUnitEvent: 'draft-unit:event',

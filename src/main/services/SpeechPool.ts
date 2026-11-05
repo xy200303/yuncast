@@ -383,8 +383,8 @@ export class SpeechPool {
     }
   }
 
-  getRecentPlayed(n: number): PoolItem[] {
-    return this.storage.poolItemRecentPlayed(Math.max(1, Math.min(n, 50)))
+  getRecentPlayed(n: number, programId?: string): PoolItem[] {
+    return this.storage.poolItemRecentPlayed(Math.max(1, Math.min(n, 50)), programId)
   }
 
   snapshot(): PoolSnapshot {

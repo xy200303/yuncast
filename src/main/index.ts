@@ -733,7 +733,9 @@ function registerIpc(
       pool.reorder([id, ...ids])
     })
   )
-  ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) => pool.getRecentPlayed(n))
+  ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) =>
+    pool.getRecentPlayed(n, storage.getConfig().live.activeProgramId || undefined)
+  )
   ipcMain.handle(IPC.poolSnapshot, () => pool.snapshot())
 
   // ---------- TTS ----------

@@ -54,6 +54,8 @@ export function CardStream({ personas }: { personas: Persona[] }) {
   const density = useLiveStore((s) => s.density)
   const displayMode = useLiveStore((s) => s.displayMode)
   const loadHistory = useLiveStore((s) => s.loadHistory)
+  // 换节目就重拉历史：历史按节目隔离，否则会混进上一场别的节目的残留
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const setDensity = useLiveStore((s) => s.setDensity)
   const setDisplayMode = useLiveStore((s) => s.setDisplayMode)
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
@@ -62,7 +64,7 @@ export function CardStream({ personas }: { personas: Persona[] }) {
   // 进页面拉一次历史；池里出现"已播"变化时补拉（开播后第一批播完就能看见）
   useEffect(() => {
     void loadHistory()
-  }, [loadHistory, pool.items.length])
+  }, [loadHistory, activeProgramId, pool.items.length])
 
   const rows = useMemo(() => mergeRows(history, pool.items), [history, pool.items])
   const speakerOf = (item: PoolItem): { name: string; color: string } => {

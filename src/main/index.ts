@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
 import { BRAND_DISPLAY } from '../shared/brand'
 import { POOL_LIMITS, type SessionConfig, type SessionConfigInput } from '../shared/types'
+import { describeDraftParams } from '../shared/draftParams'
 
 /** 崩溃现场日志（无声退出排查）：追加写 userData/crash.log，只记事件类型不带业务数据 */
 function crashNote(kind: string, detail: string): void {
@@ -1039,7 +1040,13 @@ function registerIpc(
   }
   ipcMain.handle(
     IPC.directorSend,
-    async (_e, text: string, localId?: string, attachments?: { name: string; path: string }[]) => {
+    async (
+      _e,
+      text: string,
+      localId?: string,
+      attachments?: { name: string; path: string }[],
+      params?: DraftBriefParams
+    ) => {
       let content = String(text ?? '').slice(0, 500)
       // 斜杠命令：/clear 清空当前节目的会话（上下文 + 对话时间线），不进会话也不落库
       if (!attachments?.length && content.trim().toLowerCase() === '/clear') {
@@ -1078,6 +1085,11 @@ function registerIpc(
       }
       if (lines.length > 0) content = `${content}\n${lines.join('\n')}`.trim()
       const programId = storage.getConfig().live.activeProgramId || StorageService.DIRECTOR_SESSION_KEY
+      // 每轮都带当前写稿参数：system prompt 只放宏观，语言/风格这些以本轮参数为准。
+      // 只进发给模型的那份，时间线存的还是用户原话（气泡里不该出现系统注记）
+      const toAgent = params
+        ? `${content}\n\n（系统：本场写稿参数——${describeDraftParams(params)}。写稿/改稿一律以此为准；拿不准先问导演）`
+        : content
       if (content) {
         const id = String(localId ?? '').trim() || `dm-${Date.now()}`
         try {
@@ -1093,7 +1105,7 @@ function registerIpc(
         }
       }
       try {
-        await agent.chat(content, images)
+        await agent.chat(toAgent, images)
         return { ok: true }
       } catch (error) {
         return { ok: false, error: friendlyError(error) }

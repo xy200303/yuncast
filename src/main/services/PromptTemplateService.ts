@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
-import { buildSessionPromptModule, type SessionPromptShape } from '../../shared/programPrompt'
+import { buildBroadcastPromptModule, type SessionPromptShape } from '../../shared/programPrompt'
 import {
-  PROGRAM_LANGUAGE_LABELS,
   type DirectorConfig,
   type Program,
   type Script,
@@ -161,7 +160,7 @@ const DEFAULT_PROMPTS = {
 {{scenes}}
 
 先问清楚再动笔：商品/服务是什么、价格与优惠、卖给谁、想要什么风格、这场大概播多久。任何一项不清楚，先在对话里把缺的一起问用户（一次问完，别挤牙膏），等回答再写；用户明确说"你定"就按项目简介和素材自己拿主意。
-每条底稿必须同时给两份文本：text（按本场播出语言写，观众听到的）和 textZh（中文对照；本场就是中文时填与 text 相同的内容）。draft_write / draft_add 少 textZh 会被拒绝。
+每条底稿必须同时给两份文本：text（按**本轮任务书里的写稿参数**写，观众听到的）和 textZh（中文对照；本场就是中文时填与 text 相同的内容）。draft_write / draft_add 少 textZh 会被拒绝。
 场景不够用或结构不对，先用 scene_create 把节目编排搭起来再动笔。
 写多少由你自己判断：能撑起整场、节奏有起伏就停，别灌水凑数；底稿库有硬上限（成本闸），写满 draft_write 会拒。
 怎么编排你说了算，只有几条底线：
@@ -348,7 +347,9 @@ delivery 管整段语气，正文里的三种标记管单句级表演——两�
 朗读/原文/背诵类节目：可以用**「温柔」这类保持常态语气的 cot**（每段最多一句，主播平时就是温柔语气时它反而更像真人），但**不要用「压低声音/缓慢/耳语/悄悄话」**——这些会改变音量与速度，连续贴会让声音越读越轻、越读越慢，听起来就不像正常说话了。`
   }
 
-  /** 「本场」段：剧本结构 + 本场形态/语言/风格 + 播完策略 + 事件接线 */
+  /** 「本场」段：只放宏观（节目、场次结构、播出方式、事件接线）。
+   *  语言/内容形式/风格/收尾这些「写稿参数」不写进手册：它们每一轮随任务书或导演消息传入，
+   *  手册里写死会在用户切换语言后变成过期规则（会话是出生时组装 prompt 的）。 */
   private programSection(
     program: Program,
     script: Script | null,
@@ -363,10 +364,11 @@ delivery 管整段语气，正文里的三种标记管单句级表演——两�
     }
     return `\n# 本场
 - 剧本：${program.name}
-- 简介：${program.theme || '（未设定，自由发挥）'}${this.languageSection(session)}
-${buildSessionPromptModule(shape)}${
-      session?.instruction?.trim() ? `\n- 本场风格：${session.instruction.trim()}` : ''
-    }${this.programEventLines(session)}${
+- 简介：${program.theme || '（未设定，自由发挥）'}
+${buildBroadcastPromptModule(shape)}
+- 写稿参数（播出语言、形态、本场风格、收尾、本轮调整）不在手册里：每次写稿/改稿都随任务书带当前值，以那一份为准，别沿用记忆里的旧值
+- 现场说话沿用本场稿子/最近播出内容的语言；实在拿不准就先问导演
+- 拿不准（语言口径、风格、旧稿留不留）就先 ask_director 问导演，别猜${this.programEventLines(session)}${
       script
         ? `
 - 剧本的场次序列（用 scene_advance 逐场推进，每场播得差不多就推进）：
@@ -379,21 +381,6 @@ ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 
           }`
         : '\n- 本剧本还没有场次（编排），按简介自由发挥'
     }`
-  }
-
-  /**
-   * 节目语言规则（多语言播出/跨境电商）：语言不是 auto/中文时，要求播报内容用该语言写；
-   * 给导演的聊天汇报仍是中文（那是工作语言，不是播出内容）。中文/自动不注入。
-   */
-  private languageSection(session: SessionConfig | null): string {
-    // 语言只属于本场；备稿阶段还没配本场就按自动识别写
-    const language = session?.language ?? 'auto'
-    if (language === 'auto' || language === 'Chinese') return ''
-    const label = PROGRAM_LANGUAGE_LABELS[language] ?? language
-    return `
-- 播出语言：${label}。所有播报内容（开场、speak、底稿草稿、编排场景、互动回复）都用该语言写；标点用该语言的标点；数字/价格/单位按该语言的口语读法写（例如英文 "99 dollars and 99 cents" 而不是 "九十九块九"）。
-  <cot>/<fx>/<pause> 标记照常用，cot 的情绪描述可以继续用中文写（编译层按中文关键词翻译），但正文必须是该语言。
-  给导演的对话汇报仍用中文——汇报是工作语言，不是播出内容。`
   }
 
   /** 「本场节目」段的事件接线（本场配置直述）：互动开关、启用的自动化事件清单 */

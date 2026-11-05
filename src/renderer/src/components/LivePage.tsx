@@ -1341,12 +1341,28 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
     const payload =
       others.length > 0 ? `${text}\n${others.map((f) => `[附件] ${f.name}：${f.path}`).join('\n')}`.trim() : text
     // 本地回显的 id 一起发给 main：落库用同一 id，切场/重载恢复时不重复
-    void window.api.director.send(payload, id, images.length > 0 ? images : undefined).then((result) => {
+    // 每轮都带当前写稿参数（语言/形态/风格/收尾）：system prompt 不存这些值，改了语言下一句就生效
+    void (async () => {
+      const programId = useAppStore.getState().config.live.activeProgramId
+      const session = programId ? await window.api.sessionConfig.latest(programId) : null
+      const result = await window.api.director.send(
+        payload,
+        id,
+        images.length > 0 ? images : undefined,
+        session
+          ? {
+              language: session.language,
+              instruction: session.instruction,
+              contentType: session.contentType,
+              endMode: session.endMode
+            }
+          : undefined
+      )
       if (!result.ok) {
         setAwaiting(false)
         toast.error('指令没送达', { description: result.error })
       }
-    })
+    })()
   }
 
   const answerAsk = (message: DirectorMessage, answer: string): void => {

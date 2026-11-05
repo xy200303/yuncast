@@ -12,9 +12,9 @@ import {
   type UserMessage
 } from '@earendil-works/pi-ai'
 import { estimateContextTokens } from '@earendil-works/pi-ai/utils/estimate'
+import { describeDraftParams } from '../../shared/draftParams'
 import {
   broadcastModeOf,
-  CONTENT_TYPE_LABELS,
   PROGRAM_LANGUAGE_LABELS,
   type AgentStatus,
   type BroadcastMode,
@@ -759,7 +759,14 @@ export class AgentService {
   notifyLowWater(remaining: number): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) return
     if (!this.liveActive || this.speakingPaused) return
-    this.deliver(this.prompts.render('user.low_water', { remaining }), 'task')
+    // 现场续写也算写稿：参数跟着这轮任务走（system prompt 里没有这些值）
+    const programId = this.storage.getConfig().live.activeProgramId
+    const params = programId ? this.storedBriefParams(programId) : {}
+    const note = describeDraftParams(params)
+    this.deliver(
+      `${this.prompts.render('user.low_water', { remaining })}\n\n（系统：本场写稿参数——${note}。续写按这份参数来）`,
+      'task'
+    )
   }
 
   /**
@@ -870,25 +877,22 @@ export class AgentService {
   }
 
   /**
-   * 本次写作参数（语言/形态/风格/收尾）：**每份任务书都带一份当前值**。
-   * system prompt 里也有一份，但它在会话出生时组装——用户中途切语言，旧会话看不到；
-   * 参数随任务书走，切项目、切语言后下一次写稿一定按新的来。
+   * 本次写作参数（语言/形态/风格/收尾）：**每次写稿/改稿都带一份当前值**。
+   * system prompt 只放宏观（节目、场次、播出方式），不存这些值——它在会话出生时组装一次，
+   * 用户中途切语言旧会话看不到；参数随任务书走，切项目、切语言后下一次写稿一定按新的来。
    */
   private draftParamsBlock(params: DraftBriefParams): string {
     const language = params.language ?? 'auto'
-    const languageLine =
+    const languageRule =
       language === 'auto'
-        ? '- 播出语言：自动识别（跟内容本身的语言走）'
-        : `- 播出语言：${PROGRAM_LANGUAGE_LABELS[language]}——正文（含 speak 的台词）必须用该语言写，标点也用该语言的标点；中文只放 textZh（给导演看的对照）`
-    const lines = [
-      languageLine,
-      `- 内容形式：${CONTENT_TYPE_LABELS[params.contentType ?? 'solo']}`,
-      params.instruction?.trim() ? `- 本场风格：${params.instruction.trim()}` : '',
-      params.endMode === 'stop'
-        ? '- 收尾：播完最后一场就道别下播，closer 段写一段收尾'
-        : '- 收尾：循环返场（返场不返词，同一要点换角度重讲）'
-    ].filter(Boolean)
-    return `\n\n# 本次写作参数（以这里为准：和你记忆里的旧配置、旧稿不一致时，按这里改）\n${lines.join('\n')}`
+        ? '- 正文语言跟内容本身走'
+        : `- 正文（含 speak 的台词）必须用${PROGRAM_LANGUAGE_LABELS[language]}写，标点也用该语言的标点；中文只放 textZh（给导演看的对照）`
+    return (
+      `\n\n# 本次写作参数（以这里为准：和你记忆里的旧配置、旧稿不一致时，按这里改）\n` +
+      `- ${describeDraftParams(params)}\n` +
+      `${languageRule}\n` +
+      `- 拿不准（语言口径、风格、旧稿留不留）先用 ask_director 问导演，别猜着写`
+    )
   }
 
   /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走导演手册（user.draft_brief）；

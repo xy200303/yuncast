@@ -1,17 +1,10 @@
 import type { BroadcastMode, ContentType, SessionConfig } from './types'
 
 /**
- * 「本场」提示词模块：内容形态 + 播出方式。
- * 形态（solo/conversation/reading/roleplay）与本场的内容来源/合成时机一起决定口吻与节奏；
- * 剧本资产只提供场次结构，不再携带这两类配置。
+ * 「本场」提示词模块：只放播出方式（宏观运行方式）。
+ * 内容形式（solo/conversation/reading/roleplay）属于「写稿参数」，每轮随任务书传入，不写进 system prompt——
+ * system prompt 只在会话出生时组装一次，用户中途改配置它看不到，写死就变成过期规则。
  */
-
-const CONTENT_TYPE_MODULE: Record<ContentType, string> = {
-  solo: `- 内容形式：一个人讲。整场都是你一个人的单口讲述——像电台主播、像说书先生，把主题讲透；没有搭档，别虚拟出对话者`,
-  conversation: `- 内容形式：多人聊天。要出对话感：用 speak 的 personaId 参数写不同主播的台词（按本场给各人定的嗓音播出），互相接话、补充、抬杠，像一档真的多人节目，别写成你一个人的独白`,
-  reading: `- 内容形式：照着稿子读。忠实朗读稿件内容，不自由发挥、不改写事实与数字；你的发挥空间只在语气、停顿和段落之间的衔接语上`,
-  roleplay: `- 内容形式：分角色表演。用 speak 的 personaId 参数写各个角色的台词（按本场给各人定的嗓音播出），把戏演出来——每个角色要有自己的口吻，别念成同一个旁白`
-}
 
 const BROADCAST_MODE_MODULE: Record<BroadcastMode, string> = {
   improvised: `- 播出方式：现场发挥。没有固定底稿，内容全靠你现场组织；直播间有动态（评论/礼物/进场）就接着聊，没动态可以不说——自然停顿比硬凑废话强`,
@@ -28,7 +21,7 @@ function modeOf(session: SessionPromptShape): BroadcastMode {
   return 'rolling'
 }
 
-/** 生成注入主播 system prompt 的「本场」段（内容形态 + 播出节奏两行） */
-export function buildSessionPromptModule(session: SessionPromptShape): string {
-  return `${CONTENT_TYPE_MODULE[session.contentType]}\n${BROADCAST_MODE_MODULE[modeOf(session)]}`
+/** 生成注入 system prompt 的「播出方式」行（内容形式不在里面，随写稿参数走） */
+export function buildBroadcastPromptModule(session: SessionPromptShape): string {
+  return BROADCAST_MODE_MODULE[modeOf(session)]
 }

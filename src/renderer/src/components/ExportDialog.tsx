@@ -50,7 +50,7 @@ export function ExportDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
 }) {
-  const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
+  const [unitLabel, setUnitLabel] = useState('段')
   const [loading, setLoading] = useState(false)
   const [gateError, setGateError] = useState('')
   const [missing, setMissing] = useState<ProgramGateFailure[]>([])
@@ -71,22 +71,24 @@ export function ExportDialog({
     setLoading(true)
     setGateError('')
     try {
-      if (program.broadcastMode !== 'prepared') {
+      const session = await window.api.sessionConfig.latest(program.id)
+      if (session?.synthMode !== 'pre') {
         setTotalUnits(0)
         setReadyUnits(0)
         setMissing([])
-        setGateError('滚动/即兴节目没有节目级预制音频可导出（只有预制节目支持导出）')
+        setGateError('边播边合/即时生成的音频没有节目级预制文件可导出（只有预合成档支持导出）')
         return
       }
+      setUnitLabel(AUDIO_UNIT_LABEL[session.contentType])
       const gate = await window.api.program.playGate(program.id)
       setTotalUnits(gate.total)
       setReadyUnits(gate.ready)
       setMissing(gate.failures)
-      if (gate.total === 0) setGateError('节目还没有文稿，没有可导出的音频')
+      if (gate.total === 0) setGateError('这个项目还没有文稿，没有可导出的音频')
     } finally {
       setLoading(false)
     }
-  }, [program.id, program.broadcastMode])
+  }, [program.id])
 
   useEffect(() => {
     // 只拉数据，不同步草稿态：父层是「打开才挂载」（ProgramsPage 用 exporting && <ExportDialog open />），
@@ -154,7 +156,7 @@ export function ExportDialog({
         onPointerDownOutside={(e) => running && e.preventDefault()}
       >
         <DialogHeader>
-          <DialogTitle>导出节目音频 · {program.name}</DialogTitle>
+          <DialogTitle>导出项目音频 · {program.name}</DialogTitle>
         </DialogHeader>
 
         {phase.kind !== 'done' ? (

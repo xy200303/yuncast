@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '../shared/ipc-channels'
 import type {
   AgentStatus,
+  AppEditAction,
+  AppViewAction,
   AppConfig,
   AppInfo,
   UpdateStatus,
@@ -26,7 +28,6 @@ import type {
   ModelConnectionInput,
   ModelConnectionSafe,
   PartialDeep,
-  Persona,
   PromptTemplateInfo,
   PlaybackControlAction,
   PoolResult,
@@ -37,7 +38,10 @@ import type {
   ProducePlanInfo,
   ProduceVoiceOverride,
   Program,
+  Script,
+  ProjectRecord,
   SessionConfig,
+  SessionConfigInput,
   ProgramAudioProgress,
   ProgramExportOptions,
   ProgramExportProgress,
@@ -46,8 +50,6 @@ import type {
   ProgramInput,
   Material,
   MaterialInput,
-  Script,
-  ScriptInput,
   LiveInboxEvent,
   SessionDetail,
   SessionExportOptions,
@@ -81,7 +83,11 @@ import type { TempUploadResult } from '../main/services/TempUpload'
 const api = {
   platform: process.platform,
   app: {
-    info: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>
+    info: () => ipcRenderer.invoke(IPC.appInfo) as Promise<AppInfo>,
+    /** 菜单栏：编辑动作（undo/redo/cut/copy/paste/selectAll） */
+    edit: (action: AppEditAction) => ipcRenderer.invoke(IPC.appEdit, action) as Promise<void>,
+    /** 菜单栏：视图动作（reload/zoom-in/zoom-out/zoom-reset/fullscreen/devtools） */
+    view: (action: AppViewAction) => ipcRenderer.invoke(IPC.appView, action) as Promise<void>
   },
   update: {
     /** 手动检查更新；状态变化（含进度）走 onStatus 广播 */
@@ -111,6 +117,8 @@ const api = {
     revise: (id: string, text: string) => ipcRenderer.invoke(IPC.poolRevise, id, text) as Promise<PoolResult>,
     /** 把某条提到队首（只影响未播顺序） */
     promote: (id: string) => ipcRenderer.invoke(IPC.poolPromote, id) as Promise<PoolResult>,
+    /** 仅播此条：插到当前条之后，其余顺序不动 */
+    playOnly: (id: string) => ipcRenderer.invoke(IPC.poolPlayOnly, id) as Promise<PoolResult>,
     recentPlayed: (n: number) => ipcRenderer.invoke(IPC.poolRecentPlayed, n) as Promise<PoolItem[]>,
     snapshot: () => ipcRenderer.invoke(IPC.poolSnapshot) as Promise<PoolSnapshot>,
     /** 订阅池快照广播，返回取消订阅函数 */
@@ -123,8 +131,16 @@ const api = {
     }
   },
   sessionConfig: {
-    save: (config: SessionConfig) => ipcRenderer.invoke(IPC.sessionConfigSave, config) as Promise<{ ok: boolean }>,
-    latest: (programId: string) => ipcRenderer.invoke(IPC.sessionConfigLatest, programId) as Promise<SessionConfig | null>
+    save: (input: SessionConfigInput) =>
+      ipcRenderer.invoke(IPC.sessionConfigSave, input) as Promise<
+        { ok: true; config: SessionConfig } | { ok: false; error: string }
+      >,
+    latest: (programId: string) => ipcRenderer.invoke(IPC.sessionConfigLatest, programId) as Promise<SessionConfig | null>,
+    /** 没有本场配置就建一条默认的（互动开关随时可改，不等开播） */
+    ensure: (programId: string) =>
+      ipcRenderer.invoke(IPC.sessionConfigEnsure, programId) as Promise<SessionConfig | null>,
+    patch: (programId: string, patch: Partial<Pick<SessionConfig, 'allowLiveEvents' | 'enabledTriggerIds'>>) =>
+      ipcRenderer.invoke(IPC.sessionConfigPatch, programId, patch) as Promise<SessionConfig | null>
   },
   tts: {
     /** 测试发音：用指定的接入 + 模型合成一小段（voice 空 → 模型目录第一个音色或该接入 + 模型的克隆音色） */
@@ -257,20 +273,6 @@ const api = {
         ipcRenderer.removeListener(IPC.playbackControlEvent, listener)
       }
     }
-  },
-  persona: {
-    /** 人设卡变更（含 agent/MCP 改动）：返回取消订阅函数 */
-    onChanged: (cb: (personaId: string) => void) => {
-      const listener = (_e: Electron.IpcRendererEvent, personaId: string) => cb(personaId)
-      ipcRenderer.on(IPC.personaChanged, listener)
-      return () => {
-        ipcRenderer.removeListener(IPC.personaChanged, listener)
-      }
-    },
-    list: () => ipcRenderer.invoke(IPC.personaList) as Promise<Persona[]>,
-    save: (input: Omit<Persona, 'id' | 'updatedAt'>, id?: string) =>
-      ipcRenderer.invoke(IPC.personaSave, input, id) as Promise<Persona>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.personaRemove, id) as Promise<void>
   },
   audio: {
     /** 主音量（本机监听）：交给主进程 AudioPipeline，它按这个增益推 PCM（不影响推流那一路） */
@@ -435,27 +437,31 @@ const api = {
     /** 单场可视化（场次详情「图表」tab）；场次不存在返回 null */
     session: (sessionId: string) => ipcRenderer.invoke(IPC.statsSession, sessionId) as Promise<SessionStats | null>
   },
-  script: {
-    list: () => ipcRenderer.invoke(IPC.scriptList) as Promise<Script[]>,
-    save: (input: ScriptInput, id?: string) =>
-      ipcRenderer.invoke(IPC.scriptSave, input, id) as Promise<PoolResult<Script>>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.scriptDelete, id) as Promise<PoolResult>
+  // 项目（一个项目 = 一个目录 = 一个 project.db）
+  project: {
+    list: () => ipcRenderer.invoke(IPC.projectList) as Promise<ProjectRecord[]>,
+    create: (input: { name: string; dir?: string }) =>
+      ipcRenderer.invoke(IPC.projectCreate, input) as Promise<PoolResult<ProjectRecord>>,
+    open: (id: string) => ipcRenderer.invoke(IPC.projectOpen, id) as Promise<PoolResult<ProjectRecord>>,
+    openAt: (dir: string) => ipcRenderer.invoke(IPC.projectOpenAt, dir) as Promise<PoolResult<ProjectRecord>>,
+    close: () => ipcRenderer.invoke(IPC.projectClose) as Promise<void>,
+    /** 从列表移除，不删磁盘目录 */
+    remove: (id: string) => ipcRenderer.invoke(IPC.projectRemove, id) as Promise<PoolResult>,
+    pickDir: () => ipcRenderer.invoke(IPC.projectPickDir) as Promise<{ ok: boolean; path: string }>,
+    onChanged: (cb: () => void) => {
+      const listener = () => cb()
+      ipcRenderer.on(IPC.projectChanged, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.projectChanged, listener)
+      }
+    }
   },
   program: {
     list: () => ipcRenderer.invoke(IPC.programList) as Promise<Program[]>,
     save: (input: ProgramInput, id?: string) =>
       ipcRenderer.invoke(IPC.programSave, input, id) as Promise<PoolResult<Program>>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.programDelete, id) as Promise<PoolResult>,
     /** 设为当前节目，返回生效的 activeProgramId */
     setActive: (id: string) => ipcRenderer.invoke(IPC.programSetActive, id) as Promise<string>,
-    /** 节目数据变更（保存/删除/切换，含 agent 与 MCP 路径）：界面收到后重拉列表 */
-    onChanged: (cb: () => void) => {
-      const listener = () => cb()
-      ipcRenderer.on(IPC.programChanged, listener)
-      return () => {
-        ipcRenderer.removeListener(IPC.programChanged, listener)
-      }
-    },
     /** 开播前预检：检查项清单（阻断/警告） */
     preflight: (id: string) => ipcRenderer.invoke(IPC.programPreflight, id) as Promise<PreflightItem[]>,
     /** 启动节目：加载配置 + 应用人设音色 + 装载话术库 + 启动主播；opts.allowPartial = 预制节目「仅播放已完成部分」 */

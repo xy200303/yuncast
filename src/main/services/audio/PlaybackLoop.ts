@@ -148,7 +148,7 @@ export class PlaybackLoop {
           onEnd: () => session.end(),
           onError: (error) => session.fail(error)
         },
-        { instruction: item.delivery, rate: item.rate, pitch: item.pitch, emotion: item.emotion, emotionScale: item.emotionScale, languageType: item.languageType }
+        { instruction: item.delivery, rate: item.rate, pitch: item.pitch, emotion: item.emotion, emotionScale: item.emotionScale }
       )
       return session.done
     }

@@ -1,16 +1,16 @@
-import type { BroadcastMode, ContentType, Program } from './types'
+import type { BroadcastMode, ContentType, SessionConfig } from './types'
 
 /**
- * 「本场节目」提示词模块（替代旧直播模式的 promptModule）：
- * 由节目的 contentType + broadcastMode 生成，拼进主播 system prompt 的「本场节目」段。
- * 内容类型管表达规范，播出方式管节奏；内容本身仍是 agent 自编自导。
+ * 「本场」提示词模块：内容形态 + 播出方式。
+ * 形态（solo/conversation/reading/roleplay）与本场的内容来源/合成时机一起决定口吻与节奏；
+ * 剧本资产只提供场次结构，不再携带这两类配置。
  */
 
 const CONTENT_TYPE_MODULE: Record<ContentType, string> = {
   solo: `- 内容形式：一个人讲。整场都是你一个人的单口讲述——像电台主播、像说书先生，把主题讲透；没有搭档，别虚拟出对话者`,
-  conversation: `- 内容形式：多人聊天。要出对话感：用 speak 的 role 参数写不同角色的台词（按角色音色播出），互相接话、补充、抬杠，像一档真的多人节目，别写成你一个人的独白`,
+  conversation: `- 内容形式：多人聊天。要出对话感：用 speak 的 personaId 参数写不同主播的台词（按本场给各人定的嗓音播出），互相接话、补充、抬杠，像一档真的多人节目，别写成你一个人的独白`,
   reading: `- 内容形式：照着稿子读。忠实朗读稿件内容，不自由发挥、不改写事实与数字；你的发挥空间只在语气、停顿和段落之间的衔接语上`,
-  roleplay: `- 内容形式：分角色表演。用 speak 的 role 参数写各个角色的台词（按角色音色播出），把戏演出来——每个角色要有自己的口吻，别念成同一个旁白`
+  roleplay: `- 内容形式：分角色表演。用 speak 的 personaId 参数写各个角色的台词（按本场给各人定的嗓音播出），把戏演出来——每个角色要有自己的口吻，别念成同一个旁白`
 }
 
 const BROADCAST_MODE_MODULE: Record<BroadcastMode, string> = {
@@ -19,7 +19,16 @@ const BROADCAST_MODE_MODULE: Record<BroadcastMode, string> = {
   prepared: `- 播出方式：全部做好再播。本场音频开播前已全部预制好，按顺序播出即可；你主要负责开场、段落衔接和现场互动，别临时改稿重写`
 }
 
-/** 生成注入主播 system prompt 的「本场节目」段（内容类型 + 播出方式两行） */
-export function buildProgramPromptModule(program: Program): string {
-  return `${CONTENT_TYPE_MODULE[program.contentType]}\n${BROADCAST_MODE_MODULE[program.broadcastMode]}`
+export type SessionPromptShape = Pick<SessionConfig, 'contentType' | 'contentSource' | 'synthMode'>
+
+/** 本场的播出节奏：内容来源 → 合成时机 → 现场/预制二分 */
+function modeOf(session: SessionPromptShape): BroadcastMode {
+  if (session.contentSource === 'infinite') return 'improvised'
+  if (session.synthMode === 'pre') return 'prepared'
+  return 'rolling'
+}
+
+/** 生成注入主播 system prompt 的「本场」段（内容形态 + 播出节奏两行） */
+export function buildSessionPromptModule(session: SessionPromptShape): string {
+  return `${CONTENT_TYPE_MODULE[session.contentType]}\n${BROADCAST_MODE_MODULE[modeOf(session)]}`
 }

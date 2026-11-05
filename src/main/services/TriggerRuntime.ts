@@ -284,12 +284,12 @@ export class TriggerRuntime {
     // 开播重置单场预算
     if (event.type === 'stream.started') this.firedThisSession.clear()
 
-    // 节目事件接线总闸：节目关闭直播事件时，评论/进场/礼物/点赞这类动态事件一概不进触发器；
+    // 本场事件接线总闸：关掉直播事件时，评论/进场/礼物/点赞这类动态事件一概不进触发器；
     // stream.started（开播信号）与 pool.empty/pool.low（自家水位）不是观众动态，照常放行——
     // 但预制节目（prepared）例外：它的播完/循环是引擎决策（broadcastPolicy），水位触发器不响
     const gate = this.gateProvider?.()
     if (gate && !gate.allowLiveEvents && LIVE_DYNAMIC_EVENTS.has(event.type)) return
-    if (gate?.broadcastMode === 'prepared' && (event.type === 'pool.empty' || event.type === 'pool.low')) return
+    if (gate?.contentSource !== 'infinite' && gate?.broadcastMode === 'prepared' && (event.type === 'pool.empty' || event.type === 'pool.low')) return
 
     for (const trigger of this.triggers) {
       if (!trigger.enabled || trigger.on.event !== event.type) continue
@@ -388,7 +388,7 @@ export class TriggerRuntime {
       if (!text || text.includes('{{')) return // 模板渲染不完整（缺字段）就别播
       const voiceId = this.voiceProvider().trim()
       if (!voiceId) {
-        console.warn(`[YunCast] 触发器「${trigger.name}」跳过：当前节目没配卡司嗓音（节目卡司里的卡都没选音色）`)
+        console.warn(`[YunCast] 触发器「${trigger.name}」跳过：本场还没给主播定嗓子（开播配置里选音色）`)
         return
       }
       try {

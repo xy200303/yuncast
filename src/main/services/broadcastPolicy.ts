@@ -1,25 +1,24 @@
-import type { Program } from '../../shared/types'
+import type { Program, SessionConfig } from '../../shared/types'
 import type { ProgramPlaybackService } from './ProgramPlaybackService'
 
 /**
- * 播出策略（docs/10 §7 的模式分流收拢处）：
+ * 播出策略（docs/12 §12）：
  * 三种播出方式对「启动装载 / 滚动合成 / 池见底 / 池低水位 / 就绪补装 / 水位触发器」的反应
- * 完全不同，全部封装成策略对象——引擎（index.ts 的水位订阅、launch）只问策略要决策，
- * 代码里不再出现 broadcastMode 的 if 分叉。新增播出方式 = 写一个策略 + 注册进 policyFor。
+ * 完全不同，全部封装成策略对象——引擎（index.ts 的水位订阅、launch）只问策略要决策。
  *
- * 状态口径约定（每个策略只读自己的态，互不越界）：
- * - rolling（滚动直播）：文稿态 draftUnit.status（pending/synthesizing/ready）+ 段数硬上限
- * - prepared（预制节目）：资产态 rendered.status（播放门禁 playGate 汇总），音频一口气生成后复用
- * - improvised（即兴）：无底稿，水位与播出内容无关——say 出来多少池里就多少
+ * 模式由「剧本的播出形态 + 本场内容来源」共同决定：
+ * - 本场 contentSource=infinite：无底稿，边播边无限生成（内容来源覆盖形态）
+ * - 其余按剧本 broadcastMode：prepared（全部做好再播）/ rolling（边播边准备）
+ * 收尾只认本场 endMode：stop=一遍播完停，loop/forever=循环返场。
  */
 
 /** 池见底决策：wrap-up=走两阶段收播；reload=循环重装；wait=内容在路上（允许冷场）；ignore=与本模式无关 */
 export type PoolEmptyAction = 'wrap-up' | 'reload' | 'wait' | 'ignore'
 
 export interface BroadcastPolicy {
-  /** 启动装载：返回装进池的条数（improvised 恒 0） */
+  /** 启动装载：返回装进池的条数（无限生成恒 0） */
   load(program: Program, opts?: { allowPartial?: boolean }): number
-  /** 启动后的后台合成：rolling 有欠账就滚动蒸；prepared 走「生成节目音频」入口；improvised 无底稿 */
+  /** 启动后的后台合成：rolling 有欠账就滚动蒸；prepared 走「生成节目音频」入口；无限生成无底稿 */
   kickSynthesis(program: Program): void
   /** 池见底决策 */
   poolEmptyAction(program: Program): PoolEmptyAction
@@ -33,15 +32,18 @@ export interface BroadcastPolicy {
   readonly allowsPoolTriggers: boolean
 }
 
-/** 滚动直播：整库装载 + 后台滚动合成；见底看上限，没到等续写（允许冷场），到了循环；低水位引擎直发续写 */
-function rollingPolicy(pb: ProgramPlaybackService): BroadcastPolicy {
+/** 滚动直播：整库装载 + 后台滚动合成；见底看上限，没到等续写（允许冷场），到了按本场收尾 */
+function rollingPolicy(pb: ProgramPlaybackService, session: SessionConfig): BroadcastPolicy {
   return {
     autoReloadOnReady: true,
     allowsPoolTriggers: true,
     load: (program) => pb.loadProgramDraftUnits(program.id),
-    kickSynthesis: (program) => void pb.kickSynthesis(program.id),
+    // 预合成档：开播前就该全部合好（预检会拦），开播后不再后台补蒸
+    kickSynthesis: (program) => {
+      if (session.synthMode !== 'pre') void pb.kickSynthesis(program.id)
+    },
     poolEmptyAction: (program) => {
-      if (program.finishMode === 'stop') {
+      if (session.endMode === 'stop') {
         // 「内容在路上」就等——区分「真播完」和「还在合成」
         if (pb.hasIncomingDraftUnits(program.id)) return 'wait'
         return 'wrap-up'
@@ -56,15 +58,15 @@ function rollingPolicy(pb: ProgramPlaybackService): BroadcastPolicy {
   }
 }
 
-/** 预制节目：门禁后装 rendered 音频单元；见底 stop 收播 / loop 重装音频（复用不重新合成）；永不续写 */
-function preparedPolicy(pb: ProgramPlaybackService): BroadcastPolicy {
+/** 预制节目：门禁后装 rendered 音频单元；见底按本场收尾，loop/forever 复用音频重装；永不续写 */
+function preparedPolicy(pb: ProgramPlaybackService, session: SessionConfig): BroadcastPolicy {
   return {
     autoReloadOnReady: false,
     allowsPoolTriggers: false,
     load: (program, opts) => pb.loadPreparedUnits(program, opts?.allowPartial === true),
     kickSynthesis: () => undefined,
     poolEmptyAction: (program) => {
-      if (program.finishMode === 'stop') {
+      if (session.endMode === 'stop') {
         // 音频还在出（播放中点了「生成节目音频」）就等，不算播完
         if (pb.hasIncomingRendered(program.id)) return 'wait'
         return 'wrap-up'
@@ -76,8 +78,8 @@ function preparedPolicy(pb: ProgramPlaybackService): BroadcastPolicy {
   }
 }
 
-/** 即兴播出：无底稿，装载/合成/循环都不参与；水位触发器放行（「冷场自救」对它=该说话了） */
-function improvisedPolicy(): BroadcastPolicy {
+/** 无限生成：无底稿，装载/合成/循环都不参与；水位触发器放行（「冷场自救」对它=该说话了） */
+function infinitePolicy(): BroadcastPolicy {
   return {
     autoReloadOnReady: false,
     allowsPoolTriggers: true,
@@ -89,14 +91,8 @@ function improvisedPolicy(): BroadcastPolicy {
   }
 }
 
-/** 策略工厂：按节目的播出方式取策略（新增模式在这里注册） */
-export function policyFor(program: Program, pb: ProgramPlaybackService): BroadcastPolicy {
-  switch (program.broadcastMode) {
-    case 'prepared':
-      return preparedPolicy(pb)
-    case 'improvised':
-      return improvisedPolicy()
-    default:
-      return rollingPolicy(pb)
-  }
+/** 策略工厂：本场的三个开关决定装载/合成/收尾路线（剧本资产不参与） */
+export function policyFor(program: Program, session: SessionConfig, pb: ProgramPlaybackService): BroadcastPolicy {
+  if (session.contentSource === 'infinite') return infinitePolicy()
+  return session.synthMode === 'pre' ? preparedPolicy(pb, session) : rollingPolicy(pb, session)
 }

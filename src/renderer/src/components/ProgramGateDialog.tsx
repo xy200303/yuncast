@@ -11,7 +11,6 @@ import {
 } from '@/components/ui/dialog'
 import { VoicePickDialog } from './VoicePickDialog'
 import type { LaunchResult, ProduceVoiceOverride, Program, ProgramGateResult } from '../../../shared/types'
-import { AUDIO_UNIT_LABEL } from '../lib/audioUnits'
 
 /**
  * 预制节目正式播放门禁未通过的明确提示（docs/10 §7.8）：绝不静默跳过、绝不静默播旧音频。
@@ -38,7 +37,7 @@ export function ProgramGateDialog({
   const [busy, setBusy] = useState<'' | 'produce' | 'partial'>('')
   /** 「继续生成」先弹声音选择弹窗（docs/REDESIGN 4.4），确认才发起合成 */
   const [voicePickOpen, setVoicePickOpen] = useState(false)
-  const unitLabel = AUDIO_UNIT_LABEL[program.contentType]
+  const unitLabel = '单元'
 
   const launchNow = async (allowPartial: boolean) => {
     const result = await window.api.program.launch(program.id, { allowPartial })

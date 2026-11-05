@@ -18,7 +18,7 @@ import {
   type ProgramAudioUnit
 } from '../../lib/audioUnits'
 import { audition } from '../../lib/audition'
-import type { DraftUnit, Persona, Program, Script } from '../../../../shared/types'
+import type { DraftUnit, Program, Script, SessionConfig } from '../../../../shared/types'
 import { ContentItem, ContentList } from './ContentItem'
 import { Button } from '@/components/ui/button'
 
@@ -37,15 +37,17 @@ export function PreparedPanel({ program }: { program: Program }) {
   const pool = useAppStore((s) => s.pool)
   const [units, setUnits] = useState<ProgramAudioUnit[]>([])
   const [drafts, setDrafts] = useState<DraftUnit[]>([])
-  const [personaList, setCastList] = useState<Persona[]>([])
   const [busy, setBusy] = useState(false)
+  const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null)
   const load = useCallback(async () => {
-    const [scripts, draftUnits] = await Promise.all([
+    const [scripts, draftUnits, session] = await Promise.all([
       window.api.program.plans(),
-      window.api.draftUnit.list(program.id)
+      window.api.draftUnit.list(program.id),
+      window.api.sessionConfig.latest(program.id)
     ])
     const script: Script | null = scripts.find((s) => s.id === program.id) ?? null
-    setUnits(listProgramAudioUnits(program, script, draftUnits))
+    setSessionConfig(session)
+    setUnits(listProgramAudioUnits(program, script, draftUnits, session))
     setDrafts(draftUnits)
   }, [program])
 
@@ -56,9 +58,8 @@ export function PreparedPanel({ program }: { program: Program }) {
   // 主播卡名单：章内段落按 persona_id 汇总出「谁读这一章」
   useEffect(() => {
     if (!('api' in window)) return
-    void window.api.persona.list().then(setCastList)
     const off = window.api.data.onChanged((payload) => {
-      if (payload.scope === 'personas' || payload.scope === 'drafts') void load()
+      if (payload.scope === 'drafts') void load()
     })
     return off
   }, [load])
@@ -70,21 +71,8 @@ export function PreparedPanel({ program }: { program: Program }) {
     })
   }, [program.id, load])
 
-  /** 这一章/这一段由谁读：汇总段落的 persona_id → 卡名 */
-  const chapterWho = (unit: ProgramAudioUnit): string => {
-    const members =
-      unit.kind === 'scene'
-        ? drafts.filter((d) => d.sceneId === unit.id)
-        : drafts.filter((d) => d.id === unit.id)
-    const names = [
-      ...new Set(
-        members
-          .map((d) => (d.personaId ? personaList.find((p) => p.id === d.personaId)?.name : ''))
-          .filter((name): name is string => Boolean(name))
-      )
-    ]
-    return names.length > 0 ? `${names.join('、')} · ` : ''
-  }
+  /** 章节前缀：现在不再区分说话人，留空 */
+  const chapterWho = (_unit: ProgramAudioUnit): string => ''
 
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   /** 待播的段条目（dedupeKey = rendered:<kind>:<id>；插播内容不算段） */
@@ -109,7 +97,7 @@ export function PreparedPanel({ program }: { program: Program }) {
   /** 点段正文 = 试听这段（aux 槽，全局试听条）；右侧 ▷ 跳播是另一个动作 */
   const auditionUnit = (unit: ProgramAudioUnit): void => {
     if (!unit.audioPath) {
-      toast.warning('这段还没合成', { description: '先在节目页生成节目音频，合成好了点正文就能听' })
+      toast.warning('这段还没合成', { description: '先合成这段音频，合成好了点正文就能听' })
       return
     }
     audition.toggle({ key: `unit:${unit.kind}:${unit.id}`, title: unit.title, audioPath: unit.audioPath })
@@ -125,7 +113,7 @@ export function PreparedPanel({ program }: { program: Program }) {
       {units.length === 0 ? (
         <div className="flex h-full flex-col items-center justify-center gap-2 text-muted-foreground">
           <ListMusic className="size-10" strokeWidth={1.25} />
-          <p className="text-sm">这个节目还没有节目文稿，先到节目页写稿并生成节目音频</p>
+          <p className="text-sm">这个项目还没有文稿，先让导演写稿再生成音频</p>
         </div>
       ) : (
         <ContentList>
@@ -163,7 +151,7 @@ export function PreparedPanel({ program }: { program: Program }) {
                     {isCurrent && <Badge>播报中</Badge>}
                   </>
                 }
-                meta={`${chapterWho(unit)}${unitCaption(program, unit, index, units.length)} · ${
+                meta={`${chapterWho(unit)}${unitCaption(program, unit, index, units.length, sessionConfig)} · ${
                   unit.status === 'ready'
                     ? unit.durationMs
                       ? formatDurationMs(unit.durationMs)

@@ -1,4 +1,4 @@
-import type { ContentType, Program, RenderedAudioStatus, Script, DraftUnit } from '../../../shared/types'
+import type { ContentType, Program, RenderedAudioStatus, Script, DraftUnit, SessionConfig } from '../../../shared/types'
 import { programStyleSalt, sceneFingerprint, draftUnitFingerprint } from '../../../shared/fingerprint'
 import { stripSpeechTags } from '../../../shared/speechTags'
 
@@ -43,11 +43,18 @@ export const AUDIO_UNIT_LABEL: Record<ContentType, string> = {
  * 不引入内容语义（"开场""高潮"这类交给 agent 写进标题）。
  * total 用于区分 solo 单段（一篇短文 → 正文）与多段（第 N 段）。
  */
-export function unitCaption(program: Program, unit: ProgramAudioUnit, index: number, total = 1): string {
-  if (program.contentType === 'solo') return total <= 1 ? '正文' : `第 ${index + 1} 段`
+export function unitCaption(
+  _program: Program,
+  unit: ProgramAudioUnit,
+  index: number,
+  total = 1,
+  session?: SessionConfig | null
+): string {
+  const contentType = session?.contentType ?? 'solo'
+  if (contentType === 'solo') return total <= 1 ? '正文' : `第 ${index + 1} 段`
   if (unit.kind === 'draftUnit') return '散段'
-  if (program.contentType === 'reading') return `第 ${index + 1} 章`
-  if (program.contentType === 'roleplay') return `第 ${index + 1} 场`
+  if (contentType === 'reading') return `第 ${index + 1} 章`
+  if (contentType === 'roleplay') return `第 ${index + 1} 场`
   return `环节 ${index + 1}`
 }
 
@@ -65,10 +72,12 @@ function segmentTitle(text: string): string {
 export function listProgramAudioUnits(
   program: Program,
   script: Script | null,
-  draftUnits: DraftUnit[]
+  draftUnits: DraftUnit[],
+  session?: SessionConfig | null
 ): ProgramAudioUnit[] {
-  // 与主进程 listAudioUnits 同口径：节目级风格指令进指纹盐（空盐时与旧版一致）
-  const styleSalt = programStyleSalt(program)
+  // 与主进程 listAudioUnits 同口径：本场风格指令进指纹盐（空盐时与旧版一致）
+  const styleSalt = programStyleSalt(session)
+  const contentType = session?.contentType ?? 'solo'
   const unitOf = (
     kind: ProgramAudioUnit['kind'],
     id: string,
@@ -96,7 +105,7 @@ export function listProgramAudioUnits(
     }
   }
 
-  if (program.contentType === 'solo') {
+  if (contentType === 'solo') {
     return draftUnits.map((u) => unitOf('draftUnit', u.id, segmentTitle(u.text), u.text, draftUnitFingerprint(u, styleSalt), u.rendered))
   }
   const byScene = new Map<string, DraftUnit[]>()

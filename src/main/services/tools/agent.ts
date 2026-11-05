@@ -136,7 +136,6 @@ export const agentTools = [
       const cfg = ctx.storage.getConfig()
       const activeId = cfg.live.activeProgramId
       const active = activeId ? ctx.storage.programList().find((p) => p.id === activeId) : undefined
-      const personas = ctx.persona.programPersonas()
       const voiceLabel = (voiceId: string): string => {
         if (!voiceId.trim()) return '（未设置）'
         const found = ctx.voices?.list().find((v) => v.voiceType === voiceId.trim())
@@ -170,9 +169,6 @@ export const agentTools = [
       if (!cfg.director.modelConnectionId || !cfg.director.model) {
         suggestions.push('导演大脑还没配：让导演到设置 → 语言模型给导演选接入和模型（导演不配上不了工）')
       }
-      if (personas.length > 0 && personas.every((p) => !p.voiceId.trim())) {
-        suggestions.push('节目卡司里的主播卡都没选音色：写词时逐条 role 会报错，先用 voice_list 给卡配音色')
-      }
       if (!ttsConnections.some((c) => c.可用)) {
         suggestions.push('没有可用的语音合成接入：让导演到设置 → 语音合成补齐凭据')
       }
@@ -183,9 +179,7 @@ export const agentTools = [
       if (cfg.stream.mode === 'direct' && (!cfg.stream.serverUrl || !cfg.stream.streamKey)) {
         suggestions.push('直推模式还没配推流地址/密钥：让导演到设置 → 接入 → 推流补齐')
       }
-      if (status.assetsStale === 'prompt') {
-        suggestions.push('人设/编排/手册在会话启动后改过：点直播台黄条的「立即应用」热更新即生效，不用重开会话')
-      } else if (status.assetsStale === 'brain') {
+      if (status.assetsStale === 'brain') {
         suggestions.push('导演模型/接入在会话启动后改过：要重开会话才生效（点直播台黄条的「立即应用」，或下次开播自动应用）')
       }
 
@@ -204,20 +198,14 @@ export const agentTools = [
           正在播: poolStatus.playing?.text ?? null
         },
         导演: { 名称: cfg.director.name, 模型: cfg.director.model || '（未配大脑）' },
-        节目卡司: (() => {
+        本场音色: (() => {
           const program = ctx.script.getActive().program
-          const ids = program?.personaIds ?? []
-          const members = ids
-            .map((id) => personas.find((p) => p.id === id))
-            .filter((p): p is NonNullable<typeof p> => Boolean(p))
-          return members.length > 0
-            ? {
-                成员: members.map((p) => `${p.name}（${voiceLabel(p.voiceId)}）`),
-                节目风格指令: program?.instruction || '（未配置）'
-              }
-            : '（未配卡司：写词时必须逐条用 personaId 指定主播卡 id）'
+          const session = program ? ctx.storage.sessionConfigLatest(program.id) : null
+          return {
+            默认音色: session?.voiceId || '（未配置）',
+            本场风格指令: session?.instruction || '（未配置）'
+          }
         })(),
-        可用主播卡: personas.map((p) => `${p.name}（${p.id}）`),
         语言模型接入: llmConnections,
         语音合成接入: ttsConnections,
         评论连接器: connector

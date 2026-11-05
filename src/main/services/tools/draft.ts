@@ -11,7 +11,7 @@ import {
   sceneTitleOf,
   currentSceneId,
   bitTypeMonotony,
-  resolveCastVoice
+  resolveVoice
 } from './util'
 
 /**
@@ -49,18 +49,12 @@ export const draftTools = [
       // 列表只给前 100 字（拿 id 和概要用；要看全文用 draft_get，改稿按 id 改）——
       // 底稿一多全文塞进来一条结果就是几万 token，上下文 compression 会被它顶爆
       const brief = (text: string) => (text.length > 100 ? `${text.slice(0, 100)}…` : text)
-      const leadPersonaName = (u: { personaId?: string; voiceId: string }) => {
-        const card = u.personaId
-          ? ctx.persona.list().find((p) => p.id === u.personaId)
-          : ctx.persona.programPersonas().find((p) => p.voiceId === u.voiceId)
-        return card?.name ?? ''
-      }
       return (
         `共 ${list.length} 条${list.length > 30 ? '，只列前 30 条' : ''}：\n` +
         shown
           .map(
             (u) =>
-              `${u.id}｜${sceneTitleOf(ctx, u.sceneId)}｜${DRAFT_STATUS[u.status]}｜${leadPersonaName(u) ? `主播：${leadPersonaName(u)}｜` : ''}${u.bitType ? `[${u.bitType}] ` : ''}${brief(u.text)}` +
+              `${u.id}｜${sceneTitleOf(ctx, u.sceneId)}｜${DRAFT_STATUS[u.status]}${u.bitType ? `[${u.bitType}] ` : ''}${brief(u.text)}` +
               (u.delivery ? `（演法：${u.delivery}）` : '')
           )
           .join('\n')
@@ -95,14 +89,7 @@ export const draftTools = [
         语速: found.rate ?? '默认',
         音调: found.pitch ?? '默认',
         段后停顿: found.pauseAfterMs !== undefined ? `${found.pauseAfterMs}ms` : '连续播',
-        主播: (() => {
-          const card = found.personaId
-            ? ctx.persona.list().find((p) => p.id === found.personaId)
-            : ctx.persona.programPersonas().find((p) => p.voiceId === found.voiceId)
-          if (card) return `${card.name}（personaId=${card.id}）`
-          return found.voiceId ? found.voiceId : '默认（卡司第一张）'
-        })(),
-        personaId: found.personaId ?? '',
+        音色: found.voiceId || '（跟随本场默认音色）',
         参考来源: found.sources.map((s) => `${s.name}：${s.snippet}`),
         全文: found.text
       })
@@ -126,7 +113,6 @@ export const draftTools = [
             '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/closer/general；closer=收尾段，不进自动轮播）'
         })
       ),
-      personaId: Type.Optional(Type.String({ description: '这段归哪位：主播卡 id（persona_list / program_get 卡司里的 id）；不传 = 合成时用卡司第一张' })),
       delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
       rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
       pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
@@ -146,8 +132,6 @@ export const draftTools = [
       const sceneId = params.sceneId?.trim() ?? currentSceneId(ctx)
       const siblings = ctx.draftUnits.list(programId).filter((u) => u.sceneId === sceneId)
       const variantIdx = siblings.reduce((max, u) => Math.max(max, u.variantIdx + 1), 0)
-      const programVoice = resolveCastVoice(ctx.persona, params.personaId)
-      if (programVoice.error) return programVoice.error
       ctx.draftUnits.save({
         programId,
         sceneId,
@@ -161,8 +145,7 @@ export const draftTools = [
           params.pauseAfterMs === undefined
             ? undefined
             : Math.max(0, Math.min(10000, Math.floor(Number(params.pauseAfterMs) || 0))),
-        personaId: programVoice.personaId,
-        voiceId: programVoice.voiceId ?? '',
+        voiceId: resolveVoice(ctx, programId, undefined) ?? '',
         source: 'initial',
         sources: []
       })
@@ -196,9 +179,6 @@ export const draftTools = [
                 '中文对照：当本节目语言不是中文时必填（播出用外语，这里给这句的中文意思，界面上贴在原文下面）。中文节目不用填'
             })
           ),
-          personaId: Type.Optional(
-            Type.String({ description: '这段归哪位：主播卡 id（persona_list / program_get 卡司里的 id）；双主持/多角色节目逐段指定，不传 = 卡司第一张' })
-          ),
           delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
           rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
           pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
@@ -224,19 +204,16 @@ export const draftTools = [
       if (noPlan) return noPlan
       const capped = draftCapHit(ctx)
       if (capped) return capped
-      // 先校验全部 personaId，别写一半才发现卡司名写错
-      const podcastVoices = params.items.map((item) => resolveCastVoice(ctx.persona, item.personaId))
-      const castError = podcastVoices.find((entry) => entry.error)
-      if (castError?.error) return castError.error
+      const programId = activeProgramId(ctx)!
+      const defaultVoice = resolveVoice(ctx, programId, undefined) ?? ''
       const saved = ctx.draftUnits.saveMany(
         activeProgramId(ctx)!,
         params.sceneId.trim(),
-        params.items.map((item, index) => ({
+        params.items.map((item) => ({
           text: item.text,
           textZh: item.textZh?.trim() || undefined,
           bitType: item.type,
-          personaId: podcastVoices[index].personaId,
-          voiceId: podcastVoices[index].voiceId,
+          voiceId: defaultVoice,
           delivery: item.delivery,
           rate: item.rate,
           pitch: item.pitch,
@@ -273,7 +250,6 @@ export const draftTools = [
       unitId: Type.String({ description: '底稿条目 id（draft_list 拿）' }),
       text: Type.String({ description: `新文本（桥段就传整段，单句就传一句）。${MARKUP_HINT}` }),
       type: Type.Optional(Type.String({ description: '桥段类型（不改不传）' })),
-      personaId: Type.Optional(Type.String({ description: '改归哪位（主播卡 id）；不改不传' })),
       delivery: Type.Optional(Type.String({ description: '表演指示（不改不传）' })),
       rate: Type.Optional(Type.Number({ description: '语速倍率（不改不传）' })),
       pitch: Type.Optional(Type.Number({ description: '音调倍率（不改不传）' })),
@@ -285,8 +261,6 @@ export const draftTools = [
       const programId = activeProgramId(ctx)!
       const existing = ctx.draftUnits.list(programId).find((u) => u.id === params.unitId.trim())
       if (!existing) return `找不到底稿 ${params.unitId}（用 draft_list 拿正确的 unitId）`
-      const programVoice = resolveCastVoice(ctx.persona, params.personaId)
-      if (programVoice.error) return programVoice.error
       ctx.draftUnits.save(
         {
           programId,
@@ -301,8 +275,7 @@ export const draftTools = [
             params.pauseAfterMs === undefined
               ? existing.pauseAfterMs
               : Math.max(0, Math.min(10000, Math.floor(Number(params.pauseAfterMs) || 0))),
-          personaId: programVoice.personaId ?? existing.personaId,
-          voiceId: programVoice.voiceId ?? existing.voiceId,
+          voiceId: resolveVoice(ctx, programId, undefined) ?? existing.voiceId,
           source: existing.source,
           sources: existing.sources
         },

@@ -4,7 +4,7 @@ import { useEffect, useRef } from 'react'
 export type DataScope =
   | 'personas'
   | 'voices'
-  | 'programs'
+  | 'scripts'
   | 'drafts'
   | 'knowledge'
   | 'triggers'

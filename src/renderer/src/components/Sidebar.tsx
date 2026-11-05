@@ -2,9 +2,7 @@ import type { CSSProperties } from 'react'
 import {
   AudioLines,
   BarChart3,
-  BookOpen,
-  Bot,
-  Clapperboard,
+  FolderOpen,
   History,
   PanelLeft,
   Radio,
@@ -23,17 +21,15 @@ const drag = { WebkitAppRegion: 'drag' } as CSSProperties
 const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties
 
 /**
- * 导航分三个区：
- *   直播    —— 开播相关（直播台、节目；节目是开播单元，紧跟直播台）
- *   资产库  —— 跨节目复用的素材（主播人设、素材条目、音色库）
- *   数据    —— 复盘与统计
+ * 项目工作区的导航：
+ *   项目  —— 直播台（内容 + 播出）
+ *   全局  —— 音色库（跨项目复用的 TTS 资源）
+ *   数据  —— 场次记录、统计
+ * 项目入口只在顶部菜单「项目」里：新建 / 打开 / 切换。
  */
 export const NAV_ITEMS: { id: NavPage; label: string; icon: LucideIcon; section: string }[] = [
-  { id: 'live', label: '直播台', icon: Radio, section: '直播' },
-  { id: 'programs', label: '节目', icon: Clapperboard, section: '直播' },
-  { id: 'personas', label: '主播团', icon: Bot, section: '资产库' },
-  { id: 'knowledge', label: '素材', icon: BookOpen, section: '资产库' },
-  { id: 'voices', label: '音色库', icon: AudioLines, section: '资产库' },
+  { id: 'live', label: '直播台', icon: Radio, section: '项目' },
+  { id: 'voices', label: '音色库', icon: AudioLines, section: '全局' },
   { id: 'sessions', label: '场次记录', icon: History, section: '数据' },
   { id: 'stats', label: '统计', icon: BarChart3, section: '数据' }
 ]
@@ -56,9 +52,9 @@ export function AppSidebar() {
         collapsed ? 'w-12 min-w-12 max-w-12' : 'w-64 min-w-64 max-w-64'
       )}
     >
-      {/* 顶行：和 DragStrip 同高（h-10），整行可拖 */}
+      {/* 顶行：和菜单栏同高（h-9），整行可拖 */}
       <div
-        className={cn('flex h-10 shrink-0 items-center gap-2 border-b', collapsed ? 'justify-center' : 'px-3')}
+        className={cn('flex h-9 shrink-0 items-center gap-2 border-b', collapsed ? 'justify-center' : 'px-3')}
         style={drag}
       >
         {!collapsed && (

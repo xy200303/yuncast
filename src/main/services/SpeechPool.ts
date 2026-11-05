@@ -105,6 +105,16 @@ export class SpeechPool {
     this.sweepTimer.unref?.()
   }
 
+  /** 当前剧本：池的读路径（播放/快照/容量/重排）只认这本剧本的条目，别本剧本的存货不参与 */
+  private activeScriptId(): string {
+    return this.storage.getConfig().live.activeProgramId
+  }
+
+  private activeItems(): PoolItem[] {
+    const scriptId = this.activeScriptId()
+    return this.storage.poolItemActive(scriptId || undefined)
+  }
+
   dispose(): void {
     if (this.sweepTimer) clearInterval(this.sweepTimer)
     for (const timer of this.retryTimers.values()) clearTimeout(timer)
@@ -120,7 +130,7 @@ export class SpeechPool {
     const speechText = toSpeechText(input.text)
     const text = input.text.trim()
     if (!text) throw new Error('话术内容为空')
-    if (text.length > POOL_LIMITS.textMaxLength) {
+    if (!input.allowLongText && text.length > POOL_LIMITS.textMaxLength) {
       throw new Error(`单条话术最多 ${POOL_LIMITS.textMaxLength} 字`)
     }
     const lane = input.lane && SPEECH_LANES.includes(input.lane) ? input.lane : 'normal'
@@ -152,13 +162,14 @@ export class SpeechPool {
     }
 
     // 容量上限
-    if (this.storage.poolItemActive().length >= POOL_LIMITS.capacity) {
+    if (this.activeItems().length >= POOL_LIMITS.capacity) {
       throw new Error(`话术池已满（${POOL_LIMITS.capacity} 条），等播出一部分再丢`)
     }
 
     const item: PoolItem = {
       id: `sp-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
       sessionId: this.sessionId ?? DEFAULT_SESSION_ID,
+      scriptId: this.storage.getConfig().live.activeProgramId || '',
       text,
       textZh: input.textZh?.trim() || undefined,
       turnId: input.turnId?.trim() || `turn-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
@@ -175,7 +186,7 @@ export class SpeechPool {
       pitch: input.pitch,
       emotion: input.emotion?.trim() || undefined,
       emotionScale: input.emotionScale,
-      languageType: input.languageType?.trim() || undefined,
+
       pauseAfterMs: input.pauseAfterMs,
       originDraftUnitId: input.originDraftUnitId,
       sortOrder: input.sortOrder,
@@ -233,9 +244,23 @@ export class SpeechPool {
     this.refresh()
   }
 
+  /**
+   * 仅播此条（docs/12 §8.3）：把队列里已有的这条提到 next 车道当前条之后，
+   * 其余条目顺序不动——播完它，队列从原来的位置继续。
+   */
+  playOnly(id: string): void {
+    const active = this.activeItems()
+    const item = active.find((entry) => entry.id === id)
+    if (!item) throw new Error('这条不在未播队列里（可能已经播过）')
+    if (item.status === 'playing') return
+    const minAnchor = Math.min(...active.map((entry) => entry.sortOrder ?? entry.createdAt))
+    this.storage.poolItemUpdate(id, { lane: 'next', sortOrder: minAnchor - 1 })
+    this.refresh()
+  }
+
   /** 手动排序：给出的 id 顺序即新的播出顺序（只对未播条目生效） */
   reorder(ids: string[]): void {
-    const active = new Set(this.storage.poolItemActive().map((item) => item.id))
+    const active = new Set(this.activeItems().map((item) => item.id))
     ids.forEach((id, index) => {
       if (active.has(id)) this.storage.poolItemUpdate(id, { sortOrder: index + 1 })
     })
@@ -243,18 +268,16 @@ export class SpeechPool {
   }
 
   /**
-   * 开播前清"别的节目的存货"：条目来自某段底稿（originDraftUnitId），而那段底稿不属于本节目 → 撤掉。
-   * 不清的话，预制/单篇节目的「播完即停」永远等不到池空（池里还压着上一场的词），
-   * 播完自己的内容会接着念别的节目的稿子——最难看的一种错位。没来源的现场话术（人工播报/导演 say）不动。
+   * 开播前清别的剧本的存货：条目不属于本剧本（含没有归属的旧条目）→ 撤掉。
+   * 以前按 originDraftUnitId 判断，预制节目的章级条目没有 origin，会漏；改成按 script_id 一刀切。
    */
-  dropForeignOrigins(allowedDraftUnitIds: Set<string>): number {
+  dropForeignScripts(scriptId: string): number {
     let n = 0
     for (const item of this.storage.poolItemActive()) {
-      const origin = item.originDraftUnitId
-      if (!origin || allowedDraftUnitIds.has(origin)) continue
+      if (item.scriptId === scriptId) continue
       if (item.status === 'playing') continue
       this.cancelSynth(item.id)
-      this.storage.poolItemUpdate(item.id, { status: 'skipped' })
+      this.storage.poolItemUpdate(item.id, { status: 'skipped', error: '别的剧本的存货，已撤' })
       n++
     }
     if (n > 0) this.refresh()
@@ -264,7 +287,7 @@ export class SpeechPool {
   /** 清空某条车道上的未播条目（不动正在播的） */
   clearLane(lane: PoolLane): void {
     if (!SPEECH_LANES.includes(lane)) throw new Error('未知车道')
-    for (const item of this.storage.poolItemActive()) {
+    for (const item of this.activeItems()) {
       if (item.lane !== lane || item.status === 'playing') continue
       this.cancelSynth(item.id)
       this.storage.poolItemUpdate(item.id, { status: 'skipped' })
@@ -296,20 +319,20 @@ export class SpeechPool {
   peek(): PoolItem | null {
     this.sweepExpired()
     return (
-      orderedForPlay(this.storage.poolItemActive()).find((entry) => entry.status === 'ready') ?? null
+      orderedForPlay(this.activeItems()).find((entry) => entry.status === 'ready') ?? null
     )
   }
 
   /** 播出顺序上的下一个条目（不管合成是否就绪）：段后停顿的等待决策用——下一条还在合成不能成为不停顿的理由 */
   peekUpcoming(): PoolItem | null {
     this.sweepExpired()
-    return orderedForPlay(this.storage.poolItemActive()).find((entry) => entry.status !== 'playing') ?? null
+    return orderedForPlay(this.activeItems()).find((entry) => entry.status !== 'playing') ?? null
   }
 
   /** 取播出顺序上第一个 ready 条目并置 playing；没有就返回 null（调用方等待重试） */
   next(): PoolItem | null {
     this.sweepExpired()
-    const ordered = orderedForPlay(this.storage.poolItemActive())
+    const ordered = orderedForPlay(this.activeItems())
     const item = ordered.find((entry) => entry.status === 'ready')
     if (!item) return null
     this.storage.poolItemUpdate(item.id, { status: 'playing' })
@@ -348,7 +371,7 @@ export class SpeechPool {
   jumpTo(dedupeKey: string): boolean {
     const item = this.storage.poolItemFindActiveByDedupeKey(dedupeKey)
     if (!item || item.status === 'playing') return false
-    const active = this.storage.poolItemActive()
+    const active = this.activeItems()
     const minAnchor = Math.min(...active.map((entry) => entry.sortOrder ?? entry.createdAt))
     this.storage.poolItemUpdate(item.id, { sortOrder: minAnchor - 1 })
     this.refresh()
@@ -377,7 +400,7 @@ export class SpeechPool {
 
   getStatus(): PoolStatus {
     this.sweepExpired()
-    const active = this.storage.poolItemActive()
+    const active = this.activeItems()
     const byLane: Record<PoolLane, number> = { interrupt: 0, next: 0, normal: 0, filler: 0 }
     for (const item of active) byLane[item.lane] += 1
     return {
@@ -392,10 +415,12 @@ export class SpeechPool {
   }
 
   snapshot(): PoolSnapshot {
-    const active = this.storage.poolItemActive()
+    const scriptId = this.activeScriptId()
     return {
-      items: orderedForPlay(active),
-      failed: this.storage.poolItemFailedSince(Date.now() - 5 * 60_000)
+      items: orderedForPlay(this.activeItems()),
+      failed: this.storage
+        .poolItemFailedSince(Date.now() - 5 * 60_000)
+        .filter((item) => !scriptId || item.scriptId === scriptId)
     }
   }
 
@@ -429,7 +454,7 @@ export class SpeechPool {
   /** 过期条目置 expired（不播），并取消它们的合成任务 */
   private sweepExpired(): void {
     const now = Date.now()
-    for (const item of this.storage.poolItemActive()) {
+    for (const item of this.activeItems()) {
       if (item.expiresAt && item.expiresAt <= now && item.status !== 'playing') {
         this.cancelSynth(item.id)
         this.storage.poolItemUpdate(item.id, { status: 'expired' })
@@ -446,7 +471,7 @@ export class SpeechPool {
 
   /** 预合成窗口：前 5 条 pending 自动送 TTS；被挤出窗口的合成中条目取消回 pending */
   private refreshSynthWindow(): void {
-    const queued = orderedForPlay(this.storage.poolItemActive()).filter((item) =>
+    const queued = orderedForPlay(this.activeItems()).filter((item) =>
       ['pending', 'synthesizing', 'ready'].includes(item.status)
     )
     const windowIds = new Set(queued.slice(0, POOL_LIMITS.synthWindow).map((item) => item.id))
@@ -508,7 +533,7 @@ export class SpeechPool {
         item.speechText || textAtStart,
         item.voiceId || undefined,
         controller.signal,
-        { instruction: item.delivery, rate: item.rate, pitch: item.pitch, emotion: item.emotion, emotionScale: item.emotionScale, languageType: item.languageType },
+        { instruction: item.delivery, rate: item.rate, pitch: item.pitch, emotion: item.emotion, emotionScale: item.emotionScale },
         // 用量归属当前节目（用量看板按节目分摊）
         this.storage.getConfig().live.activeProgramId || undefined
       )

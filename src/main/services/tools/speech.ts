@@ -1,10 +1,9 @@
 import { Type } from 'typebox'
 import type { PoolLane } from '../../../shared/types'
 import { defineTool } from './types'
-import { MARKUP_HINT, resolveVoice } from './util'
+import { activeProgramId, MARKUP_HINT, resolveVoice } from './util'
 
 const LANE_DESC = '车道：queue 排队顺序播（默认）/ next 当前这条播完就插播（回评论、急事用）/ interrupt 打断当前立刻说 / filler 垫底（没东西播时才轮到）'
-const PERSONA_DESC = '这句是谁的词：主播卡 id（persona_list 的 id / program_get「卡司」里的 id）。不传 = 卡司第一张；没配卡司时必须传'
 const VOICE_DESC = '直接指定音色 id（voice_list 返回的 voiceType）：一般不用传，用它就不看 personaId 指定的卡了'
 
 /**
@@ -23,7 +22,7 @@ export const speechTools = [
       '开口说话：排进话术池播出，会真的出声，直播间观众听得到。' +
       '回评论/过渡/互动用一句完整口语；完整桥段（故事/讲解，多句 150~350 字）整段一次传入，别拆成单句多次调（语气会断）。' +
       '内置主播注意：没开播或播报暂停时会被拒，备稿用 draft_add/draft_write。' +
-      '外部调用可用 personaId（主播卡 id）指定卡司里的哪张卡出声，或 voiceId 直接指定音色。返回队列条目 id，没播前想改用 pool_revise。',
+      '外部调用可用 voiceId 指定音色（不传 = 本场默认音色）。返回队列条目 id，没播前想改用 pool_revise。',
     parameters: Type.Object({
       text: Type.String({ description: `要说的话：一句短评，或一整段桥段。${MARKUP_HINT}` }),
       lane: Type.Optional(
@@ -31,7 +30,6 @@ export const speechTools = [
           description: LANE_DESC
         })
       ),
-      personaId: Type.Optional(Type.String({ description: PERSONA_DESC })),
       voiceId: Type.Optional(Type.String({ description: VOICE_DESC })),
       delivery: Type.Optional(
         Type.String({ description: '表演指示（情绪/语气，一句话，如「压低声音像说悄悄话」）——会真的拿去控制合成语气，模型支持语气指令才生效' })
@@ -43,9 +41,6 @@ export const speechTools = [
       ),
       emotionScale: Type.Optional(
         Type.Number({ description: '情感强度（火山 emotion_scale，1~5，默认 4）：只在传了 emotion 时生效' })
-      ),
-      languageType: Type.Optional(
-        Type.String({ description: '语种提示（仅百炼 qwen3-tts 生效）：Auto / Chinese / English 等，留空 = 接入默认' })
       ),
       pauseAfterMs: Type.Optional(
         Type.Number({
@@ -59,9 +54,10 @@ export const speechTools = [
         if (!ctx.isLiveActive?.()) return '还没开播：播出通道关着，备稿用 draft_write/draft_add 入库'
         if (ctx.getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
       }
-      const voiceId = resolveVoice(ctx.persona, params.personaId, params.voiceId)
+      const programId = activeProgramId(ctx) ?? ''
+      const voiceId = resolveVoice(ctx, programId, params.voiceId)
       if (!voiceId) {
-        return '没指定谁说的，节目也没配卡司：speak 传 personaId（主播卡 id），或先给节目配卡司'
+        return '本场还没给主播定嗓子：先在开播配置里选主播与音色，或 speak 显式传 voiceId'
       }
       const lane = params.lane ?? 'queue'
       const pauseAfterMs =
@@ -79,7 +75,6 @@ export const speechTools = [
           pitch: params.pitch,
           emotion: params.emotion,
           emotionScale: params.emotionScale,
-          languageType: params.languageType,
           pauseAfterMs,
           sourceAgentId: ctx.caller === 'agent' ? 'anchor' : undefined,
           sourceKind: 'reply' as const,
@@ -95,13 +90,12 @@ export const speechTools = [
         pitch: params.pitch,
         emotion: params.emotion,
         emotionScale: params.emotionScale,
-        languageType: params.languageType,
         pauseAfterMs,
         lane: lane as PoolLane,
         sourceAgentId: ctx.caller === 'agent' ? 'anchor' : undefined,
         sourceKind: ctx.caller === 'agent' ? 'scene' : 'manual'
       })
-      return `已排进队列（条目 ${item.id}，车道 ${item.lane}）：「${params.text}」${params.personaId ? `（${params.personaId}）` : ''}${pauseAfterMs ? `，播完停 ${pauseAfterMs}ms` : ''}`
+      return `已排进队列（条目 ${item.id}，车道 ${item.lane}）：「${params.text}」${pauseAfterMs ? `，播完停 ${pauseAfterMs}ms` : ''}`
     }
   }),
 

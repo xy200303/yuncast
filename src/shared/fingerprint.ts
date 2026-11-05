@@ -27,8 +27,9 @@ export const stableHash = hash16
  * 节目级风格指令盐（program.instruction）：不在文稿字段里但影响「听起来是什么」，
  * 并进指纹——改它 = 全部单元判过期重合成；空盐时指纹与旧版逐位一致（升级不标脏存量产物）
  */
-export function programStyleSalt(program: { instruction?: string }): string {
-  return program.instruction?.trim() ?? ''
+export function programStyleSalt(source: { instruction?: string } | string | null | undefined): string {
+  if (typeof source === 'string') return source.trim()
+  return source?.instruction?.trim() ?? ''
 }
 
 /** 会影响「这段音频听起来是什么」的文稿字段 */

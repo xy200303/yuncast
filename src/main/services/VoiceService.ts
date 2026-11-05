@@ -462,27 +462,27 @@ export class VoiceService {
     return { ok: true }
   }
 
-  /** 谁在用这个音色：主播卡（音色）、节目（演员表）、话术库条目 */
+  /** 谁在用这个音色：本场配置（主播嗓子）+ 话术条目的音色快照 */
   usage(id: string): VoiceUsage {
-    const empty: VoiceUsage = { personas: [], programs: [], draftUnitCount: 0, draftUnitSamples: [] }
+    const empty: VoiceUsage = { sessions: [], draftUnitCount: 0, draftUnitSamples: [] }
     const voiceType = this.storage.listVoices().find((v) => v.id === id)?.voiceType.trim() ?? ''
     if (!voiceType) return empty
 
-    const personas = this.storage.personaList()
-      .filter((persona) => persona.voiceId === voiceType)
-      .map((persona) => ({ id: persona.id, name: persona.name }))
+    const programs = this.storage.programList()
+    const sessions: VoiceUsage['sessions'] = []
+    for (const config of this.storage.sessionConfigAll()) {
+      if ((config.voiceId ?? '') !== voiceType && (config.voiceId ?? '') !== id) continue
+      sessions.push({
+        id: config.id,
+        programName: programs.find((program) => program.id === config.programId)?.name ?? config.programId,
+        at: config.createdAt
+      })
+      if (sessions.length >= 5) break
+    }
 
-    const programs: VoiceUsage['programs'] = []
     let draftUnitCount = 0
     const draftUnitSamples: VoiceUsage['draftUnitSamples'] = []
-    for (const program of this.storage.programList()) {
-      // 节目的音色引用只在卡司里：卡司成员的音色
-      const referenced = program.personaIds.some(
-        (id) => this.storage.personaList().find((p) => p.id === id)?.voiceId === voiceType
-      )
-      if (referenced) {
-        programs.push({ id: program.id, name: program.name })
-      }
+    for (const program of programs) {
       for (const draftUnit of this.storage.draftUnitList(program.id)) {
         if (draftUnit.voiceId !== voiceType) continue
         draftUnitCount += 1
@@ -491,7 +491,7 @@ export class VoiceService {
         }
       }
     }
-    return { personas, programs, draftUnitCount, draftUnitSamples }
+    return { sessions, draftUnitCount, draftUnitSamples }
   }
 
   /**

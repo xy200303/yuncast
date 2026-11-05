@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Clock3, MoreHorizontal, Pencil, Play, SkipForward, Trash2, TriangleAlert } from 'lucide-react'
+import { Clock3, MoreHorizontal, Pencil, Play, SkipForward, Sparkles, Trash2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -15,7 +15,7 @@ import { useAppStore } from '../../stores/useAppStore'
 import { mergeRows, useLiveStore, type CardRow } from '../../stores/useLiveStore'
 import { audition, auditionTitle } from '../../lib/audition'
 import { stripSpeechTags } from '../../../../shared/speechTags'
-import type { Persona, PoolItem, PoolItemStatus } from '../../../../shared/types'
+import type { PoolItem, PoolItemStatus } from '../../../../shared/types'
 
 /**
  * 本场卡片流（docs/12 第七、八、十节）：
@@ -48,7 +48,7 @@ function mmss(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
-export function CardStream({ personas }: { personas: Persona[] }) {
+export function CardStream({ onGenerate }: { onGenerate?: () => void }) {
   const pool = useAppStore((s) => s.pool)
   const history = useLiveStore((s) => s.history)
   const density = useLiveStore((s) => s.density)
@@ -74,6 +74,7 @@ export function CardStream({ personas }: { personas: Persona[] }) {
       item: {
         id: draft.id,
         sessionId: '',
+        scriptId: draft.programId,
         text: draft.text,
         textZh: draft.textZh,
         turnId: '',
@@ -84,18 +85,14 @@ export function CardStream({ personas }: { personas: Persona[] }) {
         status: (draft.rendered?.status === 'ready' ? 'ready' : 'pending') as PoolItemStatus,
         audioPath: draft.rendered?.audioPath
       } as PoolItem,
-      played: false
+      played: false,
+      draft
     }))
     const seen = new Set(draftRows.map((row) => row.item.id))
     return [...draftRows, ...failedRows.filter((row) => !seen.has(row.item.id))]
   }, [live, history, pool.items, pool.failed, drafts])
-  const speakerOf = (item: PoolItem): { name: string; color: string } => {
-    // 说话人靠音色反查（条目上现只有 voiceId 快照；personaId 随资产解耦一起进）
-    const index = personas.findIndex((persona) => persona.voiceId && persona.voiceId === item.voiceId)
-    if (index < 0) return { name: '', color: SPEAKER_COLORS[0] }
-    return { name: personas[index].name, color: SPEAKER_COLORS[index % SPEAKER_COLORS.length] }
-  }
-  const multiSpeaker = personas.length > 1
+  const speakerOf = (_row: CardRow): { name: string; color: string } => ({ name: '', color: '#1d4ed8' })
+  const multiSpeaker = false
 
   const saveEdit = async (row: CardRow): Promise<void> => {
     if (!editing) return
@@ -105,6 +102,21 @@ export function CardStream({ personas }: { personas: Persona[] }) {
       return
     }
     setBusyId(row.item.id)
+    if (row.draft) {
+      const result = await window.api.draftUnit.save(
+        { ...row.draft, text, seq: undefined } as Parameters<typeof window.api.draftUnit.save>[0],
+        row.draft.id
+      )
+      setBusyId('')
+      if (!result.ok) {
+        toast.error('改稿失败', { description: result.error })
+        return
+      }
+      setEditing(null)
+      await useLiveStore.getState().loadDrafts(row.draft.programId)
+      toast.success('已改稿，正在重新合成')
+      return
+    }
     const result = await window.api.pool.revise(row.item.id, text)
     setBusyId('')
     if (!result.ok) {
@@ -117,15 +129,26 @@ export function CardStream({ personas }: { personas: Persona[] }) {
 
   if (rows.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-xs text-muted-foreground">
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-xs text-muted-foreground">
         <span className="text-sm">本场还没有话术</span>
-        <span>开播后主播会按剧本逐段生成，或者按 Ctrl+J 让导演写一段</span>
+        <span>让导演按项目安排逐段写稿，写完可以逐段试听、改稿，再统一合成</span>
+        {!live && onGenerate && (
+          <Button size="sm" variant="outline" onClick={onGenerate}>
+            <Sparkles />
+            生成底稿
+          </Button>
+        )}
       </div>
     )
   }
 
   return (
-    <div className={cn('flex min-h-0 flex-1 flex-col', density === 'compact' ? 'gap-1.5 p-2' : 'gap-2.5 p-3')}>
+    <div
+      className={cn(
+        'flex min-h-0 w-full flex-1 flex-col',
+        density === 'compact' ? 'gap-1.5 p-2' : 'gap-2.5 p-3'
+      )}
+    >
       <div className="flex shrink-0 items-center gap-2 pb-1 text-[11px] text-muted-foreground">
         <span>
           {rows.length} 段 · {live ? `已播 ${history.length}` : '未开播'}
@@ -171,7 +194,7 @@ export function CardStream({ personas }: { personas: Persona[] }) {
           const failed = item.status === 'failed'
           const ready = item.status === 'ready'
           const dim = row.played
-          const speaker = speakerOf(item)
+          const speaker = speakerOf(row)
           const text = stripSpeechTags(item.text)
           const translation = item.textZh?.trim() || undefined
           const isEditing = editing?.id === item.id
@@ -253,24 +276,34 @@ export function CardStream({ personas }: { personas: Persona[] }) {
                           audition.toggle({ key: `pool:${item.id}`, title: auditionTitle(text), audioPath: item.audioPath })
                         }
                       >
-                        <Play /> 试听这条
+                        <Play /> 重听
                       </DropdownMenuItem>
                       <DropdownMenuItem
-                        disabled={row.played || playing}
+                        disabled={row.played || playing || Boolean(row.draft)}
+                        onSelect={async () => {
+                          const result = await window.api.pool.playOnly(item.id)
+                          if (!result.ok) toast.error('操作失败', { description: result.error })
+                          else toast.success('已插到当前条之后，播完这条队列照原顺序继续')
+                        }}
+                      >
+                        <Play /> 仅播此条
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        disabled={row.played || playing || Boolean(row.draft)}
                         onSelect={async () => {
                           const result = await window.api.pool.promote(item.id)
                           if (!result.ok) toast.error('操作失败', { description: result.error })
-                          else toast.success('已提到队首')
+                          else toast.success('已改成从这里往下播')
                         }}
                       >
-                        <Clock3 /> 提到队首
+                        <Clock3 /> 从此处播
                       </DropdownMenuItem>
                       <DropdownMenuItem disabled={row.played || playing} onSelect={() => setEditing({ id: item.id, text })}>
                         <Pencil /> 改稿
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem
-                        disabled={row.played || playing}
+                        disabled={row.played || playing || Boolean(row.draft)}
                         onSelect={async () => {
                           const result = await window.api.pool.revoke(item.id)
                           if (!result.ok) toast.error('撤销失败', { description: result.error })

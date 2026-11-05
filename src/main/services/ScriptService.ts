@@ -11,7 +11,7 @@ import type { StorageService } from './StorageService'
 /**
  * 剧本与节目（docs/01 §4 剧本/剧情线；docs/10 §9 节目化）。
  * 剧本 = 场景序列（开场→痛点→讲解→互动→催单→收尾）；节目绑定剧本，
- * 当前节目持久化在 config.live.activeProgramId；场景推进进度落在 programs.current_scene_idx（断播能续）。
+ * 当前节目持久化在 config.live.activeProgramId；场景推进进度落在 scripts.current_scene_idx（断播能续）。
  */
 export class ScriptService {
   /**
@@ -28,7 +28,7 @@ export class ScriptService {
 
   /**
    * 剧本被写后的统一通知：绑它的节目要做预制资产 stale 检测（onContentChanged），
-   * 界面刷新由 storage.onDataChanged('programs') 兜底，这里只负责「引擎侧要不要重算」
+   * 界面刷新由 storage.onDataChanged('scripts') 兜底，这里只负责「引擎侧要不要重算」
    */
   constructor(private readonly storage: StorageService) {}
 
@@ -86,19 +86,6 @@ export class ScriptService {
       id: id ?? `prog-${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       name: input.name.trim(),
       theme: input.theme.trim(),
-      contentType: input.contentType,
-      broadcastMode: input.broadcastMode,
-      finishMode: input.finishMode,
-      allowLiveEvents: input.allowLiveEvents !== false,
-      // 新节目默认全勾内建（已启用）触发器，用户之后可在开播确认页/节目编辑里减掉（docs/REDESIGN §7）
-      enabledTriggerIds: existing
-        ? [...new Set((input.enabledTriggerIds ?? []).map((t) => t.trim()).filter(Boolean))]
-        : (input.enabledTriggerIds?.length
-            ? [...new Set(input.enabledTriggerIds.map((t) => t.trim()).filter(Boolean))]
-            : this.storage.triggerList().filter((t) => t.enabled).map((t) => t.id)),
-      personaIds: [...new Set((input.personaIds ?? []).map((p) => p.trim()).filter(Boolean))],
-      instruction: input.instruction?.trim() || undefined,
-      language: input.language ?? existing?.language ?? 'auto',
       plan: input.plan ?? existing?.plan ?? { scenes: [] },
       currentSceneIdx: existing?.currentSceneIdx ?? 0,
       knowledgeScope: { ...DEFAULT_PROGRAM_KNOWLEDGE_SCOPE, ...input.knowledgeScope },
@@ -111,15 +98,7 @@ export class ScriptService {
     return program
   }
 
-  deleteProgram(id: string): void {
-    this.storage.programDelete(id)
-    // 节目的持久对话（会话 entries + 对话时间线）跟着节目一起走
-    this.storage.deleteProgramSession(id)
-    this.storage.timelineClear(id)
-    if (this.storage.getConfig().live.activeProgramId === id) this.setActiveProgram('')
-    // agent/MCP 删节目后界面也要刷新（setActiveProgram('') 已通知一次，这里补 id 删除场景）
-    this.onProgramsChanged?.(id)
-  }
+
 
   /**
    * 剧本元信息保存（save_script 工具的后端）：新建（允许空场景，场景后补）或改名/改主题。
@@ -138,22 +117,6 @@ export class ScriptService {
     const scenes = ids.map((id) => base.find((scene) => scene.id === id)!)
     this.saveScenes(programId, scenes)
     return this.getScript(programId)!
-  }
-
-  setProgramTriggers(programId: string, triggerIds: string[], expectedUpdatedAt?: number): Program {
-    const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    if (!program) throw new Error('节目不存在：用 list_programs 拿正确的 id')
-    assertFresh(expectedUpdatedAt, program.updatedAt, `节目「${program.name}」`)
-    const ids = [...new Set(triggerIds.map((t) => t.trim()).filter(Boolean))]
-    const known = new Set(this.storage.triggerList().map((t) => t.id))
-    const unknown = ids.filter((id) => !known.has(id))
-    if (unknown.length > 0) {
-      throw new Error(`这些触发器 id 不在全局触发器库：${unknown.join('、')}（先用 list_triggers 拿正确的 id）`)
-    }
-    const next: Program = { ...program, enabledTriggerIds: ids, updatedAt: Date.now() }
-    this.storage.programSave(next)
-    this.onProgramsChanged?.(programId)
-    return next
   }
 
   /** 设为当前节目（持久化进 config；空串 = 取消选择） */

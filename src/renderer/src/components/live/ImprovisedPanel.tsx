@@ -33,7 +33,6 @@ export function ImprovisedPanel() {
           status={<Sparkles className="size-4 shrink-0 text-primary" />}
           header={
             <>
-              <span className="truncate">{agent.leadPersonaName ?? '主播'} · 现场发挥</span>
               {queuedCount > 0 && <span className="shrink-0">待播 {queuedCount} 条</span>}
             </>
           }

@@ -102,8 +102,6 @@ export interface SynthPerformance {
   emotion?: string
   /** 情感强度（火山 emotion_scale，1~5）：只有带 emotion 时生效 */
   emotionScale?: number
-  /** 语种提示（百炼 qwen3-tts language_type）：Auto / Chinese / English 等，模型声明了才透传 */
-  languageType?: string
 }
 
 export interface TtsTestResult {
@@ -577,19 +575,13 @@ export class TtsService {
         : asNumber(params.emotion_scale, 4)
       params = { ...params, emotion: perf.emotion.trim(), emotion_scale: scale }
     }
-    // 语种提示（百炼 qwen3-tts language_type）：逐条 > 节目语言 > 不指定；模型参数表声明了才发
-    if (declares('language_type')) {
-      const languageType = perf?.languageType?.trim() || this.programLanguageType(programId)
-      if (languageType) params = { ...params, language_type: languageType }
-    }
     return params === route.params ? route : { ...route, params }
   }
 
-  /** 节目级风格指令（programId → program.instruction）：覆盖音色默认，低于 agent 逐条演法 */
+  /** 本场风格指令（取最近一次本场配置）：覆盖音色默认，低于 agent 逐条演法 */
   private programInstruction(programId?: string): string {
     if (!programId) return ''
-    const program = this.storage.programList().find((item) => item.id === programId)
-    return clampInstruction(program?.instruction)
+    return clampInstruction(this.storage.sessionConfigLatest(programId)?.instruction)
   }
 
   /** 音色级风格指令：克隆音色记录上配的默认演法（系统/手动音色没有这档） */
@@ -597,14 +589,6 @@ export class TtsService {
     if (!route.isClone) return ''
     const voice = this.storage.listVoices().find((item) => item.voiceType === route.voice)
     return clampInstruction(voice?.instruction)
-  }
-
-  /** 节目语言（多语言播出）：auto 不指定，交给模型/服务商自动判断 */
-  private programLanguageType(programId?: string): string {
-    if (!programId) return ''
-    const program = this.storage.programList().find((item) => item.id === programId)
-    const language = program?.language ?? 'auto'
-    return language === 'auto' ? '' : language
   }
 
   /** 这条音色路由所属服务商的预合成请求间隔（config 没显式配时的默认值，来自 manifest 的官方限流档） */

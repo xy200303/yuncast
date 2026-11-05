@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { BroadcastEndReason, BroadcastSession, BroadcastSessionPersona, LiveEvent } from '../../shared/types'
+import type { BroadcastEndReason, BroadcastSession, LiveEvent } from '../../shared/types'
 import { listEventTypes, type EventBus } from './EventBus'
 import type { StorageService } from './StorageService'
 
@@ -36,7 +36,7 @@ export class SessionRecorder {
   begin(
     programId: string,
     programName: string,
-    snapshot: { directorModelDesc: string; personas: BroadcastSessionPersona[] }
+    snapshot: { directorModelDesc: string }
   ): string {
     if (this.activeId) this.end('crash')
     const session: BroadcastSession = {
@@ -44,7 +44,6 @@ export class SessionRecorder {
       programId,
       programName,
       directorModelDesc: snapshot.directorModelDesc,
-      personas: snapshot.personas,
       startedAt: Date.now(),
       endedAt: 0,
       endReason: '',
@@ -52,8 +51,8 @@ export class SessionRecorder {
       summary: ''
     }
     this.storage.sessionInsert(session)
-    // 池里可能还有上一场的存货（收播不清池）：改挂到这场，谁播的算谁的
-    this.storage.poolItemRestampActive(session.id)
+    // 池里可能还有这场开播前就装好的存货：只把**本剧本**的改挂到这场；别的剧本的存货不碰
+    this.storage.poolItemRestampActive(session.id, programId)
     this.activeId = session.id
     this.unsubscribe = this.bus.subscribe((event) => this.mirror(event))
     this.onChanged?.()

@@ -93,7 +93,14 @@ export const useLiveStore = create<LiveState>((set, get) => ({
 }))
 
 /** 本场卡片流的一行：历史在前（旧→新）、队列在后 */
-export type CardRow = { item: PoolItem; played: boolean }
+export type CardRow = {
+  item: PoolItem
+  played: boolean
+  /** 未开播时的底稿行带着说话人（池条目只存音色快照，靠本场 cast 反查） */
+  personaId?: string
+  /** 未开播时这一行对应的话术库条目（改稿改它，不是改话术池） */
+  draft?: DraftUnit
+}
 
 export function mergeRows(history: PoolItem[], queue: PoolItem[]): CardRow[] {
   const played = [...history].reverse().map((item) => ({ item, played: true }))

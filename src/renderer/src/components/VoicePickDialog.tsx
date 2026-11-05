@@ -17,7 +17,6 @@ import { useAppStore } from '../stores/useAppStore'
 import { voiceDisplayName } from '../lib/voice'
 import {
   TTS_MODEL_KIND_LABEL,
-  type Persona,
   type ProducePlanInfo,
   type ProduceVoiceOverride,
   type Program
@@ -103,7 +102,7 @@ function pickDraftReducer(draft: PickDraft, action: PickDraftAction): PickDraft 
 /**
  * 声音选择弹窗（docs/REDESIGN 4.4，所有合成入口统一）：点「合成」先弹这个，确认才真的合成。
  * - 显示「本次合成 N 段 · 约 X 分钟」（producePlan IPC）；
- * - 声音二选一：卡司嗓音（节目卡司第一张）/ 其他（内嵌统一音色选择器）；
+ * - 声音二选一：本场主主播的嗓子 / 其他（内嵌统一音色选择器）；
  *   节目里已经不再配声音了——合成这一步是唯一的选声音入口，选完冻结进每段产物；
  * - 播客模型时「其他」呈现为主持人 A/B 两个选择器 + 开场/结尾音乐（配乐只在播客路线有意义，跟着这次选）；
  * - 池里已有其他嗓音成品时给混音提醒 + 「全部重合成统一」勾选；
@@ -129,7 +128,7 @@ export function VoicePickDialog({
   const voices = useAppStore((s) => s.voices)
   const ttsProviders = useAppStore((s) => s.ttsProviders)
   const ttsConnections = useAppStore((s) => s.ttsConnections)
-  const [castPersona, setCastPersona] = useState<Persona | null>(null)
+  const [castVoice, setCastVoice] = useState('')
 
   const [plan, setPlan] = useState<ProducePlanInfo | null>(null)
   const [planLoading, setPlanLoading] = useState(false)
@@ -196,21 +195,21 @@ export function VoicePickDialog({
   const pickedModel = modelOptions.find((option) => option.value === modelValue) ?? null
   const podcastMode = pickedModel?.podcast === true
 
-  // 出镜由节目卡司决定（没有「当前出镜」全局概念）：取节目卡司第一张，没配卡司就取第一张卡
+  // 出镜由本场配置决定：取主主播（没有主主播就取第一位）与它的嗓子
   useEffect(() => {
     if (!open || !('api' in window)) return
     let alive = true
-    void window.api.persona.list().then((list) => {
-      if (!alive) return
-      const first = program.personaIds[0] ? (list.find((item) => item.id === program.personaIds[0]) ?? null) : null
-      setCastPersona(first)
-    })
+    void window.api.sessionConfig.latest(program.id).then((session) => {
+        if (!alive) return
+        setCastVoice((session?.voiceId ?? '').trim())
+      }
+    )
     return () => {
       alive = false
     }
-  }, [open, program.personaIds])
+  }, [open, program.id])
 
-  const programVoice = castPersona?.voiceId.trim() ?? ''
+  const programVoice = castVoice
   const programVoiceName = programVoice ? voiceDisplayName(voices, ttsProviders, programVoice) : ''
 
   /** 本次选定的声音（混音提醒比对用；播客/节目安排是多个，逐个比） */
@@ -312,12 +311,10 @@ export function VoicePickDialog({
                 <Label className="text-xs text-muted-foreground">声音</Label>
                 {optionRow(
                   'persona',
-                  `卡司嗓音${castPersona?.name ? `（${castPersona.name}）` : ''}`,
+                  '本场默认音色',
                   programVoiceName
                     ? programVoiceName
-                    : castPersona
-                      ? '卡司还没选音色'
-                      : '未选主播：本节目没配卡司，逐段用 personaId 指定，或在下面选其他音色'
+                    : '未选主播：本节目没配卡司，逐段用 personaId 指定，或在下面选其他音色'
                 )}
                 {optionRow('other', '选择其他音色…', '换一把嗓音合成这一次，不改节目配置')}
               </div>

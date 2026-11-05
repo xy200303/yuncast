@@ -104,7 +104,7 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
   }, [])
 
   // 场次/节目变化（agent、MCP、其他窗口删场次或改节目）→ 统计自己重拉
-  useDataRefresh(['sessions', 'programs'], () => setReloadTick((n) => n + 1))
+  useDataRefresh(['sessions', 'scripts'], () => setReloadTick((n) => n + 1))
 
   useEffect(() => {
     const load = () => {

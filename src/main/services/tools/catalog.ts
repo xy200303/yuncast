@@ -12,11 +12,12 @@ import { sessionTools } from './session'
 import { agentTools } from './agent'
 import { eventsTools } from './events'
 import { programTools } from './program'
-import { personaTools } from './persona'
 import { voiceTools } from './voice'
 import { triggerTools } from './trigger'
 import { statsTools } from './stats'
 import { recordTools } from './record'
+import { shellTools } from './shell'
+import { fsTools } from './fs'
 
 /**
  * 工具目录：唯一事实源。内置 agent 的 function-calling、MCP 的 tools/list、CLI 的 schema
@@ -27,7 +28,6 @@ export const ALL_TOOLS: ToolDef[] = [
   ...draftTools,
   ...sceneTools,
   ...programTools,
-  ...personaTools,
   ...voiceTools,
   ...triggerTools,
   ...knowledgeTools,
@@ -38,7 +38,9 @@ export const ALL_TOOLS: ToolDef[] = [
   ...statsTools,
   ...recordTools,
   ...agentTools,
-  ...eventsTools
+  ...eventsTools,
+  ...fsTools,
+  ...shellTools
 ]
 
 export function toolsForAgent(): ToolDef[] {

@@ -12,6 +12,12 @@ import { migration as materials } from './0012-materials'
 import { migration as planIntoPrograms } from './0014-plan-into-programs'
 import { migration as materialContent } from './0015-material-content'
 import { migration as liveSessionConfig } from './0016-live-session-config'
+import { migration as decoupleAssets } from './0017-decouple-assets'
+import { migration as renameProgramsToScripts } from './0018-rename-programs-to-scripts'
+import { migration as scriptStructureOnly } from './0019-script-structure-only'
+import { migration as poolItemScript } from './0020-pool-item-script'
+import { migration as projects } from './0021-projects'
+import { migration as contentOut } from './0022-content-out-of-app-db'
 
 /**
  * 迁移清单（按 version 升序执行）。
@@ -31,7 +37,13 @@ export const migrations: Migration[] = [
   materials,
   planIntoPrograms,
   materialContent,
-  liveSessionConfig
+  liveSessionConfig,
+  decoupleAssets,
+  renameProgramsToScripts,
+  scriptStructureOnly,
+  poolItemScript,
+  projects,
+  contentOut
 ]
 
 /** 最新结构版本：等于清单里最大的 version */

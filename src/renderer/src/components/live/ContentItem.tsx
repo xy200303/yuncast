@@ -65,8 +65,8 @@ export function ContentItem({
     <div
       data-playing={current ? 'true' : undefined}
       className={cn(
-        'rounded-md border bg-card px-3 py-2 transition-colors',
-        current && 'border-primary/50 bg-primary/5'
+        'rounded-[10px] border bg-card px-3.5 py-3 transition-colors',
+        current && 'border-primary/20 bg-primary/[0.03] shadow-[inset_3px_0_0_var(--primary)]'
       )}
     >
       <div className="flex items-center gap-2">

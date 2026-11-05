@@ -32,8 +32,8 @@ export function useOnboardingSteps(): OnboardingSteps {
 
   const refresh = useCallback(() => {
     if (!('api' in window)) return
-    void Promise.all([window.api.persona.list(), window.api.program.list()]).then(([personas, programs]) => {
-      setCounts({ personas: personas.length, programs: programs.length })
+    void window.api.program.list().then((programs) => {
+      setCounts({ personas: 0, programs: programs.length })
     })
   }, [])
 

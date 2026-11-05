@@ -459,7 +459,7 @@ function parseBgm(input: unknown): BgmConfig {
 export type DataChangeScope =
   | 'personas'
   | 'voices'
-  | 'programs'
+  | 'scripts'
   | 'drafts'
   | 'knowledge'
   | 'triggers'
@@ -630,6 +630,8 @@ export interface PoolReplyTo {
 export interface PoolItem {
   id: string
   sessionId: string
+  /** 这条属于哪本剧本（入池时从当前剧本取；跨剧本的存货不会混进这一场） */
+  scriptId: string
   text: string
   /** 中文对照（外语节目用）：只用于显示，不参与合成 */
   textZh?: string
@@ -662,8 +664,6 @@ export interface PoolItem {
   emotion?: string
   /** 情感强度（火山 emotion_scale，1~5）：只在带了 emotion 时生效 */
   emotionScale?: number
-  /** 语种提示（仅百炼 qwen3-tts 支持：Auto / Chinese / English 等；留空 = 接入默认） */
-  languageType?: string
   /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播（tts.realtime 开启时） */
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
@@ -681,6 +681,8 @@ export interface PoolItem {
 /** say / insert_next 的入参 */
 export interface PoolSayInput {
   text: string
+  /** 预制音频的章级条目：正文是整章全文，允许超过单条 800 字上限 */
+  allowLongText?: boolean
   /** 中文对照（外语节目）：只显示，不进 TTS */
   textZh?: string
   voiceId?: string
@@ -692,8 +694,6 @@ export interface PoolSayInput {
   /** 情感 / 情感强度（火山）：按条指定情绪，空 = 接入默认 */
   emotion?: string
   emotionScale?: number
-  /** 语种提示（百炼 qwen3-tts）：Auto / Chinese / English…，空 = 接入默认 */
-  languageType?: string
   lane?: PoolLane
   sourceKind?: PoolSourceKind
   sourceAgentId?: string
@@ -728,22 +728,127 @@ export interface PoolSnapshot {
   failed: PoolItem[]
 }
 
-/** 本场（一次开播）的绑定配置：资产是静态的，人、嗓子、语言都只在这里定（docs/12） */
+/** 播出预设：只负责预填三个正交开关，落库后仍可逐项改（docs/12 §12） */
+export type SessionPreset = '' | 'audiobook' | 'commerce' | 'chat' | 'stage'
+
+export const SESSION_PRESETS: {
+  id: Exclude<SessionPreset, ''>
+  label: string
+  example: string
+  contentSource: SessionContentSource
+  synthMode: SessionSynthMode
+  endMode: SessionEndMode
+}[] = [
+  {
+    id: 'audiobook',
+    label: '有声书 / 播客',
+    example: '一期定了就不改',
+    contentSource: 'script',
+    synthMode: 'pre',
+    endMode: 'stop'
+  },
+  {
+    id: 'commerce',
+    label: '带货',
+    example: '底稿循环、缺了补',
+    contentSource: 'script',
+    synthMode: 'async',
+    endMode: 'loop'
+  },
+  {
+    id: 'chat',
+    label: '纯互动 / 闲聊',
+    example: '没底稿，像真人聊天',
+    contentSource: 'infinite',
+    synthMode: 'realtime',
+    endMode: 'forever'
+  },
+  {
+    id: 'stage',
+    label: '宣讲 / 发布',
+    example: '展会循环讲解',
+    contentSource: 'script',
+    synthMode: 'pre',
+    endMode: 'loop'
+  }
+]
+
+/** 内容来源：本场话术（有限）/ 边播边无限生成 */
+export type SessionContentSource = 'script' | 'infinite'
+/** 合成时机：预合成 / 异步边播边合 / 实时流式 */
+export type SessionSynthMode = 'pre' | 'async' | 'realtime'
+/** 收尾方式：一遍播完停 / 循环返场 / 一直播下去 */
+export type SessionEndMode = 'stop' | 'loop' | 'forever'
+
+/**
+ * 本场（一次开播）的唯一绑定处（docs/12 §2）：
+ * 主播与嗓子、话术语言、三个播出开关、互动开关都在这里定；资产之间零引用。
+ * 每次开播必须人点确认生成一条，字段可预填上一次的值。
+ */
+/** 本场缺省时的行为：备稿/还没配置时按「单人、本场话术、边播边合」处理 */
+export const DEFAULT_SESSION_BEHAVIOR = {
+  contentType: 'solo' as ContentType,
+  instruction: '',
+  contentSource: 'script' as SessionContentSource,
+  synthMode: 'async' as SessionSynthMode,
+  endMode: 'loop' as SessionEndMode
+}
+
+/** 本场的播出节奏（由内容来源 + 合成时机推导；资产不再存 broadcastMode） */
+export function broadcastModeOf(
+  session: Pick<SessionConfig, 'contentSource' | 'synthMode'> | null | undefined
+): BroadcastMode {
+  if (!session) return 'rolling'
+  if (session.contentSource === 'infinite') return 'improvised'
+  if (session.synthMode === 'pre') return 'prepared'
+  return 'rolling'
+}
+
+/** 本场内容形态（没配置 = 单人） */
+export function contentTypeOf(session: Pick<SessionConfig, 'contentType'> | null | undefined): ContentType {
+  return session?.contentType ?? 'solo'
+}
+
 export interface SessionConfig {
   id: string
   programId: string
+  /** 话术语言：只决定写什么语言，不进 TTS 请求 */
   language: ProgramLanguage
-  /** 播出预设（带货/有声书/闲聊…），空 = 自定义 */
-  preset: string
-  /** 合成时机：预合成 / 边播边合 / 实时流式 */
-  synthMode: 'pre' | 'async' | 'realtime'
-  /** 收尾方式 */
-  endMode: 'loop' | 'stop'
+  /** 内容形态（表达规范）：单人 / 多人 / 照稿读 / 分角色 */
+  contentType: ContentType
+  /** 本场风格指令（≤100 字）：整期默认演法，低于 agent 逐条 delivery */
+  instruction: string
+  /** 播出预设（空 = 自定义） */
+  preset: SessionPreset
+  contentSource: SessionContentSource
+  synthMode: SessionSynthMode
+  endMode: SessionEndMode
   /** 音频策略：复用已有 / 清空重合成 */
   audioPolicy: 'reuse' | 'rebuild'
-  /** 主播 → 音色（逐人指定；同一主播多节目可不同嗓子） */
-  personaVoices: { personaId: string; voiceId: string }[]
+  /** 是否把直播间动态（评论/礼物/进场）提供给主播 */
+  allowLiveEvents: boolean
+  /** 本场启用的触发器 id */
+  enabledTriggerIds: string[]
+  /** 本场默认音色（克隆音色 id 或复合串）；逐条还可以用 voiceId 覆盖 */
+  voiceId: string
   createdAt: number
+}
+
+/** 新建本场配置的入参：界面只给内容，id/createdAt 由主进程分配 */
+export type SessionConfigInput = Omit<SessionConfig, 'id' | 'createdAt'>
+
+export const DEFAULT_SESSION_CONFIG: Omit<SessionConfigInput, 'programId'> = {
+  language: 'Chinese',
+  contentType: 'solo',
+  instruction: '',
+  preset: '',
+  contentSource: 'script',
+  synthMode: 'async',
+  endMode: 'loop',
+  audioPolicy: 'reuse',
+  allowLiveEvents: true,
+  enabledTriggerIds: [],
+  voiceId: ''
 }
 
 /** 池操作统一返回形状（IPC 层不抛异常，错误信息给 UI 用） */
@@ -772,25 +877,6 @@ export const LIBRARY_SOURCE_ID = 'library'
 
 // ---------- 主播卡（Persona：纯数据卡，没有人格大脑；想的事全归导演） ----------
 
-export interface Persona {
-  id: string
-  /** 主播名字 */
-  name: string
-  /** 性格（开朗/沉稳/毒舌……） */
-  personality: string
-  /** 口癖（口头禅、语气词） */
-  catchphrases: string
-  /** 背景故事 */
-  background: string
-  /** 内容红线（写这张卡的台词时绝不能碰的话题/承诺） */
-  taboos: string
-  /** 音色（火山 voice_type / 百炼 voice，或手动音色的 `接入::模型::音色` 复合串）。
-   *  v16 起它降级为「默认音色建议」：真正用哪把嗓子在开播配置里定（docs/12 第十一节）。 */
-  voiceId: string
-  /** 默认音色建议（= 迁移前的 voiceId）；开播弹窗预填用，不再是必填校验 */
-  defaultVoiceId?: string
-  updatedAt: number
-}
 
 // ---------- 主播 Agent 状态 ----------
 
@@ -802,14 +888,13 @@ export interface AgentStatus {
   error?: string
   /** provider/model 展示用 */
   model?: string
-  leadPersonaName?: string
   /** 生成中预览：text_delta 累积的文本，入池即清空（提词器用） */
   draft: string
   /** 当前场景（提词器显示用），无剧本为空 */
   scene?: { title: string; index: number; total: number }
-  /** 会话出生后资产改过了：'prompt' = 人设/剧本/手册/节目（热更新即生效，不打断）；
-   *  'brain' = 导演模型/接入（要重开会话）；'none'/缺省 = 都对得上（docs/07 §8.5） */
-  assetsStale?: 'none' | 'prompt' | 'brain'
+  /** 只有「脑子」会对不上：'brain' = 导演模型/接入变了（要重开会话）；
+   *  'none'/缺省 = 对得上。内容不参与判断——工具实时读取，改内容不刷新会话。 */
+  assetsStale?: 'none' | 'brain'
   /** 节目开播态（引擎语义）：launch 置真、结束节目置假，与 agent 会话是否活着无关 */
   live?: boolean
   /** 播报暂停中（统一开播控制的「暂停」）：渲染层的「播报中/已暂停」以此为准，不做本地镜像 */
@@ -874,7 +959,6 @@ export type DirectorTimelineEntry =
       text: string
       append?: boolean
       final?: boolean
-      personaId?: string
     }
   | {
       type: 'thinking'
@@ -884,7 +968,6 @@ export type DirectorTimelineEntry =
       done?: boolean
       /** 定稿时给：这段思考实际花了多久（渲染层不要拿 ts 反推，见 AgentService 注释） */
       durationMs?: number
-      personaId?: string
     }
   | {
       type: 'tool'
@@ -895,7 +978,6 @@ export type DirectorTimelineEntry =
       result?: string
       durationMs?: number
       isError?: boolean
-      personaId?: string
     }
   | { type: 'ask'; id: string; message: DirectorMessage }
 
@@ -920,7 +1002,6 @@ export type ChatEntry =
       /** 仅 IPC 途中为 true：text 是新增片段，渲染层累加后立刻清掉 */
       append?: boolean
       turnId: string
-      personaId?: string
     }
   | {
       type: 'thinking'
@@ -931,7 +1012,6 @@ export type ChatEntry =
       done: boolean
       append?: boolean
       durationMs?: number
-      personaId?: string
     }
   | {
       type: 'tool'
@@ -943,7 +1023,6 @@ export type ChatEntry =
       status: 'running' | 'ok' | 'error'
       result?: string
       durationMs?: number
-      personaId?: string
     }
   | { type: 'ask'; id: string; ts: number; message: DirectorMessage }
 
@@ -1004,17 +1083,21 @@ export interface VoiceRecord {
   updatedAt: number
 }
 
-/** 一条音色被谁引用（主播卡音色） */
-export interface VoiceUsagePersona {
+/** 音色在本场配置里的引用（最近几场用它做过主播嗓子） */
+export interface VoiceUsageSession {
   id: string
-  name: string
+  programName: string
+  at: number
 }
 
-/** 音色的引用关系（`voice:usage`）：删除前先看谁在用，别删掉正在用的那个 */
+/**
+ * 音色的引用关系（`voice:usage`）：删除前先看谁在用。
+ * 资产不引用音色（主播卡没有嗓子），引用只可能来自本场配置与话术条目的音色快照。
+ */
 export interface VoiceUsage {
-  personas: VoiceUsagePersona[]
-  programs: { id: string; name: string }[]
-  /** 话术库条目数（可能很多，只给计数） */
+  /** 最近用过这把嗓子的场次数（最多 5 场，新的在前） */
+  sessions: VoiceUsageSession[]
+  /** 话术条目数（可能很多，只给计数） */
   draftUnitCount: number
   /** 前几条话术示例（让人认出是哪批话术） */
   draftUnitSamples: { id: string; programName: string; text: string }[]
@@ -1267,9 +1350,6 @@ export const BROADCAST_MODE_LABELS: Record<BroadcastMode, string> = {
   prepared: '全部做好再播'
 }
 
-/** 播完以后（即兴播出无此概念） */
-export type FinishMode = 'stop' | 'loop'
-
 /**
  * 节目语言（多语言节目/跨境电商用）：影响写稿语言、TTS 语种提示与标记编译。
  * auto = 让模型/服务商自动判断（默认，行为与旧版一致）。
@@ -1301,31 +1381,21 @@ export const PROGRAM_LANGUAGE_LABELS: Record<ProgramLanguage, string> = {
   Portuguese: 'Português（葡萄牙语）'
 }
 
+/**
+ * 剧本资产（docs/12 §3）：**只描述结构**。
+ * 名称 / 简介 / 场次序列 / 素材范围；出镜人选、嗓子、语言、播出开关都属于本场，不写在这里。
+ * 台词由本场生成，剧本里不硬编码。
+ */
 export interface Program {
   id: string
   name: string
-  /** 本场主题/节目说明（注入主播 system prompt） */
+  /** 简介（这场讲什么、给谁看；注入导演上下文，不进 TTS） */
   theme: string
-  contentType: ContentType
-  broadcastMode: BroadcastMode
-  finishMode: FinishMode
-  /** 是否把直播间动态（评论/礼物/进场）提供给主播 Agent */
-  allowLiveEvents: boolean
-  /** 启用的全局触发器 id（触发器定义在全局触发器库，节目只存启用项） */
-  enabledTriggerIds: string[]
-  /** 节目卡司：主播卡 id 数组（告诉导演"你手下有哪些人设可用"）；空数组 = 导演自选 */
-  personaIds: string[]
-  /**
-   * 节目级风格指令（≤100 字）：整期默认演法，覆盖音色默认风格、低于 agent 逐条 delivery；
-   * 进文稿指纹盐——改了它预制音频会判过期重合成。节目不再配「声音」，出镜与嗓音由卡司决定。
-   */
-  instruction?: string
-  /** 节目语言（多语言播出）：影响写稿语言与 TTS 语种提示；auto = 自动 */
-  language: ProgramLanguage
-  /** 编排：节目的场次序列（有序、有进度、场景级音频）；不再是独立"剧本"资产 */
+  /** 场次序列（有序、有进度、场景级音频） */
   plan: { scenes: ScriptScene[] }
+  /** 可用素材范围（条目白名单；附件随条目走） */
   knowledgeScope: ProgramKnowledgeScope
-  /** 剧本推进进度（断播续播用），advance_scene 更新 */
+  /** 场次推进进度（断播续播用），advance_scene 更新 */
   currentSceneIdx: number
   createdAt: number
   updatedAt: number
@@ -1336,16 +1406,26 @@ export type ProgramInput = Omit<Program, 'id' | 'createdAt' | 'updatedAt' | 'cur
 export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
   name: '',
   theme: '',
-  contentType: 'solo',
-  broadcastMode: 'rolling',
-  finishMode: 'loop',
-  allowLiveEvents: true,
-  enabledTriggerIds: [],
-  personaIds: [],
-  instruction: '',
-  language: 'auto',
   plan: { scenes: [] },
   knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
+}
+
+// ---------- 项目（一个项目 = 一个目录 = 一个 project.db） ----------
+
+/** 项目列表里的一条：只带「在哪、叫什么、什么时候打开的」，内容全部在项目库里 */
+/** 菜单栏「编辑」动作 */
+export type AppEditAction = 'undo' | 'redo' | 'cut' | 'copy' | 'paste' | 'selectAll'
+/** 菜单栏「视图」动作 */
+export type AppViewAction = 'reload' | 'zoom-in' | 'zoom-out' | 'zoom-reset' | 'fullscreen' | 'devtools'
+
+export interface ProjectRecord {
+  id: string
+  /** 项目目录绝对路径（project.db / assets / audio 都在里面） */
+  path: string
+  name: string
+  createdAt: number
+  /** 0 = 从没打开过 */
+  lastOpenedAt: number
 }
 
 // ---------- 直播间动态收件箱（docs/10 §5.3）：直播台「事件流」直接展示这份状态 ----------
@@ -1416,9 +1496,7 @@ export interface DraftUnit {
   pitch?: number
   /** 播完这段后的停顿毫秒（播放时调度，不进合成）：空 = 连续播 */
   pauseAfterMs?: number
-  /** 这段归哪张主播卡（稳定寻址：改名/换音色不影响；空 = 合成时用卡司第一张） */
-  personaId?: string
-  /** 写稿时的音色快照（personaId 存在时以卡上当前音色为准），空 = 用卡司第一张 */
+  /** 写稿时的音色快照；空 = 用本场默认音色 */
   voiceId: string
   /** 中文对照（外语节目的播出稿才需要）：只用于显示，不参与合成 */
   textZh?: string
@@ -1643,12 +1721,6 @@ export interface ProgramExportPlan {
 /** 场次结束原因：空串 = 还在播（崩溃恢复时会补 'crash'） */
 export type BroadcastEndReason = '' | 'manual' | 'auto_stop' | 'emergency' | 'app_quit' | 'crash'
 
-export interface BroadcastSessionPersona {
-  personaId: string
-  personaName: string
-  voiceDesc: string
-}
-
 export interface BroadcastSession {
   id: string
   programId: string
@@ -1656,7 +1728,6 @@ export interface BroadcastSession {
   programName: string
   /** 开播时刻实际使用的导演大脑与主播卡快照 */
   directorModelDesc: string
-  personas: BroadcastSessionPersona[]
   startedAt: number
   /** 0 = 还在播 */
   endedAt: number

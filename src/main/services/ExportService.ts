@@ -88,12 +88,13 @@ export class ExportService {
    */
   describeExportPlan(programId: string): ProgramExportPlan {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
-    if (!program) return { ok: false, error: '节目不存在' }
-    if (program.broadcastMode !== 'prepared') {
-      return { ok: false, error: '滚动/即兴节目的音频是边播边合成的运行态产物，没有节目级预制音频可导出；只有预制节目支持导出' }
+    if (!program) return { ok: false, error: '剧本不存在' }
+    const session = this.storage.sessionConfigLatest(programId)
+    if (session?.synthMode !== 'pre') {
+      return { ok: false, error: '边播边合/即时生成的音频没有节目级预制文件可导出；只有预合成档支持导出' }
     }
     const script = this.script.getScript(program.id)
-    const units = listAudioUnits(program, script, this.storage.draftUnitList(programId))
+    const units = listAudioUnits(program, script, this.storage.draftUnitList(programId), session)
     if (units.length === 0) return { ok: false, error: '节目还没有文稿，没有可导出的音频' }
     const missing: { title: string; reason: string }[] = []
     let totalBytes = 0
@@ -115,12 +116,13 @@ export class ExportService {
   async export(options: ProgramExportOptions): Promise<ProgramExportResult> {
     if (this.running) return { ok: false, error: '已有导出任务在进行，等它完成或先取消' }
     const program = this.storage.programList().find((p) => p.id === options.programId) ?? null
-    if (!program) return { ok: false, error: '节目不存在' }
-    if (program.broadcastMode !== 'prepared') {
-      return { ok: false, error: '滚动/即兴节目的音频是边播边合成的运行态产物，没有节目级预制音频可导出；只有预制节目支持导出' }
+    if (!program) return { ok: false, error: '剧本不存在' }
+    const session = this.storage.sessionConfigLatest(program.id)
+    if (session?.synthMode !== 'pre') {
+      return { ok: false, error: '边播边合/即时生成的音频没有节目级预制文件可导出；只有预合成档支持导出' }
     }
     const script = this.script.getScript(program.id)
-    const allUnits = listAudioUnits(program, script, this.storage.draftUnitList(program.id))
+    const allUnits = listAudioUnits(program, script, this.storage.draftUnitList(program.id), session)
     if (allUnits.length === 0) return { ok: false, error: '节目还没有文稿，没有可导出的音频' }
 
     // 缺音频默认阻断并列出缺哪些；显式「仅导出已完成部分」才放行（§15.5/§15.17，不静默跳过）
@@ -264,7 +266,7 @@ export class ExportService {
 
       // 结束校验：指纹或 mtime 变了 → 警告但不算失败（结果可能混着新旧音频）
       const staleHits: string[] = []
-      const freshUnits = listAudioUnits(program, this.script.getScript(program.id), this.storage.draftUnitList(program.id))
+      const freshUnits = listAudioUnits(program, this.script.getScript(program.id), this.storage.draftUnitList(program.id), session)
       const freshById = new Map(freshUnits.map((unit) => [unit.id, unit]))
       for (const unit of units) {
         const before = snapshot.get(unit.id)!

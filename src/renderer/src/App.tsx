@@ -1,4 +1,4 @@
-import { useEffect, type ComponentType } from 'react'
+import { useEffect, useState, type ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import { toast } from 'sonner'
 import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
@@ -6,40 +6,37 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Toaster } from '@/components/ui/sonner'
 import { cn } from '@/lib/utils'
 import { AppSidebar } from './components/Sidebar'
-import { DragStrip } from './components/DragStrip'
+import { MenuBar } from './components/MenuBar'
+import { ProjectCreateDialog } from './components/ProjectCreateDialog'
+import { ProjectSwitchDialog } from './components/ProjectSwitchDialog'
 import { StatusBar } from './components/StatusBar'
 import { LivePage } from './components/LivePage'
-import { PersonasPage } from './components/PersonasPage'
-import { KnowledgePage } from './components/KnowledgePage'
 import { VoicesPage } from './components/VoicesPage'
-import { ProgramsPage } from './components/ProgramsPage'
 import { SessionsPage } from './components/SessionsPage'
 import { StatsPage } from './components/StatsPage'
 import { SettingsDialog } from './components/SettingsDialog'
 import { AgentPanel } from './components/AgentPanel'
-import { OnboardingPage } from './components/OnboardingPage'
+import { ProjectWelcome } from './components/ProjectWelcome'
 import { AuditionBar } from './components/AuditionBar'
 import { useAppStore, type NavPage } from './stores/useAppStore'
+import { useProjectStore } from './stores/useProjectStore'
 import { audioEngine } from './audio/engine'
 import { initScreenRecorder } from './audio/screenRecorder'
 import { initVirtualCursor } from './overlay/virtualCursor'
 import { streamPlayer } from './audio/streamPlayer'
-import { ONBOARDING_DONE_KEY } from './lib/onboarding'
-import { llmReady } from '../../shared/types'
 
 const PAGES: Record<NavPage, ComponentType> = {
   live: LivePage,
-  personas: PersonasPage,
-  knowledge: KnowledgePage,
   voices: VoicesPage,
-  programs: ProgramsPage,
   sessions: SessionsPage,
   stats: StatsPage
 }
 
 export default function App() {
   const page = useAppStore((s) => s.page)
-  const onboardingOpen = useAppStore((s) => s.onboardingOpen)
+  const project = useProjectStore((s) => s.current)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [switchOpen, setSwitchOpen] = useState(false)
   const agentPanelMode = useAppStore((s) => s.agentPanelMode)
   const agentPanelWidth = useAppStore((s) => s.agentPanelWidth)
   const loadConfig = useAppStore((s) => s.loadConfig)
@@ -62,21 +59,7 @@ export default function App() {
 
   useEffect(() => {
     if (!('api' in window)) return // 纯浏览器打开 dev server 时没有 preload
-    void (async () => {
-      await Promise.all([loadConfig(), loadModelLibrary()])
-      // 首跑引导（docs/REDESIGN 4.9）：没标过完成且清单未就绪 → 首屏落配置清单页；
-      // 全部就绪（老用户）顺手补上完成标记，首屏照常落直播台
-      if (localStorage.getItem(ONBOARDING_DONE_KEY) === '1') return
-      const [personas, programs] = await Promise.all([window.api.persona.list(), window.api.program.list()])
-      const state = useAppStore.getState()
-      const ready =
-        llmReady(state.connections, state.config.director) &&
-        state.ttsConnections.some((connection) => connection.ready) &&
-        personas.length > 0 &&
-        programs.length > 0
-      if (ready) localStorage.setItem(ONBOARDING_DONE_KEY, '1')
-      else state.setOnboardingOpen(true)
-    })()
+    void Promise.all([loadConfig(), loadModelLibrary()])
     const themeQuery = window.matchMedia('(prefers-color-scheme: dark)')
     const onTheme = () => syncSystemTheme()
     themeQuery.addEventListener('change', onTheme)
@@ -175,26 +158,53 @@ export default function App() {
           className="min-h-0 overflow-hidden transition-[margin] duration-200"
           style={agentPanelMode === 'docked' ? { marginRight: agentPanelWidth } : undefined}
         >
-          <DragStrip />
-          {/* 五个页面常驻不卸载，只切换显隐（不用会卸载内容的 Tabs 组件） */}
-          <div className="flex min-h-0 flex-1 flex-col">
-            {(Object.keys(PAGES) as NavPage[]).map((id) => {
-              const Page = PAGES[id]
-              return (
-                <div key={id} className={cn('min-h-0 flex-1 flex-col', id === page ? 'flex' : 'hidden')}>
-                  <Page />
-                </div>
-              )
-            })}
-          </div>
-          {/* 全局试听条：任何页面触发的试听都收在这同一条上（aux 槽，不打断播报） */}
-          <AuditionBar />
+          <MenuBar
+            onCreateProject={() => setCreateOpen(true)}
+            onOpenProject={() => setSwitchOpen(true)}
+            onOpenFolder={() => {
+              void (async () => {
+                const picked = await window.api.project.pickDir()
+                if (!picked.ok) return
+                try {
+                  await useProjectStore.getState().openAt(picked.path)
+                } catch (error) {
+                  toast.error('打开项目失败', {
+                    description: error instanceof Error ? error.message : String(error)
+                  })
+                }
+              })()
+            }}
+            onAbout={() => useAppStore.getState().openSettings('about')}
+          />
+          {project ? (
+            <>
+              {/* 项目内的页面常驻不卸载，只切换显隐（不用会卸载内容的 Tabs 组件） */}
+              <div className="flex min-h-0 flex-1 flex-col">
+                {(Object.keys(PAGES) as NavPage[]).map((id) => {
+                  const Page = PAGES[id]
+                  return (
+                    <div key={id} className={cn('min-h-0 flex-1 flex-col', id === page ? 'flex' : 'hidden')}>
+                      <Page />
+                    </div>
+                  )
+                })}
+              </div>
+              {/* 全局试听条：任何页面触发的试听都收在这同一条上（aux 槽，不打断播报） */}
+              <AuditionBar />
+            </>
+          ) : (
+            <ProjectWelcome />
+          )}
           <StatusBar />
         </SidebarInset>
-        <AgentPanel />
+        {project && <AgentPanel />}
         <SettingsDialog />
-        {/* 首跑引导：全屏覆盖层（z-40，设置弹窗在它上面） */}
-        {onboardingOpen && <OnboardingPage />}
+        <ProjectCreateDialog open={createOpen} onOpenChange={setCreateOpen} />
+        <ProjectSwitchDialog
+          open={switchOpen}
+          onOpenChange={setSwitchOpen}
+          onCreate={() => setCreateOpen(true)}
+        />
         {/* Toaster 提到 body 层：否则会被布局树的堆叠上下文困住，弹窗遮罩会盖住提示 */}
         {createPortal(<Toaster />, document.body)}
       </SidebarProvider>

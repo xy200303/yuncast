@@ -6,7 +6,8 @@ import type {
   ProgramGateResult,
   RenderedAudioRef,
   Script,
-  DraftUnit
+  DraftUnit,
+  SessionConfig
 } from '../../shared/types'
 import { programStyleSalt, sceneFingerprint, draftUnitFingerprint } from '../../shared/fingerprint'
 
@@ -43,11 +44,13 @@ export function narrativeOrder(list: DraftUnit[]): DraftUnit[] {
 export function listAudioUnits(
   program: Program,
   script: Script | null,
-  draftUnits: DraftUnit[]
+  draftUnits: DraftUnit[],
+  session?: SessionConfig | null
 ): AudioUnit[] {
-  // 节目级风格指令进指纹：改它 = 全部单元过期重合成（空盐时与旧版指纹一致）
-  const styleSalt = programStyleSalt(program)
-  if (program.contentType === 'solo') {
+  // 本场风格指令进指纹：改它 = 全部单元过期重合成（空盐时与旧版指纹一致）
+  const styleSalt = programStyleSalt(session)
+  const contentType = session?.contentType ?? 'solo'
+  if (contentType === 'solo') {
     return draftUnits.map((u) => ({
       kind: 'draftUnit' as const,
       id: u.id,
@@ -97,13 +100,16 @@ export function listAudioUnits(
  * - 滚动/即兴节目根本不产生 rendered：音频是逐段合成在 DraftUnit 上的（audioPath + status），
  *   以前这里一律按 pending 报，导致「底稿明明全合成好了，进度条和门禁却说没合成」。
  */
-function unitStatus(unit: AudioUnit, program: Program): RenderedAudioRef['status'] | 'missing' | 'pending' {
+function unitStatus(
+  unit: AudioUnit,
+  session?: SessionConfig | null
+): RenderedAudioRef['status'] | 'missing' | 'pending' {
   const rendered = unit.rendered
   if (rendered) {
     if (rendered.status === 'ready' && rendered.sourceFingerprint !== unit.fingerprint) return 'stale'
     return rendered.status
   }
-  if (program.broadcastMode !== 'prepared') {
+  if (session?.synthMode !== 'pre') {
     const unitDraft = unit.draftUnits[0]
     if (!unitDraft) return 'pending'
     if (unitDraft.status === 'synthesizing') return 'synthesizing'
@@ -122,12 +128,13 @@ function unitAudioPath(unit: AudioUnit): string | undefined {
 export function audioProgress(
   program: Program,
   script: Script | null,
-  draftUnits: DraftUnit[]
+  draftUnits: DraftUnit[],
+  session?: SessionConfig | null
 ): ProgramAudioProgress {
   const progress: ProgramAudioProgress = { total: 0, ready: 0, synthesizing: 0, pending: 0, failed: 0, stale: 0 }
-  for (const unit of listAudioUnits(program, script, draftUnits)) {
+  for (const unit of listAudioUnits(program, script, draftUnits, session)) {
     progress.total++
-    const status = unitStatus(unit, program)
+    const status = unitStatus(unit, session)
     if (status === 'ready') {
       // 文件真没了按失败计（外部音频被移走等情况）
       const path = unitAudioPath(unit)
@@ -148,7 +155,8 @@ export function audioProgress(
 export function evaluateGate(
   program: Program,
   script: Script | null,
-  draftUnits: DraftUnit[]
+  draftUnits: DraftUnit[],
+  session?: SessionConfig | null
 ): ProgramGateResult {
   const result: ProgramGateResult = {
     ok: false,
@@ -164,10 +172,10 @@ export function evaluateGate(
   const fail = (unit: AudioUnit, status: ProgramGateFailure['status'], reason: string) => {
     result.failures.push({ unitKind: unit.kind, unitId: unit.id, title: unit.title, status, reason })
   }
-  for (const unit of listAudioUnits(program, script, draftUnits)) {
+  for (const unit of listAudioUnits(program, script, draftUnits, session)) {
     result.total++
     const rendered = unit.rendered
-    const status = unitStatus(unit, program)
+    const status = unitStatus(unit, session)
     if (status === 'pending') {
       result.pending++
       fail(unit, rendered ? 'pending' : 'missing', '还没合成')

@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
 import { BRAND_DISPLAY } from '../shared/brand'
-import { POOL_LIMITS, type SessionConfig } from '../shared/types'
+import { POOL_LIMITS, type SessionConfig, type SessionConfigInput } from '../shared/types'
 
 /** 崩溃现场日志（无声退出排查）：追加写 userData/crash.log，只记事件类型不带业务数据 */
 function crashNote(kind: string, detail: string): void {
@@ -92,7 +92,6 @@ import {
   type McpRuntime,
   type ModelConnectionInput,
   type PartialDeep,
-  type Persona,
   type PoolResult,
   type PoolSayInput,
   type PoolSnapshot,
@@ -116,7 +115,6 @@ import { StorageService } from './services/StorageService'
 import { BlobStoreService } from './services/BlobStoreService'
 import { TtsService, type TtsTestInput } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
-import { PersonaService } from './services/PersonaService'
 import { PromptTemplateService } from './services/PromptTemplateService'
 import { AgentService } from './services/AgentService'
 import { KnowledgeService } from './services/KnowledgeService'
@@ -124,6 +122,7 @@ import { MemoryService } from './services/MemoryService'
 import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
+import { ProjectService } from './services/ProjectService'
 import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
 import { VoiceService, type VoiceCloneInput } from './services/VoiceService'
@@ -393,7 +392,9 @@ function ensurePauseWhenDry(): void {
   if (!programId || !playerRef || !storageRef) return
   const program = storageRef.programList().find((item) => item.id === programId)
   if (!program) return
-  const policy = policyFor(program, playerRef)
+  const session = storageRef.sessionConfigLatest(programId)
+  if (!session) return
+  const policy = policyFor(program, session, playerRef)
   if (policy.poolEmptyAction(program) !== 'wait') return
   const incoming =
     playerRef.hasIncomingDraftUnits(programId) ||
@@ -589,7 +590,7 @@ let audioStyle: AudioStyleService | null = null
 let mcpApplied = ''
 
 /**
- * finishMode=stop 的收播两阶段状态（pool.empty 决策点用）：
+ * 本场 endMode=stop 的收播两阶段状态（pool.empty 决策点用）：
  * 第一阶段整轮播完 → 通知主播收尾（说 closer/道别），并挂兜底定时器；
  * 第二阶段收尾也播完（池再次见底）或兜底到点 → 正式收播（stream.ended + 收开播态 + 停会话写复盘）。
  * 开播成功时复位。
@@ -660,7 +661,7 @@ async function endProgram(reason: EndProgramReason): Promise<void> {
 function finishRoundStop(programId: string): void {
   if (!stopWrap) {
     stopWrap = { programId, timer: null }
-    console.log('[YunCast] 整轮播完（finishMode=stop）：通知主播收尾，说完收播')
+    console.log('[YunCast] 整轮播完（本场 endMode=stop）：通知主播收尾，说完收播')
     agent?.notifyProgramFinished()
     // 主播没接话（暂停中/生成失败等）就 2 分钟后兜底收播，节目不能挂在半空
     stopWrap.timer = setTimeout(() => finishRoundStop(programId), 120_000)
@@ -668,7 +669,7 @@ function finishRoundStop(programId: string): void {
     return
   }
   if (stopWrap.programId !== programId) return
-  console.log('[YunCast] finishMode=stop：收尾播完，节目结束')
+  console.log('[YunCast] 本场 endMode=stop：收尾播完，节目结束')
   void endProgram('auto_stop')
 }
 
@@ -702,7 +703,6 @@ function registerIpc(
   tts: TtsService,
   pool: SpeechPool,
   agent: AgentService,
-  persona: PersonaService,
   prompts: PromptTemplateService,
   knowledge: KnowledgeService,
   bus: EventBus,
@@ -712,13 +712,53 @@ function registerIpc(
   connector: ConnectorService,
   draftUnits: DraftUnitService,
   programPlayback: ProgramPlaybackService,
-  exporter: ExportService
+  exporter: ExportService,
+  projects: ProjectService
 ): void {
   ipcMain.handle(IPC.appInfo, (): AppInfo => ({
     name: BRAND_DISPLAY,
     version: app.getVersion(),
     platform: process.platform
   }))
+  // ---------- 菜单栏：编辑 / 视图（不引系统菜单，窗口是无边框自绘标题栏） ----------
+  ipcMain.handle(IPC.appEdit, (_e, action: string) => {
+    const contents = BrowserWindow.getFocusedWindow()?.webContents
+    if (!contents) return
+    const map: Record<string, () => void> = {
+      undo: () => contents.undo(),
+      redo: () => contents.redo(),
+      cut: () => contents.cut(),
+      copy: () => contents.copy(),
+      paste: () => contents.paste(),
+      selectAll: () => contents.selectAll()
+    }
+    map[String(action)]?.()
+  })
+  ipcMain.handle(IPC.appView, (_e, action: string) => {
+    const win = BrowserWindow.getFocusedWindow()
+    if (!win) return
+    const contents = win.webContents
+    switch (String(action)) {
+      case 'reload':
+        contents.reload()
+        break
+      case 'zoom-in':
+        contents.setZoomLevel(Math.min(contents.getZoomLevel() + 0.5, 5))
+        break
+      case 'zoom-out':
+        contents.setZoomLevel(Math.max(contents.getZoomLevel() - 0.5, -5))
+        break
+      case 'zoom-reset':
+        contents.setZoomLevel(0)
+        break
+      case 'fullscreen':
+        win.setFullScreen(!win.isFullScreen())
+        break
+      case 'devtools':
+        contents.toggleDevTools()
+        break
+    }
+  })
   ipcMain.handle(IPC.configGet, () => storage.getConfig())
   ipcMain.handle(IPC.configSet, (_event, patch: PartialDeep<AppConfig>) => storage.setConfig(patch))
   // ---------- 导演大脑（全局一份：名字 + 接入 + 模型） ----------
@@ -746,11 +786,21 @@ function registerIpc(
     guard(() => pool.insertNext(input))
   )
   ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
-  ipcMain.handle(IPC.sessionConfigSave, (_e, config: SessionConfig) => {
-    storage.sessionConfigSave(config)
-    return { ok: true }
+  ipcMain.handle(IPC.sessionConfigSave, (_e, input: SessionConfigInput) => {
+    const result = programPlayback.configureSession(input)
+    if (result.ok) agent?.refreshProgramGate()
+    return result
   })
   ipcMain.handle(IPC.sessionConfigLatest, (_e, programId: string) => storage.sessionConfigLatest(programId))
+  ipcMain.handle(IPC.sessionConfigEnsure, (_e, programId: string) => storage.sessionConfigEnsure(programId))
+  ipcMain.handle(
+    IPC.sessionConfigPatch,
+    (_e, programId: string, patch: Pick<Partial<SessionConfig>, 'allowLiveEvents' | 'enabledTriggerIds'>) => {
+      const config = storage.sessionConfigPatch(programId, patch)
+      if (config) agent?.refreshProgramGate()
+      return config
+    }
+  )
 
   ipcMain.handle(IPC.poolRevise, (_e, id: string, text: string) => guard(() => pool.revise(id, text)))
   // 提到队首：只动未播条目的顺序（正在播的不受影响）
@@ -760,6 +810,7 @@ function registerIpc(
       pool.reorder([id, ...ids])
     })
   )
+  ipcMain.handle(IPC.poolPlayOnly, (_e, id: string) => guard(() => pool.playOnly(id)))
   ipcMain.handle(IPC.poolRecentPlayed, (_e, n: number) =>
     pool.getRecentPlayed(n, storage.getConfig().live.activeProgramId || undefined)
   )
@@ -1025,7 +1076,7 @@ function registerIpc(
         lines.push(`[附件] ${name}：${path}`)
       }
       if (lines.length > 0) content = `${content}\n${lines.join('\n')}`.trim()
-      const programId = StorageService.DIRECTOR_SESSION_KEY
+      const programId = storage.getConfig().live.activeProgramId || StorageService.DIRECTOR_SESSION_KEY
       if (content) {
         const id = String(localId ?? '').trim() || `dm-${Date.now()}`
         try {
@@ -1048,10 +1099,14 @@ function registerIpc(
       }
     }
   )
-  /** 全局导演的连续对话时间线；与节目、直播状态解耦 */
-  ipcMain.handle(IPC.directorTimelineList, () =>
-    storage.timelineList(StorageService.DIRECTOR_SESSION_KEY).map((row) => JSON.parse(row.payload) as unknown)
-  )
+  /** 某项目的导演对话时间线（key = 项目 id；不传就看当前项目） */
+  ipcMain.handle(IPC.directorTimelineList, (_e, projectId?: string) => {
+    const key =
+      String(projectId ?? '').trim() ||
+      storage.getConfig().live.activeProgramId ||
+      StorageService.DIRECTOR_SESSION_KEY
+    return storage.timelineList(key).map((row) => JSON.parse(row.payload) as unknown)
+  })
 
   // ---------- 导演手册（提示词模板） ----------
   ipcMain.handle(IPC.promptTemplatesList, () => prompts.list())
@@ -1071,14 +1126,6 @@ function registerIpc(
       return { ok: false, error: friendlyError(error) }
     }
   })
-
-  // ---------- 人设卡 ----------
-  ipcMain.handle(IPC.personaList, () => persona.list())
-  ipcMain.handle(
-    IPC.personaSave,
-    (_e, input: Omit<Persona, 'id' | 'updatedAt'>, id?: string) => persona.save(input, id)
-  )
-  ipcMain.handle(IPC.personaRemove, (_e, id: string) => persona.remove(id))
 
   // ---------- 音频（主进程 AudioPipeline 是唯一音频权威） ----------
   // 渲染层只做三件事：收 PCM 出声、master 音量/紧急静音、麦克风采集。
@@ -1142,7 +1189,7 @@ function registerIpc(
       voiceSvc?.preview(String(id ?? '')) ?? { ok: false as const, error: '音色服务未初始化' }
   )
   ipcMain.handle(IPC.voiceUsage, (_e, id: string) =>
-    voiceSvc?.usage(String(id ?? '')) ?? { personas: [], programs: [], draftUnitCount: 0, draftUnitSamples: [] }
+    voiceSvc?.usage(String(id ?? '')) ?? { sessions: [], draftUnitCount: 0, draftUnitSamples: [] }
   )
   ipcMain.handle(IPC.voiceUploadSample, async (_e, bytes: Uint8Array, ext: string) => {
     if (!voiceSvc) return { ok: false, error: '音色服务未初始化' }
@@ -1239,14 +1286,32 @@ function registerIpc(
   ipcMain.handle(IPC.statsSession, (_e, sessionId: string) => storage.statsSession(String(sessionId ?? '')))
 
   // ---------- 剧本 ----------
-    // ---------- 节目 ----------
+  // ---------- 项目（一个项目 = 一个目录 = 一个 project.db）----------
+  ipcMain.handle(IPC.projectList, () => projects.list())
+  ipcMain.handle(IPC.projectCreate, (_e, input: { name: string; dir?: string }) =>
+    guard(() => projects.create({ name: String(input?.name ?? ''), dir: input?.dir ? String(input.dir) : undefined }))
+  )
+  ipcMain.handle(IPC.projectOpen, (_e, id: string) => guard(() => projects.open(String(id ?? ''))))
+  ipcMain.handle(IPC.projectOpenAt, (_e, dir: string) => guard(() => projects.openAt(String(dir ?? ''))))
+  ipcMain.handle(IPC.projectClose, () => {
+    projects.close()
+  })
+  ipcMain.handle(IPC.projectRemove, (_e, id: string) => {
+    projects.remove(String(id ?? ''))
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.projectPickDir, async () => {
+    const win = BrowserWindow.getAllWindows()[0]
+    const picked = win
+      ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+      : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+    return { ok: !picked.canceled && picked.filePaths.length > 0, path: picked.filePaths[0] ?? '' }
+  })
+
+  // ---------- 节目 ----------
   ipcMain.handle(IPC.programList, () => script.listPrograms())
   ipcMain.handle(IPC.programSave, (_e, input: ProgramInput, id?: string) =>
     guard(() => script.saveProgram(input, id))
-  )
-  ipcMain.handle(IPC.programDelete, (_e, id: string) =>
-    // 底稿/音频/持久对话（会话 entries + 时间线）的级联清理由 ScriptService.deleteProgram 统一负责
-    guard(() => script.deleteProgram(String(id ?? '')))
   )
   ipcMain.handle(IPC.programSetActive, (_e, id: string) => {
     script.setActiveProgram(String(id ?? ''))
@@ -1467,6 +1532,9 @@ if (!single) {
     const storage = new StorageService()
     // 结构迁移必须先落地再装配服务：迁移会改表结构，服务构造时就假定结构已就位
     await storage.init()
+    // 启动时没有打开任何项目：config 里上次的 activeProgramId 是陈旧指针，先清掉，
+    // 让「当前项目」只有一个真值（ProjectService.current）——打开项目时再写回来
+    if (storage.getConfig().live.activeProgramId) storage.setConfig({ live: { activeProgramId: '' } })
     // 命令行（Go 版，resources/bin/yuncast）在应用没开时按这个把应用拉起来
     storage.setLaunch(process.execPath, app.isPackaged ? [] : [app.getAppPath()])
     linkCliToPath()
@@ -1475,17 +1543,28 @@ if (!single) {
     pool = new SpeechPool(storage, tts, broadcastPool)
     pool.onWarmCache = (path) => blobs.warm(path)
     const prompts = new PromptTemplateService(storage)
-    const persona = new PersonaService(storage)
     const knowledge = new KnowledgeService(storage, blobs)
     const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
+    const projects = new ProjectService(storage, script)
+    // 切项目 = 换上下文：导演会话按新项目重建（模型/提示词都跟着新项目走）
+    projects.onSwitched = (id) => {
+      if (!id) return
+      void agent?.switchProject().catch((error) => console.warn('[项目] 切换导演会话失败:', error))
+    }
+    projects.onChanged = () => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.webContents.send(IPC.projectChanged)
+      }
+      broadcastDataChanged('scripts')
+    }
     bus = new EventBus(storage)
     // 场记：场次记录器（开播/收播在 ProgramPlaybackService.launch 与三个收播点挂钩）；
     // 启动先把上次没来得及收播的场次补尾成 crash
     recorder = new SessionRecorder(storage, bus)
     recorder.fixUnfinished()
     // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
-    const draftUnits = new DraftUnitService(storage, tts, persona, script, blobs)
+    const draftUnits = new DraftUnitService(storage, tts, script, blobs)
     draftUnits.onEvent = (u) => broadcastDraftUnit(u)
     draftUnits.onBatchDone = (programId) => broadcastDraftUnitDone(programId)
     // 预制音频资产变化广播（Scene/DraftUnit 的 rendered 更新，渲染层刷新节目音频进度）
@@ -1499,7 +1578,6 @@ if (!single) {
     agent = new AgentService(
       storage,
       pool,
-      persona,
       prompts,
       knowledge,
       memory,
@@ -1513,7 +1591,10 @@ if (!single) {
         mcp?.feedTimeline(event)
       }
     )
-    triggers = new TriggerRuntime(storage, bus, pool, agent, () => persona.programVoice())
+    triggers = new TriggerRuntime(storage, bus, pool, agent, () => {
+      const id = storage.getConfig().live.activeProgramId
+      return (id ? (storage.sessionConfigLatest(id)?.voiceId ?? '') : '').trim()
+    })
     // 节目事件接线：触发器白名单/动态事件总闸跟着当前节目走
     triggers.gateProvider = () => agent!.currentProgramGate()
     streamSvc = new StreamService(storage, broadcastStream)
@@ -1588,16 +1669,10 @@ if (!single) {
     }
     recorder.onChanged = () => broadcastDataChanged('sessions')
     draftUnits.onDraftChanged = (programId) => broadcastDataChanged('drafts', programId)
-    persona.onChanged = (personaId) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (!win.isDestroyed()) win.webContents.send(IPC.personaChanged, personaId)
-      }
-      broadcastDataChanged('personas', personaId)
-    }
     agent.getAudioStyle = () => audioStyle
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
-    const programPlayback = new ProgramPlaybackService(storage, script, persona, draftUnits, pool, agent, connector, streamSvc, tts)
+    const programPlayback = new ProgramPlaybackService(storage, script, draftUnits, pool, agent, connector, streamSvc, tts)
     storageRef = storage
     playerRef = programPlayback
     programPlayback.recorder = recorder
@@ -1630,7 +1705,6 @@ if (!single) {
       tts,
       pool,
       agent,
-      persona,
       knowledge,
       memory,
       script,
@@ -1667,7 +1741,8 @@ if (!single) {
       const status = agent?.status()
       if (status?.state !== 'running' || status.live !== true) return
       const program = storage.programList().find((p) => p.id === u.programId)
-      if (!program || !policyFor(program, programPlayback).autoReloadOnReady) return
+      const session = storage.sessionConfigLatest(u.programId)
+      if (!program || !session || !policyFor(program, session, programPlayback).autoReloadOnReady) return
       const loaded = programPlayback.loadActiveSceneDraftUnits()
       if (loaded > 0) console.log(`[YunCast] 新就绪底稿补装 ${loaded} 条`)
     }
@@ -1698,7 +1773,9 @@ if (!single) {
       if (!programId) return
       const program = storage.programList().find((p) => p.id === programId) ?? null
       if (!program) return
-      const policy = policyFor(program, programPlayback)
+      const session = storage.sessionConfigLatest(programId)
+      if (!session) return
+      const policy = policyFor(program, session, programPlayback)
 
       if (event.type === 'pool.low') {
         if (!policy.shouldAutoWrite(program)) return
@@ -1783,7 +1860,7 @@ if (!single) {
     storage.onConfigChange((config) => paintAllWindows(config.theme))
     updater = new UpdateService()
     updater.init()
-    registerIpc(storage, tts, pool, agent, persona, prompts, knowledge, bus, triggers, script, streamSvc, connector, draftUnits, programPlayback, exporter)
+    registerIpc(storage, tts, pool, agent, prompts, knowledge, bus, triggers, script, streamSvc, connector, draftUnits, programPlayback, exporter, projects)
     registerUpdateIpc(updater)
     registerMcpIpc(storage)
     createWindow(storage)

@@ -24,7 +24,6 @@ import type { StorageService } from './StorageService'
 import type { TtsService } from './TtsService'
 import type { SpeechPool } from './SpeechPool'
 import type { AgentService } from './AgentService'
-import type { PersonaService } from './PersonaService'
 import type { KnowledgeService } from './KnowledgeService'
 import type { MemoryService } from './MemoryService'
 import type { ScriptService } from './ScriptService'
@@ -63,7 +62,6 @@ export interface McpDeps {
   tts: TtsService
   pool: SpeechPool
   agent: AgentService
-  persona: PersonaService
   knowledge: KnowledgeService
   memory: MemoryService
   script: ScriptService
@@ -167,7 +165,6 @@ export class McpService {
       pool: d.pool,
       knowledge: d.knowledge,
       memory: d.memory,
-      persona: d.persona,
       script: d.script,
       storage: d.storage,
       draftUnits: d.draftUnits,

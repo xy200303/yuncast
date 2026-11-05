@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
 import { hotWords } from './statsWords'
 import { runMigrations } from '../db/migrator'
+import { openProjectDatabase } from '../db/projectSchema'
 import {
   DEFAULT_CONFIG,
   DEFAULT_DIRECTOR_CONFIG,
@@ -25,9 +26,9 @@ import {
   type ModelConnectionInput,
   type ModelConnectionSafe,
   type PartialDeep,
-  type Persona,
   type Program,
   type ProgramKnowledgeScope,
+  type ProjectRecord,
   type ProgramLanguage,
   type Material,
   type RenderedAudioRef,
@@ -132,6 +133,7 @@ function mergeDeep<T>(target: T, patch: PartialDeep<T>): T {
 interface PoolItemRow {
   id: unknown
   live_session_id: unknown
+  script_id: unknown
   text: unknown
   text_zh?: unknown
   turn_id: unknown
@@ -152,7 +154,6 @@ interface PoolItemRow {
   pitch: unknown
   emotion: unknown
   emotion_scale: unknown
-  language_type: unknown
   pause_after_ms: unknown
   stream: unknown
   origin_draft_unit_id: unknown
@@ -214,6 +215,7 @@ function rowToItem(row: PoolItemRow): PoolItem {
   return {
     id: str(row.id),
     sessionId: str(row.live_session_id),
+    scriptId: str(row.script_id),
     text: str(row.text),
     textZh: str(row.text_zh) || undefined,
     turnId: str(row.turn_id),
@@ -235,7 +237,6 @@ function rowToItem(row: PoolItemRow): PoolItem {
     pitch: num(row.pitch),
     emotion: str(row.emotion) || undefined,
     emotionScale: num(row.emotion_scale),
-    languageType: str(row.language_type) || undefined,
     pauseAfterMs: num(row.pause_after_ms),
     stream: num(row.stream) === 1,
     originDraftUnitId: str(row.origin_draft_unit_id) || undefined,
@@ -248,15 +249,45 @@ function rowToItem(row: PoolItemRow): PoolItem {
 
 const ACTIVE_STATUSES: PoolItemStatus[] = ['pending', 'synthesizing', 'ready', 'playing']
 
+// ---------- 本场配置行映射 ----------
+
+function rowToSessionConfig(row: Record<string, unknown>): SessionConfig {
+  const preset = str(row.preset)
+  const triggerIds = parseJson<unknown>(row.enabled_trigger_ids, [])
+  return {
+    id: str(row.id),
+    programId: str(row.script_id),
+    language: programLanguageOf(row.language),
+    contentType: (['solo', 'conversation', 'reading', 'roleplay'] as string[]).includes(str(row.content_type))
+      ? (str(row.content_type) as SessionConfig['contentType'])
+      : 'solo',
+    instruction: str(row.instruction),
+    preset: (['audiobook', 'commerce', 'chat', 'stage'].includes(preset) ? preset : '') as SessionConfig['preset'],
+    contentSource: str(row.content_source) === 'infinite' ? 'infinite' : 'script',
+    synthMode:
+      str(row.synth_mode) === 'pre' || str(row.synth_mode) === 'realtime'
+        ? (str(row.synth_mode) as SessionConfig['synthMode'])
+        : 'async',
+    endMode:
+      str(row.end_mode) === 'stop' || str(row.end_mode) === 'forever'
+        ? (str(row.end_mode) as SessionConfig['endMode'])
+        : 'loop',
+    audioPolicy: str(row.audio_policy) === 'rebuild' ? 'rebuild' : 'reuse',
+    allowLiveEvents: num(row.allow_live_events) !== 0,
+    enabledTriggerIds: Array.isArray(triggerIds) ? triggerIds.map(String).filter(Boolean) : [],
+    voiceId: str(row.voice_id) || parseJson<{ voiceId?: string }[]>(row.cast, [])[0]?.voiceId || '',
+    createdAt: num(row.created_at) ?? 0
+  }
+}
+
 // ---------- live_sessions / broadcast_events 行映射 ----------
 
 function rowToSession(row: Record<string, unknown>): BroadcastSession {
   return {
     id: str(row.id),
-    programId: str(row.program_id),
+    programId: str(row.script_id),
     programName: str(row.program_name),
     directorModelDesc: str(row.director_model_desc),
-    personas: parseJson(row.personas, []),
     startedAt: num(row.started_at) ?? 0,
     endedAt: num(row.ended_at) ?? 0,
     endReason: str(row.end_reason) as BroadcastSession['endReason'],
@@ -280,7 +311,18 @@ export class StorageService {
   private readonly configFile: string
   private config: AppConfig
   private configListeners = new Set<(config: AppConfig) => void>()
-  private db: DatabaseSync
+  /** 应用库（全局）：设置/凭据、音色库、供应商接入、用量、blob 存储、项目清单 */
+  private appDb: DatabaseSync
+  /** 当前项目库；没有打开项目时是一份内存空库，内容读写落在空表上（不报错、不串项目） */
+  private projectDb: DatabaseSync
+  /** 内容层统一走项目库 */
+  private get db(): DatabaseSync {
+    return this.projectDb
+  }
+  /** 全局层统一走应用库 */
+  private get adb(): DatabaseSync {
+    return this.appDb
+  }
   /** 命令行在应用没开时按这个路径把它拉起来（main 启动时 setLaunch 写入） */
   private launchApp = ''
   private launchArgs: string[] = []
@@ -315,11 +357,12 @@ export class StorageService {
     initSecretBox(dir)
     this.configFile = join(dir, 'config.json')
 
-    this.db = new DatabaseSync(StorageService.dbFile(dir))
-    this.db.exec('PRAGMA journal_mode = WAL')
-    this.db.exec('PRAGMA busy_timeout = 5000')
+    this.appDb = new DatabaseSync(StorageService.dbFile(dir))
+    this.appDb.exec('PRAGMA journal_mode = WAL')
+    this.appDb.exec('PRAGMA busy_timeout = 5000')
+    this.projectDb = StorageService.emptyContentDb()
     // 应用配置也存数据库（单行 JSON，敏感字段照样加密内联）：一份存储、一次初始化、不用等两个文件
-    this.db.exec(
+    this.adb.exec(
       'CREATE TABLE IF NOT EXISTS app_config (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)'
     )
     this.config = this.loadConfig()
@@ -337,96 +380,16 @@ export class StorageService {
    * 结构迁移 + 建表 + 启动清扫。**必须在 app.whenReady 里 await 过再往下装配服务**——
    * 本类其余方法都假定结构已经就位。
    *
-   * 顺序不能换：迁移跑在建表之前。老库要把旧表抬到最终结构（比如 live_plans → programs），
+   * 顺序不能换：迁移跑在建表之前。老库要把旧表抬到最终结构（比如 live_plans → scripts），
    * 建表只兜全新库；反过来先建表会让迁移撞上"表已存在"或漏掉该改的列。
    */
   async init(): Promise<void> {
-    const report = await runMigrations(this.db)
+    const report = await runMigrations(this.appDb)
     if (report.applied.length > 0) {
       console.log(`[YunCast] 结构迁移完成：${report.applied.length} 条，当前版本 v${report.version}`)
     }
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS pool_items (
-        id TEXT PRIMARY KEY,
-        live_session_id TEXT NOT NULL DEFAULT '',
-        text TEXT NOT NULL,
-        turn_id TEXT NOT NULL,
-        seq INTEGER NOT NULL DEFAULT 0,
-        voice_id TEXT NOT NULL DEFAULT '',
-        source_actor_id TEXT NOT NULL DEFAULT '',
-        source_kind TEXT NOT NULL DEFAULT 'manual',
-        lane TEXT NOT NULL DEFAULT 'normal',
-        dedupe_key TEXT,
-        expires_at INTEGER,
-        reply_to TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        audio_path TEXT,
-        error TEXT,
-        sort_order INTEGER,
-        created_at INTEGER NOT NULL,
-        played_at INTEGER
-      )
-    `)
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS pool_items_status ON pool_items(status, created_at)'
-    )
-    // 人设卡（M3 单主播，表结构为多主播预留）
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS personas (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        personality TEXT NOT NULL DEFAULT '',
-        catchphrases TEXT NOT NULL DEFAULT '',
-        background TEXT NOT NULL DEFAULT '',
-        taboos TEXT NOT NULL DEFAULT '',
-        voice_id TEXT NOT NULL DEFAULT '',
-        updated_at INTEGER NOT NULL
-      )
-    `)
-    // 知识库：条目（商品/书籍/话题/自定义；商品是价格护栏数据源）+ 资料文件
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS materials (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        price REAL NOT NULL DEFAULT 0,
-        selling_points TEXT NOT NULL DEFAULT '',
-        faq TEXT NOT NULL DEFAULT '',
-        content TEXT NOT NULL DEFAULT '',
-        kind TEXT NOT NULL DEFAULT 'product',
-        external_id TEXT NOT NULL DEFAULT '',
-        meta TEXT NOT NULL DEFAULT '{}',
-        created_at INTEGER NOT NULL
-      )
-    `)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS material_files (
-        id TEXT PRIMARY KEY,
-        material_id TEXT NOT NULL DEFAULT '',
-        type TEXT NOT NULL DEFAULT 'file',
-        url TEXT NOT NULL DEFAULT '',
-        name TEXT NOT NULL,
-        kind TEXT NOT NULL,
-        content TEXT NOT NULL DEFAULT '',
-        file_path TEXT NOT NULL DEFAULT '',
-        created_at INTEGER NOT NULL
-      )
-    `)
-    // 记忆：老粉画像 + 节目摘要
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS viewer_profiles (
-        name TEXT PRIMARY KEY,
-        interactions INTEGER NOT NULL DEFAULT 0,
-        asks TEXT NOT NULL DEFAULT '[]',
-        tags TEXT NOT NULL DEFAULT '[]',
-        notes TEXT NOT NULL DEFAULT '[]',
-        first_seen_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL
-      )
-    `)
-    // 摘要并入场次表（live_sessions.summary），episode_summaries 废弃
-    this.db.exec('DROP TABLE IF EXISTS episode_summaries')
-    // 触发器 + 事件日志（M5 事件驱动体系）
-    this.db.exec(`
+    // 应用库只留全局数据：项目内容在各自的 <目录>/project.db（见 ProjectService / projectSchema）
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS triggers (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -438,108 +401,28 @@ export class StorageService {
         created_at INTEGER NOT NULL
       )
     `)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS event_log (
-        id TEXT PRIMARY KEY,
-        type TEXT NOT NULL,
-        source TEXT NOT NULL,
-        payload TEXT NOT NULL DEFAULT '{}',
-        ts INTEGER NOT NULL
-      )
-    `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS event_log_ts ON event_log(ts)')
-    // v14 之后编排在 programs.plan：历史 scripts 表彻底退役（建表语句已删，这里兜底清理旧库）
-    this.db.exec('DROP TABLE IF EXISTS scripts')
-    // v3 起事件绑节目（评论/触发器等事件写入时带当前 activeProgramId）
-    this.ensureColumn('event_log', 'program_id', 'TEXT')
     // 提示词模板（导演手册）：**有行 = 用户手改过，没行 = 用代码里的默认**。
     // 所以这里不播种、也不存「是否默认」标记——恢复默认就是把行删掉。
-    this.db.exec(`
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS prompt_templates (
         key TEXT PRIMARY KEY,
         content TEXT NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
-    // 节目（一场直播/一期播客/一本有声书都是一个节目）
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS programs (
+    // 项目清单：内容在各自的 <目录>/project.db，这里只记在哪、叫什么、最近打开
+    this.adb.exec(`
+      CREATE TABLE IF NOT EXISTS projects (
         id TEXT PRIMARY KEY,
+        path TEXT NOT NULL,
         name TEXT NOT NULL,
-        theme TEXT NOT NULL DEFAULT '',
-        content_type TEXT NOT NULL DEFAULT 'solo',
-        broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
-        finish_mode TEXT NOT NULL DEFAULT 'loop',
-        allow_live_events INTEGER NOT NULL DEFAULT 1,
-        enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
-        persona_ids TEXT NOT NULL DEFAULT '[]',
-        script_id TEXT,
-        knowledge_scope TEXT NOT NULL DEFAULT '{}',
-        current_scene_idx INTEGER NOT NULL DEFAULT 0,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        last_opened_at INTEGER NOT NULL DEFAULT 0
       )
     `)
-    // 节目卡司（主播卡 id 数组；空 = 导演自选）：存量节目补列默认 []
-    this.ensureColumn('programs', 'persona_ids', "TEXT NOT NULL DEFAULT '[]'")
-    // 节目语言（多语言节目）：auto = 自动识别，其余为语言标识（Chinese/English/…）
-    this.ensureColumn('programs', 'language', "TEXT NOT NULL DEFAULT 'auto'")
-    // 节目级风格指令（≤100 字）：节目不再存声音配置，只存这一条演法底色
-    this.ensureColumn('programs', 'instruction', 'TEXT')
-    // 节目话术库（docs/07 §3 draft_units：底稿库，与运行态 pool_items 分工）
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS draft_units (
-        id TEXT PRIMARY KEY,
-        program_id TEXT NOT NULL,
-        scene_id TEXT NOT NULL DEFAULT '',
-        variant_idx INTEGER NOT NULL DEFAULT 0,
-        text TEXT NOT NULL,
-        voice_id TEXT NOT NULL DEFAULT '',
-        audio_path TEXT,
-        status TEXT NOT NULL DEFAULT 'pending',
-        error TEXT,
-        source TEXT NOT NULL DEFAULT 'initial',
-        sources TEXT NOT NULL DEFAULT '[]',
-        created_at INTEGER NOT NULL
-      )
-    `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS draft_units_program ON draft_units(program_id, scene_id, status)')
-    // 预合成时实际用的音色：装载进池时比对，音色改过就不复用旧音频
-    this.ensureColumn('draft_units', 'synth_voice', "TEXT NOT NULL DEFAULT ''")
-    // 话术取自哪条库底稿（复盘溯源，docs/07 §3）
-    this.ensureColumn('pool_items', 'origin_draft_unit_id', 'TEXT')
-    // 实时合成条目标记（M9）
-    this.ensureColumn('pool_items', 'stream', 'INTEGER NOT NULL DEFAULT 0')
-    // 语音稿（显示稿与念法分离）
-    this.ensureColumn('pool_items', 'speech_text', 'TEXT')
-    // 现场表演指示（情绪/语气）：模型支持语气指令时随这次合成发出去
-    this.ensureColumn('pool_items', 'delivery', 'TEXT')
-    // 演法硬参数：语速/音调倍率（agent 下沉，空 = 接入默认）
-    this.ensureColumn('pool_items', 'rate', 'REAL')
-    this.ensureColumn('pool_items', 'pitch', 'REAL')
-    // 情感参数（火山 emotion / emotion_scale）：按条指定情绪，空 = 接入默认
-    this.ensureColumn('pool_items', 'emotion', 'TEXT')
-    this.ensureColumn('pool_items', 'emotion_scale', 'REAL')
-    // 语种提示（百炼 qwen3-tts language_type）：空 = 接入默认/自动
-    this.ensureColumn('pool_items', 'language_type', 'TEXT')
-    // 播完这条后的停顿毫秒（播放时调度，不进合成；NULL = 连续播）
-    this.ensureColumn('pool_items', 'pause_after_ms', 'INTEGER')
-    // 桥段制：内容形态标签（BIT_TYPES；'' = 旧式单句）+ 表演指示（情绪/语速/停顿）
-    this.ensureColumn('draft_units', 'bit_type', "TEXT NOT NULL DEFAULT ''")
-    this.ensureColumn('draft_units', 'delivery', "TEXT NOT NULL DEFAULT ''")
-    // 这段归哪张主播卡（稳定寻址；空 = 合成时用卡司第一张）
-    this.ensureColumn('draft_units', 'persona_id', 'TEXT')
-    // 演法硬参数：语速/音调倍率（agent 下沉，空 = 接入默认）
-    this.ensureColumn('draft_units', 'rate', 'REAL')
-    this.ensureColumn('draft_units', 'pitch', 'REAL')
-    // 播完这段后的停顿毫秒（播放时调度，不进合成；NULL = 连续播）
-    this.ensureColumn('draft_units', 'pause_after_ms', 'INTEGER')
-    // 场景内创作顺序号：装池按它排（首轮严格按叙事顺序播放）
-    this.ensureColumn('draft_units', 'seq', 'INTEGER NOT NULL DEFAULT 0')
-    // 预制音频资产（RenderedAudioRef JSON，docs/10 §9.6）：预制节目的正式产物挂在段/章上
-    this.ensureColumn('draft_units', 'rendered', 'TEXT')
-    // 音色库（M8 声音克隆）
-    this.db.exec(`
+    this.adb.exec('CREATE INDEX IF NOT EXISTS projects_recent ON projects(last_opened_at DESC)')
+    // 音色库（M8 声音克隆）：全局资源，跨项目复用
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS voices (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -554,15 +437,10 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    // 供应商接入（设置 → 语言模型）：一条 = 一个服务商 + 一份凭据 + 一串可用模型
-    // 没有默认模型：用哪个模型由人设卡显式指定
     this.createModelConnectionsTable()
     this.ensureModelConnectionWindows()
-    // 人设卡的「大脑」：引用一条接入与其中一个模型，两列都要有值（开播时必须明确）
     // 语音合成的服务商接入（设置 → 语音合成）：一个条目 = 一个服务商账号 + 一份凭据 + 它的模型与参数
-    // 同一服务商允许多条（不同账号/参数）；实时开关按接入走。没有默认模型 / 默认音色 / 默认接入：
-    // 用哪条接入的哪个模型由音色决定（克隆音色带接入与模型，系统音色在目录里反查，手动音色写复合串）
-    this.db.exec(`
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS tts_connections (
         id TEXT PRIMARY KEY,
         provider_id TEXT NOT NULL,
@@ -575,12 +453,12 @@ export class StorageService {
       )
     `)
     this.ensureColumn('tts_connections', 'realtime', 'INTEGER NOT NULL DEFAULT 0')
-    // 用量采集（DB v3，数据页用量看板）：LLM 每次请求一条 usage_records，TTS 每次合成一条 tts_records
-    this.db.exec(`
+    // 用量采集（数据页用量看板）：LLM 每次请求一条 usage_records，TTS 每次合成一条 tts_records
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS usage_records (
         id TEXT PRIMARY KEY,
         ts INTEGER NOT NULL,
-        program_id TEXT,
+        script_id TEXT,
         persona_id TEXT NOT NULL DEFAULT '',
         connection_id TEXT NOT NULL DEFAULT '',
         model TEXT NOT NULL DEFAULT '',
@@ -593,13 +471,13 @@ export class StorageService {
         cost REAL
       )
     `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS usage_records_ts ON usage_records(ts)')
-    this.db.exec('CREATE INDEX IF NOT EXISTS usage_records_program ON usage_records(program_id, ts)')
-    this.db.exec(`
+    this.adb.exec('CREATE INDEX IF NOT EXISTS usage_records_ts ON usage_records(ts)')
+    this.adb.exec('CREATE INDEX IF NOT EXISTS usage_records_script ON usage_records(script_id, ts)')
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS tts_records (
         id TEXT PRIMARY KEY,
         ts INTEGER NOT NULL,
-        program_id TEXT,
+        script_id TEXT,
         connection_id TEXT NOT NULL DEFAULT '',
         model_id TEXT NOT NULL DEFAULT '',
         voice_id TEXT NOT NULL DEFAULT '',
@@ -607,10 +485,10 @@ export class StorageService {
         cost REAL
       )
     `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS tts_records_ts ON tts_records(ts)')
-    this.db.exec('CREATE INDEX IF NOT EXISTS tts_records_program ON tts_records(program_id, ts)')
-    // BlobStore 统一存储引擎（docs 设计：内容寻址 + 登记制引用 + 宽限期 GC；文本不进，只有二进制资产）
-    this.db.exec(`
+    this.adb.exec('CREATE INDEX IF NOT EXISTS tts_records_ts ON tts_records(ts)')
+    this.adb.exec('CREATE INDEX IF NOT EXISTS tts_records_script ON tts_records(script_id, ts)')
+    // BlobStore 统一存储引擎（内容寻址 + 登记制引用 + 宽限期 GC；文本不进，只有二进制资产）
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS blobs (
         hash TEXT PRIMARY KEY,
         ext TEXT NOT NULL DEFAULT '',
@@ -622,10 +500,9 @@ export class StorageService {
         last_seen_at INTEGER NOT NULL
       )
     `)
-    // tier：cache（默认，缓存语义）/ temp（到期即删）/ asset（GC 永不主动删）；老库补列
     this.ensureColumn('blobs', 'tier', "TEXT NOT NULL DEFAULT 'cache'")
     this.ensureColumn('blobs', 'expires_at', 'INTEGER')
-    this.db.exec(`
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS blob_refs (
         blob_hash TEXT NOT NULL,
         owner_kind TEXT NOT NULL,
@@ -634,164 +511,78 @@ export class StorageService {
         PRIMARY KEY (blob_hash, owner_kind, owner_id)
       )
     `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS blob_refs_hash ON blob_refs(blob_hash)')
-    // TTS 参数指纹 → blob：「同文同参免合成」的查找表，本身也是 blob 的缓存级别名（无 owner 引用时按容量 LRU 逐出）
-    this.db.exec(`
+    this.adb.exec('CREATE INDEX IF NOT EXISTS blob_refs_hash ON blob_refs(blob_hash)')
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS tts_cache (
         param_key TEXT PRIMARY KEY,
         blob_hash TEXT NOT NULL,
         created_at INTEGER NOT NULL
       )
     `)
-    // 克隆音色绑定目标模型与克隆时的接入（合成路由按它反推，定死不可跨模型）
     this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
-    // 音色级风格指令（合成优先级：agent 演法 > 节目级 > 音色级 > 接入×模型默认）
     this.ensureColumn('voices', 'instruction', "TEXT NOT NULL DEFAULT ''")
-    // 节目即会话：每个节目一份持久对话（pi 会话 entries + 可见时间线），切节目/重启后恢复
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS director_sessions (
-        program_id TEXT PRIMARY KEY,
-        purpose TEXT NOT NULL DEFAULT 'prep',
-        entries TEXT NOT NULL DEFAULT '[]',
-        updated_at INTEGER NOT NULL
-      )
-    `)
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS director_timeline (
-        program_id TEXT NOT NULL,
-        entry_id TEXT NOT NULL,
-        turn_id TEXT NOT NULL DEFAULT '',
-        ts INTEGER NOT NULL,
-        payload TEXT NOT NULL,
-        PRIMARY KEY (program_id, entry_id)
-      )
-    `)
-    // 全局单会话迁移（导演模型，docs/REDESIGN §3.2）：prep/live 双会话废弃，
-    // director_sessions 退化为 program_id='director' 的单条滚动存档；
-    // 老库把当前节目那份会话改 key 留下，其余节目的存档废弃
-    this.migrateToGlobalSession()
-    // 场记（场次记录）：一次开播一份留档。话术播出事实靠 pool_items.live_session_id 指向这里，
-    // 音频不复制（audio_path 是 blob 路径，blob_refs 保活）；评论/事件镜像进 broadcast_events。
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS live_sessions (
-        id TEXT PRIMARY KEY,
-        program_id TEXT NOT NULL,
-        program_name TEXT NOT NULL DEFAULT '',
-        started_at INTEGER NOT NULL,
-        ended_at INTEGER NOT NULL DEFAULT 0,
-        end_reason TEXT NOT NULL DEFAULT '',
-        stats TEXT NOT NULL DEFAULT '{}'
-      )
-    `)
-    // 下播复盘摘要与开播快照直接挂在场次上
-    this.ensureColumn('live_sessions', 'summary', "TEXT NOT NULL DEFAULT ''")
-    this.ensureColumn('live_sessions', 'director_model_desc', "TEXT NOT NULL DEFAULT ''")
-    this.ensureColumn('live_sessions', 'personas', "TEXT NOT NULL DEFAULT '[]'")
-    this.db.exec(
-      'CREATE INDEX IF NOT EXISTS live_sessions_program ON live_sessions(program_id, started_at)'
-    )
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS broadcast_events (
-        id TEXT PRIMARY KEY,
-        live_session_id TEXT NOT NULL,
-        ts INTEGER NOT NULL,
-        kind TEXT NOT NULL,
-        payload TEXT NOT NULL DEFAULT '{}'
-      )
-    `)
-    this.db.exec('CREATE INDEX IF NOT EXISTS broadcast_events_session ON broadcast_events(live_session_id, ts)')
-    // 启动清扫：上次退出遗留的 rendered synthesizing 重置为 failed（docs/10 §15.14）
-    this.sweepInterruptedRendered()
     // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
     this.migrateLegacySecrets()
-    // 品牌改名后目录从 AgentAnchor 搬到 YunCast：库里存量绝对路径（音频缓存/预制音频/音色样本/知识库文件）跟着改写
-    this.rewriteLegacyDataPaths()
   }
 
-  /** 一次性路径迁移：把库里以旧品牌目录开头的绝对路径改写到当前 userData（文件本身由 index.ts 的目录搬迁保证已就位） */
-  private rewriteLegacyDataPaths(): void {
-    const dir = app.getPath('userData')
-    const legacyDir = join(app.getPath('appData'), 'AgentAnchor')
-    if (legacyDir === dir) return
-    const targets: [string, string][] = [
-      ['pool_items', 'audio_path'],
-      ['draft_units', 'audio_path'],
-      ['material_files', 'file_path'],
-      ['voices', 'sample_path']
-    ]
-    let total = 0
-    for (const [table, column] of targets) {
-      const { changes } = this.db
-        .prepare(`UPDATE ${table} SET ${column} = ? || substr(${column}, ?) WHERE instr(${column}, ?) = 1`)
-        .run(dir, legacyDir.length + 1, legacyDir)
-      total += Number(changes)
-    }
-    if (total > 0) console.log(`[YunCast] 存量音频/文件路径迁移：改写 ${total} 行（${legacyDir} → ${dir}）`)
+  /** 挂上当前项目库：之后所有内容读写都落在它上面 */
+  attachProject(db: DatabaseSync): void {
+    this.projectDb = db
   }
+
+  /** 关掉项目：内容层退回一份内存空库，应用库和全局数据不受影响 */
+  detachProject(): void {
+    if (this.projectDb === this.appDb) return
+    this.projectDb = StorageService.emptyContentDb()
+  }
+
+  /** 没有项目时的内容层：一份建好全部业务表的内存库，读写安全落地、跨项目不串 */
+  private static emptyContentDb(): DatabaseSync {
+    return openProjectDatabase(':memory:')
+  }
+
 
   // ---------- 节目会话持久化（全局单会话：key 固定 'director'，单条滚动存档） ----------
 
   /** 全局唯一导演会话的存档 key（director_sessions 退化而来的单条记录） */
   static readonly DIRECTOR_SESSION_KEY = 'director'
 
-  /** 老库一次性迁移：当前节目那份会话改 key 成 'director'，其余节目存档废弃；已是新结构就跳过 */
-  private migrateToGlobalSession(): void {
-    const existing = this.db
-      .prepare(`SELECT 1 FROM director_sessions WHERE program_id = '${StorageService.DIRECTOR_SESSION_KEY}' LIMIT 1`)
-      .get()
-    if (existing) return
-    const activeId = this.config.live.activeProgramId
-    const row = activeId
-      ? (this.db
-          .prepare('SELECT purpose, entries, updated_at FROM director_sessions WHERE program_id = ?')
-          .get(activeId) as { purpose: string; entries: string; updated_at: number } | undefined)
-      : undefined
-    this.db
-      .prepare(`DELETE FROM director_sessions WHERE program_id <> '${StorageService.DIRECTOR_SESSION_KEY}'`)
-      .run()
-    if (row) {
-      this.db
-        .prepare('INSERT INTO director_sessions (program_id, purpose, entries, updated_at) VALUES (?, ?, ?, ?)')
-        .run(StorageService.DIRECTOR_SESSION_KEY, row.purpose, row.entries, row.updated_at)
-      console.log('[YunCast] 会话存档迁移：当前节目的会话已并入全局导演会话')
-    }
-  }
 
   /** 保存某节目的 pi 会话 entries（stop/切节目/每轮结束时覆盖写） */
   saveProgramSession(programId: string, purpose: string, entriesJson: string): void {
     this.db
       .prepare(
-        `INSERT INTO director_sessions (program_id, purpose, entries, updated_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT(program_id) DO UPDATE SET purpose = excluded.purpose, entries = excluded.entries, updated_at = excluded.updated_at`
+        `INSERT INTO director_sessions (script_id, purpose, entries, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT(script_id) DO UPDATE SET purpose = excluded.purpose, entries = excluded.entries, updated_at = excluded.updated_at`
       )
       .run(programId, purpose, entriesJson, Date.now())
   }
 
   loadProgramSession(programId: string): { purpose: string; entries: string } | null {
-    const row = this.db.prepare('SELECT purpose, entries FROM director_sessions WHERE program_id = ?').get(programId) as
+    const row = this.db.prepare('SELECT purpose, entries FROM director_sessions WHERE script_id = ?').get(programId) as
       | { purpose: string; entries: string }
       | undefined
     return row ?? null
   }
 
   deleteProgramSession(programId: string): void {
-    this.db.prepare('DELETE FROM director_sessions WHERE program_id = ?').run(programId)
-    this.db.prepare('DELETE FROM director_timeline WHERE program_id = ?').run(programId)
+    this.db.prepare('DELETE FROM director_sessions WHERE script_id = ?').run(programId)
+    this.db.prepare('DELETE FROM director_timeline WHERE script_id = ?').run(programId)
   }
 
   /** 时间线条目落库（按 entry_id upsert：流式快照/工具状态更新都收敛到同一行），每节目修剪到最近 500 条 */
   timelineAppend(programId: string, entryId: string, turnId: string, ts: number, payload: string): void {
     this.db
       .prepare(
-        `INSERT INTO director_timeline (program_id, entry_id, turn_id, ts, payload) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(program_id, entry_id) DO UPDATE SET payload = excluded.payload`
+        `INSERT INTO director_timeline (script_id, entry_id, turn_id, ts, payload) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(script_id, entry_id) DO UPDATE SET payload = excluded.payload`
       )
       .run(programId, entryId, turnId, ts, payload)
     this.db
       .prepare(
-        `DELETE FROM director_timeline WHERE program_id = ? AND entry_id NOT IN (
-           SELECT entry_id FROM director_timeline WHERE program_id = ? ORDER BY ts DESC LIMIT 500
+        `DELETE FROM director_timeline WHERE script_id = ? AND entry_id NOT IN (
+           SELECT entry_id FROM director_timeline WHERE script_id = ? ORDER BY ts DESC LIMIT 500
          )`
       )
       .run(programId, programId)
@@ -802,7 +593,7 @@ export class StorageService {
     const rows = this.db
       .prepare(
         `SELECT turn_id, payload FROM (
-           SELECT turn_id, payload, ts FROM director_timeline WHERE program_id = ? ORDER BY ts DESC LIMIT ?
+           SELECT turn_id, payload, ts FROM director_timeline WHERE script_id = ? ORDER BY ts DESC LIMIT ?
          ) ORDER BY ts ASC`
       )
       .all(programId, limit) as { turn_id: string; payload: string }[]
@@ -810,53 +601,122 @@ export class StorageService {
   }
 
   timelineClear(programId: string): void {
-    this.db.prepare('DELETE FROM director_timeline WHERE program_id = ?').run(programId)
+    this.db.prepare('DELETE FROM director_timeline WHERE script_id = ?').run(programId)
   }
 
   // ---------- 本场配置（docs/12） ----------
 
   sessionConfigSave(config: SessionConfig): void {
+    // 一个项目只有一份本场配置：重复保存就地覆盖（id 保持第一次那行，历史行不再累积）
     this.db
       .prepare(
-        `INSERT INTO session_configs (id, program_id, language, preset, synth_mode, end_mode, audio_policy, persona_voices, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO session_configs (id, script_id, language, content_type, instruction, preset, content_source,
+                                      synth_mode, end_mode, audio_policy, allow_live_events, enabled_trigger_ids, voice_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(script_id) DO UPDATE SET
+           language = excluded.language,
+           content_type = excluded.content_type,
+           instruction = excluded.instruction,
+           preset = excluded.preset,
+           content_source = excluded.content_source,
+           synth_mode = excluded.synth_mode,
+           end_mode = excluded.end_mode,
+           audio_policy = excluded.audio_policy,
+           allow_live_events = excluded.allow_live_events,
+           enabled_trigger_ids = excluded.enabled_trigger_ids,
+           voice_id = excluded.voice_id,
+           created_at = excluded.created_at`
       )
       .run(
         config.id,
         config.programId,
         config.language,
+        config.contentType,
+        config.instruction.trim(),
         config.preset,
+        config.contentSource,
         config.synthMode,
         config.endMode,
         config.audioPolicy,
-        JSON.stringify(config.personaVoices),
+        config.allowLiveEvents ? 1 : 0,
+        JSON.stringify(config.enabledTriggerIds),
+        config.voiceId ?? '',
         config.createdAt
       )
   }
 
-  /** 最近一次本场配置（开播弹窗预填用） */
+  /**
+   * 确保这个剧本有一条本场配置（互动开关随时可改，不等开播）：
+   * 没有就建一条空卡司的默认记录；开播时仍要重新过开播配置。
+   */
+  sessionConfigEnsure(programId: string): SessionConfig | null {
+    const latest = this.sessionConfigLatest(programId)
+    if (latest) return latest
+    const program = this.programList().find((item) => item.id === programId)
+    if (!program) return null
+    const config: SessionConfig = {
+      id: `session-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+      programId,
+      language: 'Chinese',
+      contentType: 'solo',
+      instruction: '',
+      preset: '',
+      contentSource: 'script',
+      synthMode: 'async',
+      endMode: 'loop',
+      audioPolicy: 'reuse',
+      allowLiveEvents: true,
+      enabledTriggerIds: this.triggerList().filter((trigger) => trigger.enabled).map((trigger) => trigger.id),
+      voiceId: '',
+      createdAt: Date.now()
+    }
+    this.sessionConfigSave(config)
+    return config
+  }
+
+  /** 最近一次本场配置（开播弹窗预填、直播台顶栏、互动总闸都读它） */
   sessionConfigLatest(programId: string): SessionConfig | null {
     const row = this.db
-      .prepare('SELECT * FROM session_configs WHERE program_id = ? ORDER BY created_at DESC LIMIT 1')
+      .prepare('SELECT * FROM session_configs WHERE script_id = ? ORDER BY created_at DESC LIMIT 1')
       .get(programId) as Record<string, unknown> | undefined
-    if (!row) return null
-    return {
-      id: str(row.id),
-      programId: str(row.program_id),
-      language: (str(row.language) || 'auto') as SessionConfig['language'],
-      preset: str(row.preset),
-      synthMode: (str(row.synth_mode) || 'async') as SessionConfig['synthMode'],
-      endMode: (str(row.end_mode) || 'loop') as SessionConfig['endMode'],
-      audioPolicy: (str(row.audio_policy) || 'reuse') as SessionConfig['audioPolicy'],
-      personaVoices: parseJson(row.persona_voices, []),
-      createdAt: num(row.created_at) ?? 0
+    return row ? rowToSessionConfig(row) : null
+  }
+
+  /**
+   * 改最近一次本场配置的互动开关/触发器（直播中调自动响应，不新开一场）：
+   * 只允许这两项——人选、语言、播出开关属于开播那一下的确认，要改就重新做一次开播配置。
+   */
+  sessionConfigPatch(
+    programId: string,
+    patch: Pick<Partial<SessionConfig>, 'allowLiveEvents' | 'enabledTriggerIds'>
+  ): SessionConfig | null {
+    const latest = this.sessionConfigLatest(programId)
+    if (!latest) return null
+    if (patch.allowLiveEvents !== undefined) {
+      this.db
+        .prepare('UPDATE session_configs SET allow_live_events = ? WHERE id = ?')
+        .run(patch.allowLiveEvents ? 1 : 0, latest.id)
     }
+    if (patch.enabledTriggerIds !== undefined) {
+      this.db
+        .prepare('UPDATE session_configs SET enabled_trigger_ids = ? WHERE id = ?')
+        .run(JSON.stringify(patch.enabledTriggerIds), latest.id)
+    }
+    return this.sessionConfigLatest(programId)
+  }
+
+  /** 全部本场配置（新的在前；音色引用统计用） */
+  sessionConfigAll(): SessionConfig[] {
+    return this.db
+      .prepare('SELECT * FROM session_configs ORDER BY created_at DESC')
+      .all()
+      .map((row) => rowToSessionConfig(row as Record<string, unknown>))
   }
 
   // ---------- 音色库（M8） ----------
 
   listVoices(): VoiceRecord[] {
-    return this.db
+    return this.adb
       .prepare('SELECT * FROM voices ORDER BY created_at DESC')
       .all()
       .map((row) => {
@@ -882,9 +742,9 @@ export class StorageService {
 
   saveVoice(voice: VoiceRecord): void {
     const oldSamplePath = str(
-      (this.db.prepare('SELECT sample_path AS p FROM voices WHERE id = ?').get(voice.id) as Record<string, unknown> | undefined)?.p
+      (this.adb.prepare('SELECT sample_path AS p FROM voices WHERE id = ?').get(voice.id) as Record<string, unknown> | undefined)?.p
     )
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO voices (id, name, provider, voice_type, model, connection_id, instruction, sample_path, status, error, authorized, authorized_at, created_at, updated_at)
          VALUES (@id, @name, @provider, @voiceType, @model, @connectionId, @instruction, @samplePath, @status, @error, @authorized, @authorizedAt, @createdAt, @updatedAt)
@@ -905,9 +765,9 @@ export class StorageService {
 
   deleteVoice(id: string): void {
     const oldSamplePath = str(
-      (this.db.prepare('SELECT sample_path AS p FROM voices WHERE id = ?').get(id) as Record<string, unknown> | undefined)?.p
+      (this.adb.prepare('SELECT sample_path AS p FROM voices WHERE id = ?').get(id) as Record<string, unknown> | undefined)?.p
     )
-    this.db.prepare('DELETE FROM voices WHERE id = ?').run(id)
+    this.adb.prepare('DELETE FROM voices WHERE id = ?').run(id)
     if (oldSamplePath) this.onAudioPathChange?.('voice', id, oldSamplePath, null)
   }
 
@@ -915,14 +775,14 @@ export class StorageService {
 
   /** 读出全部接入（密钥字段已解密），按创建顺序 */
   connectionList(): ModelConnection[] {
-    return this.db
+    return this.adb
       .prepare('SELECT * FROM llm_connections ORDER BY created_at ASC')
       .all()
       .map((row) => this.toModelConnection(row as Record<string, unknown>))
   }
 
   connectionGet(id: string): ModelConnection | null {
-    const row = this.db.prepare('SELECT * FROM llm_connections WHERE id = ?').get(id)
+    const row = this.adb.prepare('SELECT * FROM llm_connections WHERE id = ?').get(id)
     return row ? this.toModelConnection(row as Record<string, unknown>) : null
   }
 
@@ -985,7 +845,7 @@ export class StorageService {
       if (clean.input !== undefined || clean.output !== undefined) modelPrices[id2] = clean
     }
 
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO llm_connections (id, name, provider_id, params, models, model_windows, model_thinking, model_params, model_prices, created_at, updated_at)
          VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @modelParams, @modelPrices, @createdAt, @updatedAt)
@@ -1011,7 +871,7 @@ export class StorageService {
   }
 
   connectionDelete(id: string): void {
-    this.db.prepare('DELETE FROM llm_connections WHERE id = ?').run(id)
+    this.adb.prepare('DELETE FROM llm_connections WHERE id = ?').run(id)
   }
 
   /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
@@ -1098,14 +958,14 @@ export class StorageService {
 
   /** 读出全部接入（密钥字段已解密），按创建顺序 */
   ttsConnectionList(): TtsConnection[] {
-    return this.db
+    return this.adb
       .prepare('SELECT * FROM tts_connections ORDER BY created_at ASC')
       .all()
       .map((row) => this.toTtsConnection(row as Record<string, unknown>))
   }
 
   ttsConnectionGet(id: string): TtsConnection | null {
-    const row = this.db.prepare('SELECT * FROM tts_connections WHERE id = ?').get(id)
+    const row = this.adb.prepare('SELECT * FROM tts_connections WHERE id = ?').get(id)
     return row ? this.toTtsConnection(row as Record<string, unknown>) : null
   }
 
@@ -1138,7 +998,7 @@ export class StorageService {
       seen.add(modelId)
       models.push({ id: modelId, params: model.params ?? {} })
     }
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO tts_connections (id, provider_id, name, params, models, realtime, created_at, updated_at)
          VALUES (@id, @providerId, @name, @params, @models, @realtime, @createdAt, @updatedAt)
@@ -1162,7 +1022,7 @@ export class StorageService {
 
   /** 删除接入（音色路由按接入 id 找接入：删掉的接入下的克隆音色会指过来报错，界面会提示补回） */
   ttsConnectionDelete(id: string): void {
-    this.db.prepare('DELETE FROM tts_connections WHERE id = ?').run(id)
+    this.adb.prepare('DELETE FROM tts_connections WHERE id = ?').run(id)
   }
 
   /** 给渲染层的列表：密钥值置空，只留 hasSecret / ready 两个判断 */
@@ -1292,11 +1152,11 @@ export class StorageService {
     for (const table of ['llm_connections', 'tts_connections']) {
       let rows: { id: unknown; provider_id: unknown; params: unknown }[]
       try {
-        rows = this.db.prepare(`SELECT id, provider_id, params FROM ${table}`).all() as typeof rows
+        rows = this.adb.prepare(`SELECT id, provider_id, params FROM ${table}`).all() as typeof rows
       } catch {
         continue // 表还没建（全新库）就跳过
       }
-      const update = this.db.prepare(`UPDATE ${table} SET params = ? WHERE id = ?`)
+      const update = this.adb.prepare(`UPDATE ${table} SET params = ? WHERE id = ?`)
       let migrated = 0
       let unmigratable = 0
       for (const row of rows) {
@@ -1327,52 +1187,9 @@ export class StorageService {
     }
   }
 
-  /**
-   * 启动清扫（docs/10 §15.14，每次启动都跑）：上次退出遗留的 rendered.status='synthesizing'
-   * 一律重置为 'failed'（error='应用重启中断'），完成产物保留，用户手动继续合成。
-   * draft_units.rendered 列与 scripts.scenes[].rendered 都要扫。
-   */
-  private sweepInterruptedRendered(): void {
-    try {
-      const rows = this.db
-        .prepare(`SELECT id, rendered FROM draft_units WHERE rendered LIKE '%"synthesizing"%'`)
-        .all() as { id: unknown; rendered: unknown }[]
-      const update = this.db.prepare('UPDATE draft_units SET rendered = ? WHERE id = ?')
-      for (const row of rows) {
-        const rendered = parseJson<RenderedAudioRef | null>(row.rendered, null)
-        if (!rendered || rendered.status !== 'synthesizing') continue
-        update.run(JSON.stringify({ ...rendered, status: 'failed', error: '应用重启中断' }), str(row.id))
-      }
-      if (rows.length > 0) console.log(`[存储] 清扫中断的预制合成：draft_units ${rows.length} 条重置为失败`)
-    } catch {
-      // rendered 列还没建（首次启动走到这之前 ensureColumn 已跑，这里只是兜底）
-    }
-    try {
-      const rows = this.db
-        .prepare(`SELECT id, plan FROM programs WHERE plan LIKE '%"synthesizing"%'`)
-        .all() as { id: unknown; plan: unknown }[]
-      const update = this.db.prepare('UPDATE programs SET plan = ? WHERE id = ?')
-      let swept = 0
-      for (const row of rows) {
-        const plan = parseJson<{ scenes: ScriptScene[] }>(row.plan, { scenes: [] })
-        const scenes = plan.scenes
-        let dirty = false
-        for (const scene of scenes) {
-          if (scene.rendered?.status !== 'synthesizing') continue
-          scene.rendered = { ...scene.rendered, status: 'failed', error: '应用重启中断' }
-          dirty = true
-          swept++
-        }
-        if (dirty) update.run(JSON.stringify(scenes), str(row.id))
-      }
-      if (swept > 0) console.log(`[存储] 清扫中断的预制合成：剧本场景 ${swept} 条重置为失败`)
-    } catch {
-      // 表还没建就跳过
-    }
-  }
 
   private createModelConnectionsTable(): void {
-    this.db.exec(`
+    this.adb.exec(`
       CREATE TABLE IF NOT EXISTS llm_connections (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -1388,38 +1205,38 @@ export class StorageService {
 
   /** 模型级上下文窗口列（model_windows）与思考强度列（model_thinking）：老库补列，幂等 */
   private ensureModelConnectionWindows(): void {
-    const columns = this.db
+    const columns = this.adb
       .prepare('PRAGMA table_info(llm_connections)')
       .all()
       .map((row) => str((row as Record<string, unknown>).name))
     if (!columns.includes('model_windows')) {
-      this.db.exec("ALTER TABLE llm_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
+      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
     }
     if (!columns.includes('model_thinking')) {
-      this.db.exec("ALTER TABLE llm_connections ADD COLUMN model_thinking TEXT NOT NULL DEFAULT '{}'")
+      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_thinking TEXT NOT NULL DEFAULT '{}'")
     }
     // 模型级高级参数列（model_params，JSON：模型 id → { vision/temperature/maxTokens }）
     if (!columns.includes('model_params')) {
-      this.db.exec("ALTER TABLE llm_connections ADD COLUMN model_params TEXT NOT NULL DEFAULT '{}'")
+      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_params TEXT NOT NULL DEFAULT '{}'")
     }
     // 模型级单价列（model_prices，JSON：模型 id → { input/output }，元/百万 tokens）
     if (!columns.includes('model_prices')) {
-      this.db.exec("ALTER TABLE llm_connections ADD COLUMN model_prices TEXT NOT NULL DEFAULT '{}'")
+      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_prices TEXT NOT NULL DEFAULT '{}'")
     }
   }
 
   /** 兼容老库的加列 */
   private ensureColumn(table: string, column: string, definition: string): void {
-    const rows = this.db.prepare(`PRAGMA table_info(${table})`).all()
+    const rows = this.adb.prepare(`PRAGMA table_info(${table})`).all()
     if (rows.some((row) => (row as Record<string, unknown>).name === column)) return
-    this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+    this.adb.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
   // ---------- 应用配置 ----------
 
   private loadConfig(): AppConfig {
     try {
-      const row = this.db.prepare('SELECT data FROM app_config WHERE id = 1').get() as
+      const row = this.adb.prepare('SELECT data FROM app_config WHERE id = 1').get() as
         | { data?: unknown }
         | undefined
       if (row && typeof row.data === 'string') {
@@ -1515,7 +1332,7 @@ export class StorageService {
           setPath(clone, key, { __enc: seal(value) })
         }
       }
-      this.db
+      this.adb
         .prepare('INSERT INTO app_config (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data')
         .run(JSON.stringify(clone))
     } catch (error) {
@@ -1589,14 +1406,15 @@ export class StorageService {
     this.db
       .prepare(
         `INSERT INTO pool_items
-         (id, live_session_id, text, turn_id, seq, voice_id, source_actor_id, source_kind, lane,
-          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, rate, pitch, emotion, emotion_scale, language_type, pause_after_ms, stream,
+         (id, live_session_id, script_id, text, turn_id, seq, voice_id, source_actor_id, source_kind, lane,
+          dedupe_key, expires_at, reply_to, status, audio_path, speech_text, delivery, rate, pitch, emotion, emotion_scale, pause_after_ms, stream,
           origin_draft_unit_id, error, sort_order, created_at, played_at, text_zh)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         item.id,
         item.sessionId,
+        item.scriptId,
         item.text,
         item.turnId,
         item.seq,
@@ -1615,7 +1433,6 @@ export class StorageService {
         item.pitch ?? null,
         item.emotion ?? null,
         item.emotionScale ?? null,
-        item.languageType ?? null,
         item.pauseAfterMs ?? null,
         item.stream ? 1 : 0,
         item.originDraftUnitId ?? null,
@@ -1640,10 +1457,10 @@ export class StorageService {
     if (patch.voiceId !== undefined) columns.voice_id = patch.voiceId
     if (patch.pauseAfterMs !== undefined) columns.pause_after_ms = patch.pauseAfterMs ?? null
     if (patch.stream !== undefined) columns.stream = patch.stream ? 1 : 0
+    if (patch.lane !== undefined) columns.lane = patch.lane
     if (patch.speechText !== undefined) columns.speech_text = patch.speechText ?? null
     if (patch.emotion !== undefined) columns.emotion = patch.emotion || null
     if (patch.emotionScale !== undefined) columns.emotion_scale = patch.emotionScale ?? null
-    if (patch.languageType !== undefined) columns.language_type = patch.languageType || null
     const keys = Object.keys(columns)
     if (keys.length === 0) return
     // audio_path 变化要先取旧值（BlobStore 引用登记需要新旧两个路径）
@@ -1665,14 +1482,17 @@ export class StorageService {
     return row ? rowToItem(row as unknown as PoolItemRow) : null
   }
 
-  /** 未播完的条目（pending/synthesizing/ready/playing），排序由 SpeechPool 负责 */
-  poolItemActive(): PoolItem[] {
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM pool_items WHERE status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`
-      )
-      .all(...ACTIVE_STATUSES)
-    return rows.map((row) => rowToItem(row as unknown as PoolItemRow))
+  /** 未播完的条目（pending/synthesizing/ready/playing），排序由 SpeechPool 负责；传 scriptId 只取这本剧本的 */
+  poolItemActive(scriptId?: string): PoolItem[] {
+    const sql = scriptId
+      ? `SELECT * FROM pool_items WHERE script_id = ? AND status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`
+      : `SELECT * FROM pool_items WHERE status IN (${ACTIVE_STATUSES.map(() => '?').join(',')})`
+    const rows = (
+      scriptId
+        ? this.db.prepare(sql).all(scriptId, ...ACTIVE_STATUSES)
+        : this.db.prepare(sql).all(...ACTIVE_STATUSES)
+    ) as unknown[]
+    return rows.map((row) => rowToItem(row as PoolItemRow))
   }
 
   /** 某时间点之后进入终态失败的条目 */
@@ -1692,7 +1512,7 @@ export class StorageService {
     const sql = programId
       ? `SELECT p.* FROM pool_items p
            JOIN live_sessions s ON s.id = p.live_session_id
-          WHERE p.status IN ('done', 'interrupted') AND s.program_id = ?
+          WHERE p.status IN ('done', 'interrupted') AND s.script_id = ?
           ORDER BY p.played_at DESC LIMIT ?`
       : "SELECT * FROM pool_items WHERE status IN ('done', 'interrupted') ORDER BY played_at DESC LIMIT ?"
     const rows = (programId ? this.db.prepare(sql).all(programId, n) : this.db.prepare(sql).all(n)) as unknown[]
@@ -1784,7 +1604,7 @@ export class StorageService {
   sessionInsert(session: BroadcastSession): void {
     this.db
       .prepare(
-        `INSERT INTO live_sessions (id, program_id, program_name, director_model_desc, personas, started_at, ended_at, end_reason, stats, summary)
+        `INSERT INTO live_sessions (id, script_id, program_name, director_model_desc, started_at, ended_at, end_reason, stats, summary)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
@@ -1792,7 +1612,6 @@ export class StorageService {
         session.programId,
         session.programName,
         session.directorModelDesc,
-        JSON.stringify(session.personas),
         session.startedAt,
         session.endedAt,
         session.endReason,
@@ -1837,7 +1656,7 @@ export class StorageService {
   /** 场次列表：可按节目筛选，新场在前 */
   sessionList(programId?: string): BroadcastSession[] {
     const rows = programId
-      ? this.db.prepare('SELECT * FROM live_sessions WHERE program_id = ? ORDER BY started_at DESC').all(programId)
+      ? this.db.prepare('SELECT * FROM live_sessions WHERE script_id = ? ORDER BY started_at DESC').all(programId)
       : this.db.prepare('SELECT * FROM live_sessions ORDER BY started_at DESC').all()
     return (rows as Record<string, unknown>[]).map(rowToSession)
   }
@@ -1881,13 +1700,17 @@ export class StorageService {
       .run(event.id, event.sessionId, event.ts, event.kind, JSON.stringify(event.payload))
   }
 
-  /** 开场时把池里存货（未播完的活跃条目）改挂到新场次：播出事实跟着实际播出的那场走 */
-  poolItemRestampActive(sessionId: string): void {
+  /**
+   * 开场时把**本剧本**的池里存货改挂到新场次：播出事实跟着实际播出的那场走。
+   * 必须带 scriptId：以前不带，上一本剧本的存货会被算进这一场（串台）。
+   */
+  poolItemRestampActive(sessionId: string, scriptId: string): void {
     this.db
       .prepare(
-        `UPDATE pool_items SET live_session_id = ? WHERE status IN ('pending', 'synthesizing', 'ready', 'playing')`
+        `UPDATE pool_items SET live_session_id = ?
+          WHERE script_id = ? AND status IN ('pending', 'synthesizing', 'ready', 'playing')`
       )
-      .run(sessionId)
+      .run(sessionId, scriptId)
   }
 
   /** 删场次：连带删它的播出条目（逐条解 blob 引用）与事件镜像，最后删场次行 */
@@ -1921,14 +1744,14 @@ export class StorageService {
       args.to = query.to
     }
     if (query.programId) {
-      conds.push('program_id = @pid')
+      conds.push('script_id = @pid')
       args.pid = query.programId
     }
     const where = conds.length > 0 ? `WHERE ${conds.join(' AND ')}` : ''
     const sessionIds = `SELECT id FROM live_sessions ${where}`
     const sessions = this.db
       .prepare(
-        `SELECT id, program_id, program_name, personas, started_at, ended_at FROM live_sessions ${where} ORDER BY started_at`
+        `SELECT id, script_id, program_name, started_at, ended_at FROM live_sessions ${where} ORDER BY started_at`
       )
       .all(args) as Record<string, unknown>[]
     const comments = this.db
@@ -1939,7 +1762,7 @@ export class StorageService {
         `SELECT text FROM pool_items WHERE status IN ('done', 'interrupted') AND live_session_id IN (${sessionIds})`
       )
       .all(args) as Record<string, unknown>[]
-    // 合成量走 tts_records（合成事实表；它与场次的口径不同——按自己的 ts/program_id 筛）
+    // 合成量走 tts_records（合成事实表；它与场次的口径不同——按自己的 ts/script_id 筛）
     const ttsConds: string[] = []
     const ttsArgs: Record<string, string | number> = {}
     if (query.from && query.from > 0) {
@@ -1951,12 +1774,12 @@ export class StorageService {
       ttsArgs.to = query.to
     }
     if (query.programId) {
-      ttsConds.push('program_id = @pid')
+      ttsConds.push('script_id = @pid')
       ttsArgs.pid = query.programId
     }
     const ttsChars = num(
       (
-        this.db
+        this.adb
           .prepare(`SELECT COALESCE(SUM(chars), 0) AS n FROM tts_records ${ttsConds.length > 0 ? `WHERE ${ttsConds.join(' AND ')}` : ''}`)
           .get(ttsArgs) as Record<string, unknown>
       )?.n
@@ -1987,7 +1810,7 @@ export class StorageService {
       entry.minutes += sessionMinutes(row)
       sessByDay.set(key, entry)
     }
-    const programOf = new Map(sessions.map((row) => [str(row.id), str(row.program_id)]))
+    const programOf = new Map(sessions.map((row) => [str(row.id), str(row.script_id)]))
     const commentsByProgram = new Map<string, number>()
     for (const row of comments) {
       const key = dayKey(num(row.ts) ?? 0)
@@ -2003,7 +1826,7 @@ export class StorageService {
     // 节目排行（场次数 / 总时长 / 场均评论），按场次数排
     const programAgg = new Map<string, { programId: string; programName: string; sessions: number; minutes: number }>()
     for (const row of sessions) {
-      const pid = str(row.program_id)
+      const pid = str(row.script_id)
       const entry = programAgg.get(pid) ?? { programId: pid, programName: str(row.program_name) || '未命名节目', sessions: 0, minutes: 0 }
       entry.sessions += 1
       entry.minutes += sessionMinutes(row)
@@ -2017,24 +1840,7 @@ export class StorageService {
       }))
       .sort((a, b) => b.sessions - a.sessions)
 
-    // 主播排行：主播 = 场次快照里的 personaName（一场多卡各记一场）
-    const personaAgg = new Map<string, { personaName: string; sessions: number; minutes: number }>()
-    for (const row of sessions) {
-      const sessionPersonas = parseJson<{ personaName?: string }[]>(row.personas, [])
-      const seen = new Set<string>()
-      for (const member of sessionPersonas) {
-        const name = str(member.personaName)
-        if (!name || seen.has(name)) continue
-        seen.add(name)
-        const entry = personaAgg.get(name) ?? { personaName: name, sessions: 0, minutes: 0 }
-        entry.sessions += 1
-        entry.minutes += sessionMinutes(row)
-        personaAgg.set(name, entry)
-      }
-    }
-    const byCast = [...personaAgg.values()]
-      .map((entry) => ({ ...entry, minutes: Math.round(entry.minutes) }))
-      .sort((a, b) => b.sessions - a.sessions)
+    const byCast: { personaName: string; sessions: number; minutes: number }[] = []
 
     return {
       totals: {
@@ -2110,7 +1916,7 @@ export class StorageService {
     const now = Date.now()
     const tier = blob.tier ?? 'cache'
     const expiresAt = tier === 'temp' ? (blob.expiresAt ?? null) : null
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO blobs (hash, ext, bytes, mime, tier, expires_at, created_at, last_seen_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -2130,7 +1936,7 @@ export class StorageService {
   blobGet(
     hash: string
   ): { hash: string; ext: string; bytes: number; mime: string; tier: string; expiresAt: number | null; lastSeenAt: number } | null {
-    const row = this.db.prepare('SELECT * FROM blobs WHERE hash = ?').get(hash) as Record<string, unknown> | undefined
+    const row = this.adb.prepare('SELECT * FROM blobs WHERE hash = ?').get(hash) as Record<string, unknown> | undefined
     if (!row) return null
     return {
       hash: str(row.hash),
@@ -2144,20 +1950,20 @@ export class StorageService {
   }
 
   blobTouch(hash: string): void {
-    this.db.prepare('UPDATE blobs SET last_seen_at = ? WHERE hash = ?').run(Date.now(), hash)
+    this.adb.prepare('UPDATE blobs SET last_seen_at = ? WHERE hash = ?').run(Date.now(), hash)
   }
 
   /** 删 blob 行并连带清掉它的别名与引用登记（sweep 各路径共用，这里兜底防悬挂） */
   blobDelete(hash: string): void {
-    this.db.prepare('DELETE FROM blobs WHERE hash = ?').run(hash)
-    this.db.prepare('DELETE FROM tts_cache WHERE blob_hash = ?').run(hash)
-    this.db.prepare('DELETE FROM blob_refs WHERE blob_hash = ?').run(hash)
+    this.adb.prepare('DELETE FROM blobs WHERE hash = ?').run(hash)
+    this.adb.prepare('DELETE FROM tts_cache WHERE blob_hash = ?').run(hash)
+    this.adb.prepare('DELETE FROM blob_refs WHERE blob_hash = ?').run(hash)
   }
 
   /** 已到期的 temp 级 blob（sweep 第一步：到期即删、不进容量统计）；仍被 owner 引用的不在此列——见 blobExpiredTempsReferenced */
   blobExpiredTemps(now: number): { hash: string; bytes: number }[] {
     return (
-      this.db
+      this.adb
         .prepare(
           `SELECT b.hash, b.bytes FROM blobs b
            WHERE b.tier = 'temp' AND b.expires_at IS NOT NULL AND b.expires_at < ?
@@ -2169,7 +1975,7 @@ export class StorageService {
 
   /** 已到期但仍被 owner 引用的 temp 级 blob：有人忘了 promote，sweep 跳过删除并按 owner 报警 */
   blobExpiredTempsReferenced(now: number): { hash: string; owners: { kind: string; id: string }[] }[] {
-    const rows = this.db
+    const rows = this.adb
       .prepare(
         `SELECT b.hash, r.owner_kind, r.owner_id FROM blobs b
          JOIN blob_refs r ON r.blob_hash = b.hash
@@ -2187,7 +1993,7 @@ export class StorageService {
 
   /** 调整 blob 级别（temp 转正 asset/cache 时清掉到期时间） */
   blobSetTier(hash: string, tier: 'cache' | 'temp' | 'asset'): void {
-    this.db
+    this.adb
       .prepare('UPDATE blobs SET tier = ?, expires_at = CASE WHEN ? = \'temp\' THEN expires_at ELSE NULL END WHERE hash = ?')
       .run(tier, tier, hash)
     this.blobTouch(hash)
@@ -2195,13 +2001,13 @@ export class StorageService {
 
   /** 真孤儿判定：没有任何 owner 引用、也没有缓存别名（asset 级显式删除前的安全检查） */
   blobIsOrphan(hash: string): boolean {
-    const refs = this.db.prepare('SELECT COUNT(*) AS c FROM blob_refs WHERE blob_hash = ?').get(hash) as Record<string, unknown>
-    const aliases = this.db.prepare('SELECT COUNT(*) AS c FROM tts_cache WHERE blob_hash = ?').get(hash) as Record<string, unknown>
+    const refs = this.adb.prepare('SELECT COUNT(*) AS c FROM blob_refs WHERE blob_hash = ?').get(hash) as Record<string, unknown>
+    const aliases = this.adb.prepare('SELECT COUNT(*) AS c FROM tts_cache WHERE blob_hash = ?').get(hash) as Record<string, unknown>
     return (num(refs.c) ?? 0) === 0 && (num(aliases.c) ?? 0) === 0
   }
 
   blobAddRef(hash: string, ownerKind: string, ownerId: string): void {
-    this.db
+    this.adb
       .prepare(
         'INSERT INTO blob_refs (blob_hash, owner_kind, owner_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING'
       )
@@ -2210,7 +2016,7 @@ export class StorageService {
   }
 
   blobReleaseRef(hash: string, ownerKind: string, ownerId: string): void {
-    this.db
+    this.adb
       .prepare('DELETE FROM blob_refs WHERE blob_hash = ? AND owner_kind = ? AND owner_id = ?')
       .run(hash, ownerKind, ownerId)
   }
@@ -2218,7 +2024,7 @@ export class StorageService {
   /** GC 候选：没有任何 owner 引用、且不在 tts_cache 别名里、且过了宽限期的 blob */
   blobGcCandidates(graceBefore: number): { hash: string; bytes: number }[] {
     return (
-      this.db
+      this.adb
         .prepare(
           `SELECT b.hash, b.bytes FROM blobs b
            WHERE b.tier = 'cache' AND b.last_seen_at < ?
@@ -2232,7 +2038,7 @@ export class StorageService {
   /** 缓存级 blob（有 tts_cache 别名但没有 owner 引用）：按 last_seen 升序，供容量 LRU 逐出 */
   blobCacheEntries(): { hash: string; bytes: number; lastSeenAt: number }[] {
     return (
-      this.db
+      this.adb
         .prepare(
           `SELECT b.hash, b.bytes, b.last_seen_at FROM blobs b
            WHERE b.tier = 'cache'
@@ -2245,14 +2051,14 @@ export class StorageService {
   }
 
   ttsCacheGet(paramKey: string): string | null {
-    const row = this.db.prepare('SELECT blob_hash AS h FROM tts_cache WHERE param_key = ?').get(paramKey) as
+    const row = this.adb.prepare('SELECT blob_hash AS h FROM tts_cache WHERE param_key = ?').get(paramKey) as
       | Record<string, unknown>
       | undefined
     return row ? str(row.h) : null
   }
 
   ttsCachePut(paramKey: string, blobHash: string): void {
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO tts_cache (param_key, blob_hash, created_at) VALUES (?, ?, ?)
          ON CONFLICT(param_key) DO UPDATE SET blob_hash = excluded.blob_hash`
@@ -2262,7 +2068,7 @@ export class StorageService {
   }
 
   ttsCacheDelete(paramKey: string): void {
-    this.db.prepare('DELETE FROM tts_cache WHERE param_key = ?').run(paramKey)
+    this.adb.prepare('DELETE FROM tts_cache WHERE param_key = ?').run(paramKey)
   }
 
   /** 所有音频路径及其 owner（BlobStore 老缓存迁移用）：pool_items + draft_units 两表并集 */
@@ -2295,58 +2101,8 @@ export class StorageService {
           : ownerKind === 'voice'
             ? { table: 'voices', column: 'sample_path' }
             : { table: 'material_files', column: 'file_path' }
-    this.db.prepare(`UPDATE ${target.table} SET ${target.column} = ? WHERE id = ?`).run(newPath, ownerId)
-  }
-
-  // ---------- 人设卡 ----------
-
-  /** 取第一张人设卡（M3 单主播）；库里没有返回 null，由 PersonaService 负责播种 */
-  /** 人设卡列表（主播团），按创建顺序 */
-  personaList(): Persona[] {
-    return this.db
-      .prepare('SELECT * FROM personas ORDER BY rowid ASC')
-      .all()
-      .map((row) => this.toPersona(row as Record<string, unknown>))
-  }
-
-  personaDelete(id: string): void {
-    this.db.prepare('DELETE FROM personas WHERE id = ?').run(id)
-  }
-
-  private toPersona(r: Record<string, unknown>): Persona {
-    return {
-      id: str(r.id),
-      name: str(r.name),
-      personality: str(r.personality),
-      catchphrases: str(r.catchphrases),
-      background: str(r.background),
-      taboos: str(r.taboos),
-      voiceId: str(r.voice_id),
-      updatedAt: num(r.updated_at) ?? 0
-    }
-  }
-
-  personaSave(persona: Persona): void {
-    this.db
-      .prepare(
-        `INSERT INTO personas (id, name, personality, catchphrases, background, taboos, voice_id, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, personality = excluded.personality,
-           catchphrases = excluded.catchphrases, background = excluded.background,
-           taboos = excluded.taboos, voice_id = excluded.voice_id,
-           updated_at = excluded.updated_at`
-      )
-      .run(
-        persona.id,
-        persona.name,
-        persona.personality,
-        persona.catchphrases,
-        persona.background,
-        persona.taboos,
-        persona.voiceId,
-        persona.updatedAt
-      )
+    const db = ownerKind === 'voice' ? this.adb : this.db
+    db.prepare(`UPDATE ${target.table} SET ${target.column} = ? WHERE id = ?`).run(newPath, ownerId)
   }
 
   // ---------- 知识库 ----------
@@ -2474,14 +2230,14 @@ export class StorageService {
   // ---------- 触发器 ----------
 
   triggerList(): Trigger[] {
-    return this.db
+    return this.adb
       .prepare('SELECT * FROM triggers ORDER BY created_at ASC')
       .all()
       .map((row) => rowToTrigger(row as Record<string, unknown>))
   }
 
   triggerSave(trigger: Trigger): void {
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO triggers (id, name, enabled, on_event, on_filter, target, throttle, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -2503,14 +2259,14 @@ export class StorageService {
   }
 
   triggerDelete(id: string): void {
-    this.db.prepare('DELETE FROM triggers WHERE id = ?').run(id)
+    this.adb.prepare('DELETE FROM triggers WHERE id = ?').run(id)
     this.onDataChanged?.('triggers')
   }
 
   // ---------- 提示词模板（导演手册） ----------
 
   promptTemplateGet(key: string): { content: string; updatedAt: number } | null {
-    const row = this.db
+    const row = this.adb
       .prepare('SELECT content, updated_at FROM prompt_templates WHERE key = ?')
       .get(key) as Record<string, unknown> | undefined
     if (!row) return null
@@ -2519,18 +2275,18 @@ export class StorageService {
 
   /** 全部模板行（只有用户手改过的 key 才有行；启动时清理死 key / 旧默认残留用） */
   promptTemplateRows(): { key: string; content: string }[] {
-    return (this.db.prepare('SELECT key, content FROM prompt_templates').all() as Record<string, unknown>[]).map(
+    return (this.adb.prepare('SELECT key, content FROM prompt_templates').all() as Record<string, unknown>[]).map(
       (row) => ({ key: str(row.key), content: str(row.content) })
     )
   }
 
   /** 删模板行：恢复默认就是删行（没行 = 用代码里的默认文本） */
   promptTemplateDelete(key: string): void {
-    this.db.prepare('DELETE FROM prompt_templates WHERE key = ?').run(key)
+    this.adb.prepare('DELETE FROM prompt_templates WHERE key = ?').run(key)
   }
 
   promptTemplateUpsert(key: string, content: string): void {
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO prompt_templates (key, content, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET content = excluded.content, updated_at = excluded.updated_at`
@@ -2544,7 +2300,7 @@ export class StorageService {
     // 事件绑节目：写入时取当前选中节目（评论/触发器事件都落在它名下）
     const programId = this.config.live.activeProgramId || null
     this.db
-      .prepare('INSERT INTO event_log (id, type, source, payload, ts, program_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .prepare('INSERT INTO event_log (id, type, source, payload, ts, script_id) VALUES (?, ?, ?, ?, ?, ?)')
       .run(event.id, event.type, event.source, JSON.stringify(event.payload), event.ts, programId)
     // 容量滚动清理：只留最近 5000 条
     this.db.exec(
@@ -2555,25 +2311,25 @@ export class StorageService {
   /** 最近的事件（按时间正序）：EventHub 启动回填用 */
   eventLogRecent(limit: number): LiveEvent[] {
     const rows = this.db
-      .prepare('SELECT id, type, source, payload, ts, program_id FROM event_log ORDER BY ts DESC LIMIT ?')
-      .all(limit) as { id: string; type: string; source: string; payload: string; ts: number; program_id: string | null }[]
+      .prepare('SELECT id, type, source, payload, ts, script_id FROM event_log ORDER BY ts DESC LIMIT ?')
+      .all(limit) as { id: string; type: string; source: string; payload: string; ts: number; script_id: string | null }[]
     return rows.reverse().map((row) => ({
       id: row.id,
       type: row.type,
       source: row.source as LiveEvent['source'],
       payload: JSON.parse(row.payload) as Record<string, unknown>,
       ts: row.ts,
-      programId: row.program_id ?? undefined
+      programId: row.script_id ?? undefined
     }))
   }
 
   // ---------- 用量采集（DB v3；cost 列已停用，恒 NULL） ----------
 
   usageInsert(record: UsageRecord): void {
-    this.db
+    this.adb
       .prepare(
         `INSERT INTO usage_records
-         (id, ts, program_id, persona_id, connection_id, model, kind, input_tokens, output_tokens, cache_read, cache_write, estimated, cost)
+         (id, ts, script_id, persona_id, connection_id, model, kind, input_tokens, output_tokens, cache_read, cache_write, estimated, cost)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
@@ -2594,9 +2350,9 @@ export class StorageService {
   }
 
   ttsInsert(record: TtsRecord): void {
-    this.db
+    this.adb
       .prepare(
-        `INSERT INTO tts_records (id, ts, program_id, connection_id, model_id, voice_id, chars, cost)
+        `INSERT INTO tts_records (id, ts, script_id, connection_id, model_id, voice_id, chars, cost)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
@@ -2616,23 +2372,23 @@ export class StorageService {
     const now = new Date()
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
     const trendStart = todayStart - 29 * 24 * 3600_000
-    const where = programId ? 'WHERE program_id = @pid' : ''
+    const where = programId ? 'WHERE script_id = @pid' : ''
     const args: Record<string, string | number> = programId ? { pid: programId } : {}
     const bucket = (table: 'usage_records' | 'tts_records', since?: number): UsageBucket => {
       const row = (
         table === 'usage_records'
-          ? this.db
+          ? this.adb
               .prepare(
                 `SELECT COALESCE(SUM(input_tokens), 0) AS li, COALESCE(SUM(output_tokens), 0) AS lo,
                         COALESCE(SUM(cache_read), 0) AS lcr
-                 FROM usage_records ${programId ? 'WHERE program_id = @pid' : ''}
+                 FROM usage_records ${programId ? 'WHERE script_id = @pid' : ''}
                  ${since !== undefined ? (programId ? 'AND' : 'WHERE') + ' ts >= @since' : ''}`
               )
               .get({ ...args, ...(since !== undefined ? { since } : {}) }) as Record<string, unknown>
-          : this.db
+          : this.adb
               .prepare(
                 `SELECT COALESCE(SUM(chars), 0) AS tc
-                 FROM tts_records ${programId ? 'WHERE program_id = @pid' : ''}
+                 FROM tts_records ${programId ? 'WHERE script_id = @pid' : ''}
                  ${since !== undefined ? (programId ? 'AND' : 'WHERE') + ' ts >= @since' : ''}`
               )
               .get({ ...args, ...(since !== undefined ? { since } : {}) }) as Record<string, unknown>
@@ -2657,14 +2413,14 @@ export class StorageService {
       llmCacheRead: a.llmCacheRead + b.llmCacheRead,
       ttsChars: a.ttsChars + b.ttsChars
     })
-    const llmTrend = this.db
+    const llmTrend = this.adb
       .prepare(
         `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day,
                 COALESCE(SUM(input_tokens + output_tokens), 0) AS tokens
          FROM usage_records ${where === '' ? 'WHERE' : where + ' AND'} ts >= @start GROUP BY day`
       )
       .all({ ...args, start: trendStart }) as { day: string; tokens: number }[]
-    const ttsTrend = this.db
+    const ttsTrend = this.adb
       .prepare(
         `SELECT date(ts / 1000, 'unixepoch', 'localtime') AS day, COALESCE(SUM(chars), 0) AS chars
          FROM tts_records ${where === '' ? 'WHERE' : where + ' AND'} ts >= @start GROUP BY day`
@@ -2684,13 +2440,13 @@ export class StorageService {
     const collect = (table: 'usage_records' | 'tts_records', key: 'llmTokens' | 'ttsChars') => {
       const rows =
         table === 'usage_records'
-          ? (this.db
+          ? (this.adb
               .prepare(
-                'SELECT program_id AS pid, COALESCE(SUM(input_tokens + output_tokens), 0) AS value FROM usage_records GROUP BY program_id'
+                'SELECT script_id AS pid, COALESCE(SUM(input_tokens + output_tokens), 0) AS value FROM usage_records GROUP BY script_id'
               )
               .all() as { pid: string | null; value: number }[])
-          : (this.db
-              .prepare('SELECT program_id AS pid, COALESCE(SUM(chars), 0) AS value FROM tts_records GROUP BY program_id')
+          : (this.adb
+              .prepare('SELECT script_id AS pid, COALESCE(SUM(chars), 0) AS value FROM tts_records GROUP BY script_id')
               .all() as { pid: string | null; value: number }[])
       for (const row of rows) {
         const entry = byProgramMap.get(row.pid) ?? { llmTokens: 0, ttsChars: 0 }
@@ -2720,15 +2476,15 @@ export class StorageService {
   usageRecent(limit = 100, programId?: string): UsageRecord[] {
     const rows = (
       programId
-        ? this.db
-            .prepare('SELECT * FROM usage_records WHERE program_id = ? ORDER BY ts DESC LIMIT ?')
+        ? this.adb
+            .prepare('SELECT * FROM usage_records WHERE script_id = ? ORDER BY ts DESC LIMIT ?')
             .all(programId, limit)
-        : this.db.prepare('SELECT * FROM usage_records ORDER BY ts DESC LIMIT ?').all(limit)
+        : this.adb.prepare('SELECT * FROM usage_records ORDER BY ts DESC LIMIT ?').all(limit)
     ) as Record<string, unknown>[]
     return rows.map((r) => ({
       id: str(r.id),
       ts: num(r.ts) ?? 0,
-      programId: r.program_id ? str(r.program_id) : null,
+      programId: r.script_id ? str(r.script_id) : null,
       personaId: str(r.persona_id),
       connectionId: str(r.connection_id),
       model: str(r.model),
@@ -2746,15 +2502,15 @@ export class StorageService {
   ttsRecent(limit = 100, programId?: string): TtsRecord[] {
     const rows = (
       programId
-        ? this.db
-            .prepare('SELECT * FROM tts_records WHERE program_id = ? ORDER BY ts DESC LIMIT ?')
+        ? this.adb
+            .prepare('SELECT * FROM tts_records WHERE script_id = ? ORDER BY ts DESC LIMIT ?')
             .all(programId, limit)
-        : this.db.prepare('SELECT * FROM tts_records ORDER BY ts DESC LIMIT ?').all(limit)
+        : this.adb.prepare('SELECT * FROM tts_records ORDER BY ts DESC LIMIT ?').all(limit)
     ) as Record<string, unknown>[]
     return rows.map((r) => ({
       id: str(r.id),
       ts: num(r.ts) ?? 0,
-      programId: r.program_id ? str(r.program_id) : null,
+      programId: r.script_id ? str(r.script_id) : null,
       connectionId: str(r.connection_id),
       modelId: str(r.model_id),
       voiceId: str(r.voice_id),
@@ -2774,7 +2530,7 @@ export class StorageService {
         .run(JSON.stringify({ ...rendered, audioPath: newPath }), ownerId)
       return
     }
-    for (const row of this.db.prepare('SELECT id, plan FROM programs').all() as Record<string, unknown>[]) {
+    for (const row of this.db.prepare('SELECT id, plan FROM scripts').all() as Record<string, unknown>[]) {
       const plan = parseJson<{ scenes: { id?: string; rendered?: RenderedAudioRef }[] }>(row.plan, { scenes: [] })
       const index = plan.scenes.findIndex((scene) => scene.id === ownerId)
       if (index < 0) continue
@@ -2782,45 +2538,67 @@ export class StorageService {
       if (!rendered) return
       const scenes = [...plan.scenes]
       scenes[index] = { ...scenes[index], rendered: { ...rendered, audioPath: newPath } }
-      this.db.prepare('UPDATE programs SET plan = ? WHERE id = ?').run(JSON.stringify({ scenes }), str(row.id))
+      this.db.prepare('UPDATE scripts SET plan = ? WHERE id = ?').run(JSON.stringify({ scenes }), str(row.id))
       return
     }
   }
 
-  // ---------- 节目 ----------
+  // ---------- 剧本资产 ----------
 
-  programList(): Program[] {
-    return this.db
-      .prepare('SELECT * FROM programs ORDER BY created_at ASC')
+  // ---------- 项目清单（应用库）----------
+
+  projectRows(): ProjectRecord[] {
+    return this.adb
+      .prepare('SELECT * FROM projects ORDER BY last_opened_at DESC, created_at DESC')
       .all()
       .map((row) => {
         const r = row as Record<string, unknown>
-        const contentType = str(r.content_type)
-        const broadcastMode = str(r.broadcast_mode)
-        const finishMode = str(r.finish_mode)
-        const triggerIds = parseJson<unknown>(r.enabled_trigger_ids, [])
-        const personaIds = parseJson<unknown>(r.persona_ids, [])
+        return {
+          id: str(r.id),
+          path: str(r.path),
+          name: str(r.name),
+          createdAt: num(r.created_at) ?? 0,
+          lastOpenedAt: num(r.last_opened_at) ?? 0
+        }
+      })
+  }
+
+  projectRowInsert(record: ProjectRecord): void {
+    this.adb
+      .prepare(
+        'INSERT OR REPLACE INTO projects (id, path, name, created_at, last_opened_at) VALUES (?, ?, ?, ?, ?)'
+      )
+      .run(record.id, record.path, record.name, record.createdAt, record.lastOpenedAt)
+    this.onDataChanged?.('scripts')
+  }
+
+  projectRowTouch(id: string): void {
+    this.adb.prepare('UPDATE projects SET last_opened_at = ? WHERE id = ?').run(Date.now(), id)
+    this.onDataChanged?.('scripts')
+  }
+
+  projectRowRemove(id: string): void {
+    this.adb.prepare('DELETE FROM projects WHERE id = ?').run(id)
+    this.onDataChanged?.('scripts')
+  }
+
+  /**
+   * 项目（内置兼容层：`Program` 这个名字暂时保留给上层服务用）。
+   * 一个项目库只有一行 project，所以这里永远返回 0 或 1 条。
+   */
+  programList(): Program[] {
+    return this.db
+      .prepare('SELECT * FROM project ORDER BY created_at ASC')
+      .all()
+      .map((row) => {
+        const r = row as Record<string, unknown>
         return {
           id: str(r.id),
           name: str(r.name),
           theme: str(r.theme),
-          contentType:
-            contentType === 'conversation' || contentType === 'reading' || contentType === 'roleplay'
-              ? contentType
-              : 'solo',
-          broadcastMode: broadcastMode === 'improvised' || broadcastMode === 'prepared' ? broadcastMode : 'rolling',
-          finishMode: finishMode === 'stop' ? 'stop' : 'loop',
-          allowLiveEvents: num(r.allow_live_events) !== 0,
-          enabledTriggerIds: Array.isArray(triggerIds) ? triggerIds.map(String).filter(Boolean) : [],
-          personaIds: Array.isArray(personaIds) ? personaIds.map(String).filter(Boolean) : [],
-          instruction: str(r.instruction) || undefined,
-          language: programLanguageOf(r.language),
-          plan: parseJson<{ scenes: ScriptScene[] }>(r.plan, { scenes: [] }),
-          knowledgeScope: {
-            ...DEFAULT_PROGRAM_KNOWLEDGE_SCOPE,
-            ...parseJson<Partial<ProgramKnowledgeScope>>(r.knowledge_scope, {})
-          },
-          currentSceneIdx: num(r.current_scene_idx) ?? 0,
+          plan: { scenes: parseJson<ScriptScene[]>(r.scenes, []) },
+          knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE,
+          currentSceneIdx: num(r.scene_idx) ?? 0,
           createdAt: num(r.created_at) ?? 0,
           updatedAt: num(r.updated_at) ?? 0
         }
@@ -2830,49 +2608,28 @@ export class StorageService {
   programSave(program: Program): void {
     this.db
       .prepare(
-        `INSERT INTO programs (id, name, theme, content_type, broadcast_mode, finish_mode, allow_live_events,
-                               enabled_trigger_ids, persona_ids, instruction, language, plan, knowledge_scope, current_scene_idx,
-                               created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO project (id, name, type, theme, scenes, scene_idx, created_at, updated_at)
+         VALUES (?, ?, 'authored', ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
-           name = excluded.name, theme = excluded.theme,
-           content_type = excluded.content_type, broadcast_mode = excluded.broadcast_mode,
-           finish_mode = excluded.finish_mode, allow_live_events = excluded.allow_live_events,
-           enabled_trigger_ids = excluded.enabled_trigger_ids, persona_ids = excluded.persona_ids,
-           instruction = excluded.instruction, language = excluded.language,
-           plan = excluded.plan, knowledge_scope = excluded.knowledge_scope,
+           name = excluded.name,
+           theme = excluded.theme,
+           scenes = excluded.scenes,
            updated_at = excluded.updated_at`
       )
       .run(
         program.id,
         program.name,
         program.theme,
-        program.contentType,
-        program.broadcastMode,
-        program.finishMode,
-        program.allowLiveEvents ? 1 : 0,
-        JSON.stringify(program.enabledTriggerIds),
-        JSON.stringify(program.personaIds),
-        program.instruction?.trim() || null,
-        program.language ?? 'auto',
-        JSON.stringify(program.plan),
-
-        JSON.stringify(program.knowledgeScope),
+        JSON.stringify(program.plan.scenes ?? []),
         program.currentSceneIdx,
         program.createdAt,
         program.updatedAt
       )
-    // 节目行变了就广播：agent/MCP/CLI 建的节目，界面要立刻看得到（之前漏了这条，录制时"建了节目但页面没刷新"）
-    this.onDataChanged?.('programs', program.id)
+    this.onDataChanged?.('scripts', program.id)
   }
 
-  programDelete(id: string): void {
-    this.db.prepare('DELETE FROM programs WHERE id = ?').run(id)
-    this.onDataChanged?.('programs', id)
-    // 走 draftUnitDeleteWhere 而不是裸 DELETE：BlobStore 引用要逐条解除
-    this.draftUnitDeleteWhere(id)
-    // 场记级联：节目的历史场次一起删（播出条目的 blob 引用在 sessionDelete 里逐条解除）
-    for (const session of this.sessionList(id)) this.sessionDelete(session.id)
+  programSetSceneIdx(id: string, idx: number): void {
+    this.db.prepare('UPDATE project SET scene_idx = ?, updated_at = ? WHERE id = ?').run(idx, Date.now(), id)
   }
 
   /** 场景推进进度落库（断播能续） */
@@ -2882,7 +2639,7 @@ export class StorageService {
       const rendered = parseJson<RenderedAudioRef | null>(row.rendered, null)
       if (rendered?.audioPath) out.push({ path: rendered.audioPath, ownerKind: 'draft_unit_rendered', ownerId: str(row.id) })
     }
-    for (const row of this.db.prepare('SELECT id, plan FROM programs').all() as Record<string, unknown>[]) {
+    for (const row of this.db.prepare('SELECT id, plan FROM scripts').all() as Record<string, unknown>[]) {
       const plan = parseJson<{ scenes: { id?: string; rendered?: RenderedAudioRef }[] }>(row.plan, { scenes: [] })
       for (const scene of plan.scenes) {
         if (scene.rendered?.audioPath && scene.id) {
@@ -2893,17 +2650,13 @@ export class StorageService {
     return out
   }
 
-  programSetSceneIdx(id: string, idx: number): void {
-    this.db.prepare('UPDATE programs SET current_scene_idx = ? WHERE id = ?').run(idx, id)
-  }
-
   // ---------- 话术库（draft_units） ----------
 
   draftUnitList(programId: string): DraftUnit[] {
     // 列表顺序 = 叙事顺序：场景段在前（按场景内创作序号 seq），全场通用沉底
     return this.db
       .prepare(
-        `SELECT * FROM draft_units WHERE program_id = ?
+        `SELECT * FROM draft_units WHERE script_id = ?
          ORDER BY CASE WHEN scene_id = '' THEN 1 ELSE 0 END, scene_id ASC, seq ASC, created_at ASC`
       )
       .all(programId)
@@ -2913,7 +2666,7 @@ export class StorageService {
   /** 场景内下一个创作序号（write_bits/手动新增都用它；老数据 seq=0 时从 max(created 序) 续） */
   draftUnitNextSeq(programId: string, sceneId: string): number {
     const row = this.db
-      .prepare('SELECT MAX(seq) AS m FROM draft_units WHERE program_id = ? AND scene_id = ?')
+      .prepare('SELECT MAX(seq) AS m FROM draft_units WHERE script_id = ? AND scene_id = ?')
       .get(programId, sceneId) as Record<string, unknown>
     return (num(row.m) ?? 0) + 1
   }
@@ -2926,14 +2679,14 @@ export class StorageService {
       ) || null)
     this.db
       .prepare(
-        `INSERT INTO draft_units (id, program_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, pause_after_ms, persona_id, voice_id, audio_path,
+        `INSERT INTO draft_units (id, script_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, pause_after_ms, voice_id, audio_path,
                                  status, error, source, sources, rendered, created_at, text_zh)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
            text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
            rate = excluded.rate, pitch = excluded.pitch, pause_after_ms = excluded.pause_after_ms,
-           persona_id = excluded.persona_id, voice_id = excluded.voice_id, audio_path = excluded.audio_path,
+           voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
            sources = excluded.sources, rendered = excluded.rendered, text_zh = excluded.text_zh`
       )
@@ -2949,7 +2702,6 @@ export class StorageService {
         u.rate ?? null,
         u.pitch ?? null,
         u.pauseAfterMs ?? null,
-        u.personaId ?? null,
         u.voiceId,
         u.audioPath ?? null,
         u.status,
@@ -2997,9 +2749,9 @@ export class StorageService {
   draftUnitDeleteWhere(programId: string, sceneId?: string): void {
     const doomed = (
       (sceneId === undefined
-        ? this.db.prepare('SELECT id, audio_path, rendered FROM draft_units WHERE program_id = ?').all(programId)
+        ? this.db.prepare('SELECT id, audio_path, rendered FROM draft_units WHERE script_id = ?').all(programId)
         : this.db
-            .prepare('SELECT id, audio_path, rendered FROM draft_units WHERE program_id = ? AND scene_id = ?')
+            .prepare('SELECT id, audio_path, rendered FROM draft_units WHERE script_id = ? AND scene_id = ?')
             .all(programId, sceneId)) as Record<string, unknown>[]
     ).map((row) => ({
       id: str(row.id),
@@ -3007,9 +2759,9 @@ export class StorageService {
       renderedPath: parseJson<RenderedAudioRef | null>(row.rendered, null)?.audioPath || null
     }))
     if (sceneId === undefined) {
-      this.db.prepare('DELETE FROM draft_units WHERE program_id = ?').run(programId)
+      this.db.prepare('DELETE FROM draft_units WHERE script_id = ?').run(programId)
     } else {
-      this.db.prepare('DELETE FROM draft_units WHERE program_id = ? AND scene_id = ?').run(programId, sceneId)
+      this.db.prepare('DELETE FROM draft_units WHERE script_id = ? AND scene_id = ?').run(programId, sceneId)
     }
     for (const row of doomed) {
       if (row.audioPath) this.onAudioPathChange?.('draft_unit', row.id, row.audioPath, null)
@@ -3051,14 +2803,15 @@ export class StorageService {
   }
 
   close(): void {
-    this.db.close()
+    this.projectDb.close()
+    this.appDb.close()
   }
 }
 
 function rowToDraftUnit(r: Record<string, unknown>): DraftUnit {
   return {
     id: str(r.id),
-    programId: str(r.program_id),
+    programId: str(r.script_id),
     sceneId: str(r.scene_id),
     variantIdx: num(r.variant_idx) ?? 0,
     seq: num(r.seq) ?? 0,
@@ -3068,7 +2821,6 @@ function rowToDraftUnit(r: Record<string, unknown>): DraftUnit {
     rate: num(r.rate),
     pitch: num(r.pitch),
     pauseAfterMs: num(r.pause_after_ms),
-    personaId: str(r.persona_id) || undefined,
     voiceId: str(r.voice_id),
     textZh: str(r.text_zh) || undefined,
     audioPath: str(r.audio_path) || null,

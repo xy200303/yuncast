@@ -51,10 +51,10 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
   db.exec('PRAGMA journal_mode = WAL')
   const report = await runMigrations(db)
   const total = report.applied.length
-  check('执行了全部迁移', total >= 13, report.applied.join(','))
-  check('结构版本最新', report.version === 16 && userVersion(db) === 16, `user_version=${userVersion(db)}`)
+  check('执行了全部迁移', total >= 17, report.applied.join(','))
+  check('结构版本最新', report.version === 22 && userVersion(db) === 22, `user_version=${userVersion(db)}`)
   check('执行记录落表', migrationRows(db) === total, `_migrations=${migrationRows(db)}`)
-  check('迁移器不建业务表（由 init 建表兜底）', !tableExists(db, 'programs'))
+  check('迁移器不建业务表（由 init 建表兜底）', !tableExists(db, 'programs') && !tableExists(db, 'scripts'))
   const again = await runMigrations(db)
   check('再跑一次是空转', again.applied.length === 0, again.applied.join(','))
   db.close()
@@ -70,20 +70,84 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
     const copyPath = join(work, 'live-copy.db')
     copyFileSync(live, copyPath)
     const before = new DatabaseSync(copyPath)
-    const beforePrograms = before.prepare('SELECT COUNT(*) c FROM programs').get().c
-    const beforeVersion = userVersion(before)
     before.close()
     const db = new DatabaseSync(copyPath)
     const report = await runMigrations(db)
-    // 现役库可能正好停在上一版：允许补跑 0016 这一条，但不能再跑历史迁移
-    check('只补跑比现役库新的迁移', report.applied.every((name) => name === '0016-live-session-config'), report.applied.join(','))
-    check('版本抬到最新', userVersion(db) === 16, `user_version=${userVersion(db)}`)
-    check('业务数据没动', db.prepare('SELECT COUNT(*) c FROM programs').get().c === beforePrograms)
-    check('基线登记完整', migrationRows(db) >= 13, `_migrations=${migrationRows(db)}`)
+    // 现役库可能正好停在上一版：允许补跑 0016/0017/0018，但不能再跑历史迁移
+    check(
+      '只补跑比现役库新的迁移',
+      report.applied.every(
+        (name) =>
+          name === '0016-live-session-config' ||
+          name === '0017-decouple-assets' ||
+          name === '0018-rename-programs-to-scripts' ||
+          name === '0019-script-structure-only' ||
+          name === '0020-pool-item-script' ||
+          name === '0021-projects' ||
+          name === '0022-content-out-of-app-db'
+      ),
+      report.applied.join(',')
+    )
+    check('版本抬到最新', userVersion(db) === 22, `user_version=${userVersion(db)}`)
+    check(
+      '内容表已从应用库移除',
+      ['scripts', 'draft_units', 'pool_items', 'personas', 'materials'].every((t) => !tableExists(db, t))
+    )
+    check('基线登记完整', migrationRows(db) >= 17, `_migrations=${migrationRows(db)}`)
     const againReport = await runMigrations(db)
     check('再跑一次是空转', againReport.applied.length === 0, againReport.applied.join(','))
     db.close()
   }
+}
+
+// ---------- B2 v16 现役结构：资产解耦的破坏性重建 ----------
+{
+  console.log('\n[B2] v16 结构（旧卡司列 + persona_voices）升 v17')
+  const db = new DatabaseSync(join(work, 'legacy-v16.db'))
+  db.exec(`
+    PRAGMA user_version = 16;
+    CREATE TABLE personas (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, personality TEXT NOT NULL DEFAULT '',
+      catchphrases TEXT NOT NULL DEFAULT '', background TEXT NOT NULL DEFAULT '',
+      taboos TEXT NOT NULL DEFAULT '', voice_id TEXT NOT NULL DEFAULT '',
+      default_voice_id TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE programs (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, theme TEXT NOT NULL DEFAULT '',
+      content_type TEXT NOT NULL DEFAULT 'solo', broadcast_mode TEXT NOT NULL DEFAULT 'rolling',
+      finish_mode TEXT NOT NULL DEFAULT 'loop', allow_live_events INTEGER NOT NULL DEFAULT 1,
+      enabled_trigger_ids TEXT NOT NULL DEFAULT '[]', persona_ids TEXT NOT NULL DEFAULT '[]',
+      instruction TEXT, language TEXT NOT NULL DEFAULT 'auto', plan TEXT NOT NULL DEFAULT '{"scenes":[]}',
+      knowledge_scope TEXT NOT NULL DEFAULT '{}', current_scene_idx INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE session_configs (
+      id TEXT PRIMARY KEY, program_id TEXT NOT NULL, language TEXT NOT NULL DEFAULT 'auto',
+      preset TEXT NOT NULL DEFAULT '', synth_mode TEXT NOT NULL DEFAULT 'async',
+      end_mode TEXT NOT NULL DEFAULT 'loop', audio_policy TEXT NOT NULL DEFAULT 'reuse',
+      persona_voices TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE pool_items (id TEXT PRIMARY KEY, text TEXT, language_type TEXT);
+    INSERT INTO personas (id, name, voice_id, default_voice_id) VALUES
+      ('persona-1', '小满', 'v1', 'v1'), ('persona-2', '阿哲', 'v2', 'v2');
+    INSERT INTO programs (id, name, persona_ids, finish_mode) VALUES ('prog-1', '保温杯', '["persona-1","persona-2"]', 'stop');
+    INSERT INTO session_configs (id, program_id, persona_voices, end_mode, created_at)
+      VALUES ('sc-1', 'prog-1', '[{"personaId":"persona-1","voiceId":"v1"},{"personaId":"persona-2","voiceId":"v2"}]', 'loop', 1);
+    INSERT INTO pool_items (id, text, language_type) VALUES ('p1', '旧条目', 'Chinese');
+  `)
+  const report = await runMigrations(db)
+  check(
+    '只跑 0017 + 0018 + 0019',
+    report.applied.join(',') ===
+      '0017-decouple-assets,0018-rename-programs-to-scripts,0019-script-structure-only,0020-pool-item-script,0021-projects,0022-content-out-of-app-db',
+    report.applied.join(',')
+  )
+  check(
+    '内容表已从应用库移除',
+    ['personas', 'scripts', 'session_configs', 'pool_items'].every((t) => !tableExists(db, t))
+  )
+  check('项目清单留在应用库', tableExists(db, 'projects'))
+  db.close()
 }
 
 // ---------- C 远古库（v11：素材还叫 products、编排还在 scripts 表） ----------
@@ -113,18 +177,19 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
     INSERT INTO products (id, name) VALUES ('prod-1', '保温杯');
   `)
   const report = await runMigrations(db)
-  check('基线后只补跑新迁移', report.applied.join(',') === '0012-materials,0014-plan-into-programs,0015-material-content,0016-live-session-config', report.applied.join(','))
-  check('结构版本抬到最新', userVersion(db) === 16)
-  check('底稿加上了中文对照列', columns(db, 'draft_units').has('text_zh'))
-  check('建立本场配置表', tableExists(db, 'session_configs'))
-  check('products → materials', tableExists(db, 'materials') && !tableExists(db, 'products'))
-  check('改名后仍补上正文列（顺序敏感）', columns(db, 'materials').has('content'))
-  check('附件表挂到条目上', columns(db, 'material_files').has('material_id') && columns(db, 'material_files').has('url'))
-  check('编排进节目、scripts 退场', columns(db, 'programs').has('plan') && !tableExists(db, 'scripts'))
-  const program = db.prepare('SELECT plan, instruction, knowledge_scope FROM programs').get()
-  check('场景搬进 programs.plan', JSON.parse(program.plan).scenes.length === 1)
-  check('节目风格指令原样保留', program.instruction === '压低声音', String(program.instruction))
-  check('素材范围只留 materials', JSON.parse(program.knowledge_scope).materials === '*', program.knowledge_scope)
+  check(
+    '基线后只补跑新迁移',
+    report.applied.join(',') ===
+      '0012-materials,0014-plan-into-programs,0015-material-content,0016-live-session-config,0017-decouple-assets,0018-rename-programs-to-scripts,0019-script-structure-only,0020-pool-item-script,0021-projects,0022-content-out-of-app-db',
+    report.applied.join(',')
+  )
+  check('结构版本抬到最新', userVersion(db) === 22)
+  check(
+    '内容表已从应用库移除',
+    ['scripts', 'session_configs', 'draft_units', 'materials', 'material_files'].every((t) => !tableExists(db, t))
+  )
+  check('旧表也清掉了', !tableExists(db, 'programs') && !tableExists(db, 'products'))
+  check('项目清单留在应用库', tableExists(db, 'projects'))
   db.close()
 }
 
@@ -160,19 +225,18 @@ const migrationRows = (db) => db.prepare('SELECT COUNT(*) c FROM _migrations').g
   check(
     '从 v4 一路抬到最新',
     report.applied.join(',') ===
-      '0004-rename-tables,0005-persona-columns,0006-drop-model-profile,0007-program-instruction,0010-naming,0011-persona-id-prefix,0012-materials,0014-plan-into-programs,0015-material-content,0016-live-session-config',
+      '0004-rename-tables,0005-persona-columns,0006-drop-model-profile,0007-program-instruction,0010-naming,0011-persona-id-prefix,0012-materials,0014-plan-into-programs,0015-material-content,0016-live-session-config,0017-decouple-assets,0018-rename-programs-to-scripts,0019-script-structure-only,0020-pool-item-script,0021-projects,0022-content-out-of-app-db',
     report.applied.join(',')
   )
-  check('表名改造：agents/utterances/speech_items', ['personas', 'draft_units', 'pool_items'].every((t) => tableExists(db, t)) && !tableExists(db, 'agents'))
-  check('死列 model_profile_id 已删', !columns(db, 'personas').has('model_profile_id'))
-  const program = db.prepare('SELECT instruction, persona_ids FROM programs').get()
-  check('audio_config 里的 instruction 摘到顶层', program.instruction === '语速放慢一点', String(program.instruction))
-  check('audio_config 列已删', !columns(db, 'programs').has('audio_config'))
-  check('presenter_ids → persona_ids', columns(db, 'programs').has('persona_ids'))
-  check('卡司里的旧 id 前缀改写', program.persona_ids.includes('persona-1'), program.persona_ids)
-  check('场次卡司列 cast → personas', columns(db, 'live_sessions').has('personas') && !columns(db, 'live_sessions').has('cast'))
-  check('结构版本抬到最新', userVersion(db) === 16)
-  check('主播的默认音色建议已回填', columns(db, 'personas').has('default_voice_id'))
+  check(
+    '内容表已从应用库移除',
+    ['personas', 'draft_units', 'pool_items', 'scripts', 'live_sessions', 'director_timeline'].every(
+      (t) => !tableExists(db, t)
+    )
+  )
+  check('远古表也一并清掉', !tableExists(db, 'agents') && !tableExists(db, 'utterances'))
+  check('结构版本抬到最新', userVersion(db) === 22)
+  check('项目清单留在应用库', tableExists(db, 'projects'))
   db.close()
 }
 

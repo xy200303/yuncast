@@ -6,12 +6,9 @@ import {
   Brain,
   CheckCircle2,
   Check,
-  ChevronDown,
   ChevronRight,
   Copy,
   Loader2,
-  Megaphone,
-  MoreHorizontal,
   Paperclip,
   Play,
   RefreshCw,
@@ -20,18 +17,11 @@ import {
   Square,
   Wrench,
   X,
-  XCircle,
-  Zap
+  XCircle
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
 import { Label } from '@/components/ui/label'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
@@ -40,62 +30,67 @@ import { cn } from '@/lib/utils'
 import { Markdown } from '@/components/Markdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { AutoResponsePicker } from './live/AutoResponsePicker'
-import { RecordMenuSub } from './live/RecordControl'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { ProgramGateDialog } from '@/components/ProgramGateDialog'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { VoicePickDialog } from '@/components/VoicePickDialog'
 import { useAppStore, type NavPage, type SettingsPaneId } from '../stores/useAppStore'
 import { useLiveStore } from '../stores/useLiveStore'
+import { useDataRefresh } from '../lib/useDataRefresh'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import { AssetStaleBanner } from './AssetStaleBanner'
 import { CommentList } from './live/CommentList'
 import { EventStream } from './live/EventStream'
-import { ImprovisedPanel } from './live/ImprovisedPanel'
 import { NowPlayingBar } from './live/NowPlayingBar'
-import { PreparedPanel } from './live/PreparedPanel'
 import { CardStream } from './live/CardStream'
-import { WaterBar } from './live/WaterBar'
 import { LaunchConfigDialog, type LaunchConfig } from './live/LaunchConfigDialog'
+import { WorkbenchTopBar, type DrawerTab } from './live/WorkbenchTopBar'
+import { WorkbenchDrawer } from './live/WorkbenchDrawer'
+import { CONTENT_TYPE_LABELS } from '../../../shared/types'
 import type {
-  Persona,
   ChatEntry,
   DirectorMessage,
   LiveComment,
   LiveInboxEvent,
   Program,
-  VoiceRecord,
   PreflightItem,
   ProduceVoiceOverride,
   ProgramGateResult,
   PoolItem,
+  SessionConfig,
+  Trigger
 } from '../../../shared/types'
 
-/** 预检「去修复」深链：按检查项 code 跳到对应设置栏目或页面（docs/REDESIGN 4.5） */
+/**
+ * 预检「去修复」深链：按检查项 code 跳到对应设置栏目。
+ * 主播卡/剧本都不再是资产：缺嗓子的修复口是项目的开播配置，缺编排的修复口是导演对话。
+ */
 const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page?: NavPage }> = {
   'director-brain': { label: '去配大脑', pane: 'director' },
-  'voice-missing': { label: '去选音色', page: 'personas' },
   'tts-broken': { label: '去检查合成', pane: 'tts' },
   'voice-test': { label: '去测发音', pane: 'tts' },
-  'script-missing': { label: '去写编排', page: 'programs' },
   connector: { label: '去连接', pane: 'comment' },
   stream: { label: '去推流设置', pane: 'stream' }
 }
 
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
-  const [leftTab, setLeftTab] = useState<'pool' | 'comments' | 'events'>('pool')
+  /** 主区标签：接下来（卡片流）/ 评论流 / 事件流——常驻可切换 */
+  const [mainTab, setMainTab] = useState<'pool' | 'comments' | 'events'>('pool')
+  /** 工作台抽屉：剧本大纲 / 章节 / 互动（docs/12 §7，平时不占版面） */
+  const [drawer, setDrawer] = useState<DrawerTab | null>(null)
+  const [manualOpen, setManualOpen] = useState(false)
   const [comments, setComments] = useState<LiveComment[]>([])
   /** 发给主播的直播间动态（事件流选项卡；主进程 250ms 节流推快照） */
   const [inboxEvents, setInboxEvents] = useState<LiveInboxEvent[]>([])
   /** 节目控制（选择/启动/暂停/结束 + 预检与门禁弹窗）：activeProgram 也由它给，只有一处真值 */
   const programControl = useProgramLauncher()
-  // 已播历史与底稿的加载放在页面级（WaterBar 常驻、卡片流只在滚动模式出现，
-  // 挂在卡片流里会导致预制模式永远 0 段历史）
+  // 已播历史与底稿的加载放在页面级（底栏水位/卡片流都要用，挂在卡片流里预制模式会拿不到历史）
   const loadHistory = useLiveStore((s) => s.loadHistory)
   const loadDrafts = useLiveStore((s) => s.loadDrafts)
   const agentLive = useAppStore((s) => s.agent.live === true)
+  const agentBusy = useAppStore((s) => s.agent.busy === true)
   const activeId = useAppStore((s) => s.config.live.activeProgramId)
   const poolSize = useAppStore((s) => s.pool.items.length)
   useEffect(() => {
@@ -104,65 +99,35 @@ export function LivePage() {
   useEffect(() => {
     void loadDrafts(agentLive ? '' : activeId)
   }, [agentLive, activeId, loadDrafts])
+  // 导演写稿是一段一段入库的：本剧本的底稿变了就重拉，卡片流不用手动刷新
+  useDataRefresh(['drafts'], (_scope, detail) => {
+    if (agentLive) return
+    if (detail && detail !== activeId) return
+    void loadDrafts(activeId)
+  })
 
-  /** 开播配置确认：语言/收尾写回节目，勾了"清空重合成"就先清音频，然后进原有预检流程 */
+  /** 开播配置确认：本场绑定落库（不写回节目/主播卡）；清空重合成先清音频，再进预检 */
   const applyLaunchConfig = async (config: LaunchConfig): Promise<void> => {
     const program = programControl.activeProgram
     if (!program) return
     programControl.setLaunchConfigOpen(false)
-    const patch = { language: config.language, finishMode: config.finishMode } as const
-    if (patch.language !== program.language || patch.finishMode !== program.finishMode) {
-      const saved = await window.api.program.save(
-        {
-          name: program.name,
-          theme: program.theme,
-          contentType: program.contentType,
-          broadcastMode: program.broadcastMode,
-          finishMode: patch.finishMode,
-          allowLiveEvents: program.allowLiveEvents,
-          enabledTriggerIds: program.enabledTriggerIds,
-          personaIds: program.personaIds,
-          instruction: program.instruction,
-          language: patch.language,
-          plan: program.plan,
-          knowledgeScope: program.knowledgeScope
-        },
-        program.id
-      )
-      if (!saved.ok) {
-        toast.error('保存配置失败', { description: saved.error })
-        return
-      }
+    const saved = await window.api.sessionConfig.save({ ...config, programId: program.id })
+    if (!saved.ok) {
+      toast.error('本场配置没保存', { description: saved.error })
+      return
     }
-    // 本场配置落库：主播→音色只在这一场生效（引擎装池时按它覆盖卡上默认音色）
-    await window.api.sessionConfig.save({
-      id: `sc-${program.id}-${Date.now()}`,
-      programId: program.id,
-      language: config.language,
-      preset: '',
-      synthMode: config.synthMode,
-      endMode: config.finishMode,
-      audioPolicy: config.rebuildAudio ? 'rebuild' : 'reuse',
-      personaVoices: config.personaVoices,
-      createdAt: Date.now()
-    })
-    if (config.rebuildAudio) {
+    programControl.setSession(saved.config)
+    if (config.audioPolicy === 'rebuild') {
       const cleared = await window.api.draftUnit.clearAudio(program.id)
       if (!cleared.ok) {
         toast.error('清空音频失败', { description: cleared.error })
         return
       }
-      toast.message('已清空本节目音频', { description: `共 ${cleared.item ?? 0} 段，开播后按当前音色重新合成` })
+      toast.message('已清空本节目音频', { description: `共 ${cleared.item ?? 0} 段，开播后按本场音色重新合成` })
     }
     programControl.openPreflight()
   }
   const [draftCounts, setDraftCounts] = useState({ draft: 0, ready: 0 })
-  /** 开播配置里逐个主播选音色用的音色库 */
-  const [voiceList, setVoiceList] = useState<VoiceRecord[]>([])
-  useEffect(() => {
-    if (!('api' in window)) return
-    void window.api.voice.list().then(setVoiceList)
-  }, [])
   useEffect(() => {
     const programId = programControl.activeProgram?.id
     if (!programControl.launchConfigOpen || !programId) return
@@ -171,29 +136,8 @@ export function LivePage() {
     })
   }, [programControl.launchConfigOpen, programControl.activeProgram?.id])
   const activeProgram = programControl.activeProgram
-  // 主播卡名单：队列行按音色反查卡名，多主播节目显示身份
-  const [personaList, setCastList] = useState<Persona[]>([])
-  useEffect(() => {
-    if (!('api' in window)) return
-    const load = () => void window.api.persona.list().then(setCastList)
-    load()
-    const off = window.api.data.onChanged((payload) => {
-      if (payload.scope === 'personas') load()
-    })
-    return off
-  }, [])
 
-  /** 当前节目是否向主播提供直播间动态：关闭时评论流区域整体隐藏（docs/10 §11.5） */
-  const allowLiveEvents = activeProgram?.allowLiveEvents ?? true
-  /** 中间区布局由播出方式决定：现场发挥 / 边播边准备（默认，含未选节目）/ 全部做好再播 */
-  const broadcastMode = activeProgram?.broadcastMode ?? 'rolling'
-
-  // 节目关了直播间动态而标签还停在评论流/事件流：切回队列
-  useEffect(() => {
-    if (!allowLiveEvents && leftTab !== 'pool') setLeftTab('pool')
-  }, [allowLiveEvents, leftTab])
-
-  // 评论订阅提到页面层（标签上要显示条数），保持最近 100 条
+  // 评论订阅提到页面层（抽屉里要显示条数），保持最近 100 条
   useEffect(() => {
     if (!('api' in window)) return
     return window.api.comment.onComment((comment) => {
@@ -225,100 +169,129 @@ export function LivePage() {
     })
   }, [])
 
-  // 队列：按话轮分组（同 lane + turnId 一组，原子播出不拆开）。
-  // 正在播的那条同样列在这里，用「播报中」标记标出来——不再单独做一块状态显示。
-  const groups = useMemo(() => {
-    const out: { key: string; items: PoolItem[] }[] = []
-    for (const item of pool.items) {
-      const key = `${item.lane}:${item.turnId}`
-      const last = out[out.length - 1]
-      if (last && last.key === key) last.items.push(item)
-      else out.push({ key, items: [item] })
-    }
-    return out
-  }, [pool.items])
 
   return (
-    <div className="flex min-h-0 flex-1">
-        {/* 左栏 = 队列 / 评论流。「正在播什么」在右栏对话区底部的常驻状态行（一处就够） */}
-        <section className="flex min-w-0 flex-1 flex-col">
-          {/* 资产改过但本场会话还是旧的：都在这里给「立即应用」 */}
-          <AssetStaleBanner />
-          {/* UpNext 统一壳（docs/REDESIGN 4.6）：[接下来][评论流][事件流] 三个 tab，
-              「接下来」内容按 broadcastMode 填充（prepared=章节列表 / improvised=实况 / rolling=话术池队列）。
-              节目关了直播间动态（allowLiveEvents=false）时不出 Tabs，直接放「接下来」内容 */}
-          {(() => {
-            // 本场卡片流：已播历史 + 未播队列同一条流（docs/12 第八节）
-            const upNext =
-              broadcastMode === 'prepared' && activeProgram ? (
-                <PreparedPanel program={activeProgram} />
-              ) : broadcastMode === 'improvised' ? (
-                <ImprovisedPanel />
-              ) : (
-                <CardStream personas={personaList} />
-              )
-            if (!allowLiveEvents) return upNext
-            return (
-              <Tabs value={leftTab} onValueChange={(v) => setLeftTab(v as typeof leftTab)} className="min-h-0 flex-1 gap-0">
-                <div className="shrink-0 border-b px-4 pt-2">
-                  <TabsList variant="line">
-                    <TabsTrigger value="pool" className="px-3 text-xs">
-                      接下来{broadcastMode === 'rolling' && ` · ${groups.reduce((n, group) => n + group.items.length, 0)}`}
-                    </TabsTrigger>
-                    <TabsTrigger value="comments" className="px-3 text-xs">
-                      评论流 · {comments.length}
-                    </TabsTrigger>
-                    <TabsTrigger value="events" className="px-3 text-xs" title="发给主播的直播间动态（评论、礼物、系统通知）">
-                      事件流 · {inboxEvents.filter((e) => e.state === 'new' || e.state === 'seen').length}
-                    </TabsTrigger>
-                  </TabsList>
-                </div>
-                <TabsContent value="pool" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
-                  {upNext}
-                </TabsContent>
-                {/* 评论流/事件流自己带滚动容器（列表内自动跟到最新）；这里只负责"撑满 + 是活跃页时铺成列" */}
-                <TabsContent value="comments" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
-                  <CommentList comments={comments} />
-                </TabsContent>
-                <TabsContent value="events" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
-                  <EventStream events={inboxEvents} />
-                </TabsContent>
-              </Tabs>
-            )
-          })()}
-          {/* 水位条：还能撑多久、缓冲有没有见底（docs/12 第九节） */}
-          <WaterBar />
-          {/* NowPlayingBar 吸底（docs/REDESIGN 4.6）：节目选择在左槽、启动/传输/结束在中槽、急停音量⋯在右槽 */}
-          <NowPlayingBar
-            program={activeProgram}
-            onFocusQueue={() => {
-              setLeftTab('pool')
-              // 等 tab 渲染完再滚：把正在播的那条带到视野中间（音乐播放器的"回到当前曲目"）
-              window.setTimeout(() => {
-                const list = document.getElementById('up-next-list')
-                const target = document.querySelector('[data-playing="true"]')
-                if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
-                else list?.scrollTo({ top: 0, behavior: 'smooth' })
-              }, 80)
-            }}
-            programPicker={programControl.picker}
-            launchAction={programControl.launchAction}
-            endAction={programControl.endAction}
-            actions={<DeskActions program={activeProgram} onProgramSaved={programControl.patchProgram} />}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* 顶栏 · 本场配置（docs/12 §7）：剧本 / 主播 / 语言 / 预设，⋯ 收导演、大纲、评论事件、推流互动 */}
+      <WorkbenchTopBar
+        program={activeProgram}
+        session={programControl.session}
+        running={programControl.running}
+        prepared={programControl.session?.synthMode === 'pre'}
+        onConfigure={() => programControl.setLaunchConfigOpen(true)}
+        onOpenDrawer={setDrawer}
+        onOpenDirector={() => useAppStore.getState().openAgentPanel()}
+        onManualBroadcast={() => setManualOpen(true)}
+        onOpenStreamSettings={() => useAppStore.getState().openSettings('stream')}
+        onFocusQueue={() => {
+          setMainTab('pool')
+          window.setTimeout(() => {
+            const list = document.getElementById('up-next-list')
+            const target = document.querySelector('[data-playing="true"]')
+            if (target) target.scrollIntoView({ block: 'center', behavior: 'smooth' })
+            else list?.scrollTo({ top: 0, behavior: 'smooth' })
+          }, 80)
+        }}
+      />
+
+      {/* 资产改过但本场会话还是旧的：都在这里给「立即应用」 */}
+      <AssetStaleBanner />
+
+      {/* 主体：接下来（段落卡片流）/ 评论流 / 事件流。
+          卡片流一段一张卡、正文全文可见（docs/12 第七、八节）；评论/事件常驻可切换，不等同于抽屉 */}
+      <Tabs
+        value={mainTab}
+        onValueChange={(value) => setMainTab(value as typeof mainTab)}
+        className="min-h-0 flex-1 gap-0"
+      >
+        <div className="flex shrink-0 items-end gap-2 border-b px-4 pt-2">
+          <TabsList variant="line">
+            <TabsTrigger value="pool" className="px-3 text-xs">
+              接下来{pool.items.length > 0 ? ` · ${pool.items.length}` : ''}
+            </TabsTrigger>
+            <TabsTrigger value="comments" className="px-3 text-xs">
+              评论流 · {comments.length}
+            </TabsTrigger>
+            <TabsTrigger
+              value="events"
+              className="px-3 text-xs"
+              title="发给主播的直播间动态（评论、礼物、系统通知）"
+            >
+              事件流 · {inboxEvents.filter((event) => event.state === 'new' || event.state === 'seen').length}
+            </TabsTrigger>
+          </TabsList>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-7 gap-1 px-2 text-xs"
+            disabled={!programControl.activeProgram || programControl.running || agentBusy}
+            title={
+              !programControl.activeProgram
+                ? '先打开一个项目：场次和稿子都在项目里'
+                : programControl.running
+                  ? '直播中不能写稿：先结束本场'
+                  : agentBusy
+                    ? '导演正在写：写完这一段或先停掉再派新的'
+                    : '让导演按项目安排写底稿，过程在导演对话里'
+            }
+            onClick={programControl.startDraft}
+          >
+            <Sparkles className="size-3.5" />
+            生成底稿
+          </Button>
+        </div>
+        <TabsContent value="pool" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
+          <CardStream
+            onGenerate={
+              programControl.activeProgram && !programControl.running && !agentBusy
+                ? programControl.startDraft
+                : undefined
+            }
           />
-        </section>
-        {/* 预检 / 开播确认 / 结束确认 / 底稿 / 声音选择 / 预制门禁：都挂在页面根部 */}
-        {programControl.dialogs}
-        <LaunchConfigDialog
-          open={programControl.launchConfigOpen}
+        </TabsContent>
+        <TabsContent value="comments" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
+          <CommentList comments={comments} />
+        </TabsContent>
+        <TabsContent value="events" className="min-h-0 data-[state=active]:flex data-[state=active]:flex-col">
+          <EventStream events={inboxEvents} />
+        </TabsContent>
+      </Tabs>
+
+      {/* 底栏 · 音乐播放器式：播放/暂停、03/23、分段水位、还能播多久、音量、跳过、更多、结束本场。
+          剧本/主播/语言/预设只在顶栏，这里不重复。 */}
+      <div className="shrink-0 border-t bg-card/60">
+        <NowPlayingBar
           program={activeProgram}
-          personas={personaList}
-          voices={voiceList}
-          draftCount={draftCounts.draft}
-          readyCount={draftCounts.ready}
-          onCancel={() => programControl.setLaunchConfigOpen(false)}
-          onConfirm={(config: LaunchConfig) => void applyLaunchConfig(config)}
+          launchAction={programControl.launchAction}
+          endAction={programControl.endAction}
         />
+      </div>
+
+      {/* 抽屉：剧本大纲 / 评论 / 事件 / 章节 / 互动 */}
+      <WorkbenchDrawer
+        open={drawer !== null}
+        tab={drawer ?? 'scenes'}
+        onTab={setDrawer}
+        onClose={() => setDrawer(null)}
+        program={activeProgram}
+        session={programControl.session}
+        prepared={programControl.session?.synthMode === 'pre'}
+        onSessionSaved={programControl.setSession}
+      />
+
+      {/* 预检 / 开播确认 / 结束确认 / 底稿 / 声音选择 / 预制门禁：都挂在页面根部 */}
+      {programControl.dialogs}
+      <ManualBroadcastDialog open={manualOpen} onOpenChange={setManualOpen} />
+      <LaunchConfigDialog
+        open={programControl.launchConfigOpen}
+        program={activeProgram}
+        triggers={programControl.triggerList.filter((item) => item.enabled)}
+        session={programControl.session}
+        draftCount={draftCounts.draft}
+        readyCount={draftCounts.ready}
+        onCancel={() => programControl.setLaunchConfigOpen(false)}
+        onConfirm={(config: LaunchConfig) => void applyLaunchConfig(config)}
+      />
     </div>
   )
 }
@@ -333,7 +306,10 @@ function useProgramLauncher() {
   const director = useAppStore((s) => s.config.director)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [programs, setPrograms] = useState<Program[]>([])
-  const [personaList, setCastList] = useState<Awaited<ReturnType<typeof window.api.persona.list>>>([])
+  /** 本场配置（最近一次）：卡司/语言/互动/收尾都以它为准；开播配置确认后更新 */
+  const [session, setSession] = useState<SessionConfig | null>(null)
+  /** 触发器清单（开播配置里的互动勾选用） */
+  const [triggerList, setTriggerList] = useState<Trigger[]>([])
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
@@ -352,26 +328,38 @@ function useProgramLauncher() {
    * 在节目页改了名字/删了节目再回直播台，看到的就是旧清单（曾把已删节目当"当前节目"显示）。
    */
   const loadPrograms = useCallback(async (): Promise<Program[]> => {
-    const [programList, personaList] = await Promise.all([window.api.program.list(), window.api.persona.list()])
+    const programList = await window.api.program.list()
     setPrograms(programList)
-    setCastList(personaList)
     return programList
   }, [])
 
   const page = useAppStore((s) => s.page)
   useEffect(() => {
     if (page === 'live') void loadPrograms()
-  }, [page, loadPrograms])
+    // 切项目 = 换一个库：activeProgramId 变了必须重拉，否则顶栏/卡片流还停在上一本
+  }, [page, activeProgramId, loadPrograms])
 
-  // agent / MCP 在后台建了/删了/切了节目：收到广播就重拉，界面不用手动刷新
-  useEffect(() => window.api.program.onChanged(() => void loadPrograms()), [loadPrograms])
+  // 本场配置跟着当前节目走（切节目/开播配置保存后都重拉）
+  useEffect(() => {
+    if (!activeProgramId) {
+      setSession(null)
+      return
+    }
+    setSession((prev) => (prev && prev.programId === activeProgramId ? prev : null))
+    void window.api.sessionConfig.latest(activeProgramId).then((next) =>
+      setSession((prev) => (prev?.id === next?.id ? prev : next))
+    )
+  }, [activeProgramId, page])
+  useEffect(() => {
+    if (page !== 'live') return
+    void window.api.trigger.list().then(setTriggerList)
+  }, [page])
 
   /** 直播中的判定：开播态归引擎（agent.live）——主播会话没起来也照播存量，不算没开播 */
   const running = agent.live === true
   const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
-  const personaNames = activeProgram?.personaIds.length
-    ? activeProgram.personaIds.map((id) => personaList.find((item) => item.id === id)?.name).filter(Boolean).join('、')
-    : `导演自选（可用 ${personaList.length} 位）`
+
+
   const blocked = (checks ?? []).some((item) => item.level === 'block')
   /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
   const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
@@ -411,16 +399,16 @@ function useProgramLauncher() {
   }
 
   const switchProgram = async (id: string): Promise<void> => {
-    // 切之前重拉一次清单：本地这份可能是旧的（节目刚在节目页被删/改名），
-    // 直接照着旧清单切会"切到一个已经不存在的节目"还弹成功提示
+    // 切之前重拉一次清单：本地这份可能是旧的（剧本刚在剧本页被删/改名），
+    // 直接照着旧清单切会"切到一个已经不存在的剧本"还弹成功提示
     const program = (await loadPrograms()).find((p) => p.id === id)
     if (!program) {
-      toast.error('这个节目已经不在了', { description: '清单已刷新，重新选一个' })
+      toast.error('这本剧本已经不在了', { description: '清单已刷新，重新选一个' })
       return
     }
     await window.api.program.setActive(id)
     await useAppStore.getState().loadConfig()
-    toast.success(`已切换到节目：${program.name}`, {
+    toast.success(`已切换到剧本：${program.name}`, {
       description: running ? '结构性变更下次开播生效' : undefined
     })
   }
@@ -446,7 +434,7 @@ function useProgramLauncher() {
 
   const openPreflight = async (): Promise<void> => {
     if (!activeProgramId) {
-      toast.warning('先选一个节目', { description: '节目决定这场用什么人设、剧本与话术' })
+      toast.warning('先打开一个项目', { description: '场次、稿子与声音都在项目里' })
       return
     }
     await runPreflight()
@@ -462,14 +450,14 @@ function useProgramLauncher() {
         // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
         resumeBroadcast()
         if (result.warning) {
-          toast.warning(`节目已启动：${activeProgram?.name ?? ''}（主播还没就位）`, {
+          toast.warning(`直播已启动：${activeProgram?.name ?? ''}（主播还没就位）`, {
             description: result.warning
           })
         } else {
-          toast.success(`节目已启动：${activeProgram?.name ?? ''}`, {
+          toast.success(`直播已启动：${activeProgram?.name ?? ''}`, {
             description: result.loaded
               ? `已装载 ${result.loaded} 个播出单元，接着播`
-              : '本节目没有就绪底稿，主播先现场生成'
+              : '本场没有就绪底稿，主播先现场生成'
           })
         }
       } else if (result.gate && activeProgram) {
@@ -497,50 +485,16 @@ function useProgramLauncher() {
     }
   }
 
-  /** 左槽里的节目选择：纯文字 + 下拉（未开播可换，直播中只读）；不用 Select 的小药丸，窄带上会挤压文字 */
-  const picker = (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild disabled={running}>
-        <button
-          type="button"
-          className="flex min-w-0 max-w-full items-center gap-1 text-sm font-medium hover:text-primary disabled:opacity-60 disabled:hover:text-foreground"
-          title={
-            running
-              ? '直播中不能换节目（结构性变更下次开播生效）'
-              : activeProgram
-                ? `${activeProgram.name}${activeProgram.theme ? ` · ${activeProgram.theme}` : ''}（点它换节目）`
-                : '选择节目'
-          }
-        >
-          <span className="truncate">{activeProgram?.name ?? '选择节目'}</span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-60">
-        {programs.length === 0 ? (
-          <DropdownMenuItem disabled>还没有节目（到「节目」页新建）</DropdownMenuItem>
-        ) : (
-          programs.map((item) => (
-            <DropdownMenuItem key={item.id} onSelect={() => void switchProgram(item.id)}>
-              <Check className={cn('size-3.5', item.id === activeProgramId ? 'opacity-100' : 'opacity-0')} />
-              <span className="truncate">{item.name}</span>
-            </DropdownMenuItem>
-          ))
-        )}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  )
-
   /** 中槽未开播态：唯一主 CTA（先跑预检 → 开播确认，再出声） */
   const launchAction = (
     <Button
       size="sm"
       disabled={busy || checking}
       onClick={() => setLaunchConfigOpen(true)}
-      title="先配这一场：语言 / 主播 / 音频 / 合成时机，再预检开播"
+      title="先配这一场：语言 / 音色 / 音频 / 合成时机，再预检开播"
     >
       {busy || checking ? <Loader2 className="animate-spin" /> : <Play />}
-      启动节目
+      启动直播
     </Button>
   )
 
@@ -578,12 +532,30 @@ function useProgramLauncher() {
           {activeProgram && (
             <div className="grid gap-2 rounded-lg border bg-muted/20 p-3 text-xs sm:grid-cols-2">
               <div><span className="text-muted-foreground">导演：</span>{director.name} · {director.model || '未配置大脑'}</div>
-              <div><span className="text-muted-foreground">卡司：</span>{personaNames || '导演自选'}</div>
-              <div><span className="text-muted-foreground">播出：</span>{activeProgram.broadcastMode === 'prepared' ? '全部做好再播' : activeProgram.broadcastMode === 'rolling' ? '边播边准备' : '现场发挥'}</div>
-              <div><span className="text-muted-foreground">互动：</span>{activeProgram.allowLiveEvents ? '开启' : '关闭'} · {activeProgram.enabledTriggerIds.length} 个自动响应</div>
+              <div><span className="text-muted-foreground">音色：</span>{'按本场配置'}</div>
+              <div>
+                <span className="text-muted-foreground">形态：</span>
+                {session ? CONTENT_TYPE_LABELS[session.contentType] : '未配置'}
+              </div>
+              <div>
+                <span className="text-muted-foreground">播出：</span>
+                {session
+                  ? `${session.contentSource === 'infinite' ? '无限生成' : '本场话术'} · ${
+                      session.synthMode === 'pre' ? '预合成' : session.synthMode === 'realtime' ? '实时' : '边播边合'
+                    }`
+                  : '未配置'}
+              </div>
+              <div><span className="text-muted-foreground">互动：</span>{session?.allowLiveEvents ? '开启' : '关闭'} · {session?.enabledTriggerIds.length ?? 0} 个自动响应</div>
             </div>
           )}
-          {activeProgram && <AutoResponsePicker program={activeProgram} compact onSaved={patchProgram} />}
+          {activeProgram && session && (
+            <AutoResponsePicker
+              programId={activeProgram.id}
+              session={session}
+              compact
+              onSaved={setSession}
+            />
+          )}
           <div className="max-h-72 space-y-2 overflow-y-auto">
             {(checks ?? []).map((item) => (
               <div key={item.code ?? item.label} className="flex items-start gap-2 rounded-md border p-2">
@@ -620,7 +592,7 @@ function useProgramLauncher() {
             <Button variant="outline" onClick={() => setChecks(null)}>
               先去处理
             </Button>
-            {presynthShort && activeProgram?.broadcastMode === 'rolling' && (
+            {presynthShort && session?.contentSource === 'script' && session?.synthMode !== 'pre' && (
               <Button variant="outline" onClick={startPresynth}>
                 <AudioWaveform />
                 提前合成全部
@@ -695,11 +667,11 @@ function useProgramLauncher() {
           onLaunched={(result) => {
             resumeBroadcast()
             if (result.warning) {
-              toast.warning(`节目已启动：${activeProgram.name}（主播还没就位）`, {
+              toast.warning(`直播已启动：${activeProgram.name}（主播还没就位）`, {
                 description: result.warning
               })
             } else {
-              toast.success(`节目已启动：${activeProgram.name}`, {
+              toast.success(`直播已启动：${activeProgram.name}`, {
                 description: result.loaded ? `已装载 ${result.loaded} 个播出单元，接着播` : undefined
               })
             }
@@ -713,14 +685,18 @@ function useProgramLauncher() {
     programs,
     activeProgram,
     running,
-    picker,
     launchAction,
     endAction,
     dialogs,
     patchProgram,
     openPreflight,
     launchConfigOpen,
-    setLaunchConfigOpen
+    setLaunchConfigOpen,
+    session,
+    setSession,
+    triggerList,
+    switchProgram,
+    startDraft
   }
 }
 
@@ -1018,6 +994,8 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
 export function DirectorConsole({ active, onUnread }: { active: boolean; onUnread: () => void }) {
   const agent = useAppStore((s) => s.agent)
   const loopRunning = useAppStore((s) => s.loopRunning)
+  /** 会话按项目分开：切项目就换一份对话记录 */
+  const projectId = useAppStore((s) => s.config.live.activeProgramId)
   const [entries, setEntries] = useState<ChatEntry[]>([])
   /** 已发出、还没等到导演第一条动静（占位提示用；首条时间线条目落地即清） */
   const [awaiting, setAwaiting] = useState(false)
@@ -1074,22 +1052,22 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
   useEffect(() => {
     if (!('api' in window)) return
     let cancelled = false
-    void window.api.director.timelineList('director').then((stored) => {
+    // 换项目 = 换一份对话：先清屏再拉这个项目的存档，避免把上一个项目的记录带进来
+    seenRef.current = new Set()
+    restoredRef.current = new Set()
+    setEntries([])
+    void window.api.director.timelineList(projectId).then((stored) => {
       if (cancelled || demoRef.current) return
       for (const entry of stored) {
         seenRef.current.add(entry.id)
         restoredRef.current.add(entry.id)
       }
-      setEntries((current) => {
-        const merged = new Map(stored.map((entry) => [entry.id, entry]))
-        for (const entry of current) merged.set(entry.id, entry)
-        return [...merged.values()].sort((a, b) => a.ts - b.ts)
-      })
+      setEntries([...stored].sort((a, b) => a.ts - b.ts))
     })
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [projectId])
 
   // 订阅对话时间线（文本流式 + 工具卡片 + 压缩后 reset）与请示卡片
   useEffect(() => {
@@ -1112,7 +1090,6 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
           text: entry.text,
           final: entry.final === true,
           append: entry.append === true,
-          personaId: entry.personaId
         })
       } else if (entry.type === 'thinking') {
         upsert({
@@ -1124,7 +1101,6 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
           done: entry.done === true,
           append: entry.append === true,
           durationMs: entry.durationMs,
-          personaId: entry.personaId
         })
       } else if (entry.type === 'ask') {
         // 主播请示卡片：与文本/工具同一条单通道
@@ -1140,7 +1116,6 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
           status: entry.status,
           result: entry.result,
           durationMs: entry.durationMs,
-          personaId: entry.personaId
         })
       }
       landed(entry.id)
@@ -1602,52 +1577,6 @@ function ThinkingBlock({
     </div>
   )
 }
-
-/** 播放条最右的「⋯」动作菜单：人工播报 / 自动响应（白名单 + 互动总闸）。
- *  这些是播出层操作，原来挂在导演面板的「操作」页里；面板收成纯对话区后挪到这里。 */
-function DeskActions({ program, onProgramSaved }: { program: Program | null; onProgramSaved: (program: Program) => void }) {
-  const [broadcastOpen, setBroadcastOpen] = useState(false)
-  const [autoOpen, setAutoOpen] = useState(false)
-
-  return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant="outline" size="icon-sm" title="手动操作：人工播报 / 自动响应">
-            <MoreHorizontal />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-48">
-          <DropdownMenuItem onSelect={() => setBroadcastOpen(true)}>
-            <Megaphone />
-            人工播报
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={!program}
-            onSelect={() => setAutoOpen(true)}
-            title="自动响应白名单与互动总闸：播出中也能改，改完立刻生效"
-          >
-            <Zap />
-            自动响应{program ? `（${program.enabledTriggerIds.length}）` : ''}
-          </DropdownMenuItem>
-          <RecordMenuSub />
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <ManualBroadcastDialog open={broadcastOpen} onOpenChange={setBroadcastOpen} />
-      {program && (
-        <Dialog open={autoOpen} onOpenChange={setAutoOpen}>
-          <DialogContent className="sm:max-w-lg">
-            <DialogHeader>
-              <DialogTitle>自动响应 · {program.name}</DialogTitle>
-            </DialogHeader>
-            <AutoResponsePicker program={program} onSaved={onProgramSaved} />
-          </DialogContent>
-        </Dialog>
-      )}
-    </>
-  )
-}
-
 
 /** 人工播报弹窗：输入内容丢进话术池 */
 function ManualBroadcastDialog({

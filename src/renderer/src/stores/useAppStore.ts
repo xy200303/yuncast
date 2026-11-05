@@ -26,8 +26,8 @@ import {
   type ResolvedAppTheme
 } from '../theme/applyAppearance'
 
-/** 五个导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
-export const NAV_PAGES = ['live', 'programs', 'personas', 'knowledge', 'voices', 'sessions', 'stats'] as const
+/** 项目工作区的导航页（设置是全局弹窗，不在页面流里）。key 同时用作路由和 store 状态。 */
+export const NAV_PAGES = ['live', 'voices', 'sessions', 'stats'] as const
 export type NavPage = (typeof NAV_PAGES)[number]
 export type AgentPanelMode = 'floating' | 'docked' | 'minimized'
 export type SettingsPaneId =
@@ -71,8 +71,6 @@ interface AppState {
   openSettings: (pane?: SettingsPaneId) => void
 
   /** 首跑引导页（docs/REDESIGN 4.9）：全屏覆盖层，完成标记在 localStorage（lib/onboarding） */
-  onboardingOpen: boolean
-  setOnboardingOpen: (open: boolean) => void
 
   agentPanelMode: AgentPanelMode
   agentPanelContext: AgentPanelContext | null
@@ -144,8 +142,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
   openSettings: (pane) => set({ settingsOpen: true, settingsPane: pane ?? null }),
 
-  onboardingOpen: false,
-  setOnboardingOpen: (onboardingOpen) => set({ onboardingOpen }),
 
   agentPanelMode: 'minimized',
   agentPanelContext: null,

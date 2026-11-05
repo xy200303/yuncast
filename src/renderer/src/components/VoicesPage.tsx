@@ -275,11 +275,8 @@ export function VoicesPage() {
           {deleting && usages[deleting.id] && usageCount(usages[deleting.id]) > 0 && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs">
               <p className="mb-1 text-[13px] text-destructive">这个音色正在被使用，删掉后这些地方会指向不存在的音色：</p>
-              {usages[deleting.id].personas.map((item) => (
-                <p key={item.id}>主播卡「{item.name}」 · 音色</p>
-              ))}
-              {usages[deleting.id].programs.map((item) => (
-                <p key={item.id}>节目「{item.name}」的卡司里</p>
+              {usages[deleting.id].sessions.map((item) => (
+                <p key={item.id}>「{item.programName}」最近一次本场配置里</p>
               ))}
               {usages[deleting.id].draftUnitCount > 0 && (
                 <p>
@@ -318,17 +315,16 @@ export function VoicesPage() {
   )
 }
 
-/** 「被 2 张主播卡 · 1 个节目 · 12 条话术使用」 */
+/** 「被 2 场本场配置 · 12 条话术使用」 */
 function usageSummary(usage: VoiceUsage): string {
   const parts: string[] = []
-  if (usage.personas.length) parts.push(`${usage.personas.length} 张主播卡`)
-  if (usage.programs.length) parts.push(`${usage.programs.length} 个节目`)
+  if (usage.sessions.length) parts.push(`${usage.sessions.length} 场本场配置`)
   if (usage.draftUnitCount) parts.push(`${usage.draftUnitCount} 条话术`)
-  return parts.length > 0 ? `被 ${parts.join(' · ')}使用` : '还没被主播卡 / 节目 / 话术使用'
+  return parts.length > 0 ? `被 ${parts.join(' · ')}使用` : '还没被本场配置 / 话术使用'
 }
 
 function usageCount(usage: VoiceUsage): number {
-  return usage.personas.length + usage.programs.length + usage.draftUnitCount
+  return usage.sessions.length + usage.draftUnitCount
 }
 
 /** 编辑音色（显示名 + 风格指令；复刻标识与绑定不动） */

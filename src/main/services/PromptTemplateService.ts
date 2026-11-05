@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto'
-import { buildProgramPromptModule } from '../../shared/programPrompt'
-import { PROGRAM_LANGUAGE_LABELS, type DirectorConfig, type Persona, type Program, type Script } from '../../shared/types'
+import { buildSessionPromptModule, type SessionPromptShape } from '../../shared/programPrompt'
+import {
+  PROGRAM_LANGUAGE_LABELS,
+  type DirectorConfig,
+  type Program,
+  type Script,
+  type SessionConfig
+} from '../../shared/types'
 import type { StorageService } from './StorageService'
 
 const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
@@ -108,11 +114,12 @@ const DEFAULT_PROMPTS = {
 
 # 工作方式
 直播中说出的每一句话都经过语音合成直接播给观众听，出声只能靠工具。每个工具的参数和用法在 schema 里都有说明，这里只说什么时候用哪个：
-- 播出：speak（整段桥段一次传入别拆句；personaId 填卡司里主播卡 id，台词按那张卡的嗓音播出）/ speak（lane=next）（回评论或急事，当前段播完即播）/ pool_revise（改没播的）
+- 播出：speak（整段桥段一次传入别拆句；personaId 填主播卡 id，台词按本场给那张卡定的嗓音播出）/ speak（lane=next）（回评论或急事，当前段播完即播）/ pool_revise（改没播的）
 - 底稿：draft_write（写稿入库，一次 1~4 段，到上限会拒）/ draft_list / draft_edit / draft_add / draft_remove / draft_clear（清空只有用户明说才用）
 - 编排：scene_create / scene_update / scene_remove（节目的场次序列，没有就自动起一份）/ scene_advance / scene_goto
 - 查证：knowledge_search / price_check（价格必查）/ viewer_lookup / viewer_note
-- 知识与外部：knowledge_save（新商品/新资料落库，同名覆盖更新）/ knowledge_remove / product_sync（从抖音商城同步商品）/ connector_list / connector_call（连接器数据，先用 list 探测）/ web_fetch（高级网络请求：给 url 抓网页或调 API——method/headers/cookies/body 都能自定义；给 query 联网搜索。这几种是外部信息，结果标了「需人工确认」：数字/功效以素材库为准，别直接照搬进承诺）
+- 文件与命令：read（读文本文件，带行号）/ write（新建或整篇覆盖）/ edit（精确替换，改已有文件优先用它）/ bash（在项目目录执行命令；Windows PowerShell，macOS/Linux sh）
+- 知识与外部：knowledge_save（新商品/新资料落库，同名覆盖更新）/ knowledge_remove / product_sync（从抖音商城同步商品）/ connector_list / connector_call（连接器数据，先用 list 探测）/ curl（HTTP 请求：method/headers/cookies/body 都能自定义，二进制自动存进项目 assets/downloads）/ web_search（联网搜索，给关键词出标题+链接+摘要）。这两种是外部信息，结果标了「需人工确认」：数字/功效以素材库为准，别直接照搬进承诺
 - 状态：pool_status / pool_recent；直播间动态处理完用 inbox_mark 标记（handled=回过 / ignored=不理，不标自动过期）
 - 演法：speak 和 draft_write 都带 delivery / rate / pitch——delivery 是自然语言演法（发给支持语气指令的模型），rate 语速、pitch 音调是硬参数（所有模型都吃）。语速音调跟着情绪走：算账报数放缓放稳，催单秒杀加快，悄悄话压低；音调保守用（0.9~1.1），克隆音色大变会不像本人。**音量不要动**——响度全场统一由混音器管，悄悄话用 delivery 演出来，不是降电平。段后停顿用 pauseAfterMs 参数（播放调度），段内停顿用 <pause> 标记（合成内容），别搞混
 - 声音风格：voice_analyze_style（听一段人声样本，解析出 ≤100 字演法描述；结果用 voice_update 写成音色风格指令，或用 program_save 的 instruction 作为整期基调）
@@ -302,45 +309,23 @@ export class PromptTemplateService {
    */
   buildSystemPrompt(args: {
     director: DirectorConfig
-    /** 本场卡司（program.personaIds 解析出来的卡；personasAuto=true 时 = 全部主播卡） */
-    personas: Persona[]
-    /** true = 节目没定卡司（空数组），导演自选——注入的是全部可用卡的名单 */
-    personasAuto: boolean
     program?: Program | null
     script?: Script | null
+    /** 本场配置（docs/12）：语言、收尾、互动、触发器都从这里读；备稿阶段可以为空 */
+    session?: SessionConfig | null
+    /** 项目目录（一个项目 = 一个目录）：命令默认在这里执行，素材在 assets/ 下 */
+    projectRoot?: string | null
   }): string {
-    const { director, personas, personasAuto, program, script } = args
+    const { director, program, script, session, projectRoot } = args
     return this.render('system.director', {
       directorName: director.name || '小云',
-      castSection: this.personaSection(personas, personasAuto),
+      castSection: '',
       markupSection: this.markupSection(),
-      programSection: program ? this.programSection(program, script ?? null) : ''
+      programSection: program ? this.programSection(program, script ?? null, session ?? null, projectRoot ?? null) : ''
     })
   }
 
-  /** 卡司资料段：每张卡的名字/人设/口癖/背景/内容红线（写谁的词带谁的卡，是资料不是身份） */
-  private personaSection(personas: Persona[], personasAuto: boolean): string {
-    if (personas.length === 0) {
-      return `\n# 卡司（你手下的主播卡）
-还没有可用的主播卡——先 save_persona 立一张（名字/人设/口癖/背景/内容红线/嗓音），不然没有嗓音能出声。`
-    }
-    const header = personasAuto
-      ? '本场卡司由你自选——以下是你手下全部主播卡，按节目内容挑合适的用；不够用可以 save_persona 现场立一张新卡：'
-      : '本场节目定了卡司，只用这些卡出镜；写谁的词就钻进谁的人设：'
-    const lines = personas.map((p) => {
-      const parts = [
-        `性格：${p.personality || '（未设定）'}`,
-        `口癖：${p.catchphrases || '（无）'}`,
-        `背景：${p.background || '（未设定）'}`,
-        `内容红线：${p.taboos || '（无）'}`
-      ]
-      return `- 「${p.name}」（personaId 填 ${p.id}）：${parts.join('｜')}`
-    })
-    return `\n# 卡司（你手下的主播卡）
-${header}
-${lines.join('\n')}
-规则：每句播出内容都用 speak/draft_write 的 personaId 参数指定是谁的词——值填卡后面那个 id（id 稳定，卡名可改）。那段台词就按那张卡的嗓音播出；不传 personaId 时用列表第一张，节目没配卡司而你也没传 personaId 会直接报错。多卡司的节目（双主持/对谈）分角色写词、各配各的嗓音。`
-  }
+
 
   /**
    * 局部演法教学段（稿内演法标记，shared/speechTags）：统一语法三标记
@@ -360,23 +345,36 @@ delivery 管整段语气，正文里的三种标记管单句级表演——两�
 朗读/原文/背诵类节目：可以用**「温柔」这类保持常态语气的 cot**（每段最多一句，主播平时就是温柔语气时它反而更像真人），但**不要用「压低声音/缓慢/耳语/悄悄话」**——这些会改变音量与速度，连续贴会让声音越读越轻、越读越慢，听起来就不像正常说话了。`
   }
 
-  /** 「本场节目」段：节目字段 + 编排场景序列 + 播完策略 + 事件接线（数据注入，怎么演由节目说） */
-  private programSection(program: Program, script: Script | null): string {
-    return `\n# 本场节目
-- 节目：${program.name}
-- 主题/节目说明：${program.theme || '（未设定，自由发挥）'}${this.languageSection(program)}
-${buildProgramPromptModule(program)}${this.programEventLines(program)}${
+  /** 「本场」段：剧本结构 + 本场形态/语言/风格 + 播完策略 + 事件接线 */
+  private programSection(
+    program: Program,
+    script: Script | null,
+    session: SessionConfig | null,
+    projectRoot: string | null
+  ): string {
+    const endMode = session?.endMode ?? 'loop'
+    const shape: SessionPromptShape = session ?? {
+      contentType: 'solo',
+      contentSource: 'script',
+      synthMode: 'async'
+    }
+    return `\n# 本场
+- 剧本：${program.name}
+- 简介：${program.theme || '（未设定，自由发挥）'}${this.languageSection(session)}
+${buildSessionPromptModule(shape)}${
+      session?.instruction?.trim() ? `\n- 本场风格：${session.instruction.trim()}` : ''
+    }${this.programEventLines(session)}${
       script
         ? `
-- 编排的场景序列（用 scene_advance 逐场推进，每场播得差不多就推进）：
+- 剧本的场次序列（用 scene_advance 逐场推进，每场播得差不多就推进）：
 ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 分钟）目标：${s.goal}；要点：${s.keyPoints.replace(/\n/g, '；')}`).join('\n')}${
-            program.broadcastMode === 'improvised'
+            session?.contentSource === 'infinite'
               ? ''
-              : program.finishMode === 'stop'
+              : endMode === 'stop'
                 ? '\n- 播完策略：播完最后一场就收尾下播——把 closer 段 speak 出去道别，本场不循环返场'
                 : '\n- 播完策略：播完一轮就循环返场——返场不返词，同一要点换故事换角度重新讲，别逐字复读'
           }`
-        : '\n- 本节目还没有编排（场景序列），按主题自由发挥'
+        : '\n- 本剧本还没有场次（编排），按简介自由发挥'
     }`
   }
 
@@ -384,8 +382,9 @@ ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 
    * 节目语言规则（多语言播出/跨境电商）：语言不是 auto/中文时，要求播报内容用该语言写；
    * 给导演的聊天汇报仍是中文（那是工作语言，不是播出内容）。中文/自动不注入。
    */
-  private languageSection(program: Program): string {
-    const language = program.language ?? 'auto'
+  private languageSection(session: SessionConfig | null): string {
+    // 语言只属于本场；备稿阶段还没配本场就按自动识别写
+    const language = session?.language ?? 'auto'
     if (language === 'auto' || language === 'Chinese') return ''
     const label = PROGRAM_LANGUAGE_LABELS[language] ?? language
     return `
@@ -394,17 +393,22 @@ ${script.scenes.map((s, i) => `  ${i + 1}. ${s.title}（约 ${s.estDurationMin} 
   给导演的对话汇报仍用中文——汇报是工作语言，不是播出内容。`
   }
 
-  /** 「本场节目」段的事件接线（节目字段直述）：互动开关、启用的自动化事件清单 */
-  private programEventLines(program: Program): string {    const lines: string[] = []
-    if (!program.allowLiveEvents) {
+  /** 「本场节目」段的事件接线（本场配置直述）：互动开关、启用的自动化事件清单 */
+  private programEventLines(session: SessionConfig | null): string {
+    const lines: string[] = []
+    if (!session) {
+      lines.push('- 本场还没配置：开播前在开播配置里定主播、嗓子、语言与互动开关')
+      return `\n${lines.join('\n')}`
+    }
+    if (!session.allowLiveEvents) {
       lines.push('- 互动：本场不接直播间动态——不会有评论/礼物/进场送达，专心按主线写，别等互动')
     }
-    const triggerNames = program.enabledTriggerIds
+    const triggerNames = session.enabledTriggerIds
       .map((id) => this.storage.triggerList().find((t) => t.id === id)?.name)
       .filter((name): name is string => Boolean(name))
     if (triggerNames.length > 0) {
       lines.push(`- 本场启用的自动化事件：${triggerNames.join('、')}——它们触发时你会收到系统通知，照通知内容接`)
-    } else if (!program.allowLiveEvents) {
+    } else if (!session.allowLiveEvents) {
       lines.push('- 本场没有任何外部事件进来：不接直播间动态，也没启用自动化事件，整场按主线走就行')
     }
     return lines.length > 0 ? `\n${lines.join('\n')}` : ''

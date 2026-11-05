@@ -83,7 +83,7 @@ export const voiceTools = [
     risk: 'read',
     expose: { agent: true, mcp: true },
     description:
-      '看一个音色的完整信息和引用关系：哪些主播卡在用（卡司成员）、哪些节目卡司里有它、多少条底稿用它、未播队列里有没有它。' +
+      '看一个音色的完整信息和引用关系：最近哪些本场配置把它当主播嗓子、多少条底稿用它、未播队列里有没有它。' +
       '删音色（voice_delete）前必须先查这个。voiceId 参数传音色库记录 id（voice_list 的 id 字段）。',
     parameters: Type.Object({
       voiceId: Type.String({ description: '音色库记录 id（voice_list 返回的 id 字段，不是合成标识 voiceId）' })
@@ -103,8 +103,7 @@ export const voiceTools = [
           音色标识: voice.voiceType || '（训练未完成，还没有标识）',
           授权时间: voice.authorizedAt ? new Date(voice.authorizedAt).toLocaleString() : '（未记录）',
           引用: {
-            主播卡: usage.personas.map((p) => p.name),
-            在节目卡司里: usage.programs.map((p) => p.name),
+            最近的本场配置: usage.sessions.map((s) => `${s.programName}@${new Date(s.at).toLocaleDateString()}`),
             底稿条目数: usage.draftUnitCount,
             底稿示例: usage.draftUnitSamples.map((s) => `「${s.programName}」${s.text.slice(0, 40)}`),
             未播队列条目数: queueRefs
@@ -162,7 +161,7 @@ export const voiceTools = [
     expose: { agent: true, mcp: true },
     description:
       '从音色库删除一个音色（登记删除，不可恢复；已生成的音频文件保留，后续合成需重选音色）。' +
-      '被主播卡/节目卡司/未播队列引用的音色删不了——返回值会列出谁在引用、先怎么解。删之前先用 voice_get 看引用。' +
+      '被本场配置/未播队列引用的音色删不了——返回值会列出谁在引用、先怎么解。删之前先用 voice_get 看引用。' +
       '内置主播第一次调用不传 confirmed：向导演发确认卡；确认后带 confirmed=true 重调才执行。外部调用直接执行。voiceId 参数传音色库记录 id。',
     parameters: Type.Object({
       voiceId: Type.String({ description: '音色库记录 id（voice_list 的 id 字段）' }),
@@ -178,15 +177,14 @@ export const voiceTools = [
         ? ctx.pool.snapshot().items.filter((i) => i.voiceId === voice.voiceType).length
         : 0
       const blockers: string[] = []
-      if (usage.personas.length > 0) {
-        blockers.push(`主播卡：${usage.personas.map((p) => p.name).join('、')}`)
+      if (usage.sessions.length > 0) {
+        blockers.push(`最近的本场配置：${usage.sessions.map((s) => s.programName).join('、')}`)
       }
-      if (usage.programs.length > 0) blockers.push(`在节目卡司里：${usage.programs.map((p) => p.name).join('、')}`)
       if (queueRefs > 0) blockers.push(`未播队列：${queueRefs} 条`)
       if (blockers.length > 0) {
         return (
           `删不了：音色「${voice.name}」还在被引用——\n${blockers.map((b) => `- ${b}`).join('\n')}\n` +
-          `先解掉引用（persona_save 换音色 / program_save 改卡司 / pool_revise 修订队列条目），再删除`
+          `先解掉引用（开播配置里给主播换音色 / pool_revise 修订队列条目），再删除`
         )
       }
       if (!params.confirmed) {
@@ -511,9 +509,6 @@ export const voiceTools = [
         Type.String({ description: '情感（仅火山模型生效）：happy / angry / sad / surprised 等；留空 = 接入默认' })
       ),
       emotionScale: Type.Optional(Type.Number({ description: '情感强度（火山 emotion_scale，1~5）：只在传了 emotion 时生效' })),
-      languageType: Type.Optional(
-        Type.String({ description: '语种提示（仅百炼 qwen3-tts 生效）：Auto / Chinese / English 等；留空 = 接入默认' })
-      ),
       outPath: Type.Optional(Type.String({ description: '成品复制到的本机绝对路径（如 D:/out/a.mp3）；不传就只给缓存路径' }))
     }),
     handler: async (ctx, params) => {
@@ -523,8 +518,7 @@ export const voiceTools = [
         rate: params.rate,
         pitch: params.pitch,
         emotion: params.emotion,
-        emotionScale: params.emotionScale,
-        languageType: params.languageType
+        emotionScale: params.emotionScale
       })
       if (!params.outPath) {
         return `已合成：${audioPath}\n（缓存在应用内部目录；要落到指定位置就传 outPath 再合成一次，缓存命中不重复打接口）`

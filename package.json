@@ -20,8 +20,9 @@
     "dist:win": "node scripts/build-cli.mjs windows-amd64 && electron-vite build && electron-builder --win --publish never"
   },
   "dependencies": {
-    "@earendil-works/pi-agent-core": "^1.2.0",
-    "@earendil-works/pi-ai": "^1.2.0",
+    "@earendil-works/pi-agent-core": "^1.5.0",
+    "@earendil-works/pi-ai": "^1.5.0",
+    "@earendil-works/pi-coding-agent": "^1.5.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@streamdown/cjk": "^1.0.4",
     "class-variance-authority": "^0.7.1",

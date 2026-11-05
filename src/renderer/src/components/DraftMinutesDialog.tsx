@@ -37,7 +37,7 @@ export function DraftMinutesDialog({
           <DialogTitle>生成底稿 · {program.name}</DialogTitle>
         </DialogHeader>
         <p className="text-sm text-muted-foreground">
-          主播会按这个节目的内容类型、剧本和知识范围逐场景写底稿——过程在直播台看得见，随时可以插话改口径。
+          导演会按这个项目的场次结构逐场写底稿——过程在直播台看得见，随时可以插话改口径。
         </p>
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)}>

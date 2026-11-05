@@ -10,7 +10,6 @@ import type {
 import type { SpeechPool } from '../SpeechPool'
 import type { KnowledgeService } from '../KnowledgeService'
 import type { MemoryService } from '../MemoryService'
-import type { PersonaService } from '../PersonaService'
 import type { ScriptService } from '../ScriptService'
 import type { StorageService } from '../StorageService'
 import type { AudioStyleService } from '../AudioStyleService'
@@ -50,7 +49,6 @@ export interface ToolCtx {
   pool: SpeechPool
   knowledge: KnowledgeService
   memory: MemoryService
-  persona: PersonaService
   script: ScriptService
   storage: StorageService
   draftUnits: DraftUnitService
@@ -113,6 +111,8 @@ export interface ToolCtx {
   agentChat?: (text: string, timeoutMs: number) => Promise<string>
   /** 事件近查（events_recent 工具，仅外部侧接线；实时流走 GET /events SSE） */
   eventsRecent?: (limit: number, kinds?: Set<string>) => string
+  /** 当前项目目录（bash / read / write / edit 的工作目录；没打开项目时 null） */
+  projectRoot?: () => string | null
 }
 
 /**

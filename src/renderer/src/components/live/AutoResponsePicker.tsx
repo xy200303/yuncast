@@ -3,20 +3,22 @@ import { toast } from 'sonner'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
-import type { Program, Trigger } from '../../../../shared/types'
+import type { SessionConfig, Trigger } from '../../../../shared/types'
 
 /**
- * 自动响应配置（节目的互动总闸 + 触发器白名单）：
- * 开播确认页和直播台「⋯ → 自动响应」共用同一份组件——**播出中也能改**，改完写回节目配置，
- * 主进程 refreshProgramGate 立刻让引擎按新配置判定（不用下播、不用重启会话）。
+ * 自动响应配置（本场的互动总闸 + 触发器白名单）：
+ * 开播确认页和直播台「⋯ → 自动响应」共用同一份组件——**播出中也能改**，
+ * 改的是本场配置（不写回节目），主进程 refreshProgramGate 立刻让引擎按新配置判定。
  */
 export function AutoResponsePicker({
-  program,
+  programId,
+  session,
   onSaved,
   compact = false
 }: {
-  program: Program
-  onSaved?: (program: Program) => void
+  programId: string
+  session: SessionConfig
+  onSaved?: (session: SessionConfig) => void
   /** 紧凑版（开播确认页内嵌）：不放标题与说明 */
   compact?: boolean
 }) {
@@ -27,14 +29,15 @@ export function AutoResponsePicker({
     void window.api.trigger.list().then((list) => setTriggers(list.filter((item) => item.enabled)))
   }, [])
 
-  const save = async (patch: Partial<Pick<Program, 'allowLiveEvents' | 'enabledTriggerIds'>>): Promise<void> => {
+  const save = async (
+    patch: Partial<Pick<SessionConfig, 'allowLiveEvents' | 'enabledTriggerIds'>>
+  ): Promise<void> => {
     if (busy) return
     setBusy(true)
     try {
-      const { id, createdAt: _c, updatedAt: _u, currentSceneIdx: _s, ...input } = program
-      const result = await window.api.program.save({ ...input, ...patch }, id)
-      if (result.ok) onSaved?.(result.item)
-      else toast.error('自动响应没保存上', { description: result.error })
+      const saved = await window.api.sessionConfig.patch(programId, patch)
+      if (saved) onSaved?.(saved)
+      else toast.error('自动响应没保存上', { description: '本场配置不存在，先做一次开播配置' })
     } finally {
       setBusy(false)
     }
@@ -42,8 +45,8 @@ export function AutoResponsePicker({
 
   const toggle = (triggerId: string, on: boolean): void => {
     const next = on
-      ? [...new Set([...program.enabledTriggerIds, triggerId])]
-      : program.enabledTriggerIds.filter((id) => id !== triggerId)
+      ? [...new Set([...session.enabledTriggerIds, triggerId])]
+      : session.enabledTriggerIds.filter((id) => id !== triggerId)
     void save({ enabledTriggerIds: next })
   }
 
@@ -57,12 +60,12 @@ export function AutoResponsePicker({
           </p>
         </div>
         <Switch
-          checked={program.allowLiveEvents}
+          checked={session.allowLiveEvents}
           disabled={busy}
           onCheckedChange={(checked) => void save({ allowLiveEvents: checked })}
         />
       </div>
-      {program.allowLiveEvents && (
+      {session.allowLiveEvents && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border bg-muted/20 px-3 py-2">
           <span className="text-xs text-muted-foreground">自动响应：</span>
           {triggers.length === 0 ? (
@@ -71,7 +74,7 @@ export function AutoResponsePicker({
             triggers.map((trigger) => (
               <label key={trigger.id} className="flex cursor-pointer items-center gap-1.5 text-xs">
                 <Checkbox
-                  checked={program.enabledTriggerIds.includes(trigger.id)}
+                  checked={session.enabledTriggerIds.includes(trigger.id)}
                   disabled={busy}
                   onCheckedChange={(checked) => toggle(trigger.id, checked === true)}
                 />

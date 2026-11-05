@@ -6,7 +6,7 @@ import { SpeechText } from './SpeechText'
  * 之前每处各写一套（leading-5/leading-6、muted/前景色交错），换个模式字就变了样——
  * 所以字号、行高、字色只在下面这一个常量里定义，谁渲染正文都走它。
  */
-const CONTENT_TEXT_CLASS = 'text-[13px] leading-6'
+const CONTENT_TEXT_CLASS = 'text-[15px] leading-[1.75]'
 
 /** 次要正文（历史回看、生成中预览）：字号行高完全一致，只把字色压暗 */
 const CONTENT_TEXT_MUTED_CLASS = `${CONTENT_TEXT_CLASS} text-muted-foreground`

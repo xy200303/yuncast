@@ -1,6 +1,10 @@
 /** IPC 通道常量，main / preload / renderer 共用 */
 export const IPC = {
   appInfo: 'app:info',
+  /** 菜单栏的编辑动作：undo/redo/cut/copy/paste/selectAll */
+  appEdit: 'app:edit',
+  /** 菜单栏的视图动作：reload/zoom-in/zoom-out/zoom-reset/fullscreen/devtools */
+  appView: 'app:view',
   configGet: 'config:get',
   configSet: 'config:set',
 
@@ -19,9 +23,15 @@ export const IPC = {
   /** 本场配置：开播弹窗确认后落库（docs/12） */
   sessionConfigSave: 'session-config:save',
   sessionConfigLatest: 'session-config:latest',
+  /** 没有本场配置就建一条（互动开关随时可改，不等开播） */
+  sessionConfigEnsure: 'session-config:ensure',
+  /** 直播中改自动响应开关（只动互动/触发器，不新开一场） */
+  sessionConfigPatch: 'session-config:patch',
   poolRevise: 'pool:revise',
   /** 把某条未播话术提到队首（等价「从此处播」前的排队动作） */
   poolPromote: 'pool:promote',
+  /** 仅播此条：插到当前条之后，其余顺序不动 */
+  poolPlayOnly: 'pool:play-only',
   poolRecentPlayed: 'pool:recent-played',
   /** renderer → main：取第一个 ready 条目开始播放（主进程置 playing） */
   /** renderer → main：播报完成回报 */
@@ -166,16 +176,24 @@ export const IPC = {
   statsSession: 'stats:session',
 
   // 剧本
-  scriptList: 'script:list',
-  scriptSave: 'script:save',
-  scriptDelete: 'script:delete',
+  // 项目（一个项目 = 一个目录 = 一个 project.db）
+  projectList: 'project:list',
+  projectCreate: 'project:create',
+  projectOpen: 'project:open',
+  /** 按目录打开一个已有项目（目录里必须有 project.db） */
+  projectOpenAt: 'project:open-at',
+  projectClose: 'project:close',
+  /** 从列表移除（不动磁盘目录） */
+  projectRemove: 'project:remove',
+  /** 新建项目时选一个父目录 */
+  projectPickDir: 'project:pick-dir',
+  /** main → renderer：项目列表或当前项目变化 */
+  projectChanged: 'project:changed',
 
   // 节目
   programList: 'program:list',
   programSave: 'program:save',
-  programDelete: 'program:delete',
   programSetActive: 'program:set-active',
-  programChanged: 'program:changed',
   /** 开播前预检（docs/07 §8.5）：返回检查项清单，UI 弹确认 */
   programPreflight: 'program:preflight',
   /** 启动节目：加载配置 + 应用人设/音色 + 装载话术库 + 启动主播 */

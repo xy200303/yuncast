@@ -5,8 +5,8 @@ import { NAV_ITEMS } from './Sidebar'
 import { voiceRouteSummary } from '../lib/voice'
 
 /**
- * 底部状态栏：显示当前**实际生效**的导演大脑与节目卡司的嗓音 + 服务商；
- * 没有「当前出镜」概念——卡司没选音色就照实写「卡司没选音色」。
+ * 底部状态栏：显示当前**实际生效**的导演大脑与本场主主播的嗓音 + 服务商；
+ * 本场没配主播/没定嗓子就照实写，不做兜底。
  * 导演大脑没配 / 嗓音路由断了给红色块，点击直达对应设置页。
  */
 export function StatusBar() {
@@ -35,7 +35,7 @@ export function StatusBar() {
     ? `导演 ${config.director.name}（${providerLabel(llmProviders, directorConnection?.providerId ?? '')}）`
     : null
 
-  // 节目卡司：取卡司第一张的嗓音；没配就照实说明
+  // 本场卡司：取本场配置里主主播的嗓音；没配就照实说明
   const [programVoice, setProgramVoice] = useState<{ name: string; voiceId: string; hasCast: boolean } | null>(null)
   useEffect(() => {
     if (!('api' in window)) return
@@ -48,19 +48,16 @@ export function StatusBar() {
           setProgramVoice(null)
           return
         }
-        const castFirst = program.personaIds[0]
-        const personas = await window.api.persona.list()
-        const voiceId = (castFirst ? personas.find((p) => p.id === castFirst)?.voiceId : '') ?? ''
-        setProgramVoice({ name: program.name, voiceId: voiceId.trim(), hasCast: Boolean(castFirst) })
+        const session = await window.api.sessionConfig.latest(program.id)
+        const voiceId = (session?.voiceId ?? '').trim()
+        setProgramVoice({ name: program.name, voiceId, hasCast: Boolean(voiceId) })
       })
     }
     load()
-    const off = window.api.program.onChanged(load)
     return () => {
       alive = false
-      off()
     }
-  }, [config.live.activeProgramId])
+  }, [config.live.activeProgramId, agent.live])
 
   // 卡司嗓音 + TTS 服务商；嗓音路由断了（接入被删/模型没启用）红色警示
   const voice = programVoice?.voiceId
@@ -129,8 +126,8 @@ export function StatusBar() {
             卡司嗓音失效 → 去修复
           </button>
         ) : (
-          <span title={programVoice?.hasCast ? '卡司里的卡还没选音色' : '本节目没配卡司：合成时逐段用 personaId 指定'}>
-            {!programVoice ? '未选节目' : programVoice.hasCast ? '卡司没选音色' : '未选主播'}
+          <span title="本项目还没选音色：开播前在开播配置里定">
+            {!programVoice ? '未打开项目' : '本场未选音色'}
           </span>
         )}
         {synthesizing > 0 && (

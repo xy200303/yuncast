@@ -9,8 +9,8 @@ import { DirectorConsole } from './LivePage'
 const FLOAT_KEY = 'yuncast.agent-panel.float:v1'
 // 无版本的旧键只做读取兜底，写只写新键：老用户升级后浮窗位置不丢
 const LEGACY_FLOAT_KEY = 'yuncast.agent-panel.float'
-/** 应用自己的标题栏高度（DragStrip h-10 = 40px，右侧是系统窗口按钮）：浮窗不许压上去 */
-const TITLEBAR_H = 40
+/** 应用自己的标题栏高度（菜单栏 h-9 = 36px，右侧是系统窗口按钮）：浮窗不许压上去 */
+const TITLEBAR_H = 36
 
 type FloatRect = { x: number; y: number; width: number; height: number }
 

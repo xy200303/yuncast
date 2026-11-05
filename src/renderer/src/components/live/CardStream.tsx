@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Clock3, MoreHorizontal, Pencil, Play, SkipForward, Trash2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
@@ -53,30 +53,24 @@ export function CardStream({ personas }: { personas: Persona[] }) {
   const history = useLiveStore((s) => s.history)
   const density = useLiveStore((s) => s.density)
   const displayMode = useLiveStore((s) => s.displayMode)
-  const loadHistory = useLiveStore((s) => s.loadHistory)
   const setDensity = useLiveStore((s) => s.setDensity)
   const setDisplayMode = useLiveStore((s) => s.setDisplayMode)
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null)
   const live = useAppStore((s) => s.agent.live === true)
-  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   /** 未开播时展示的是「节目底稿」= 还没播的内容，状态一律未播/待合成（放 store，水位条也要用） */
   const drafts = useLiveStore((s) => s.drafts)
-  const loadDrafts = useLiveStore((s) => s.loadDrafts)
   const [busyId, setBusyId] = useState('')
 
-  // 开播中才拉历史；未开播时展示底稿（未播），不显示上一场的"已播"
-  useEffect(() => {
-    if (live) void loadHistory()
-  }, [live, loadHistory, activeProgramId, pool.items.length])
-
-  useEffect(() => {
-    void loadDrafts(live ? '' : activeProgramId)
-  }, [live, activeProgramId, loadDrafts])
-
   const rows = useMemo<CardRow[]>(() => {
-    if (live) return mergeRows(history, pool.items)
-    // 未开播：底稿就是待播内容（结束本场后自动回到这里，不会停在"已播"）
-    return drafts.map((draft) => ({
+    // 失败条目单独一路：它们既不在未播队列里，也不该被"未开播就只看底稿"藏起来
+    const failedRows: CardRow[] = pool.failed.map((item) => ({ item, played: false }))
+    if (live) {
+      const base = mergeRows(history, pool.items)
+      const seen = new Set(base.map((row) => row.item.id))
+      return [...base, ...failedRows.filter((row) => !seen.has(row.item.id))]
+    }
+    // 未开播：底稿就是待播内容（结束本场后自动回到这里，不会停在"已播"），失败条目照常列出
+    const draftRows = drafts.map((draft) => ({
       item: {
         id: draft.id,
         sessionId: '',
@@ -92,7 +86,9 @@ export function CardStream({ personas }: { personas: Persona[] }) {
       } as PoolItem,
       played: false
     }))
-  }, [live, history, pool.items, drafts])
+    const seen = new Set(draftRows.map((row) => row.item.id))
+    return [...draftRows, ...failedRows.filter((row) => !seen.has(row.item.id))]
+  }, [live, history, pool.items, pool.failed, drafts])
   const speakerOf = (item: PoolItem): { name: string; color: string } => {
     // 说话人靠音色反查（条目上现只有 voiceId 快照；personaId 随资产解耦一起进）
     const index = personas.findIndex((persona) => persona.voiceId && persona.voiceId === item.voiceId)

@@ -46,6 +46,7 @@ import { ProgramGateDialog } from '@/components/ProgramGateDialog'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { VoicePickDialog } from '@/components/VoicePickDialog'
 import { useAppStore, type NavPage, type SettingsPaneId } from '../stores/useAppStore'
+import { useLiveStore } from '../stores/useLiveStore'
 import { audioEngine } from '../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../audio/liveControl'
 import { AssetStaleBanner } from './AssetStaleBanner'
@@ -90,6 +91,19 @@ export function LivePage() {
   const [inboxEvents, setInboxEvents] = useState<LiveInboxEvent[]>([])
   /** 节目控制（选择/启动/暂停/结束 + 预检与门禁弹窗）：activeProgram 也由它给，只有一处真值 */
   const programControl = useProgramLauncher()
+  // 已播历史与底稿的加载放在页面级（WaterBar 常驻、卡片流只在滚动模式出现，
+  // 挂在卡片流里会导致预制模式永远 0 段历史）
+  const loadHistory = useLiveStore((s) => s.loadHistory)
+  const loadDrafts = useLiveStore((s) => s.loadDrafts)
+  const agentLive = useAppStore((s) => s.agent.live === true)
+  const activeId = useAppStore((s) => s.config.live.activeProgramId)
+  const poolSize = useAppStore((s) => s.pool.items.length)
+  useEffect(() => {
+    if (agentLive) void loadHistory()
+  }, [agentLive, loadHistory, activeId, poolSize])
+  useEffect(() => {
+    void loadDrafts(agentLive ? '' : activeId)
+  }, [agentLive, activeId, loadDrafts])
 
   /** 开播配置确认：语言/收尾写回节目，勾了"清空重合成"就先清音频，然后进原有预检流程 */
   const applyLaunchConfig = async (config: LaunchConfig): Promise<void> => {

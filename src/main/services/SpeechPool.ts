@@ -79,6 +79,9 @@ export class SpeechPool {
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>()
   /** 彻底失败（停播）的条目：点「继续」时由 retryFailed 重新触发合成 */
   private haltedIds = new Set<string>()
+  /** 连续合成失败计数与熔断窗口：3 条连着失败就停 60 秒，别把整池挨个撞一遍 */
+  private consecutiveFailures = 0
+  private circuitUntil = 0
 
   /** 音频就绪预热钩子（index.ts 接 BlobStore.warm：开播装池/合成完成时把文件读进 OS 页面缓存） */
   onWarmCache: ((path: string) => void) | null = null
@@ -458,7 +461,12 @@ export class SpeechPool {
     const now = Date.now()
     for (const item of queued.slice(0, POOL_LIMITS.synthWindow)) {
       // 退避中的条目到点再合成（retryAt 的定时器到点会 refresh 一次）
-      if (item.status === 'pending' && !this.synthJobs.has(item.id) && (this.retryAt.get(item.id) ?? 0) <= now) {
+      if (
+        item.status === 'pending' &&
+        !this.synthJobs.has(item.id) &&
+        Date.now() >= this.circuitUntil &&
+        (this.retryAt.get(item.id) ?? 0) <= now
+      ) {
         void this.synthesize(item)
       }
     }
@@ -513,6 +521,11 @@ export class SpeechPool {
       }
       this.clearRetry(item.id)
       this.haltedIds.delete(item.id)
+      // 有一条真的合成成功就说明链路是通的：熔断计数与窗口一起复位
+      if (this.consecutiveFailures > 0) {
+        this.consecutiveFailures = 0
+        this.circuitUntil = 0
+      }
       this.storage.poolItemUpdate(item.id, { status: 'ready', audioPath, stream: false })
       this.onWarmCache?.(audioPath)
     } catch (error) {
@@ -527,6 +540,16 @@ export class SpeechPool {
         // 429/5xx/网络类临时错误退避重试（2s→8s）；401/403 鉴权欠费类重试无意义，直接失败
         // 分类要看技术原文（raw），不能看翻译后的人话（message）
         const retryable = !SpeechPool.FATAL.test(raw) && SpeechPool.RETRYABLE.test(raw)
+        if (!retryable) {
+          // 鉴权/模型不存在这类错误，连着撞三条就完全没必要继续撞下去
+          this.consecutiveFailures += 1
+          if (this.consecutiveFailures >= 3 && Date.now() >= this.circuitUntil) {
+            this.circuitUntil = Date.now() + 60_000
+            console.warn(
+              `[YunCast] 连续 ${this.consecutiveFailures} 条合成失败（${message}）：暂停自动合成 60 秒，等人工处理`
+            )
+          }
+        }
         if (retryable && attempts < 3) {
           const delay = SpeechPool.BACKOFF_MS[Math.min(attempts - 1, SpeechPool.BACKOFF_MS.length - 1)]
           console.warn(`[YunCast] TTS 合成失败（${item.id}，第 ${attempts} 次），${delay / 1000}s 后重试: ${message}`)

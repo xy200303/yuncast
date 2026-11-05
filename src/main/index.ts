@@ -415,6 +415,13 @@ function autoPauseWhenDry(): boolean {
 
 /** 池快照广播给所有窗口；顺带探测 pool.empty / pool.low（沿只发一次，恢复后可再发） */
 let poolWasEmpty = true
+/**
+ * 本场「自动补货」预算：池空时最多让主播再写 2 次。
+ * 这是防"合成失败 → 池空 → 主播补货 → 又失败"死循环的最后一道闸——没有它，
+ * 失败条目不在池里、池永远判定为空，主播会被无限叫醒。
+ */
+let autoFillBudget = { used: 0 }
+const AUTO_FILL_LIMIT = 2
 let poolWasLow = false
 /** 模块级引用：池快照回调里要用（main() 里创建后赋上） */
 let storageRef: StorageService | null = null
@@ -428,7 +435,19 @@ function broadcastPool(snapshot: PoolSnapshot): void {
   const remaining = snapshot.items.length
   const empty = remaining === 0
   if (empty) ensurePauseWhenDry()
-  if (empty && !poolWasEmpty) bus?.emit('pool.empty', {}, 'pool')
+  if (empty && !poolWasEmpty) {
+    // 池空分流（docs/12 第 13 节）：先看是不是"合成失败把池掏空了"。
+    // 有失败 → 不叫主播补货（再写一版同样会失败），把处理权交回人；
+    // 预算用完 → 也不叫，避免无限重生。
+    if (snapshot.failed.length > 0) {
+      console.warn(`[YunCast] 池空了但有 ${snapshot.failed.length} 条合成失败：不触发补货，等人工重试/换音色`)
+    } else if (autoFillBudget.used >= AUTO_FILL_LIMIT) {
+      console.warn(`[YunCast] 本场自动补货已用满 ${AUTO_FILL_LIMIT} 次：不再叫主播写稿`)
+    } else {
+      autoFillBudget.used += 1
+      bus?.emit('pool.empty', {}, 'pool')
+    }
+  }
   // 自动暂停后来了新内容（合成完成/主播补货/装载）：接着播，不用人点「继续」
   if (!empty && autoPausedForDry) {
     autoPausedForDry = false
@@ -595,6 +614,8 @@ async function launchAndAnnounce(
   const wasLive = agent?.status().live === true
   const result = await player.launch(programId, { allowPartial: opts.allowPartial === true })
   if (!result.ok) return result
+  // 新一场重新给满补货预算
+  autoFillBudget = { used: 0 }
   if (!wasLive) bus?.emit('stream.started', {}, opts.source)
   resetStopWrap()
   if ((result.loaded ?? 0) === 0) {

@@ -80,8 +80,19 @@ const tracks = [
 /** 更新日志：只写仓库里查得到的事实（与 CHANGELOG.md 对齐） */
 const changelog = [
   {
-    v: 'v0.4.0',
+    v: 'v0.4.1',
     when: '最新',
+    items: [
+      '存储收口：合成音频进项目 audio/、附件进 assets/，整个目录拷走就是完整备份',
+      'TTS 缓存改存项目库；应用级 BlobStore 与引用登记全部删除',
+      '目录搬家/换机后按文件名自动重绑路径，打开即播',
+      '打开项目时清空 .tmp、清扫没人引用的文件（1 小时宽限期）',
+      '删除旧库补列、配置迁移、触发器模板升级等兼容层；项目结构版本不一致直接拒绝打开'
+    ]
+  },
+  {
+    v: 'v0.4.0',
+    when: '项目制',
     items: [
       '项目制：一个项目 = 一个目录 = 一个数据库；欢迎页直接进最近项目，项目可导入导出（ZIP，包内相对路径）',
       '直播台收敛成单窗口：卡片流 + 带水位的播放条，评论流/事件流常驻，场次大纲与章节点播不再重复一份',
@@ -610,8 +621,8 @@ onUnmounted(() => {
         target="_blank"
         rel="noreferrer"
       >
-        <span class="notice-tag">v0.4.0</span>
-        <span class="notice-text">项目制重构：一个项目 = 一个目录，可导入导出 ZIP · 支持一键装虚拟声卡</span>
+        <span class="notice-tag">v0.4.1</span>
+        <span class="notice-text">存储收口：音频与附件进项目目录，整个目录拷走就是备份</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">

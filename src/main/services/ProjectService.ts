@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
@@ -160,9 +160,18 @@ export class ProjectService {
   }
 
   /** 从列表移除（**不动磁盘目录**：项目是用户资产，删文件必须由用户自己决定） */
-  remove(id: string): void {
+  /** 移除项目；deleteFiles=true 时连项目目录一起删（不可恢复，调用方必须先确认） */
+  remove(id: string, options: { deleteFiles?: boolean } = {}): void {
+    const record = this.storage.projectRows().find((row) => row.id === id)
     if (this.current?.id === id) this.close()
     this.storage.projectRowRemove(id)
+    if (options.deleteFiles && record) {
+      try {
+        rmSync(record.path, { recursive: true, force: true })
+      } catch (error) {
+        console.warn('[项目] 删除目录失败:', error instanceof Error ? error.message : String(error))
+      }
+    }
     this.onChanged?.()
   }
 

@@ -1305,8 +1305,8 @@ function registerIpc(
   ipcMain.handle(IPC.projectClose, () => {
     projects.close()
   })
-  ipcMain.handle(IPC.projectRemove, (_e, id: string) => {
-    projects.remove(String(id ?? ''))
+  ipcMain.handle(IPC.projectRemove, (_e, id: string, deleteFiles?: boolean) => {
+    projects.remove(String(id ?? ''), { deleteFiles: deleteFiles === true })
     return { ok: true }
   })
   ipcMain.handle(IPC.projectPickDir, async () => {

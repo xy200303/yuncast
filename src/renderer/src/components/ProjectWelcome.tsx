@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, FolderOpen, FolderSearch, Plus } from 'lucide-react'
+import { ArrowRight, FolderOpen, FolderSearch, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { useProjectStore } from '@/stores/useProjectStore'
+import { ProjectDeleteDialog } from './ProjectDeleteDialog'
+import type { ProjectRecord } from '../../../shared/types'
 
 /**
  * 没有打开项目时的主区：产品化的启动页——
@@ -21,6 +23,7 @@ export function ProjectWelcome({
   const projects = useProjectStore((s) => s.projects)
   const openProject = useProjectStore((s) => s.open)
   const [busy, setBusy] = useState('')
+  const [deleting, setDeleting] = useState<ProjectRecord | null>(null)
 
   // 欢迎页出现时重拉一次清单：启动后还没打开过项目，store 里可能是空的
   useEffect(() => {
@@ -82,17 +85,35 @@ export function ProjectWelcome({
         ) : (
           <div className="mt-3 overflow-hidden rounded-xl border bg-card shadow-[0_1px_2px_rgba(0,0,0,.04)]">
             {recent.map((project, index) => (
-              <button
+              <div
                 key={project.id}
-                type="button"
-                disabled={busy !== ''}
+                role="button"
+                tabIndex={0}
                 onClick={() => void enter(project.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    void enter(project.id)
+                  }
+                }}
                 title={project.path}
-                className={`group flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 disabled:opacity-60 ${
+                className={`group flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 ${
                   index > 0 ? 'border-t' : ''
-                }`}
+                } ${busy !== '' ? 'opacity-60' : ''}`}
               >
                 <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">{project.name}</span>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  className="shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+                  title="删除项目"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    setDeleting(project)
+                  }}
+                >
+                  <Trash2 />
+                </Button>
                 <span className="shrink-0 text-[11px] text-muted-foreground">
                   {busy === project.id ? (
                     '打开中…'
@@ -100,11 +121,13 @@ export function ProjectWelcome({
                     <ArrowRight className="size-3.5 opacity-0 transition-opacity group-hover:opacity-100" />
                   )}
                 </span>
-              </button>
+              </div>
             ))}
           </div>
         )}
       </div>
+
+      <ProjectDeleteDialog project={deleting} onOpenChange={(next) => !next && setDeleting(null)} />
     </div>
   )
 }

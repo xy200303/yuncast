@@ -452,7 +452,8 @@ const api = {
     openAt: (dir: string) => ipcRenderer.invoke(IPC.projectOpenAt, dir) as Promise<PoolResult<ProjectRecord>>,
     close: () => ipcRenderer.invoke(IPC.projectClose) as Promise<void>,
     /** 从列表移除，不删磁盘目录 */
-    remove: (id: string) => ipcRenderer.invoke(IPC.projectRemove, id) as Promise<PoolResult>,
+    remove: (id: string, deleteFiles?: boolean) =>
+      ipcRenderer.invoke(IPC.projectRemove, id, deleteFiles) as Promise<PoolResult>,
     pickDir: () => ipcRenderer.invoke(IPC.projectPickDir) as Promise<{ ok: boolean; path: string }>,
     /** 导出项目为 ZIP（含项目目录与本项目引用的音频；包内只有相对路径） */
     exportProject: (projectId?: string) =>

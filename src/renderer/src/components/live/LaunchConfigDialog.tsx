@@ -179,11 +179,8 @@ export function LaunchConfigDialog({
     })
   }
 
-  useEffect(() => {
-    if (!open) return
-    if (tab === 'write' && draftCount > 0) setTab('synth')
-    else if (tab === 'synth' && readyCount > 0) setTab('play')
-  }, [open, tab, draftCount, readyCount])
+  /** 分段推进只发生在打开时（见上一个 effect）；打开后一律听用户的：
+   *  写稿/合成/播放三段都能点回去，「已经合成完了」不该把人锁在下一步。 */
 
   const steps: { id: 'write' | 'synth' | 'play'; label: string; done: boolean }[] = [
     { id: 'write', label: '写稿', done: draftCount > 0 },
@@ -447,13 +444,21 @@ export function LaunchConfigDialog({
           {tab === 'write' ? (
             <Button disabled={launching || !onWrite} onClick={() => onWrite?.(config)}>
               <Sparkles />
-              开始写稿
+              {draftCount > 0 ? '重新写稿' : '开始写稿'}
             </Button>
           ) : tab === 'synth' ? (
-            <Button disabled={launching || !onSynthesize} onClick={() => onSynthesize?.(config)}>
-              <AudioWaveform />
-              开始合成
-            </Button>
+            config.synthMode === 'pre' ? (
+              <Button disabled={launching || !onSynthesize} onClick={() => onSynthesize?.(config)}>
+                <AudioWaveform />
+                {readyCount > 0 ? '重新合成音频' : '预先合成音频'}
+              </Button>
+            ) : (
+              // 边播边合 / 实时：开播前没有「必须合成完」这一步，直接进开播设置
+              <Button disabled={launching} onClick={() => setTab('play')}>
+                <Play />
+                下一步：开播设置
+              </Button>
+            )
           ) : (
             <Button disabled={launching} onClick={() => onConfirm(config)}>
               <Play />

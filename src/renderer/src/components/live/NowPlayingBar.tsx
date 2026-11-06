@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Loader2, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Slider } from '@/components/ui/slider'
 import { RecordIndicator } from './RecordControl'
 import { AudioOutputDialog } from './AudioOutputDialog'
 import { useAppStore } from '../../stores/useAppStore'
@@ -50,7 +49,6 @@ export function NowPlayingBar({
   const [prepared, setPrepared] = useState(false)
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null)
   const masterVolume = useAppStore((s) => s.masterVolume)
-  const setMasterVolume = useAppStore((s) => s.setMasterVolume)
   const [audioOpen, setAudioOpen] = useState(false)
 
   useEffect(() => {
@@ -267,26 +265,15 @@ export function NowPlayingBar({
 
         <RecordIndicator />
 
-        {/* 音量 */}
-        <div className="flex shrink-0 items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            onClick={() => setAudioOpen(true)}
-            title="声音输出：选择设备、调各自音量"
-          >
-            {masterVolume > 0 ? <Volume2 /> : <VolumeX />}
-          </Button>
-          <Slider
-            className="w-24"
-            value={[masterVolume]}
-            min={0}
-            max={100}
-            step={1}
-            aria-label="主音量"
-            onValueChange={([v]) => setMasterVolume(v)}
-          />
-        </div>
+        {/* 声音输出：配置在弹窗里（设备多选 + 各自音量），播放条只留入口 */}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => setAudioOpen(true)}
+          title="声音输出：选择设备、调音量"
+        >
+          {masterVolume > 0 ? <Volume2 /> : <VolumeX />}
+        </Button>
 
         {/* 传输控制：上一段（预制）/ 下一段 / 队列 / 结束 */}
         {running && (

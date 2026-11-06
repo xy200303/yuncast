@@ -47,9 +47,7 @@ export function ProjectWelcome({
       style={{ background: 'radial-gradient(900px 420px at 50% -8%, var(--muted), transparent 70%)' }}
     >
       <div className="w-full max-w-2xl">
-        <h1 className="text-[22px] font-semibold tracking-tight">小云播客坊</h1>
-
-        <div className="mt-6 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button className="h-9 gap-1.5 px-4" onClick={onCreate}>
             <Plus />
             新建项目

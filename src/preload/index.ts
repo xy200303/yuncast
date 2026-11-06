@@ -454,12 +454,12 @@ const api = {
     /** 从列表移除，不删磁盘目录 */
     remove: (id: string) => ipcRenderer.invoke(IPC.projectRemove, id) as Promise<PoolResult>,
     pickDir: () => ipcRenderer.invoke(IPC.projectPickDir) as Promise<{ ok: boolean; path: string }>,
-    /** 导出项目到 .yuncast（单个压缩包，含项目目录与本项目引用的音频） */
+    /** 导出项目为 ZIP（含项目目录与本项目引用的音频；包内只有相对路径） */
     exportProject: (projectId?: string) =>
       ipcRenderer.invoke(IPC.projectExport, projectId) as Promise<
         { ok: true; file: string } | { ok: false; error?: string; canceled?: boolean }
       >,
-    /** 导入 .yuncast：解包到「文档/YunCast Projects」，登记并打开 */
+    /** 导入项目 ZIP：解压到「文档/YunCast Projects」，登记并打开 */
     importProject: () =>
       ipcRenderer.invoke(IPC.projectImport) as Promise<
         { ok: true; item: ProjectRecord } | { ok: false; error?: string; canceled?: boolean }

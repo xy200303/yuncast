@@ -1324,15 +1324,15 @@ function registerIpc(
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     return { ok: !picked.canceled && picked.filePaths.length > 0, path: picked.filePaths[0] ?? '' }
   })
-  // 项目导入/导出：一个 .yuncast 包 = 项目目录 + 项目目录之外的音频资产
+  // 项目导入/导出：一个 ZIP 包 = manifest + 项目目录（包内全是相对路径，换机器可用）
   ipcMain.handle(IPC.projectExport, async (_e, projectId?: string) => {
     const record = storage.projectRows().find((row) => row.id === (projectId ?? projects.currentProject()?.id))
     if (!record) return { ok: false, error: '没有可导出的项目' }
     const win = BrowserWindow.getAllWindows()[0]
     const picked = await dialog.showSaveDialog(win, {
       title: '导出项目',
-      defaultPath: join(app.getPath('documents'), `${record.name.replace(/[\\/:*?"<>|]/g, '_')}.yuncast`),
-      filters: [{ name: 'YunCast 项目', extensions: ['yuncast'] }]
+      defaultPath: join(app.getPath('documents'), `${record.name.replace(/[\\/:*?"<>|]/g, '_')}.zip`),
+      filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }]
     })
     if (picked.canceled || !picked.filePath) return { ok: false, canceled: true }
     try {
@@ -1348,7 +1348,7 @@ function registerIpc(
     const picked = await dialog.showOpenDialog(win, {
       title: '导入项目',
       properties: ['openFile'],
-      filters: [{ name: 'YunCast 项目', extensions: ['yuncast'] }]
+      filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }]
     })
     if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true }
     try {

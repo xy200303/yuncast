@@ -69,9 +69,9 @@ export function WorkbenchTopBar({
 
       {/* 唯一可点的一项：做成描边按钮，一眼看得出能点 */}
       <Button
-        variant="outline"
+        variant="ghost"
         size="sm"
-        className="h-7 gap-1 px-2.5 text-xs"
+        className="h-7 gap-1 bg-muted/60 px-2.5 text-xs hover:bg-muted"
         onClick={onOpenAutoResponse}
         disabled={!program}
         title="自动响应：决定哪些直播间动态派给主播（欢迎/送礼/点赞/冷场自救…），改动立刻生效"

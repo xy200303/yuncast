@@ -71,7 +71,7 @@ export function WorkbenchTopBar({
       <Button
         variant="ghost"
         size="sm"
-        className="h-7 gap-1 bg-muted/60 px-2.5 text-xs hover:bg-muted"
+        className="h-7 gap-1 px-2 text-xs"
         onClick={onOpenAutoResponse}
         disabled={!program}
         title="自动响应：决定哪些直播间动态派给主播（欢迎/送礼/点赞/冷场自救…），改动立刻生效"

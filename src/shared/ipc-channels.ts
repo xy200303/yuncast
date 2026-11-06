@@ -240,7 +240,7 @@ export const IPC = {
   sessionList: 'session:list',
   /** 场次详情：场次行 + 播出话术条目 + 评论/事件时间线 */
   sessionDetail: 'session:detail',
-  /** 删场次：连带删播出条目（解 blob 引用）与事件镜像 */
+  /** 删场次：连带删播出条目与事件镜像 */
   sessionDelete: 'session:delete',
   /** 场次音频导出：实际播出的有音频条目按播放顺序导出（进度复用 programExportEvent） */
   sessionExport: 'session:export',

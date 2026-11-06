@@ -1,6 +1,6 @@
 import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
@@ -319,7 +319,7 @@ export class StorageService {
   private readonly configFile: string
   private config: AppConfig
   private configListeners = new Set<(config: AppConfig) => void>()
-  /** 应用库（全局）：设置/凭据、音色库、供应商接入、用量、blob 存储、项目清单 */
+  /** 应用库（全局）：设置/凭据、音色库、接入、用量、项目清单 */
   private appDb: DatabaseSync
   /** 当前项目库；没有打开项目时是一份内存空库，内容读写落在空表上（不报错、不串项目） */
   private projectDb: DatabaseSync
@@ -493,38 +493,6 @@ export class StorageService {
     `)
     this.adb.exec('CREATE INDEX IF NOT EXISTS tts_records_ts ON tts_records(ts)')
     this.adb.exec('CREATE INDEX IF NOT EXISTS tts_records_script ON tts_records(script_id, ts)')
-    // BlobStore 统一存储引擎（内容寻址 + 登记制引用 + 宽限期 GC；文本不进，只有二进制资产）
-    this.adb.exec(`
-      CREATE TABLE IF NOT EXISTS blobs (
-        hash TEXT PRIMARY KEY,
-        ext TEXT NOT NULL DEFAULT '',
-        bytes INTEGER NOT NULL DEFAULT 0,
-        mime TEXT NOT NULL DEFAULT '',
-        tier TEXT NOT NULL DEFAULT 'cache',
-        expires_at INTEGER,
-        created_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL
-      )
-    `)
-    this.ensureColumn('blobs', 'tier', "TEXT NOT NULL DEFAULT 'cache'")
-    this.ensureColumn('blobs', 'expires_at', 'INTEGER')
-    this.adb.exec(`
-      CREATE TABLE IF NOT EXISTS blob_refs (
-        blob_hash TEXT NOT NULL,
-        owner_kind TEXT NOT NULL,
-        owner_id TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (blob_hash, owner_kind, owner_id)
-      )
-    `)
-    this.adb.exec('CREATE INDEX IF NOT EXISTS blob_refs_hash ON blob_refs(blob_hash)')
-    this.adb.exec(`
-      CREATE TABLE IF NOT EXISTS tts_cache (
-        param_key TEXT PRIMARY KEY,
-        blob_hash TEXT NOT NULL,
-        created_at INTEGER NOT NULL
-      )
-    `)
     this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
     this.ensureColumn('voices', 'instruction', "TEXT NOT NULL DEFAULT ''")
@@ -747,9 +715,6 @@ export class StorageService {
   }
 
   saveVoice(voice: VoiceRecord): void {
-    const oldSamplePath = str(
-      (this.adb.prepare('SELECT sample_path AS p FROM voices WHERE id = ?').get(voice.id) as Record<string, unknown> | undefined)?.p
-    )
     this.adb
       .prepare(
         `INSERT INTO voices (id, name, provider, voice_type, model, connection_id, instruction, sample_path, status, error, authorized, authorized_at, created_at, updated_at)
@@ -763,18 +728,10 @@ export class StorageService {
         instruction: voice.instruction ?? '',
         authorized: voice.authorized ? 1 : 0
       })
-    const newSamplePath = voice.samplePath || ''
-    if (oldSamplePath !== newSamplePath) {
-      this.onAudioPathChange?.('voice', voice.id, oldSamplePath || null, newSamplePath || null)
-    }
   }
 
   deleteVoice(id: string): void {
-    const oldSamplePath = str(
-      (this.adb.prepare('SELECT sample_path AS p FROM voices WHERE id = ?').get(id) as Record<string, unknown> | undefined)?.p
-    )
     this.adb.prepare('DELETE FROM voices WHERE id = ?').run(id)
-    if (oldSamplePath) this.onAudioPathChange?.('voice', id, oldSamplePath, null)
   }
 
   // ---------- 供应商接入（设置 → 语言模型） ----------
@@ -1369,25 +1326,6 @@ export class StorageService {
   // ---------- 话术池存储 ----------
 
   /**
-   * 音频归属变化钩子（BlobStoreService 注入）：owner 行的 audio_path 变化时回调，
-   * 由它对 blobs/ 目录下的文件登记/解除引用（登记制 GC 的唯一入口，外部不要直接操作 blob_refs）。
-   * 注意同步调用：better-sqlite3 单连接，回调里再查库是安全的。
-   */
-  /**
-   * 音频/文件路径变更钩子（BlobStore 引用登记的驱动）。
-   * ownerKind：draftUnit/speech_item（audio_path 列）、voice（sample_path）、
-   * draft_unit_rendered/scene_rendered（rendered JSON 里的 audioPath）、knowledge_file（file_path）。
-   */
-  onAudioPathChange:
-    | ((
-        ownerKind: 'draft_unit' | 'pool_item' | 'voice' | 'draft_unit_rendered' | 'scene_rendered' | 'knowledge_file',
-        ownerId: string,
-        oldPath: string | null,
-        newPath: string | null
-      ) => void)
-    | null = null
-
-  /**
    * 数据变更广播钩子（index.ts 接成 data:changed 推给所有窗口）。
    * 挂在存储层是刻意的：界面刷新只认「库真的变了」这一个信号，
    * IPC、agent 工具、MCP 三条写路径于是自动都覆盖，不用每个调用方各记得广播一次。
@@ -1435,7 +1373,6 @@ export class StorageService {
         item.playedAt ?? null,
         item.textZh ?? ''
       )
-    if (item.audioPath) this.onAudioPathChange?.('pool_item', item.id, null, item.audioPath)
   }
 
   poolItemUpdate(id: string, patch: Partial<PoolItem>): void {
@@ -1456,18 +1393,8 @@ export class StorageService {
     if (patch.emotionScale !== undefined) columns.emotion_scale = patch.emotionScale ?? null
     const keys = Object.keys(columns)
     if (keys.length === 0) return
-    // audio_path 变化要先取旧值（BlobStore 引用登记需要新旧两个路径）
-    const oldAudioPath =
-      patch.audioPath !== undefined
-        ? (str(
-            (this.db.prepare('SELECT audio_path AS p FROM pool_items WHERE id = ?').get(id) as Record<string, unknown> | undefined)?.p
-          ) || null)
-        : undefined
     const sql = `UPDATE pool_items SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`
     this.db.prepare(sql).run(...(keys.map((k) => columns[k]) as never[]), id)
-    if (oldAudioPath !== undefined) {
-      this.onAudioPathChange?.('pool_item', id, oldAudioPath, (patch.audioPath ?? null) as string | null)
-    }
   }
 
   poolItemGet(id: string): PoolItem | null {
@@ -1604,7 +1531,6 @@ export class StorageService {
   }
 
   poolItemPrune(): void {
-    // 删除前把要删行的音频路径取出来，删完逐个解除 blob 引用（GC 按登记回收文件）。
     // 场记豁免：归到某个场次的条目是播出留档，不随池裁剪删除（删场次时才级联清掉）。
     const doomed = [
       ...(this.db
@@ -1625,11 +1551,7 @@ export class StorageService {
     ]
     if (doomed.length === 0) return
     const del = this.db.prepare('DELETE FROM pool_items WHERE id = ?')
-    for (const row of doomed) {
-      del.run(str(row.id))
-      const path = str(row.audio_path)
-      if (path) this.onAudioPathChange?.('pool_item', str(row.id), path, null)
-    }
+    for (const row of doomed) del.run(str(row.id))
   }
 
   // ---------- 场记（场次记录，docs 见 SessionRecorder） ----------
@@ -1746,17 +1668,11 @@ export class StorageService {
       .run(sessionId, scriptId)
   }
 
-  /** 删场次：连带删它的播出条目（逐条解 blob 引用）与事件镜像，最后删场次行 */
+  /** 删场次：连带删它的播出条目与事件镜像，最后删场次行 */
   sessionDelete(id: string): void {
-    const items = this.db
-      .prepare('SELECT id, audio_path FROM pool_items WHERE live_session_id = ?')
-      .all(id) as Record<string, unknown>[]
+    const items = this.db.prepare('SELECT id FROM pool_items WHERE live_session_id = ?').all(id) as Record<string, unknown>[]
     const delItem = this.db.prepare('DELETE FROM pool_items WHERE id = ?')
-    for (const row of items) {
-      delItem.run(str(row.id))
-      const path = str(row.audio_path)
-      if (path) this.onAudioPathChange?.('pool_item', str(row.id), path, null)
-    }
+    for (const row of items) delItem.run(str(row.id))
     this.db.prepare('DELETE FROM broadcast_events WHERE live_session_id = ?').run(id)
     this.db.prepare('DELETE FROM live_sessions WHERE id = ?').run(id)
     this.onDataChanged?.('sessions')
@@ -1942,168 +1858,6 @@ export class StorageService {
     }
   }
 
-  // ---------- BlobStore（统一二进制资产存储：内容寻址 + 登记制引用 + 宽限期 GC） ----------
-
-  /** 写入/触碰 blob 元数据。同内容重复 put 时 tier 只升不降（temp < cache < asset），temp 的到期时间取更早的那个 */
-  blobUpsert(blob: { hash: string; ext: string; bytes: number; mime: string; tier?: string; expiresAt?: number | null }): void {
-    const now = Date.now()
-    const tier = blob.tier ?? 'cache'
-    const expiresAt = tier === 'temp' ? (blob.expiresAt ?? null) : null
-    this.adb
-      .prepare(
-        `INSERT INTO blobs (hash, ext, bytes, mime, tier, expires_at, created_at, last_seen_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(hash) DO UPDATE SET
-           last_seen_at = excluded.last_seen_at,
-           tier = CASE
-             WHEN blobs.tier = 'asset' OR excluded.tier = 'asset' THEN 'asset'
-             WHEN blobs.tier = 'cache' OR excluded.tier = 'cache' THEN 'cache'
-             ELSE 'temp' END,
-           expires_at = CASE
-             WHEN blobs.tier != 'temp' OR excluded.tier != 'temp' THEN NULL
-             ELSE MIN(COALESCE(blobs.expires_at, excluded.expires_at), COALESCE(excluded.expires_at, blobs.expires_at)) END`
-      )
-      .run(blob.hash, blob.ext, blob.bytes, blob.mime, tier, expiresAt, now, now)
-  }
-
-  blobGet(
-    hash: string
-  ): { hash: string; ext: string; bytes: number; mime: string; tier: string; expiresAt: number | null; lastSeenAt: number } | null {
-    const row = this.adb.prepare('SELECT * FROM blobs WHERE hash = ?').get(hash) as Record<string, unknown> | undefined
-    if (!row) return null
-    return {
-      hash: str(row.hash),
-      ext: str(row.ext),
-      bytes: num(row.bytes) ?? 0,
-      mime: str(row.mime),
-      tier: str(row.tier) || 'cache',
-      expiresAt: num(row.expires_at) ?? null,
-      lastSeenAt: num(row.last_seen_at) ?? 0
-    }
-  }
-
-  blobTouch(hash: string): void {
-    this.adb.prepare('UPDATE blobs SET last_seen_at = ? WHERE hash = ?').run(Date.now(), hash)
-  }
-
-  /** 删 blob 行并连带清掉它的别名与引用登记（sweep 各路径共用，这里兜底防悬挂） */
-  blobDelete(hash: string): void {
-    this.adb.prepare('DELETE FROM blobs WHERE hash = ?').run(hash)
-    this.adb.prepare('DELETE FROM tts_cache WHERE blob_hash = ?').run(hash)
-    this.adb.prepare('DELETE FROM blob_refs WHERE blob_hash = ?').run(hash)
-  }
-
-  /** 已到期的 temp 级 blob（sweep 第一步：到期即删、不进容量统计）；仍被 owner 引用的不在此列——见 blobExpiredTempsReferenced */
-  blobExpiredTemps(now: number): { hash: string; bytes: number }[] {
-    return (
-      this.adb
-        .prepare(
-          `SELECT b.hash, b.bytes FROM blobs b
-           WHERE b.tier = 'temp' AND b.expires_at IS NOT NULL AND b.expires_at < ?
-             AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.blob_hash = b.hash)`
-        )
-        .all(now) as Record<string, unknown>[]
-    ).map((row) => ({ hash: str(row.hash), bytes: num(row.bytes) ?? 0 }))
-  }
-
-  /** 已到期但仍被 owner 引用的 temp 级 blob：有人忘了 promote，sweep 跳过删除并按 owner 报警 */
-  blobExpiredTempsReferenced(now: number): { hash: string; owners: { kind: string; id: string }[] }[] {
-    const rows = this.adb
-      .prepare(
-        `SELECT b.hash, r.owner_kind, r.owner_id FROM blobs b
-         JOIN blob_refs r ON r.blob_hash = b.hash
-         WHERE b.tier = 'temp' AND b.expires_at IS NOT NULL AND b.expires_at < ?`
-      )
-      .all(now) as Record<string, unknown>[]
-    const byHash = new Map<string, { kind: string; id: string }[]>()
-    for (const row of rows) {
-      const list = byHash.get(str(row.hash)) ?? []
-      list.push({ kind: str(row.owner_kind), id: str(row.owner_id) })
-      byHash.set(str(row.hash), list)
-    }
-    return [...byHash].map(([hash, owners]) => ({ hash, owners }))
-  }
-
-  /** 调整 blob 级别（temp 转正 asset/cache 时清掉到期时间） */
-  blobSetTier(hash: string, tier: 'cache' | 'temp' | 'asset'): void {
-    this.adb
-      .prepare('UPDATE blobs SET tier = ?, expires_at = CASE WHEN ? = \'temp\' THEN expires_at ELSE NULL END WHERE hash = ?')
-      .run(tier, tier, hash)
-    this.blobTouch(hash)
-  }
-
-  /** 真孤儿判定：没有任何 owner 引用、也没有缓存别名（asset 级显式删除前的安全检查） */
-  blobIsOrphan(hash: string): boolean {
-    const refs = this.adb.prepare('SELECT COUNT(*) AS c FROM blob_refs WHERE blob_hash = ?').get(hash) as Record<string, unknown>
-    const aliases = this.adb.prepare('SELECT COUNT(*) AS c FROM tts_cache WHERE blob_hash = ?').get(hash) as Record<string, unknown>
-    return (num(refs.c) ?? 0) === 0 && (num(aliases.c) ?? 0) === 0
-  }
-
-  blobAddRef(hash: string, ownerKind: string, ownerId: string): void {
-    this.adb
-      .prepare(
-        'INSERT INTO blob_refs (blob_hash, owner_kind, owner_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING'
-      )
-      .run(hash, ownerKind, ownerId, Date.now())
-    this.blobTouch(hash)
-  }
-
-  blobReleaseRef(hash: string, ownerKind: string, ownerId: string): void {
-    this.adb
-      .prepare('DELETE FROM blob_refs WHERE blob_hash = ? AND owner_kind = ? AND owner_id = ?')
-      .run(hash, ownerKind, ownerId)
-  }
-
-  /** GC 候选：没有任何 owner 引用、且不在 tts_cache 别名里、且过了宽限期的 blob */
-  blobGcCandidates(graceBefore: number): { hash: string; bytes: number }[] {
-    return (
-      this.adb
-        .prepare(
-          `SELECT b.hash, b.bytes FROM blobs b
-           WHERE b.tier = 'cache' AND b.last_seen_at < ?
-             AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.blob_hash = b.hash)
-             AND NOT EXISTS (SELECT 1 FROM tts_cache c WHERE c.blob_hash = b.hash)`
-        )
-        .all(graceBefore) as Record<string, unknown>[]
-    ).map((row) => ({ hash: str(row.hash), bytes: num(row.bytes) ?? 0 }))
-  }
-
-  /** 缓存级 blob（有 tts_cache 别名但没有 owner 引用）：按 last_seen 升序，供容量 LRU 逐出 */
-  blobCacheEntries(): { hash: string; bytes: number; lastSeenAt: number }[] {
-    return (
-      this.adb
-        .prepare(
-          `SELECT b.hash, b.bytes, b.last_seen_at FROM blobs b
-           WHERE b.tier = 'cache'
-             AND EXISTS (SELECT 1 FROM tts_cache c WHERE c.blob_hash = b.hash)
-             AND NOT EXISTS (SELECT 1 FROM blob_refs r WHERE r.blob_hash = b.hash)
-           ORDER BY b.last_seen_at ASC`
-        )
-        .all() as Record<string, unknown>[]
-    ).map((row) => ({ hash: str(row.hash), bytes: num(row.bytes) ?? 0, lastSeenAt: num(row.last_seen_at) ?? 0 }))
-  }
-
-  ttsCacheGet(paramKey: string): string | null {
-    const row = this.adb.prepare('SELECT blob_hash AS h FROM tts_cache WHERE param_key = ?').get(paramKey) as
-      | Record<string, unknown>
-      | undefined
-    return row ? str(row.h) : null
-  }
-
-  ttsCachePut(paramKey: string, blobHash: string): void {
-    this.adb
-      .prepare(
-        `INSERT INTO tts_cache (param_key, blob_hash, created_at) VALUES (?, ?, ?)
-         ON CONFLICT(param_key) DO UPDATE SET blob_hash = excluded.blob_hash`
-      )
-      .run(paramKey, blobHash, Date.now())
-    this.blobTouch(blobHash)
-  }
-
-  ttsCacheDelete(paramKey: string): void {
-    this.adb.prepare('DELETE FROM tts_cache WHERE param_key = ?').run(paramKey)
-  }
-
   // ---------- 知识库 ----------
 
   materialList(): Material[] {
@@ -2183,17 +1937,11 @@ export class StorageService {
         'INSERT INTO material_files (id, material_id, type, url, name, kind, content, file_path, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(file.id, file.materialId, file.type ?? 'file', file.url ?? '', file.name, file.kind, file.content, file.filePath, file.createdAt)
-    if (file.filePath) this.onAudioPathChange?.('knowledge_file', file.id, null, file.filePath)
     this.onDataChanged?.('knowledge', 'files')
   }
 
   materialFileDelete(id: string): void {
-    const oldPath =
-      str(
-        (this.db.prepare('SELECT file_path AS p FROM material_files WHERE id = ?').get(id) as Record<string, unknown> | undefined)?.p
-      ) || null
     this.db.prepare('DELETE FROM material_files WHERE id = ?').run(id)
-    if (oldPath) this.onAudioPathChange?.('knowledge_file', id, oldPath, null)
     this.onDataChanged?.('knowledge', 'files')
   }
 
@@ -2629,11 +2377,6 @@ export class StorageService {
   }
 
   draftUnitSave(u: DraftUnit): void {
-    // 音频归属变化（全文 upsert，先取旧路径给 BlobStore 引用登记用）
-    const oldAudioPath =
-      (str(
-        (this.db.prepare('SELECT audio_path AS p FROM draft_units WHERE id = ?').get(u.id) as Record<string, unknown> | undefined)?.p
-      ) || null)
     this.db
       .prepare(
         `INSERT INTO draft_units (id, script_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, pause_after_ms, voice_id, audio_path,
@@ -2669,34 +2412,20 @@ export class StorageService {
         u.createdAt,
         u.textZh ?? ''
       )
-    this.onAudioPathChange?.('draft_unit', u.id, oldAudioPath, u.audioPath ?? null)
   }
 
   /** 只更新预制音频资产（rendered 列）：生产入口/导入外部音频/stale 检测用，不动运行态字段 */
   draftUnitSetRendered(id: string, rendered: RenderedAudioRef | null): void {
-    const oldRendered = (
-      this.db.prepare('SELECT rendered AS r FROM draft_units WHERE id = ?').get(id) as Record<string, unknown> | undefined
-    )?.r
-    const oldPath = parseJson<RenderedAudioRef | null>(oldRendered, null)?.audioPath || null
     this.db
       .prepare('UPDATE draft_units SET rendered = ? WHERE id = ?')
       .run(rendered ? JSON.stringify(rendered) : null, id)
-    const newPath = rendered?.audioPath || null
-    if (oldPath !== newPath) this.onAudioPathChange?.('draft_unit_rendered', id, oldPath, newPath)
   }
 
   draftUnitDelete(id: string): void {
-    const row = this.db.prepare('SELECT audio_path AS p, rendered AS r FROM draft_units WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined
-    const oldAudioPath = str(row?.p) || null
-    const oldRenderedPath = parseJson<RenderedAudioRef | null>(row?.r, null)?.audioPath || null
     this.db.prepare('DELETE FROM draft_units WHERE id = ?').run(id)
-    if (oldAudioPath) this.onAudioPathChange?.('draft_unit', id, oldAudioPath, null)
-    if (oldRenderedPath) this.onAudioPathChange?.('draft_unit_rendered', id, oldRenderedPath, null)
   }
 
-  /** 按 id 取单条底稿（删除前取音频路径用） */
+  /** 按 id 取单条底稿 */
   draftUnitGet(id: string): DraftUnit | null {
     const row = this.db.prepare('SELECT * FROM draft_units WHERE id = ?').get(id)
     return row ? rowToDraftUnit(row as Record<string, unknown>) : null
@@ -2704,25 +2433,10 @@ export class StorageService {
 
   /** 批量删除（重生成某场景/清空节目话术库用） */
   draftUnitDeleteWhere(programId: string, sceneId?: string): void {
-    const doomed = (
-      (sceneId === undefined
-        ? this.db.prepare('SELECT id, audio_path, rendered FROM draft_units WHERE script_id = ?').all(programId)
-        : this.db
-            .prepare('SELECT id, audio_path, rendered FROM draft_units WHERE script_id = ? AND scene_id = ?')
-            .all(programId, sceneId)) as Record<string, unknown>[]
-    ).map((row) => ({
-      id: str(row.id),
-      audioPath: str(row.audio_path) || null,
-      renderedPath: parseJson<RenderedAudioRef | null>(row.rendered, null)?.audioPath || null
-    }))
     if (sceneId === undefined) {
       this.db.prepare('DELETE FROM draft_units WHERE script_id = ?').run(programId)
     } else {
       this.db.prepare('DELETE FROM draft_units WHERE script_id = ? AND scene_id = ?').run(programId, sceneId)
-    }
-    for (const row of doomed) {
-      if (row.audioPath) this.onAudioPathChange?.('draft_unit', row.id, row.audioPath, null)
-      if (row.renderedPath) this.onAudioPathChange?.('draft_unit_rendered', row.id, row.renderedPath, null)
     }
   }
 
@@ -2734,10 +2448,6 @@ export class StorageService {
     error?: string,
     synthVoice?: string
   ): void {
-    const oldAudioPath =
-      str(
-        (this.db.prepare('SELECT audio_path AS p FROM draft_units WHERE id = ?').get(id) as Record<string, unknown> | undefined)?.p
-      ) || null
     if (synthVoice === undefined) {
       this.db
         .prepare('UPDATE draft_units SET status = ?, audio_path = ?, error = ? WHERE id = ?')
@@ -2747,16 +2457,114 @@ export class StorageService {
         .prepare('UPDATE draft_units SET status = ?, audio_path = ?, error = ?, synth_voice = ? WHERE id = ?')
         .run(status, audioPath, error ?? null, synthVoice, id)
     }
-    if (oldAudioPath !== (audioPath ?? null)) {
-      this.onAudioPathChange?.('draft_unit', id, oldAudioPath, audioPath ?? null)
-    }
   }
 
-  /** 所有底稿引用的音频文件（清空/删除底稿时判断缓存是否成孤儿） */
+  /** 所有底稿引用的音频文件（清空/删除底稿时判断文件是否成孤儿） */
   draftUnitAllAudioPaths(): string[] {
     return (this.db
       .prepare("SELECT DISTINCT audio_path AS path FROM draft_units WHERE audio_path IS NOT NULL AND audio_path != ''")
       .all() as Record<string, unknown>[]).map((row) => str(row.path))
+  }
+
+  // ---------- 项目文件（audio/、assets/ 与 tts_cache） ----------
+
+  /** 项目里还被「内容」引用的文件（归一化路径）：稿子、池、附件、场景预制产物。
+   *  TTS 缓存不算引用——它只是备忘，文件没了下次重新合成即可。 */
+  projectReferencedFiles(): Set<string> {
+    return new Set(this.contentFilePaths().map((path) => resolve(path).toLowerCase()))
+  }
+
+  /** 项目引用的全部文件路径（含 TTS 缓存；重绑用） */
+  projectFilePaths(): string[] {
+    return this.contentFilePaths(true)
+  }
+
+  private contentFilePaths(includeCache = false): string[] {
+    const out: string[] = []
+    const add = (value: unknown): void => {
+      const path = str(value)
+      if (path) out.push(path)
+    }
+    const union = includeCache
+      ? `SELECT audio_path AS p FROM draft_units WHERE audio_path IS NOT NULL AND audio_path != ''
+         UNION SELECT audio_path AS p FROM pool_items WHERE audio_path IS NOT NULL AND audio_path != ''
+         UNION SELECT file_path AS p FROM material_files WHERE file_path IS NOT NULL AND file_path != ''
+         UNION SELECT path AS p FROM tts_cache`
+      : `SELECT audio_path AS p FROM draft_units WHERE audio_path IS NOT NULL AND audio_path != ''
+         UNION SELECT audio_path AS p FROM pool_items WHERE audio_path IS NOT NULL AND audio_path != ''
+         UNION SELECT file_path AS p FROM material_files WHERE file_path IS NOT NULL AND file_path != ''`
+    for (const row of this.db.prepare(union).all() as Record<string, unknown>[]) add(row.p)
+    for (const row of this.db
+      .prepare('SELECT rendered FROM draft_units WHERE rendered IS NOT NULL')
+      .all() as Record<string, unknown>[]) add(parseJson<RenderedAudioRef | null>(row.rendered, null)?.audioPath)
+    for (const row of this.db.prepare('SELECT scenes FROM project').all() as Record<string, unknown>[]) {
+      for (const scene of parseJson<ScriptScene[]>(row.scenes, [])) add(scene.rendered?.audioPath)
+    }
+    return out
+  }
+
+  /** 目录搬家后把失效的绝对路径改到当前目录（列、rendered JSON、场景 JSON 一起改） */
+  projectRewriteFilePath(oldPath: string, newPath: string): void {
+    for (const sql of [
+      'UPDATE draft_units SET audio_path = ? WHERE audio_path = ?',
+      'UPDATE pool_items SET audio_path = ? WHERE audio_path = ?',
+      'UPDATE material_files SET file_path = ? WHERE file_path = ?',
+      'UPDATE tts_cache SET path = ? WHERE path = ?'
+    ]) {
+      this.db.prepare(sql).run(newPath, oldPath)
+    }
+    for (const row of this.db
+      .prepare('SELECT id, rendered FROM draft_units WHERE rendered IS NOT NULL')
+      .all() as Record<string, unknown>[]) {
+      const rendered = parseJson<RenderedAudioRef | null>(row.rendered, null)
+      if (rendered?.audioPath !== oldPath) continue
+      this.db.prepare('UPDATE draft_units SET rendered = ? WHERE id = ?').run(JSON.stringify({ ...rendered, audioPath: newPath }), str(row.id))
+    }
+    for (const row of this.db.prepare('SELECT id, scenes FROM project').all() as Record<string, unknown>[]) {
+      const scenes = parseJson<ScriptScene[]>(row.scenes, [])
+      let changed = false
+      for (const scene of scenes) {
+        if (scene.rendered?.audioPath === oldPath) {
+          scene.rendered.audioPath = newPath
+          changed = true
+        }
+      }
+      if (changed) this.db.prepare('UPDATE project SET scenes = ? WHERE id = ?').run(JSON.stringify(scenes), str(row.id))
+    }
+  }
+
+  projectTtsCacheGet(paramKey: string): string | null {
+    const row = this.db.prepare('SELECT path FROM tts_cache WHERE param_key = ?').get(paramKey) as
+      | Record<string, unknown>
+      | undefined
+    return row ? str(row.path) : null
+  }
+
+  projectTtsCachePut(paramKey: string, path: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO tts_cache (param_key, path, created_at) VALUES (?, ?, ?)
+         ON CONFLICT(param_key) DO UPDATE SET path = excluded.path`
+      )
+      .run(paramKey, path, Date.now())
+  }
+
+  projectTtsCacheDelete(paramKey: string): void {
+    this.db.prepare('DELETE FROM tts_cache WHERE param_key = ?').run(paramKey)
+  }
+
+  /** 文件被回收后，指向它的缓存别名一起清掉 */
+  projectTtsCacheDeleteByPath(path: string): void {
+    this.db.prepare('DELETE FROM tts_cache WHERE path = ?').run(path)
+  }
+
+  /** 清掉指向已不存在文件的缓存别名 */
+  projectTtsCachePruneMissing(): void {
+    const rows = this.db.prepare('SELECT param_key, path FROM tts_cache').all() as Record<string, unknown>[]
+    for (const row of rows) {
+      const path = str(row.path)
+      if (path && !existsSync(path)) this.projectTtsCacheDelete(str(row.param_key))
+    }
   }
 
   close(): void {

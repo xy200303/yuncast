@@ -1,10 +1,10 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { ensureCloneSample, CLONE_SAMPLE_DURATION, probeSampleDuration } from './audio/sampleAudio'
-import { existsSync } from 'node:fs'
-import { dirname, extname } from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { existsSync, mkdirSync } from 'node:fs'
+import { dirname, extname, join } from 'node:path'
+import { createHash, randomUUID } from 'node:crypto'
+import { app } from 'electron'
 import type { StorageService } from './StorageService'
-import type { BlobStoreService } from './BlobStoreService'
 import { clampInstruction, type TtsService } from './TtsService'
 import {
   getTtsProvider,
@@ -63,11 +63,24 @@ export class VoiceService {
   constructor(
     private readonly storage: StorageService,
     private readonly tts: TtsService,
-    private readonly blobs: BlobStoreService,
     private readonly onChanged: (voices: VoiceRecord[]) => void,
     /** 试听由主进程直接出声（aux 槽：不打断正在播报的话术） */
     private readonly play: (itemId: string, filePath: string) => Promise<{ ok: boolean; error?: string }>
   ) {}
+
+  /** 音色样本跟着音色库走（应用级，不随项目）：<userData>/voices/ */
+  private voicesDir(): string {
+    const dir = join(app.getPath('userData'), 'voices')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  /** 录制/转码的临时区：<userData>/tmp/，启动时清空 */
+  private stagingDir(): string {
+    const dir = join(app.getPath('userData'), 'tmp')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
 
   list(): VoiceRecord[] {
     return this.storage.listVoices()
@@ -75,14 +88,13 @@ export class VoiceService {
 
   /**
    * 录制/上传的样本落盘（渲染进程传来的音频字节流）。
-   * 入 BlobStore temp 档（24h）：提交克隆后由 archiveSample 转正 asset；放弃/关窗的暂存由 GC 到期清掉。
+   * 先放临时区：提交克隆后由 archiveSample 归档进 voices/，放弃/关窗的暂存由启动清扫删掉。
    */
   async saveSample(bytes: Uint8Array, ext = 'webm'): Promise<string> {
-    const staging = this.blobs.tmpPath(`sample-${Date.now()}-${randomUUID().slice(0, 6)}.${ext}`)
+    const staging = join(this.stagingDir(), `sample-${Date.now()}-${randomUUID().slice(0, 6)}.${ext}`)
     await mkdir(dirname(staging), { recursive: true })
     await writeFile(staging, Buffer.from(bytes))
-    const put = await this.blobs.putFile(staging, ext, { tier: 'temp' })
-    return put.path
+    return staging
   }
 
   /** 提交克隆。authorized 必须为 true（合规底线）；克隆到哪条接入 + 哪个模型由调用方指定。 */
@@ -126,7 +138,7 @@ export class VoiceService {
       return { ok: false, error: '样本文件不存在，请重新上传或录制' }
     }
     // 录出来的 webm 之类火山/百炼都不收：这里统一转成 mp3 再提交（用户不用管格式）；转码产物落暂存区
-    const prepared = await ensureCloneSample(input.samplePath, this.blobs.stagingDir())
+    const prepared = await ensureCloneSample(input.samplePath, this.stagingDir())
     if (!prepared.ok || !prepared.path) {
       return { ok: false, error: prepared.error ?? '样本处理失败：换个 wav / mp3 / m4a 试试' }
     }
@@ -296,7 +308,7 @@ export class VoiceService {
     // 本地样本可选归档（留痕用，API 只认 URL）；有本地样本就先做时长前置校验（百炼 10–60s）
     let samplePath = ''
     if (input.samplePath && existsSync(input.samplePath)) {
-      const prepared = await ensureCloneSample(input.samplePath, this.blobs.stagingDir())
+      const prepared = await ensureCloneSample(input.samplePath, this.stagingDir())
       if (!prepared.ok || !prepared.path) {
         return { ok: false, error: prepared.error ?? '样本处理失败：换个 wav / mp3 / m4a 试试' }
       }
@@ -401,20 +413,25 @@ export class VoiceService {
   }
 
   /**
-   * 样本归档进 BlobStore（asset 档，GC 永不自动删）：已是 blob 的（saveSample 的 temp 暂存）直接转正；
-   * 用户原文件/转码产物入库（原文件不动用 copy 语义，暂存区产物直接 move）。失败返回空串。
+   * 样本归档进 voices/（应用级长期资产）：已在 voices/ 的直接返回；
+   * 用户原文件只抄一份（不动原文件），临时区产物直接搬。
    */
   private async archiveSample(source: string): Promise<string> {
     try {
-      const existing = this.blobs.hashForPath(source)
-      if (existing) {
-        this.blobs.promote(existing, 'asset')
-        return source
-      }
+      const dir = this.voicesDir()
+      if (dirname(source).toLowerCase() === dir.toLowerCase()) return source
       const ext = extname(source).replace(/^\./, '').toLowerCase() || 'mp3'
-      const ours = source.startsWith(this.blobs.stagingDir())
-      const put = await this.blobs.putFile(source, ext, { tier: 'asset', move: ours })
-      return put.path
+      const hash = createHash('sha256').update(await readFile(source)).digest('hex')
+      const target = join(dir, `${hash}.${ext}`)
+      if (existsSync(target)) {
+        await rm(source, { force: true }).catch(() => undefined)
+        return target
+      }
+      await rename(source, target).catch(async () => {
+        await copyFile(source, target)
+        await rm(source, { force: true }).catch(() => undefined)
+      })
+      return target
     } catch {
       return ''
     }
@@ -430,10 +447,9 @@ export class VoiceService {
     }
     this.storage.deleteVoice(id)
     if (voice.samplePath) {
-      // blob 样本：引用钩子已随删行解除，没别的音色共用才删文件（asset 档只能显式删）
-      const hash = this.blobs.hashForPath(voice.samplePath)
-      if (hash) await this.blobs.deleteIfUnreferenced(hash)
-      else await rm(voice.samplePath, { force: true }).catch(() => undefined)
+      // 没别的音色共用同一份样本才删文件
+      const shared = this.storage.listVoices().some((v) => v.id !== id && v.samplePath === voice.samplePath)
+      if (!shared) await rm(voice.samplePath, { force: true }).catch(() => undefined)
     }
     this.emitChanged()
     return { ok: true }

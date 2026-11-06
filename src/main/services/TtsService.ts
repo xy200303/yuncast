@@ -2,7 +2,7 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import type { StorageService } from './StorageService'
-import type { BlobStoreService } from './BlobStoreService'
+import type { ProjectFiles } from './ProjectFiles'
 import {
   findTtsCatalogVoice,
   getTtsProvider,
@@ -38,7 +38,7 @@ import {
  *   X-Api-Key + X-Api-Resource-Id 鉴权，逐行 JSON 累积 base64 音频后整段落盘（不接流式播出）。
  * - 阿里云百炼：qwen3-tts 系走 DashScope 通用端点，Qwen-Audio / CosyVoice 系走 maas 业务空间端点；
  *   SSE 真流式见 synthesizeBailianStream。
- * 预合成产物经 BlobStore（userData/blobs，内容寻址 + tts_cache 别名）缓存，同文同参只存一份。
+ * 预合成产物落在项目的 `audio/`（内容寻址文件名 + 项目内 tts_cache 别名），同文同参只存一份。
  *
  * 凭据按接入存在 tts_connections（一条 = 一个服务商账号：凭据 + 启用模型 + 实时开关），
  * 没有默认模型 / 默认音色 / 默认接入——用哪条接入的哪个模型完全由音色自己决定。
@@ -141,7 +141,7 @@ export class TtsService {
 
   constructor(
     private readonly storage: StorageService,
-    private readonly blobs: BlobStoreService
+    private readonly files: ProjectFiles
   ) {}
 
   /**
@@ -187,18 +187,14 @@ export class TtsService {
     }
   }
 
-  /** 缓存别名命中 → blob 路径；别名还在但 blob 已被 GC 的顺手清掉 */
+  /** 缓存别名命中 → 项目里的音频文件；文件没了顺手清掉别名 */
   private cachedPathFor(cacheKey: string): string | null {
-    const hash = this.storage.ttsCacheGet(cacheKey)
-    if (!hash) return null
-    const path = this.blobs.pathOf(hash)
-    if (!path) this.storage.ttsCacheDelete(cacheKey)
-    return path
+    return this.files.cachedPath(cacheKey)
   }
 
-  /** 路径归不归 BlobStore 管（内容寻址缓存）：调用方删「临时」文件前必须先问，桶里的 blob 别处还在引用 */
-  isBlobPath(path: string): boolean {
-    return this.blobs.isBlobPath(path)
+  /** 路径归不归项目管（合成音频/附件）：调用方删「临时」文件前必须先问，托管文件别处还在引用 */
+  isManagedAudio(path: string | null | undefined): boolean {
+    return this.files.isManaged(path)
   }
 
   /** 该音色的完整路由（流式通道据此看模型 streaming 能力位） */
@@ -518,11 +514,11 @@ export class TtsService {
       signal,
       onLog: (message) => console.log(`[TTS] 播客合成：${message}`)
     })
-    const tempPath = this.blobs.tmpPath(`${itemId}.${extension}`)
+    const tempPath = this.files.tmpPath(`${itemId}.${extension}`)
     await mkdir(dirname(tempPath), { recursive: true }).catch(() => undefined)
     await writeFile(tempPath, result.audio)
-    const put = await this.blobs.putFile(tempPath, extension)
-    this.storage.ttsCachePut(cacheKey, put.hash)
+    const put = await this.files.put(tempPath, 'audio', extension)
+    this.files.remember(cacheKey, put.path)
     console.log(
       `[TTS] 播客整期合成完成：${request.turns.length} 轮，${(result.audio.length / 1024).toFixed(0)}KB` +
         `${result.fromAudioUrl ? '（服务端整期成品）' : '（逐轮拼接）'}`
@@ -669,16 +665,16 @@ export class TtsService {
       return cachedPath
     }
     this.cacheMisses += 1
-    // 先写临时文件（按条目 id 命名，便于排查），成功后入 BlobStore（同内容自动去重）并登记缓存别名
-    const tempPath = this.blobs.tmpPath(`${itemId}.${extension}`)
+    // 先写临时文件（按条目 id 命名，便于排查），成功后搬进项目 audio/（同内容自动去重）并登记缓存别名
+    const tempPath = this.files.tmpPath(`${itemId}.${extension}`)
     if (route.provider === 'bailian') {
       await this.synthesizeBailian(sendText, tempPath, route, signal)
     } else {
       await this.synthesizeVolcano(sendText, tempPath, route, signal, programId)
     }
     this.recordSynthesis(route, sendText.length, programId)
-    const put = await this.blobs.putFile(tempPath, extension)
-    this.storage.ttsCachePut(cacheKey, put.hash)
+    const put = await this.files.put(tempPath, 'audio', extension)
+    this.files.remember(cacheKey, put.path)
     return put.path
   }
 

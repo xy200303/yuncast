@@ -131,8 +131,7 @@ export class TtsStreamService {
       console.warn('流式合成失败:', error)
       throw error
     } finally {
-      // synthesize 返回的多是 BlobStore 缓存路径（内容寻址、别处还在引用），删了就是悬空缓存——只认真临时文件
-      if (audioFile && !this.tts.isBlobPath(audioFile)) void rm(audioFile, { force: true }).catch(() => undefined)
+      if (audioFile && !this.tts.isManagedAudio(audioFile)) void rm(audioFile, { force: true }).catch(() => undefined)
     }
   }
 }

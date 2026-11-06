@@ -11,7 +11,7 @@ const SKIP_EVENT_TYPES = new Set(['timer.interval', 'stream.started', 'stream.en
 /**
  * 场记（场次记录）：一次开播的完整留档。
  * - begin：开播成功时建场次行，并挂事件总线镜像（评论/事件 → broadcast_events）；
- *   话术播出事实由 SpeechPool 把条目打上 session_id（音频不复制，blob_refs 保活）
+ *   话术播出事实由 SpeechPool 把条目打上 session_id（音频用项目里的同一份文件，不复制）
  * - end：收播三处（自动/手动/紧急）统一收口，结算统计；重复调用幂等
  * - fixUnfinished：启动时给上次崩溃遗留的「还在播」场次补 end_reason='crash'
  */

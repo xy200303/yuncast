@@ -2,7 +2,7 @@ import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, shell } fro
 import { randomUUID } from 'node:crypto'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
-import { appendFileSync, existsSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
@@ -114,7 +114,7 @@ import {
   type VoiceRecord
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
-import { BlobStoreService } from './services/BlobStoreService'
+import { ProjectFiles } from './services/ProjectFiles'
 import { TtsService, type TtsTestInput } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
 import { PromptTemplateService } from './services/PromptTemplateService'
@@ -568,7 +568,6 @@ let agent: AgentService | null = null
 let bus: EventBus | null = null
 let triggers: TriggerRuntime | null = null
 let timerInterval: ReturnType<typeof setInterval> | null = null
-let audioCacheSweep: ReturnType<typeof setInterval> | null = null
 let connector: ConnectorService | null = null
 let voiceSvc: VoiceService | null = null
 let ttsStream: TtsStreamService | null = null
@@ -1403,7 +1402,7 @@ function registerIpc(
       return result
     }
   )
-  // 导入外部音频（§7.4）：主进程弹文件选择框，复制入 BlobStore（不动用户原文件）并挂到指定 Scene/DraftUnit 的 rendered
+  // 导入外部音频（§7.4）：主进程弹文件选择框，复制进项目 audio/（不动用户原文件）并挂到指定 Scene/DraftUnit 的 rendered
   ipcMain.handle(
     IPC.programImportAudio,
     async (_e, programId: string, target: { kind: 'scene' | 'draftUnit'; id: string }) => {
@@ -1594,18 +1593,23 @@ if (!single) {
     // 命令行（Go 版，resources/bin/yuncast）在应用没开时按这个把应用拉起来
     storage.setLaunch(process.execPath, app.isPackaged ? [] : [app.getAppPath()])
     linkCliToPath()
-    const blobs = new BlobStoreService(storage)
-    const tts = new TtsService(storage, blobs)
-    pool = new SpeechPool(storage, tts, broadcastPool)
-    pool.onWarmCache = (path) => blobs.warm(path)
-    const prompts = new PromptTemplateService(storage)
-    const knowledge = new KnowledgeService(storage, blobs)
-    const memory = new MemoryService(storage)
     const script = new ScriptService(storage)
     const projects = new ProjectService(storage, script)
-    // 切项目 = 换上下文：导演会话按新项目重建（模型/提示词都跟着新项目走）
+    // 项目文件：合成音频/附件直接落项目目录（打开项目后才有根，切项目自动跟着走）
+    const files = new ProjectFiles(projects, storage)
+    const tts = new TtsService(storage, files)
+    pool = new SpeechPool(storage, tts, broadcastPool)
+    pool.onWarmCache = (path) => files.warm(path)
+    const prompts = new PromptTemplateService(storage)
+    const knowledge = new KnowledgeService(storage, files)
+    const memory = new MemoryService(storage)
+    // 切项目 = 换上下文：导演会话按新项目重建（模型/提示词都跟着新项目走）；
+    // 目录被拷到别处时先把失效路径按哈希重绑回来，再清临时区、扫孤儿文件
     projects.onSwitched = (id) => {
       if (!id) return
+      files.rebind()
+      files.cleanTemp()
+      void files.sweep().catch((error) => console.warn('[项目文件] 清扫失败:', error))
       void agent?.switchProject().catch((error) => console.warn('[项目] 切换导演会话失败:', error))
     }
     projects.onChanged = () => {
@@ -1620,7 +1624,7 @@ if (!single) {
     recorder = new SessionRecorder(storage, bus)
     recorder.fixUnfinished()
     // 节目底稿库（提前建：主播 Agent 的底稿工具、生成 Agent、节目启动都用它）
-    const draftUnits = new DraftUnitService(storage, tts, script, blobs)
+    const draftUnits = new DraftUnitService(storage, tts, script, files)
     draftUnits.onEvent = (u) => broadcastDraftUnit(u)
     draftUnits.onBatchDone = (programId) => broadcastDraftUnitDone(programId)
     // 预制音频资产变化广播（Scene/DraftUnit 的 rendered 更新，渲染层刷新节目音频进度）
@@ -1708,7 +1712,7 @@ if (!single) {
       broadcastVoices(voices)
       broadcastDataChanged('voices')
     }
-    voiceSvc = new VoiceService(storage, tts, blobs, broadcastVoicesAll, async (itemId, filePath) => {
+    voiceSvc = new VoiceService(storage, tts, broadcastVoicesAll, async (itemId, filePath) => {
       const request = pipeline!.playFile(itemId, filePath, { slot: 'aux' })
       const started = await request.started
       if (started.ok) await request.done
@@ -1922,11 +1926,8 @@ if (!single) {
       console.warn('[YunCast] ffmpeg 不可用:', error instanceof Error ? error.message : error)
     }
 
-    // BlobStore：启动清临时区 → 异步扫一遍孤儿/超容量缓存 → 之后每 30 分钟 GC
-    void blobs.sweepTmp()
-    void blobs.sweep().catch((error) => console.warn('[BlobStore] 启动清扫失败:', error))
-    audioCacheSweep = setInterval(() => void blobs.sweep(), 30 * 60_000)
-    audioCacheSweep.unref?.()
+    // 音色录制/转码临时区：启动清一次（中断留下的 webm 与转码产物）
+    rmSync(join(app.getPath('userData'), 'tmp'), { recursive: true, force: true })
     timerInterval.unref?.()
 
     // 主题改了立刻让窗口 chrome 跟上（标题栏按钮、窗口底色）

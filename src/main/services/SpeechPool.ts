@@ -88,7 +88,7 @@ export class SpeechPool {
   private consecutiveFailures = 0
   private circuitUntil = 0
 
-  /** 音频就绪预热钩子（index.ts 接 BlobStore.warm：开播装池/合成完成时把文件读进 OS 页面缓存） */
+  /** 音频就绪预热钩子（index.ts 接 ProjectFiles.warm：开播装池/合成完成时把文件读进 OS 页面缓存） */
   onWarmCache: ((path: string) => void) | null = null
   /** 合成彻底失败的钩子（index.ts 接统一暂停 + 事件流）：一条合不出来就停播，等人处理 */
   onSynthHalt: ((item: PoolItem, error: string) => void) | null = null

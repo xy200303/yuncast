@@ -75,6 +75,16 @@ function rewriteFilePaths(db: DatabaseSync, remap: (path: string) => string): vo
     'UPDATE draft_units SET audio_path = ? WHERE audio_path = ?',
     'audio_path'
   )
+  rewriteColumn(
+    "SELECT DISTINCT file_path FROM material_files WHERE file_path IS NOT NULL AND file_path != ''",
+    'UPDATE material_files SET file_path = ? WHERE file_path = ?',
+    'file_path'
+  )
+  rewriteColumn(
+    'SELECT DISTINCT path FROM tts_cache',
+    'UPDATE tts_cache SET path = ? WHERE path = ?',
+    'path'
+  )
 
   try {
     const rows = db.prepare('SELECT id, rendered FROM draft_units WHERE rendered IS NOT NULL').all() as {
@@ -176,11 +186,15 @@ export class ProjectTransferService {
     const staging = mkdtempSync(join(tmpdir(), 'yuncast-export-'))
     try {
       const projectCopy = join(staging, 'project')
-      cpSync(record.path, projectCopy, { recursive: true })
+      // 项目目录整份拷进包：.tmp 是合成中间产物，不进包
+      const projectRoot = resolve(record.path)
+      cpSync(projectRoot, projectCopy, {
+        recursive: true,
+        filter: (src) => !relative(projectRoot, src).split(sep)[0].startsWith('.tmp')
+      })
       mkdirSync(join(projectCopy, 'audio'), { recursive: true })
       mkdirSync(join(projectCopy, 'assets'), { recursive: true })
 
-      const projectRoot = resolve(record.path)
       /** 绝对路径 → 包内相对路径；项目目录外的文件先拷进包里 */
       const externalMap = new Map<string, string>()
       const toRelative = (path: string): string => {

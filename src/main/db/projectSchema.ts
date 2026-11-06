@@ -212,6 +212,13 @@ const DDL = `
     updated_at INTEGER NOT NULL
   );
 
+  /** TTS 缓存：同文本同参数只合一次；path 指向项目 audio/ 里的文件 */
+  CREATE TABLE IF NOT EXISTS tts_cache (
+    param_key TEXT PRIMARY KEY,
+    path TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+
 `
 
 /** 新建（或打开后补齐）项目库，返回连接。 */

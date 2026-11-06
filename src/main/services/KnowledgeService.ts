@@ -12,7 +12,7 @@ import type {
   ProgramKnowledgeScope
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
-import type { BlobStoreService } from './BlobStoreService'
+import type { ProjectFiles } from './ProjectFiles'
 
 /**
  * 知识库（docs/01 §4）：商品资料 + 文件资料包，关键词检索（第一版零依赖可解释）。
@@ -65,7 +65,7 @@ export class KnowledgeService {
 
   constructor(
     private readonly storage: StorageService,
-    private readonly blobs: BlobStoreService
+    private readonly files: ProjectFiles
   ) {}
 
   // ---------- 知识条目（商品/书籍/话题/自定义；商品是价格护栏数据源） ----------
@@ -142,9 +142,8 @@ export class KnowledgeService {
       if (!content) throw new Error('文件里没有解析出可用文字（扫描件/加密文件不支持）')
       if (description?.trim()) content = `${description.trim()}\n${content}`
     }
-    // 附件复制进 BlobStore（asset 档，move=false 不动用户原文件）：之后用户移动/删了原文件，重新解析照样能读
-    const put = await this.blobs.putFile(filePath, extname(filePath).replace(/^\./, '').toLowerCase(), {
-      tier: 'asset',
+    // 附件复制进项目 assets/（不动用户原文件）：之后用户移动/删了原文件，重新解析照样能读
+    const put = await this.files.put(filePath, 'assets', extname(filePath).replace(/^\./, '').toLowerCase(), {
       move: false
     })
     const file: MaterialFile = {
@@ -163,9 +162,8 @@ export class KnowledgeService {
   deleteFile(id: string): void {
     const file = this.storage.materialFileList().find((item) => item.id === id)
     this.storage.materialFileDelete(id)
-    // blob 附件：删行的钩子已解除引用，没别的资料共用同一文件才删（asset 档只能显式删）
-    const hash = file ? this.blobs.hashForPath(file.filePath) : null
-    if (hash) void this.blobs.deleteIfUnreferenced(hash)
+    // 没别的资料共用同一个文件才删（附件在项目 assets/ 里）
+    if (file?.filePath) void this.files.deleteIfUnreferenced(file.filePath)
   }
 
   private async extractText(filePath: string, kind: KnowledgeKind): Promise<string> {

@@ -169,7 +169,7 @@ export class ScriptService {
 
   /**
    * 写/清某场景的整章预制音频引用（存在 scripts.scenes JSON 内）。
-   * 走 storage 的专用通道（带 blob 引用钩子）；不动 updatedAt：预制产物更新不是用户编辑剧本，不该触发版本冲突误判。
+   * 走 storage 的专用通道；不动 updatedAt：预制产物更新不是用户编辑剧本，不该触发版本冲突误判。
    */
   setSceneRendered(programId: string, sceneId: string, rendered: ScriptScene['rendered'] | null): void {
     const program = this.storage.programList().find((p) => p.id === programId)
@@ -247,9 +247,7 @@ export class ScriptService {
     const base: ScriptScene[] = script?.scenes ?? []
     const i = Math.floor(index) - 1
     if (!program || i < 0 || i >= base.length) throw new Error(`没有第 ${index} 场（现在共 ${base.length} 场）`)
-    // 被删场挂着预制音频的，释放 blob 引用（scriptSave 是通用整存，不过钩子，这里显式补）
-    const removedPath = base[i].rendered?.audioPath
-    if (removedPath) this.storage.onAudioPathChange?.('scene_rendered', base[i].id, removedPath, null)
+    // 被删场挂着的预制音频文件由项目清扫回收（先确认没有别处引用）
     const scenes = base.filter((_, at) => at !== i)
     // 删到空剧本允许（主播自编可能推倒重来）：saveScript 校验至少要有一场，空序列直接落库
     this.saveScenes(programId, scenes)

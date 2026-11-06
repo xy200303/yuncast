@@ -19,7 +19,7 @@ import { buildPodcastTurns } from '../../shared/podcast'
 import { findCloneVoice, parseManualVoice } from '../../shared/voiceProvider'
 import type { StorageService } from './StorageService'
 import { stripSpeechTags } from '../../shared/speechTags'
-import type { BlobStoreService } from './BlobStoreService'
+import type { ProjectFiles } from './ProjectFiles'
 import type { TtsService } from './TtsService'
 import type { ScriptService } from './ScriptService'
 import { findTtsCatalogVoice, ttsModelCapabilities } from './providers/registry'
@@ -69,7 +69,7 @@ export class DraftUnitService {
     private readonly storage: StorageService,
     private readonly tts: TtsService,
     private readonly script: ScriptService,
-    private readonly blobs: BlobStoreService
+    private readonly files: ProjectFiles
   ) {}
 
   /**
@@ -287,16 +287,17 @@ export class DraftUnitService {
     const candidates = [...new Set(paths.filter((p): p is string => Boolean(p)))]
     if (candidates.length === 0) return
     const normalize = (value: string) => resolve(value).toLowerCase()
-    // 剩下的底稿（全节目，内容寻址跨节目共享）+ 池里条目还在引用的文件不能删
+    // 剩下的底稿 + 池里条目还在引用的文件不能删
     const referenced = new Set(
       [...this.storage.draftUnitAllAudioPaths(), ...this.storage.poolItemReferencedAudioPaths()].map(normalize)
     )
     for (const path of candidates) {
-      // blob 路径由引用钩子（行删除时已解除登记）+ 宽限期 GC 管，这里不直接删文件
-      if (this.blobs.isBlobPath(path)) continue
+      // 项目外的文件不归我们管（用户自己的录音、外部路径）
+      if (!this.files.isManaged(path)) continue
       if (referenced.has(normalize(path))) continue
-      void rm(path, { force: true })
-        .then(() => console.log(`[话术库] 底稿删除，孤儿音频一并清掉：${path}`))
+      void this.files
+        .deleteIfUnreferenced(path)
+        .then((removed) => removed && console.log(`[话术库] 底稿删除，孤儿音频一并清掉：${path}`))
         .catch(() => undefined)
     }
   }
@@ -676,7 +677,7 @@ export class DraftUnitService {
           undefined,
           program.id
         )
-        // 产物已是 blob（播客合成走 BlobStore 缓存）：直接挂 rendered，引用钩子随 writeUnitRendered 登记，不再复制一份
+        // 产物已落在项目 audio/ 里：直接挂 rendered，不再复制一份
         writeUnitRendered(unit, { ...pending, status: 'ready', audioPath: result.audioPath, durationMs: result.durationMs })
         base.done++
       } catch (error) {
@@ -802,10 +803,10 @@ export class DraftUnitService {
       }
     }
     try {
-      // 整章拼接：产物落暂存区 → 入 BlobStore（同内容去重；引用随 writeUnitRendered 的钩子登记）
-      const staged = this.blobs.tmpPath(`scene-${unit.id}-${unit.fingerprint}.mp3`)
+      // 整章拼接：产物落暂存区 → 搬进项目 audio/（同内容去重）
+      const staged = this.files.tmpPath(`scene-${unit.id}-${unit.fingerprint}.mp3`)
       const concatPath = await this.concatAudioFiles(segmentPaths, staged)
-      const put = await this.blobs.putFile(concatPath, 'mp3')
+      const put = await this.files.put(concatPath, 'audio', 'mp3')
       return put.path
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -972,7 +973,7 @@ export class DraftUnitService {
 
   /** ffmpeg 拼接（concat demuxer + 统一转 mp3）：段文件格式可能混着 mp3/wav，重编码保证拼得出；清单文件落暂存区 */
   private async concatAudioFiles(files: string[], outPath: string): Promise<string> {
-    const listPath = this.blobs.tmpPath(`concat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
+    const listPath = this.files.tmpPath(`concat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.txt`)
     await mkdir(dirname(listPath), { recursive: true }).catch(() => undefined)
     const content = files.map((file) => `file '${file.replace(/'/g, "'\\''")}'`).join('\n')
     await writeFile(listPath, content, 'utf8')
@@ -1000,7 +1001,7 @@ export class DraftUnitService {
   }
 
   /**
-   * 导入外部音频（§7.4，program:import-audio 的后端）：单流复制入 BlobStore（不动用户原文件），
+   * 导入外部音频（§7.4，program:import-audio 的后端）：复制进项目 audio/（不动用户原文件），
    * 挂到指定 Scene/DraftUnit 的 rendered（status='ready'、external=true、快照字段记 'external'、
    * 指纹取当前文稿指纹）。外部音频不参与重新合成。
    */
@@ -1030,7 +1031,7 @@ export class DraftUnitService {
         fingerprint = draftUnitFingerprint(draftUnit, styleSalt)
       }
 
-      const put = await this.blobs.putFile(sourcePath, ext.replace(/^\./, ''), { move: false })
+      const put = await this.files.put(sourcePath, 'audio', ext.replace(/^\./, ''), { move: false })
       const audioPath = put.path
       const rendered: RenderedAudioRef = {
         audioPath,

@@ -100,6 +100,19 @@ export function WorkbenchTopBar({
         </>
       )}
 
+      <Divider />
+
+      {/* 自动响应是播出中的实时开关（改完立刻生效），不算「一场的配置」，播出中也能点 */}
+      <button
+        type="button"
+        onClick={() => onOpenDrawer('interaction')}
+        disabled={!program}
+        className={cn(metaClass, 'hover:bg-muted/60 disabled:pointer-events-none disabled:opacity-50')}
+        title="自动响应：决定哪些直播间动态派给主播（欢迎/送礼/点赞/冷场自救…），改动立刻生效"
+      >
+        <span className="text-muted-foreground">自动响应</span>
+      </button>
+
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <span className={cn('mr-1 text-[11px]', running ? 'text-emerald-600' : 'text-muted-foreground')}>
           {running ? '播出中' : '未开播'}
@@ -118,11 +131,11 @@ export function WorkbenchTopBar({
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={onManualBroadcast}>人工播报</DropdownMenuItem>
             <RecordMenuSub />
-            {/* 播出中只留播控与查看：配置类入口全部收起，免得一场里改出两套状态 */}
+            {/* 播出中只留播控与查看：配置类入口全部收起，免得一场里改出两套状态
+               （自动响应是实时开关，已经提到顶栏，不在菜单里重复） */}
             {!running && (
               <>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={() => onOpenDrawer('interaction')}>自动响应设置</DropdownMenuItem>
                 <DropdownMenuItem onSelect={onOpenStreamSettings}>推流设置</DropdownMenuItem>
               </>
             )}

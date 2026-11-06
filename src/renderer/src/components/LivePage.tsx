@@ -80,6 +80,8 @@ export function LivePage() {
   const poolSize = useAppStore((s) => s.pool.items.length)
   useEffect(() => {
     if (agentLive) void loadHistory()
+    // 收播即清场：已播历史不带到下一场，卡片流回到稿子态（下次启动直播重新按稿子装载）
+    else useLiveStore.getState().resetLive()
   }, [agentLive, loadHistory, activeId, poolSize])
   useEffect(() => {
     // 开播后也要留着：卡片流按稿子顺序排位置，没有底稿就只能按播放历史排（循环后顺序会跳）

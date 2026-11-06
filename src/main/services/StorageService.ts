@@ -1265,11 +1265,16 @@ export class StorageService {
     return rows.map((row) => rowToItem(row as PoolItemRow))
   }
 
-  /** 某时间点之后进入终态失败的条目 */
-  poolItemFailedSince(since: number): PoolItem[] {
-    const rows = this.db
-      .prepare("SELECT * FROM pool_items WHERE status = 'failed' AND created_at >= ? ORDER BY created_at DESC")
-      .all(since)
+  /** 某时间点之后进入终态失败的条目；sessionId 传了就只取这一场的 */
+  poolItemFailedSince(since: number, sessionId?: string): PoolItem[] {
+    const sql = sessionId
+      ? "SELECT * FROM pool_items WHERE status = 'failed' AND created_at >= ? AND live_session_id = ? ORDER BY created_at DESC"
+      : "SELECT * FROM pool_items WHERE status = 'failed' AND created_at >= ? ORDER BY created_at DESC"
+    const rows = (
+      sessionId
+        ? this.db.prepare(sql).all(since, sessionId)
+        : this.db.prepare(sql).all(since)
+    ) as unknown[]
     return rows.map((row) => rowToItem(row as unknown as PoolItemRow))
   }
 
@@ -1361,15 +1366,27 @@ export class StorageService {
   /**
    * 每条底稿（origin_draft_unit_id）最近一次进池的时间（轮播公平排序用：
    * 没播过的最优先，播过的按最久没播排，整个场景的话术轮得上，不饿死队尾）
+   * sessionId 传了就只看这一场：下一场从稿子第一段重新排，不接着上一场的进度。
    */
-  poolItemLastLoadedByOrigin(): Map<string, number> {
-    const rows = this.db
-      .prepare(
-        `SELECT origin_draft_unit_id AS origin, MAX(created_at) AS last_at
-         FROM pool_items WHERE origin_draft_unit_id IS NOT NULL AND origin_draft_unit_id != ''
-         GROUP BY origin_draft_unit_id`
-      )
-      .all() as { origin: unknown; last_at: unknown }[]
+  poolItemLastLoadedByOrigin(sessionId?: string): Map<string, number> {
+    const rows = (
+      sessionId
+        ? this.db
+            .prepare(
+              `SELECT origin_draft_unit_id AS origin, MAX(created_at) AS last_at
+               FROM pool_items WHERE origin_draft_unit_id IS NOT NULL AND origin_draft_unit_id != ''
+                 AND live_session_id = ?
+               GROUP BY origin_draft_unit_id`
+            )
+            .all(sessionId)
+        : this.db
+            .prepare(
+              `SELECT origin_draft_unit_id AS origin, MAX(created_at) AS last_at
+               FROM pool_items WHERE origin_draft_unit_id IS NOT NULL AND origin_draft_unit_id != ''
+               GROUP BY origin_draft_unit_id`
+            )
+            .all()
+    ) as { origin: unknown; last_at: unknown }[]
     const map = new Map<string, number>()
     for (const row of rows) map.set(str(row.origin), num(row.last_at) ?? 0)
     return map

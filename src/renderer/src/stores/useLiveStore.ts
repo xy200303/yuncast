@@ -50,6 +50,8 @@ interface LiveState {
   setDensity: (density: Density) => void
   /** 拉最近已播（切回直播台/开播后调用；失败不抛，界面按空历史处理） */
   loadHistory: (count?: number) => Promise<void>
+  /** 收播/换项目：把本场的已播历史清掉，卡片流回到「稿子」态，不混上一场 */
+  resetLive: () => void
   /** 拉节目底稿（未开播时卡片流与水位条都看它） */
   loadDrafts: (programId: string) => Promise<void>
 }
@@ -89,6 +91,9 @@ export const useLiveStore = create<LiveState>((set, get) => ({
     } finally {
       set({ historyLoading: false })
     }
+  },
+  resetLive: () => {
+    if (get().history.length > 0) set({ history: [] })
   }
 }))
 

@@ -649,7 +649,6 @@ async function endProgram(reason: EndProgramReason): Promise<void> {
   if (!wasLive) return
   agent?.setLiveActive(false)
   pool?.clearAll(reason === 'emergency' ? '场次已紧急停止' : '场次已结束')
-  if (pool) pool.sessionId = null
   recorder?.end(reason)
   bus?.emit('stream.ended', {}, reason === 'manual' ? 'human' : 'system')
 }

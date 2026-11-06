@@ -313,8 +313,8 @@ export class SpeechPool {
   }
 
   /**
-   * 收播清场：池里所有条目一律作废（含正在播的），合成任务取消，退避/停播重试状态清空。
-   * 结束节目时调用——换节目再也不会接着念上一场的存货（含人工插播、导演现场 say 这类无来源话术）。
+   * 收播清场：池里所有条目一律作废（含正在播的），合成任务与退避/停播/熔断状态全部清空。
+   * 结束节目时调用——下一场从稿子重新装载，不接着念上一场的存货（含人工插播、导演现场 say 这类无来源话术）。
    */
   clearAll(reason = '节目已结束'): number {
     let count = 0
@@ -325,7 +325,16 @@ export class SpeechPool {
       count++
     }
     this.haltedIds.clear()
+    this.synthAttempts.clear()
+    this.retryAt.clear()
+    this.retryTimers.forEach((timer) => clearTimeout(timer))
+    this.retryTimers.clear()
+    this.consecutiveFailures = 0
+    this.circuitUntil = 0
+    // 场次也在这里摘掉：快照里的失败列表/已播都只认本场，下一场是全新的
+    this.sessionId = null
     if (count > 0) this.refresh()
+    else this.broadcast(this.snapshot())
     return count
   }
 
@@ -472,10 +481,12 @@ export class SpeechPool {
 
   snapshot(): PoolSnapshot {
     const scriptId = this.activeScriptId()
+    // 失败卡片也只认本场：上一场没处理完的失败不带到下一场
+    const sessionId = this.sessionId && this.sessionId !== DEFAULT_SESSION_ID ? this.sessionId : undefined
     return {
       items: orderedForPlay(this.activeItems()),
       failed: this.storage
-        .poolItemFailedSince(Date.now() - 5 * 60_000)
+        .poolItemFailedSince(Date.now() - 5 * 60_000, sessionId)
         .filter((item) => !scriptId || item.scriptId === scriptId)
     }
   }

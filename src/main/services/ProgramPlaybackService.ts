@@ -571,7 +571,7 @@ export class ProgramPlaybackService {
     const script = this.script.getScript(program.id)
     const sceneOrder = new Map((script?.scenes ?? []).map((s, i) => [s.id, i]))
     const orderOf = (sceneId: string): number => sceneOrder.get(sceneId) ?? Number.MAX_SAFE_INTEGER
-    const lastLoaded = this.storage.poolItemLastLoadedByOrigin()
+    const lastLoaded = this.storage.poolItemLastLoadedByOrigin(this.pool.sessionId ?? undefined)
     ready.sort(
       (a, b) =>
         (lastLoaded.get(a.id) ?? 0) - (lastLoaded.get(b.id) ?? 0) ||
@@ -687,7 +687,7 @@ export class ProgramPlaybackService {
    * 循环闸门用：全进过池了再装就是重播，只有到段数上限才允许
    */
   hasFreshDraftUnits(programId: string): boolean {
-    const lastLoaded = this.storage.poolItemLastLoadedByOrigin()
+    const lastLoaded = this.storage.poolItemLastLoadedByOrigin(this.pool.sessionId ?? undefined)
     return this.loadableDraftUnits(programId).some((u) => !lastLoaded.has(u.id))
   }
 

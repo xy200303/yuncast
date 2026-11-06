@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, AudioWaveform, Check, Play, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
-import { SpeakerPicker } from './SpeakerPicker'
+import { voiceRouteSummary } from '../../lib/voice'
 import { cn } from '@/lib/utils'
+import { useAppStore } from '../../stores/useAppStore'
 import {
   CONTENT_TYPE_LABELS,
   DEFAULT_SESSION_CONFIG,
@@ -152,6 +153,11 @@ export function LaunchConfigDialog({
   const [tab, setTab] = useState<'write' | 'synth' | 'play'>(defaultTab)
   /** 稿子里出现的主播标识（自动识别，逐个配声） */
   const [speakers, setSpeakers] = useState<string[]>([])
+  /** 音色配置弹窗：key = 'default' 或主播标识；value 是弹窗里还没确认的临时选择 */
+  const [voiceEditing, setVoiceEditing] = useState<{ key: string; label: string; value: string } | null>(null)
+  const voices = useAppStore((state) => state.voices)
+  const ttsProviders = useAppStore((state) => state.ttsProviders)
+  const ttsConnections = useAppStore((state) => state.ttsConnections)
   // 打开时按真实进度落位：稿子还没写就一定从「写稿」开始；写好了就跳到「合成」/「播放」
   useEffect(() => {
     if (!open) return
@@ -206,6 +212,10 @@ export function LaunchConfigDialog({
 
   /** 分段推进只发生在打开时（见上一个 effect）；打开后一律听用户的：
    *  写稿/合成/播放三段都能点回去，「已经合成完了」不该把人锁在下一步。 */
+
+  /** 音色配置是否完整：默认音色必选；稿子里出现的每个主播都要有自己的音色 */
+  const voiceReady =
+    !!config.voiceId.trim() && speakers.every((label) => !!(config.speakerVoices?.[label] ?? '').trim())
 
   const steps: { id: 'write' | 'synth' | 'play'; label: string; done: boolean }[] = [
     { id: 'write', label: '写稿', done: draftCount > 0 },
@@ -353,38 +363,48 @@ export function LaunchConfigDialog({
             <div className="flex flex-col gap-5">
 <div className="flex flex-col gap-4">
               <p className="text-[12px] text-muted-foreground">
-                本场默认音色；稿子里出现的其他主播会自动列在下面，逐个配音色。没选音色时新内容没法合成，存量音频照播。
+                稿子里的主播会自动列出来，逐个配置音色；没标主播的段落用默认音色。配置不全不能继续。
               </p>
-              <Field label="默认音色">
-                <UnifiedVoicePicker
-                  voiceId={config.voiceId}
-                  onPick={(voiceId) => patch({ voiceId })}
-                  emptyLabel="未选音色"
-                  placeholder="选择音色"
-                />
-              </Field>
-              {speakers.length > 0 && (
-                <Field label="主播音色" hint="从稿子里的主播标识自动识别；没配的跟随默认音色">
-                  <div className="flex flex-col gap-2">
-                    {speakers.map((label) => (
-                      <div key={label} className="flex items-center gap-2">
-                        <span className="w-24 shrink-0 truncate text-[12.5px] text-muted-foreground" title={label}>
-                          {label}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <SpeakerPicker
-                            value={config.speakerVoices?.[label] ?? ''}
-                            onChange={(voiceId) =>
-                              patch({ speakerVoices: { ...(config.speakerVoices ?? {}), [label]: voiceId } })
-                            }
-                            emptyLabel="跟随默认音色"
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </Field>
-              )}
+              <div className="overflow-hidden rounded-lg border">
+                <div className="flex items-center gap-3 px-3 py-2">
+                  <span className="w-20 shrink-0 text-[12.5px] text-muted-foreground">默认音色</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px]">
+                    {config.voiceId.trim()
+                      ? voiceRouteSummary(voices, ttsProviders, ttsConnections, config.voiceId).voiceName ||
+                        '已配置'
+                      : '未配置'}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7"
+                    onClick={() => setVoiceEditing({ key: 'default', label: '默认音色', value: config.voiceId })}
+                  >
+                    配置音色
+                  </Button>
+                </div>
+                {speakers.map((label) => {
+                  const picked = (config.speakerVoices?.[label] ?? '').trim()
+                  return (
+                    <div key={label} className="flex items-center gap-3 border-t px-3 py-2">
+                      <span className="w-20 shrink-0 truncate text-[12.5px] text-muted-foreground" title={label}>
+                        {label}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-[13px]">
+                        {picked ? voiceRouteSummary(voices, ttsProviders, ttsConnections, picked).voiceName : '未配置'}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7"
+                        onClick={() => setVoiceEditing({ key: label, label, value: picked })}
+                      >
+                        配置音色
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
 <div className="flex flex-col gap-5">
               
@@ -473,7 +493,11 @@ export function LaunchConfigDialog({
 
         </Tabs>
 
-        <div className="flex shrink-0 items-center justify-end gap-2 border-t px-7 py-3">
+        <div className="shrink-0 border-t px-7 py-3">
+          {tab === 'synth' && !voiceReady && (
+            <p className="mb-2 text-right text-[12px] text-amber-600">还有主播没配音色，配置完才能继续。</p>
+          )}
+          <div className="flex items-center justify-end gap-2">
           <Button variant="ghost" onClick={onCancel}>
             取消
           </Button>
@@ -487,13 +511,21 @@ export function LaunchConfigDialog({
             </Button>
           ) : tab === 'synth' ? (
             config.synthMode === 'pre' ? (
-              <Button disabled={launching || !onSynthesize} onClick={() => onSynthesize?.(config)}>
+              <Button
+                disabled={launching || !onSynthesize || !voiceReady}
+                title={voiceReady ? undefined : '还有主播没配音色：配置完才能继续'}
+                onClick={() => onSynthesize?.(config)}
+              >
                 <AudioWaveform />
                 {readyCount > 0 ? '重新合成音频' : '预先合成音频'}
               </Button>
             ) : (
               // 边播边合 / 实时：开播前没有「必须合成完」这一步，直接进开播设置
-              <Button disabled={launching} onClick={() => setTab('play')}>
+              <Button
+                disabled={launching || !voiceReady}
+                title={voiceReady ? undefined : '还有主播没配音色：配置完才能继续'}
+                onClick={() => setTab('play')}
+              >
                 <Play />
                 下一步：开播设置
               </Button>
@@ -504,7 +536,42 @@ export function LaunchConfigDialog({
               确认开播
             </Button>
           )}
+          </div>
         </div>
+
+        {/* 音色配置弹窗：一个角色一个弹窗，避免把选择器铺在页面上 */}
+        <Dialog open={voiceEditing !== null} onOpenChange={(next) => !next && setVoiceEditing(null)}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-[15px]">配置音色 · {voiceEditing?.label ?? ''}</DialogTitle>
+            </DialogHeader>
+            <UnifiedVoicePicker
+              voiceId={voiceEditing?.value ?? ''}
+              onPick={(voiceId) => setVoiceEditing((prev) => (prev ? { ...prev, value: voiceId } : prev))}
+              emptyLabel={voiceEditing?.key === 'default' ? '未选音色' : undefined}
+              placeholder="选择音色"
+            />
+            <DialogFooter>
+              <Button variant="ghost" onClick={() => setVoiceEditing(null)}>
+                取消
+              </Button>
+              <Button
+                disabled={voiceEditing?.key !== 'default' && !(voiceEditing?.value ?? '').trim()}
+                onClick={() => {
+                  if (!voiceEditing) return
+                  if (voiceEditing.key === 'default') patch({ voiceId: voiceEditing.value })
+                  else
+                    patch({
+                      speakerVoices: { ...(config.speakerVoices ?? {}), [voiceEditing.label]: voiceEditing.value }
+                    })
+                  setVoiceEditing(null)
+                }}
+              >
+                确定
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </DialogContent>
     </Dialog>
   )

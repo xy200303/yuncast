@@ -862,7 +862,8 @@ export const DEFAULT_SESSION_CONFIG: Omit<SessionConfigInput, 'programId'> = {
   synthMode: 'async',
   endMode: 'loop',
   audioPolicy: 'reuse',
-  allowLiveEvents: true,
+  // 默认不接直播间动态：要接就去顶栏「自动响应」打开（那里是实时开关，开播中也能调）
+  allowLiveEvents: false,
   enabledTriggerIds: [],
   voiceId: ''
 }

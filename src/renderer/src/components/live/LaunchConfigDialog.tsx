@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AlertTriangle, AudioWaveform, Check, Play, Sparkles, Star, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -20,7 +19,6 @@ import {
   type ProgramLanguage,
   type SessionConfig,
   type SessionConfigInput,
-  type Trigger
 } from '../../../../shared/types'
 
 /**
@@ -116,7 +114,6 @@ function prefill(session: SessionConfig | null): LaunchConfig {
 export function LaunchConfigDialog({
   open,
   program,
-  triggers,
   session,
   draftCount,
   readyCount,
@@ -131,7 +128,6 @@ export function LaunchConfigDialog({
 }: {
   open: boolean
   program: Program | null
-  triggers: Trigger[]
   session: SessionConfig | null
   draftCount: number
   readyCount: number
@@ -420,35 +416,8 @@ export function LaunchConfigDialog({
                   />
                 </Field>
               )}
-<div className="flex flex-col gap-4">
-              <label className="flex items-center gap-2 text-[13px]">
-                <Checkbox
-                  checked={config.allowLiveEvents}
-                  onCheckedChange={(checked) => patch({ allowLiveEvents: checked === true })}
-                />
-                读评论区 / 礼物 / 进场
-              </label>
-              <p className="text-[11.5px] text-muted-foreground">关闭后评论、礼物、进场都不派给主播。</p>
-              {config.allowLiveEvents && triggers.length > 0 && (
-                <div className="grid grid-cols-2 gap-x-6 gap-y-2.5 border-t pt-4">
-                  {triggers.map((trigger) => (
-                    <label key={trigger.id} className="flex items-center gap-2 text-[12px] text-muted-foreground">
-                      <Checkbox
-                        checked={config.enabledTriggerIds.includes(trigger.id)}
-                        onCheckedChange={(checked) =>
-                          patch({
-                            enabledTriggerIds: checked
-                              ? [...new Set([...config.enabledTriggerIds, trigger.id])]
-                              : config.enabledTriggerIds.filter((id) => id !== trigger.id)
-                          })
-                        }
-                      />
-                      <span className="truncate">{trigger.name}</span>
-                    </label>
-                  ))}
-                </div>
-              )}
-            </div>
+              {/* 互动接线不在开播配置里改：顶栏「自动响应」是它的唯一入口（实时生效，播出中也能调）。
+                  这里是开播那一刻的快照，不在这里二次编辑，避免两处改出两套状态 */}
             </div>
                     </TabsContent>
 

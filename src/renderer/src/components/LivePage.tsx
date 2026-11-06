@@ -60,8 +60,7 @@ import type {
   ProduceVoiceOverride,
   ProgramGateResult,
   PoolItem,
-  SessionConfig,
-  Trigger
+  SessionConfig
 } from '../../../shared/types'
 
 /**
@@ -115,7 +114,15 @@ export function LivePage() {
   const persistLaunchConfig = async (config: LaunchConfig): Promise<boolean> => {
     const program = programControl.activeProgram
     if (!program) return false
-    const saved = await window.api.sessionConfig.save({ ...config, programId: program.id })
+    // 互动接线归顶栏「自动响应」管（它会实时改），这边存的是开播快照——
+    // 用库里的当前值覆盖，别让一份旧快照把用户刚调好的开关顶回去
+    const latest = await window.api.sessionConfig.latest(program.id)
+    const saved = await window.api.sessionConfig.save({
+      ...config,
+      programId: program.id,
+      allowLiveEvents: latest?.allowLiveEvents ?? config.allowLiveEvents,
+      enabledTriggerIds: latest?.enabledTriggerIds ?? config.enabledTriggerIds
+    })
     if (!saved.ok) {
       toast.error('本场配置没保存', { description: saved.error })
       return false
@@ -431,7 +438,6 @@ export function LivePage() {
       <LaunchConfigDialog
         open={programControl.launchConfigOpen}
         program={activeProgram}
-        triggers={programControl.triggerList.filter((item) => item.enabled)}
         session={programControl.session}
         draftCount={draftCounts.draft}
         readyCount={draftCounts.ready}
@@ -461,7 +467,6 @@ function useProgramLauncher() {
   /** 本场配置（最近一次）：卡司/语言/互动/收尾都以它为准；开播配置确认后更新 */
   const [session, setSession] = useState<SessionConfig | null>(null)
   /** 触发器清单（开播配置里的互动勾选用） */
-  const [triggerList, setTriggerList] = useState<Trigger[]>([])
   const [busy, setBusy] = useState(false)
   const [checking, setChecking] = useState(false)
   const [checks, setChecks] = useState<PreflightItem[] | null>(null)
@@ -504,10 +509,6 @@ function useProgramLauncher() {
       setSession((prev) => (prev?.id === next?.id ? prev : next))
     )
   }, [activeProgramId, page])
-  useEffect(() => {
-    if (page !== 'live') return
-    void window.api.trigger.list().then(setTriggerList)
-  }, [page])
 
   /** 直播中的判定：开播态归引擎（agent.live）——主播会话没起来也照播存量，不算没开播 */
   const running = agent.live === true
@@ -769,7 +770,6 @@ function useProgramLauncher() {
     busy,
     session,
     setSession,
-    triggerList,
     switchProgram,
     startDraft
   }

@@ -54,6 +54,9 @@ export function WorkbenchTopBar({
       ? (SESSION_PRESETS.find((item) => item.id === session.preset)?.label ?? '自定义')
       : '自定义'
     : '未配置'
+  /** 播出中这两项只读：它们决定整场的声音与播出方式，改了下半场会和新内容打架 */
+  const lockedHint = '播出中锁定：语言与预设决定整场的声音和播出方式，结束本场后再改'
+  const metaClass = 'flex shrink-0 items-center gap-1 rounded px-1 py-1 text-[12px]'
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
@@ -62,25 +65,40 @@ export function WorkbenchTopBar({
 
       <Divider />
 
-      <button
-        type="button"
-        onClick={onConfigure}
-        className="flex shrink-0 items-center gap-1 rounded px-1 py-1 text-[12px] hover:bg-muted/60"
-        title="本场语言（只决定写什么语言，不传给 TTS）"
-      >
-        <span className="text-muted-foreground">语言</span>
-        <span>{languageLabel}</span>
-      </button>
+      {running ? (
+        <>
+          <span className={cn(metaClass, 'text-muted-foreground/80')} title={lockedHint}>
+            <span className="text-muted-foreground">语言</span>
+            <span>{languageLabel}</span>
+          </span>
+          <span className={cn(metaClass, 'text-muted-foreground/80')} title={lockedHint}>
+            <span className="text-muted-foreground">预设</span>
+            <span>{presetLabel}</span>
+          </span>
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={onConfigure}
+            className={cn(metaClass, 'hover:bg-muted/60')}
+            title="本场语言（只决定写什么语言，不传给 TTS）"
+          >
+            <span className="text-muted-foreground">语言</span>
+            <span>{languageLabel}</span>
+          </button>
 
-      <button
-        type="button"
-        onClick={onConfigure}
-        className="flex shrink-0 items-center gap-1 rounded px-1 py-1 text-[12px] hover:bg-muted/60"
-        title="播出预设（内容来源 / 合成时机 / 收尾）"
-      >
-        <span className="text-muted-foreground">预设</span>
-        <span>{presetLabel}</span>
-      </button>
+          <button
+            type="button"
+            onClick={onConfigure}
+            className={cn(metaClass, 'hover:bg-muted/60')}
+            title="播出预设（内容来源 / 合成时机 / 收尾）"
+          >
+            <span className="text-muted-foreground">预设</span>
+            <span>{presetLabel}</span>
+          </button>
+        </>
+      )}
 
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <span className={cn('mr-1 text-[11px]', running ? 'text-emerald-600' : 'text-muted-foreground')}>

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { AudioWaveform, Clock3, MoreHorizontal, Pencil, Play, SkipForward, Trash2, TriangleAlert } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { AudioWaveform, Clock3, Mic, MoreHorizontal, Pencil, Play, SkipForward, Trash2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,6 +18,7 @@ import { ContentText } from '@/components/ContentText'
 import { useAppStore } from '../../stores/useAppStore'
 import { mergeRows, useLiveStore, type CardRow } from '../../stores/useLiveStore'
 import { audition, auditionTitle } from '../../lib/audition'
+import { voiceRouteSummary } from '../../lib/voice'
 import { stripSpeechTags } from '../../../../shared/speechTags'
 import type { PoolItem, PoolItemStatus } from '../../../../shared/types'
 
@@ -72,6 +73,31 @@ export function CardStream() {
   const [synthPitch, setSynthPitch] = useState('')
   const [synthBusy, setSynthBusy] = useState(false)
 
+  // 每张卡要显示「这一段用谁的嗓子、什么演法」：段落没指定音色时落到本场默认音色
+  const voices = useAppStore((s) => s.voices)
+  const ttsProviders = useAppStore((s) => s.ttsProviders)
+  const ttsConnections = useAppStore((s) => s.ttsConnections)
+  const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
+  const [defaultVoiceId, setDefaultVoiceId] = useState('')
+  useEffect(() => {
+    if (!activeProgramId) {
+      setDefaultVoiceId('')
+      return
+    }
+    let alive = true
+    void window.api.sessionConfig
+      .latest(activeProgramId)
+      .then((session) => {
+        if (alive) setDefaultVoiceId((session?.voiceId ?? '').trim())
+      })
+      .catch(() => {
+        if (alive) setDefaultVoiceId('')
+      })
+    return () => {
+      alive = false
+    }
+  }, [activeProgramId, live, pool.items.length])
+
   const rows = useMemo<CardRow[]>(() => {
     // 失败条目单独一路：它们既不在未播队列里，也不该被"未开播就只看底稿"藏起来
     const failedRows: CardRow[] = pool.failed.map((item) => ({ item, played: false }))
@@ -91,6 +117,7 @@ export function CardStream() {
         turnId: '',
         seq: draft.seq,
         voiceId: draft.voiceId ?? '',
+        delivery: draft.delivery || undefined,
         source: { agentId: 'draft', kind: 'manual' },
         lane: 'normal',
         // 合成状态以底稿自身为准（rendered 是预制资产，不是单段合成结果）
@@ -208,6 +235,10 @@ export function CardStream() {
           const text = stripSpeechTags(item.text)
           // 译文只用于显示：老数据里可能带着 <cot>/<pause> 标记，渲染前剥掉
           const translation = item.textZh?.trim() ? stripSpeechTags(item.textZh.trim()) : undefined
+          // 这一段用谁的嗓子、什么演法：段落没指定就落到本场默认音色
+          const voiceId = (item.voiceId || defaultVoiceId).trim()
+          const voiceName = voiceId ? voiceRouteSummary(voices, ttsProviders, ttsConnections, voiceId).voiceName : ''
+          const delivery = item.delivery?.trim() || row.draft?.delivery?.trim() || ''
           const isEditing = editing?.id === item.id
           const fromUnit = item.source.kind === 'scene'
           // 只有"没有正文的纯标题"才降级成提示条（场景名/节奏标记那种）；
@@ -265,6 +296,20 @@ export function CardStream() {
                 </span>
                 {ready && <span className="tabular-nums">{mmss(estimateMs(text))}</span>}
                 {playing && <span className="text-primary">◉ 在播</span>}
+                {voiceName && (
+                  <span className="flex min-w-0 shrink items-center gap-1" title={`本段音色：${voiceName}`}>
+                    <Mic className="size-3 shrink-0" />
+                    <span className="max-w-24 truncate">{voiceName}</span>
+                  </span>
+                )}
+                {delivery && (
+                  <span
+                    className="min-w-0 max-w-[40%] truncate text-muted-foreground/80"
+                    title={`演法：${delivery}`}
+                  >
+                    演法 · {delivery}
+                  </span>
+                )}
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                   {ready && (
                     <Button

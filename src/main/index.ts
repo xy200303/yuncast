@@ -1565,7 +1565,9 @@ function registerIpc(
   ipcMain.handle(IPC.streamStats, () => stream.getStats())
   ipcMain.on(IPC.streamMicPcm, (_e, pcm: Uint8Array) => stream.pushMicPcm(pcm))
   // 虚拟声卡：用户点安装才跑，会弹 UAC（装的是系统驱动，不能静默）
-  ipcMain.handle(IPC.streamInstallVirtualCable, () => installVirtualCable())
+  ipcMain.handle(IPC.streamInstallVirtualCable, (_e, opts?: { zipPath?: string; pick?: boolean }) =>
+    installVirtualCable(opts ?? {})
+  )
 
   // ---------- 平台连接器 ----------
   ipcMain.handle(IPC.connectorStatus, () => connector.status())

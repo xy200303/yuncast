@@ -80,6 +80,10 @@
       {
         "from": "cli/dist/${os}-${arch}",
         "to": "bin"
+      },
+      {
+        "from": "resources/virtual-cable",
+        "to": "virtual-cable"
       }
     ],
     "npmRebuild": true,

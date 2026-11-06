@@ -38,10 +38,11 @@ export function OutputDeviceSection() {
     if (applied) toast.success(`输出已切到：${applied.label}`)
   }
 
-  const install = async (): Promise<void> => {
+  const install = async (opts: { pick?: boolean } = {}): Promise<void> => {
     setInstalling(true)
     try {
-      const result = await window.api.stream.installVirtualCable()
+      const result = await window.api.stream.installVirtualCable(opts)
+      if (result.canceled) return
       if (!result.ok) {
         toast.error('虚拟声卡没装上', { description: result.error })
         return
@@ -57,7 +58,7 @@ export function OutputDeviceSection() {
           description: `输出：${applied?.label ?? found.label}；推流软件里把麦克风选 CABLE Output`
         })
       } else {
-        toast.success('安装完成', { description: '没立刻检测到设备的话，点「重新检测」或重启一次应用' })
+        toast.success('安装完成', { description: 'VB-CABLE 装完通常要重启一次电脑，CABLE Input 才会出现' })
       }
     } finally {
       setInstalling(false)
@@ -132,16 +133,21 @@ export function OutputDeviceSection() {
               重新检测
             </Button>
             {!virtual && (
-              <Button size="sm" variant="outline" className="h-8" disabled={installing} onClick={() => void install()}>
-                {installing ? '安装中…' : '安装虚拟声卡（需要管理员）'}
-              </Button>
+              <>
+                <Button size="sm" variant="ghost" className="h-8" disabled={installing} onClick={() => void install({ pick: true })}>
+                  用本地安装包…
+                </Button>
+                <Button size="sm" variant="outline" className="h-8" disabled={installing} onClick={() => void install()}>
+                  {installing ? '安装中…' : '安装虚拟声卡（需要管理员）'}
+                </Button>
+              </>
             )}
           </div>
         </div>
         {!virtual && (
           <p className="text-[11px] leading-relaxed text-muted-foreground">
-            安装会从 VB-Audio 官网下载 VB-CABLE 并弹 UAC 提权装驱动；公司电脑/杀软可能拦截。
-            不装也可以：直接在推流软件里把系统的“立体声混音”当麦克风（部分声卡不支持）。
+            「安装」会从 VB-Audio 官网下载 VB-CABLE（约 1.3 MB）并弹 UAC 提权装驱动，装完通常要重启电脑；
+            下载慢的话先自己下好，点「用本地安装包…」指给应用。公司电脑/杀软可能拦截驱动安装。
           </p>
         )}
       </div>

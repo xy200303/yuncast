@@ -22,7 +22,7 @@ const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36'
 
 function tarBinary(): string {
-  const systemTar = join(process.env.SystemRoot ?? 'C:\Windows', 'System32', 'tar.exe')
+  const systemTar = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
   return process.platform === 'win32' && existsSync(systemTar) ? systemTar : 'tar'
 }
 
@@ -69,13 +69,45 @@ function findSetup(dir: string): string | null {
   return null
 }
 
-export async function installVirtualCable(): Promise<{ ok: boolean; error?: string; url?: string }> {
+/**
+ * 安装虚拟声卡。
+ * @param zipPath 本地安装包（用户自己下好的 zip）：走这条就不用联网，慢网络下最实用
+ * @param pick    让主进程弹文件选择框挑本地安装包
+ */
+export async function installVirtualCable(
+  opts: { zipPath?: string; pick?: boolean } = {}
+): Promise<{ ok: boolean; error?: string; canceled?: boolean; source?: string }> {
   if (process.platform !== 'win32') return { ok: false, error: '虚拟声卡安装只支持 Windows' }
+  let zipPath = opts.zipPath?.trim() ?? ''
+  if (opts.pick && !zipPath) {
+    const { dialog, BrowserWindow } = await import('electron')
+    const win = BrowserWindow.getAllWindows()[0]
+    const picked = await dialog.showOpenDialog(win, {
+      title: '选择虚拟声卡安装包',
+      properties: ['openFile'],
+      filters: [{ name: 'VB-CABLE 安装包', extensions: ['zip'] }]
+    })
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true }
+    zipPath = picked.filePaths[0]
+  }
   const work = mkdtempSync(join(tmpdir(), 'yuncast-vbcable-'))
   try {
-    const url = await resolveInstallerUrl()
-    const zip = join(work, 'vbcable.zip')
-    await download(url, zip)
+    let zip = zipPath
+    let source = 'local'
+    if (!zip) {
+      // 应用资源里自带安装包就直接用（发布包可以把包放进 resources/virtual-cable/）
+      const bundled = findBundledPackage()
+      if (bundled) {
+        zip = bundled
+        source = 'bundled'
+      } else {
+        const url = await resolveInstallerUrl()
+        zip = join(work, 'vbcable.zip')
+        await download(url, zip)
+        source = 'download'
+      }
+    }
+    if (!existsSync(zip)) throw new Error(`安装包不存在：${zip}`)
     const unpack = join(work, 'unpack')
     mkdirSync(unpack, { recursive: true })
     spawnSync(tarBinary(), ['-xf', zip, '-C', unpack], { windowsHide: true })
@@ -99,7 +131,7 @@ export async function installVirtualCable(): Promise<{ ok: boolean; error?: stri
       }
       return { ok: false, error: `安装失败：${output.slice(0, 200) || '未知错误'}` }
     }
-    return { ok: true }
+    return { ok: true, source }
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) }
   } finally {
@@ -107,3 +139,21 @@ export async function installVirtualCable(): Promise<{ ok: boolean; error?: stri
   }
 }
 
+
+/** 发布包里自带的安装包（resources/virtual-cable/*.zip）；开发时也认项目的 resources/ 目录 */
+function findBundledPackage(): string | null {
+  const candidates = [
+    join(process.resourcesPath ?? '', 'virtual-cable'),
+    join(process.cwd(), 'resources', 'virtual-cable')
+  ]
+  for (const dir of candidates) {
+    try {
+      if (!existsSync(dir)) continue
+      const zip = readdirSync(dir).find((name) => /\.zip$/i.test(name))
+      if (zip) return join(dir, zip)
+    } catch {
+      // 目录不可读就跳过
+    }
+  }
+  return null
+}

@@ -139,21 +139,8 @@ const CONTENT_DDL = `
   CREATE INDEX IF NOT EXISTS event_log_ts ON event_log(ts);
 `
 
-/**
- * 旧版业务表（主播卡/素材/底稿/池）在项目库里仍按原列名存在：
- * 现有管线（合成、装载、场记）先继续工作，概念层的删除放在管线改造之后，避免半途断播。
- */
-const LEGACY_CONTENT_DDL = `
-  CREATE TABLE IF NOT EXISTS personas (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    personality TEXT NOT NULL DEFAULT '',
-    catchphrases TEXT NOT NULL DEFAULT '',
-    background TEXT NOT NULL DEFAULT '',
-    taboos TEXT NOT NULL DEFAULT '',
-    updated_at INTEGER NOT NULL
-  );
-
+/** 素材与附件（知识库）：跨版本都保留的两张表 */
+const MATERIAL_DDL = `
   CREATE TABLE IF NOT EXISTS materials (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -185,7 +172,6 @@ const CONTENT_COLUMNS: [string, string, string][] = [
   ['draft_units', 'synth_voice', "TEXT NOT NULL DEFAULT ''"],
   ['draft_units', 'bit_type', "TEXT NOT NULL DEFAULT ''"],
   ['draft_units', 'delivery', "TEXT NOT NULL DEFAULT ''"],
-  ['draft_units', 'persona_id', 'TEXT'],
   ['draft_units', 'rate', 'REAL'],
   ['draft_units', 'pitch', 'REAL'],
   ['draft_units', 'pause_after_ms', 'INTEGER'],
@@ -203,8 +189,7 @@ const CONTENT_COLUMNS: [string, string, string][] = [
   ['pool_items', 'pause_after_ms', 'INTEGER'],
   ['pool_items', 'queue_seq', 'INTEGER'],
   ['live_sessions', 'summary', "TEXT NOT NULL DEFAULT ''"],
-  ['live_sessions', 'director_model_desc', "TEXT NOT NULL DEFAULT ''"],
-  ['live_sessions', 'personas', "TEXT NOT NULL DEFAULT '[]'"]
+  ['live_sessions', 'director_model_desc', "TEXT NOT NULL DEFAULT ''"]
 ]
 
 const DDL = `
@@ -238,129 +223,8 @@ export function openProjectDatabase(file: string, options: { create?: boolean } 
   if (options.create !== false) {
     db.exec(DDL)
     db.exec(CONTENT_DDL)
-    db.exec(LEGACY_CONTENT_DDL)
+    db.exec(MATERIAL_DDL)
     ensureContentColumns(db)
-    // 老版本把「全项目共用」的对话存成 key='director'：项目级会话上线后直接清掉，不做迁移
-    // 项目表接管剧本：先补列，再把旧 scripts 行（id = 项目 id）搬过来，最后删表
-    const projectInfo = db.prepare('PRAGMA table_info(project)').all() as { name: string }[]
-    for (const [col, decl] of [
-      ['theme', "TEXT NOT NULL DEFAULT ''"],
-      ['scenes', "TEXT NOT NULL DEFAULT '[]'"],
-      ['scene_idx', 'INTEGER NOT NULL DEFAULT 0']
-    ] as const) {
-      if (!projectInfo.some((item) => item.name === col)) {
-        try {
-          db.exec(`ALTER TABLE project ADD COLUMN ${col} ${decl}`)
-        } catch {
-          // 老 SQLite 不支持就跳过，读写侧有兜底
-        }
-      }
-    }
-    const legacyScripts = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'scripts'")
-      .get()
-    if (legacyScripts) {
-      const row = db
-        .prepare('SELECT name, theme, plan, current_scene_idx FROM scripts LIMIT 1')
-        .get() as Record<string, unknown> | undefined
-      if (row) {
-        const plan = String(row.plan ?? '{"scenes":[]}')
-        let scenes = '[]'
-        try {
-          scenes = JSON.stringify((JSON.parse(plan) as { scenes?: unknown[] }).scenes ?? [])
-        } catch {
-          // 坏数据就保持空
-        }
-        db.prepare(
-          "UPDATE project SET name = CASE WHEN name = '' THEN ? ELSE name END, theme = ?, scenes = ?, scene_idx = ?"
-        ).run(String(row.name ?? ''), String(row.theme ?? ''), scenes, Number(row.current_scene_idx ?? 0))
-      }
-      db.exec('DROP TABLE scripts')
-    }
-    // 中文/自动语言的项目：老底稿缺译文就用原文补齐（译文栏不再显示空白）
-    try {
-      const row = db
-        .prepare("SELECT language FROM session_configs LIMIT 1")
-        .get() as { language?: string } | undefined
-      const language = row?.language ?? 'auto'
-      if (language === 'Chinese' || language === 'auto') {
-        db.exec("UPDATE draft_units SET text_zh = text WHERE text_zh = ''")
-      }
-    } catch {
-      // 表还没建/字段缺失就跳过
-    }
-    // 本场配置改成「一个项目一行」：老库多行快照只留最新一行，再补唯一索引
-    if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_configs'").get()) {
-      db.exec(`DELETE FROM session_configs WHERE rowid NOT IN (
-        SELECT rowid FROM (
-          SELECT rowid, ROW_NUMBER() OVER (PARTITION BY script_id ORDER BY created_at DESC, rowid DESC) AS rn
-            FROM session_configs
-        ) WHERE rn = 1
-      )`)
-      db.exec(
-        'CREATE UNIQUE INDEX IF NOT EXISTS session_configs_script_unique ON session_configs(script_id)'
-      )
-    }
-    // 卡司退役：本场配置只留一个默认音色；老库从 cast 第一项搬过来
-    const scCols = db.prepare('PRAGMA table_info(session_configs)').all() as { name: string }[]
-    if (!scCols.some((c) => c.name === 'voice_id')) {
-      try {
-        db.exec("ALTER TABLE session_configs ADD COLUMN voice_id TEXT NOT NULL DEFAULT ''")
-      } catch {
-        // 老 SQLite 加列失败就跳过，读侧有兜底
-      }
-    }
-    if (scCols.some((c) => c.name === 'cast')) {
-      try {
-        const rows = db.prepare('SELECT id, cast FROM session_configs').all() as { id: string; cast: string }[]
-        const set = db.prepare("UPDATE session_configs SET voice_id = ? WHERE id = ? AND voice_id = ''")
-        for (const row of rows) {
-          try {
-            const cast = JSON.parse(row.cast || '[]') as { voiceId?: string }[]
-            const voice = String(cast[0]?.voiceId ?? '')
-            if (voice) set.run(voice, row.id)
-          } catch {
-            // 坏数据跳过
-          }
-        }
-        db.exec('ALTER TABLE session_configs DROP COLUMN cast')
-      } catch {
-        // 删列失败就留着，反正不再读写
-      }
-    }
-    // 主播卡与段落归属退役
-    db.exec('DROP TABLE IF EXISTS personas')
-    for (const [table, col] of [['draft_units', 'persona_id'], ['live_sessions', 'personas']] as const) {
-      const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
-      if (cols.some((c) => c.name === col)) {
-        try {
-          db.exec(`ALTER TABLE ${table} DROP COLUMN ${col}`)
-        } catch {
-          // 留着也无害
-        }
-      }
-    }
-    // 项目表早期预留的列（brief/language/default_voice_id/synth_mode）没人读：有就删掉
-    const projectCols = db.prepare('PRAGMA table_info(project)').all() as { name: string }[]
-    for (const dead of ['brief', 'language', 'default_voice_id', 'synth_mode']) {
-      if (projectCols.some((col) => col.name === dead)) {
-        try {
-          db.exec(`ALTER TABLE project DROP COLUMN ${dead}`)
-        } catch {
-          // 老 SQLite 不支持 DROP COLUMN 就留着，反正没人读
-        }
-      }
-    }
-    // 早期方案里预留、但一直没人用的四张表：直接删掉，别让库结构留悬念
-    for (const dead of ['scenes', 'drafts', 'conversations', 'messages']) {
-      db.exec(`DROP TABLE IF EXISTS ${dead}`)
-    }
-    db.exec("DELETE FROM director_sessions WHERE script_id = 'director'")
-    db.exec("DELETE FROM director_timeline WHERE script_id = 'director'")
-    // 旧版本切项目会往时间线里塞「会话已重开」旁白：现在切项目不再重开会话，这些历史旁白一并清掉
-    db.exec(
-      "DELETE FROM director_timeline WHERE payload LIKE '%会话已按最新项目资料重开%' OR payload LIKE '%已按新模型重开会话%'"
-    )
     db.exec(`PRAGMA user_version = ${PROJECT_SCHEMA_VERSION}`)
   }
   return db

@@ -5,7 +5,6 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { initSecretBox, isV2Sealed, open as openSeal, seal } from './secretBox'
 import { hotWords } from './statsWords'
-import { runMigrations } from '../db/migrator'
 import { openProjectDatabase } from '../db/projectSchema'
 import {
   DEFAULT_CONFIG,
@@ -386,17 +385,15 @@ export class StorageService {
   }
 
   /**
-   * 结构迁移 + 建表 + 启动清扫。**必须在 app.whenReady 里 await 过再往下装配服务**——
+   * 建表 + 启动清扫。**必须在 app.whenReady 里 await 过再往下装配服务**——
    * 本类其余方法都假定结构已经就位。
    *
-   * 顺序不能换：迁移跑在建表之前。老库要把旧表抬到最终结构（比如 live_plans → scripts），
-   * 建表只兜全新库；反过来先建表会让迁移撞上"表已存在"或漏掉该改的列。
+   * 结构只有「当前形态」一份：没有迁移历史；老库缺的列由 ensureColumn 就地补齐，
+   * 多出来的历史列/表不影响读写。
    */
   async init(): Promise<void> {
-    const report = await runMigrations(this.appDb)
-    if (report.applied.length > 0) {
-      console.log(`[YunCast] 结构迁移完成：${report.applied.length} 条，当前版本 v${report.version}`)
-    }
+    // 迁移器时代的执行记录表：不再使用
+    this.adb.exec('DROP TABLE IF EXISTS _migrations')
     // 应用库只留全局数据：项目内容在各自的 <目录>/project.db（见 ProjectService / projectSchema）
     this.adb.exec(`
       CREATE TABLE IF NOT EXISTS triggers (

@@ -141,7 +141,7 @@ export function McpPane() {
       {/* 令牌（不完整显示） */}
       <div className="mt-3 rounded-lg border bg-card px-4 py-4">
         <p className="text-[13px] font-medium">访问令牌</p>
-        <p className="text-xs text-muted-foreground">每个请求都要带它；不要贴进公开仓库或聊天记录</p>
+        <p className="text-xs text-muted-foreground">每个请求都要带，别外传</p>
         <div className="mt-3 flex items-center gap-2">
           <code className="flex-1 truncate rounded-md bg-muted px-2 py-1.5 text-xs">
             {config?.token ? `${config.token.slice(0, 8)}…` : '…'}

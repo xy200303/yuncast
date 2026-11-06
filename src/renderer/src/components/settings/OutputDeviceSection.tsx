@@ -111,12 +111,7 @@ export function OutputDeviceSection() {
             checked={stream.autoVirtualCable}
             onCheckedChange={(checked) => void apply({ autoVirtualCable: checked })}
           />
-          <span className="text-[12.5px] leading-relaxed">
-            有虚拟声卡时自动切过去
-            <span className="block text-[11px] text-muted-foreground">
-              启动、插拔设备、保存设置时都按这条规则重新选（手动选过的设备优先）
-            </span>
-          </span>
+          <span className="text-[12.5px]">有虚拟声卡时自动切过去</span>
         </label>
 
         <div className="flex flex-wrap items-center gap-2 border-t pt-3">
@@ -148,12 +143,6 @@ export function OutputDeviceSection() {
             )}
           </div>
         </div>
-        {!virtual && (
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
-            「安装」会从 VB-Audio 官网下载 VB-CABLE（约 1.3 MB）并弹 UAC 提权装驱动，装完通常要重启电脑；
-            下载慢的话先自己下好，点「用本地安装包…」指给应用。公司电脑/杀软可能拦截驱动安装。
-          </p>
-        )}
       </div>
     </div>
   )

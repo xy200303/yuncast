@@ -39,7 +39,6 @@ export const openAiProvider: LlmProviderDef = {
       type: 'password',
       secret: true,
       placeholder: 'sk-…',
-      help: '只在落盘时加密保存，运行时注入 pi，不落 pi 的盘'
     },
     {
       key: 'baseUrl',

@@ -51,8 +51,7 @@ export const piCloudProviders: LlmProviderDef[] = LLM_PROVIDERS.map((id) => {
         type: 'password',
         secret: true,
         placeholder: 'sk-…',
-        help: '只在落盘时加密保存，运行时注入 pi，不落 pi 的盘'
-      },
+        },
       {
         key: 'baseUrl',
         label: '自定义 API 地址（留空走官方地址）',

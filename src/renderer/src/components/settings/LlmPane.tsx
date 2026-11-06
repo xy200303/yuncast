@@ -42,7 +42,6 @@ export function LlmSection() {
   const [deleting, setDeleting] = useState<ModelConnectionSafe | null>(null)
   /** 待删接入是不是导演大脑在用的那条（删除前查一次，用于提示） */
   const [usedBy, setUsedBy] = useState(0)
-  const [testing, setTesting] = useState<ModelConnectionSafe | null>(null)
 
   const askDelete = async (connection: ModelConnectionSafe) => {
     const director = await window.api.director.get()
@@ -68,10 +67,6 @@ export function LlmSection() {
           connection={editing.connection}
           providers={providers}
           onClose={() => setEditing(null)}
-          onTest={(connection) => {
-            setEditing(null)
-            setTesting(connection)
-          }}
           onDelete={(connection) => {
             setEditing(null)
             void askDelete(connection)
@@ -130,8 +125,6 @@ export function LlmSection() {
         </>
       )}
 
-      {testing && <TestConnectionDialog connection={testing} onClose={() => setTesting(null)} />}
-
       <Dialog open={deleting !== null} onOpenChange={(open) => !open && setDeleting(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -156,118 +149,15 @@ export function LlmSection() {
   )
 }
 
-/** 导演大脑（全局一份）：导演的名字 + 用哪条接入的哪个模型思考。主播卡只是人设与嗓音，不再各自配脑 */
-/**
- * 连通性测试弹窗：列出这条接入的全部模型，逐个测（也能一次全测）。
- * 同一家的模型可用性常常不一致，所以不挑一个代表来测，得能单独验。
- */
-function TestConnectionDialog({
-  connection,
-  onClose
-}: {
-  connection: ModelConnectionSafe
-  onClose: () => void
-}) {
-  const providers = useAppStore((s) => s.llmProviders)
-  type TestState = { state: 'idle' | 'running' | 'ok' | 'error'; detail?: string }
-  const [results, setResults] = useState<Record<string, TestState>>({})
-  const [batchRunning, setBatchRunning] = useState(false)
-
-  const setResult = (model: string, next: TestState) =>
-    setResults((prev) => ({ ...prev, [model]: next }))
-
-  const runOne = async (model: string): Promise<void> => {
-    setResult(model, { state: 'running' })
-    const result = await window.api.model.test(connection.id, model)
-    setResult(
-      model,
-      result.ok
-        ? { state: 'ok', detail: result.latencyMs ? `${result.latencyMs} ms` : undefined }
-        : { state: 'error', detail: result.error }
-    )
-  }
-
-  const runAll = async (): Promise<void> => {
-    if (batchRunning) return
-    setBatchRunning(true)
-    try {
-      // 串行：同一条接入并发打请求容易被限流，也会把失败原因搅在一起
-      for (const model of connection.models) await runOne(model)
-    } finally {
-      setBatchRunning(false)
-    }
-  }
-
-  return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <ProviderIcon providerId={connection.providerId} />
-            测试「{connection.name}」
-          </DialogTitle>
-        </DialogHeader>
-        <p className="text-xs text-muted-foreground">
-          给每个模型发一句最小请求，验「地址 + 密钥 + 模型名」一整套
-        </p>
-        <div className="flex flex-col gap-2">
-          {connection.models.map((model) => {
-            const result = results[model] ?? { state: 'idle' as const }
-            return (
-              <div
-                key={model}
-                className="flex items-center gap-2 rounded-lg border px-3 py-2"
-              >
-                <span className="min-w-0 flex-1 truncate font-mono text-sm">{model}</span>
-                {result.state === 'ok' && (
-                  <span className="shrink-0 text-xs text-emerald-600">
-                    连通{result.detail ? ` · ${result.detail}` : ''}
-                  </span>
-                )}
-                {result.state === 'error' && (
-                  <span className="max-w-[16rem] shrink-0 truncate text-xs text-destructive" title={result.detail}>
-                    {result.detail}
-                  </span>
-                )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="shrink-0"
-                  disabled={result.state === 'running' || batchRunning}
-                  onClick={() => void runOne(model)}
-                >
-                  {result.state === 'running' ? '测试中…' : '测试'}
-                </Button>
-              </div>
-            )
-          })}
-        </div>
-        <p className="text-xs text-muted-foreground">
-          {providerLabel(providers, connection.providerId)} 的模型逐个测，同一家不同型号可用性可能不一致
-        </p>
-        <DialogFooter className="gap-2 sm:justify-between">
-          <Button variant="outline" disabled={batchRunning} onClick={() => void runAll()}>
-            {batchRunning ? '测试中…' : '全部测试'}
-          </Button>
-          <Button onClick={onClose}>关闭</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-/** 新建/编辑供应商接入：凭据按 manifest 的 configFields 渲染，模型列表单独编辑 */
 function ConnectionEditorView({
   connection,
   providers,
   onClose,
-  onTest,
   onDelete
 }: {
   connection?: ModelConnectionSafe
   providers: LlmProviderManifest[]
   onClose: () => void
-  onTest: (connection: ModelConnectionSafe) => void
   onDelete: (connection: ModelConnectionSafe) => void
 }) {
   const setConnections = useAppStore((s) => s.setConnections)
@@ -311,10 +201,11 @@ function ConnectionEditorView({
   const [pickerOpen, setPickerOpen] = useState(false)
   /** 「高级：API 协议」折叠条（默认收着，一般不用动） */
   const [protocolOpen, setProtocolOpen] = useState(false)
-  /** 表单直连测试（不必先保存）：idle/running/ok/error + 一行结果 */
-  const [formTest, setFormTest] = useState<{ state: 'idle' | 'running' | 'ok' | 'error'; detail?: string }>({
-    state: 'idle'
-  })
+  /** 表单直连测试（不必先保存）：逐个模型测，结果一行一个 */
+  const [formTest, setFormTest] = useState<{
+    running: boolean
+    results: { model: string; ok: boolean; detail?: string }[]
+  }>({ running: false, results: [] })
   /** 「+ 添加模型」就地插入的空行下标，用来给它的模型 ID 输入框自动聚焦 */
   const [focusIndex, setFocusIndex] = useState<number | null>(null)
   const [params, setParams] = useState<Record<string, string | number | boolean>>(() => {
@@ -465,32 +356,41 @@ function ConnectionEditorView({
     }
   }
 
-  /** 测试连通：用表单当前（未保存）的值测第一个模型；密钥留空 = 沿用已保存的（主进程合并） */
+  /** 测试连通：用表单当前（未保存）的值逐个模型测；密钥留空 = 沿用已保存的（主进程合并） */
   const runFormTest = async () => {
-    if (formTest.state === 'running') return
+    if (formTest.running) return
     const ids = [...new Set(models.map((row) => row.id.trim()).filter(Boolean))]
     if (ids.length === 0) {
       toast.warning('先在模型列表里加一个模型再测')
       return
     }
-    setFormTest({ state: 'running' })
-    try {
-      const result = await window.api.model.testInput({
-        id: connection?.id,
-        name,
-        providerId,
-        params,
-        models: ids,
-        model: ids[0]
-      })
-      setFormTest(
-        result.ok
-          ? { state: 'ok', detail: `${ids[0]} 连通${result.latencyMs ? ` · ${result.latencyMs} ms` : ''}` }
-          : { state: 'error', detail: result.error }
-      )
-    } catch (error) {
-      setFormTest({ state: 'error', detail: error instanceof Error ? error.message : String(error) })
+    setFormTest({ running: true, results: [] })
+    const results: { model: string; ok: boolean; detail?: string }[] = []
+    for (const model of ids) {
+      try {
+        const result = await window.api.model.testInput({
+          id: connection?.id,
+          name,
+          providerId,
+          params,
+          models: ids,
+          model
+        })
+        results.push({
+          model,
+          ok: result.ok,
+          detail: result.ok
+            ? result.latencyMs
+              ? `${result.latencyMs} ms`
+              : undefined
+            : result.error
+        })
+      } catch (error) {
+        results.push({ model, ok: false, detail: error instanceof Error ? error.message : String(error) })
+      }
+      setFormTest({ running: true, results: [...results] })
     }
+    setFormTest({ running: false, results })
   }
 
   return (
@@ -686,9 +586,7 @@ function ConnectionEditorView({
                           <label className="flex items-start justify-between gap-3 text-sm">
                             <span>
                               多模态（识图）
-                              <span className="block text-xs text-muted-foreground">
-                                开了之后导演发图片主播才能看到（模型本身要支持图像输入）
-                              </span>
+                              <span className="block text-xs text-muted-foreground">允许导演看图（模型需支持）</span>
                             </span>
                             <Switch
                               checked={row.vision}
@@ -697,9 +595,7 @@ function ConnectionEditorView({
                           </label>
                           <label className="flex flex-col gap-1.5 text-sm">
                             温度
-                            <span className="text-xs text-muted-foreground">
-                              采样温度 0~2，留空按服务商默认。小更稳（话术/报价），大更飘（脑洞/段子）
-                            </span>
+                            <span className="text-xs text-muted-foreground">0~2，留空用服务商默认</span>
                             <Input
                               value={row.temperature}
                               onChange={(e) => patchAdvancedAt(index, { temperature: e.target.value.replace(/[^\d.]/g, '') })}
@@ -710,9 +606,7 @@ function ConnectionEditorView({
                           </label>
                           <label className="flex flex-col gap-1.5 text-sm">
                             回复上限
-                            <span className="text-xs text-muted-foreground">
-                              单次回复上限（tokens），留空按 8192。回复被截断、话术写不完时调大
-                            </span>
+                            <span className="text-xs text-muted-foreground">tokens，留空 8192</span>
                             <Input
                               value={row.maxTokens}
                               onChange={(e) => patchAdvancedAt(index, { maxTokens: e.target.value.replace(/[^\d]/g, '') })}
@@ -731,45 +625,37 @@ function ConnectionEditorView({
                     </Dialog>
                   </div>
                 ))}
-                <p className="text-xs text-muted-foreground">
-                  模型 id 一行一个（手打或「从目录选」挑）；每行末尾的扳手是高级参数——上下文窗口、思考强度、多模态/温度/回复上限，一般不用动
-                </p>
               </div>
             )}
           </div>
 
-          {/* 测试连通：用表单当前值直接测（不必先保存）；编辑时密钥留空 = 沿用已保存的 */}
+          {/* 一个测试入口：用表单当前值直接测（不必先保存）；编辑时密钥留空 = 沿用已保存的 */}
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="outline" size="sm" disabled={formTest.state === 'running'} onClick={() => void runFormTest()}>
-              {formTest.state === 'running' ? '测试中…' : '测试连通'}
+            <Button variant="outline" size="sm" disabled={formTest.running} onClick={() => void runFormTest()}>
+              {formTest.running ? '测试中…' : '测试连接'}
             </Button>
-            {formTest.state === 'ok' && <span className="text-xs text-emerald-600">{formTest.detail}</span>}
-            {formTest.state === 'error' && (
-              <span className="max-w-md truncate text-xs text-destructive" title={formTest.detail}>
-                {formTest.detail}
+            {formTest.results.map((item) => (
+              <span
+                key={item.model}
+                className={item.ok ? 'text-xs text-emerald-600' : 'max-w-md truncate text-xs text-destructive'}
+                title={item.detail}
+              >
+                {item.ok ? '✓' : '✗'} {item.model}
+                {item.ok && item.detail ? ` · ${item.detail}` : ''}
               </span>
-            )}
-            {formTest.state === 'idle' && (
-              <span className="text-xs text-muted-foreground">用上面填好的值测，不用先保存</span>
-            )}
-          </div>
-
-          {connection && (
-            <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={() => onTest(connection)}>
-                测试连接
-              </Button>
+            ))}
+            {connection && (
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-destructive hover:text-destructive"
+                className="ml-auto text-destructive hover:text-destructive"
                 onClick={() => onDelete(connection)}
               >
                 <Trash2 />
                 删除接入
               </Button>
-            </div>
-          )}
+            )}
+          </div>
       </div>
 
       <div className="flex items-center justify-between gap-2">

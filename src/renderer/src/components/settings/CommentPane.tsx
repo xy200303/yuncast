@@ -74,9 +74,6 @@ export function CommentGatewayCard() {
           </Button>
         </div>
       </div>
-      <p className="mt-2 text-xs text-muted-foreground">
-        端口和令牌在哪：打开连接器的「设置 → 智能体接口」，把上面的端口和令牌抄过来。连接器没开时会自动重试，打开它就自己连上了。
-      </p>
     </div>
   )
 }

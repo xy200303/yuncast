@@ -40,7 +40,11 @@ export function OutputDeviceSection() {
   const apply = async (patch: Partial<typeof stream>): Promise<void> => {
     await saveConfig({ stream: patch })
     const applied = await syncOutputDevice()
-    if (applied) toast.success(`输出已切到：${applied.label}`)
+    if (applied) {
+      toast.success(
+        applied.mirrorLabel ? `输出：${applied.label}；同时送 ${applied.mirrorLabel}` : `输出已切到：${applied.label}`
+      )
+    }
   }
 
   const install = async (opts: { pick?: boolean } = {}): Promise<void> => {
@@ -109,9 +113,34 @@ export function OutputDeviceSection() {
         <label className="flex items-start gap-2">
           <Switch
             checked={stream.autoVirtualCable}
+            disabled={stream.dualOutput}
             onCheckedChange={(checked) => void apply({ autoVirtualCable: checked })}
           />
-          <span className="text-[12.5px]">有虚拟声卡时自动切过去</span>
+          <span className="text-[12.5px]">
+            有虚拟声卡时自动切过去
+            {stream.dualOutput && <span className="block text-[11px] text-muted-foreground">双路输出时不需要自动切</span>}
+          </span>
+        </label>
+
+        <label className="flex items-start gap-2">
+          <Switch
+            checked={stream.dualOutput}
+            disabled={!virtual}
+            onCheckedChange={(checked) =>
+              void apply({
+                dualOutput: checked,
+                ...(checked
+                  ? { autoVirtualCable: false, ...(selectedId === virtual?.deviceId ? { outputDeviceId: '' } : {}) }
+                  : {})
+              })
+            }
+          />
+          <span className="text-[12.5px]">
+            同时输出到虚拟声卡
+            <span className="block text-[11px] text-muted-foreground">
+              主输出照常出声，同一路声音再送 {virtual?.label ?? '虚拟声卡'}；推流软件采集 CABLE Output
+            </span>
+          </span>
         </label>
 
         <div className="flex flex-wrap items-center gap-2 border-t pt-3">

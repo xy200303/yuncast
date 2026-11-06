@@ -365,7 +365,8 @@ export const DEFAULT_STREAM_CONFIG: StreamConfig = {
   serverUrl: '',
   streamKey: '',
   outputDeviceId: '',
-  autoVirtualCable: true
+  autoVirtualCable: true,
+  dualOutput: false
 }
 
 
@@ -425,7 +426,8 @@ function parseStream(input: unknown): StreamConfig {
     serverUrl: typeof row.serverUrl === 'string' ? row.serverUrl : '',
     streamKey: typeof row.streamKey === 'string' ? row.streamKey : '',
     outputDeviceId: typeof row.outputDeviceId === 'string' ? row.outputDeviceId : '',
-    autoVirtualCable: row.autoVirtualCable !== false
+    autoVirtualCable: row.autoVirtualCable !== false,
+    dualOutput: row.dualOutput === true
   }
 }
 
@@ -1751,6 +1753,8 @@ export interface StreamConfig {
   outputDeviceId: string
   /** 有虚拟声卡（CABLE Input / VoiceMeeter Input）时自动用它当输出 */
   autoVirtualCable: boolean
+  /** 双路输出：主输出照常（自己监听），同时把同一路声音送进虚拟声卡给推流软件采集 */
+  dualOutput: boolean
 }
 
 

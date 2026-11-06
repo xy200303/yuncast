@@ -19,6 +19,13 @@ class StreamPlayer {
   private cursor = 0
   private sources = new Set<AudioBufferSourceNode>()
 
+  // 第二路输出（同时送虚拟声卡）：独立 AudioContext，同一批 PCM 镜像过去
+  private mirrorCtx: AudioContext | null = null
+  private mirrorGain: GainNode | null = null
+  private mirrorCursor = 0
+  private mirrorSources = new Set<AudioBufferSourceNode>()
+  private mirrorDeviceId: string | null = null
+
   private ensureGraph(): AudioContext {
     if (this.ctx) return this.ctx
     const ctx = audioEngine.ensureContext()
@@ -27,6 +34,57 @@ class StreamPlayer {
     this.gain = ctx.createGain()
     this.gain.connect(audioEngine.ttsInput())
     return ctx
+  }
+
+  /**
+   * 第二路输出设备（虚拟声卡）：
+   * - deviceId 非空 = 开一路镜像，同一批 PCM 同时送过去（自己听主输出，推流软件采 CABLE Output）
+   * - null = 关掉镜像
+   */
+  async setMirrorDevice(deviceId: string | null): Promise<boolean> {
+    if (!deviceId) {
+      this.stopMirror()
+      return true
+    }
+    if (this.mirrorCtx && this.mirrorDeviceId === deviceId) return true
+    this.stopMirror()
+    try {
+      const ctx = new AudioContext() as AudioContext & { setSinkId?: (id: string) => Promise<void> }
+      if (typeof ctx.setSinkId !== 'function') {
+        void ctx.close()
+        return false
+      }
+      await ctx.setSinkId(deviceId)
+      const gain = ctx.createGain()
+      gain.gain.value = 1
+      gain.connect(ctx.destination)
+      void ctx.resume().catch(() => undefined)
+      this.mirrorCtx = ctx
+      this.mirrorGain = gain
+      this.mirrorCursor = 0
+      this.mirrorDeviceId = deviceId
+      return true
+    } catch (error) {
+      console.warn('[音频] 第二路输出接不上：', error instanceof Error ? error.message : String(error))
+      this.stopMirror()
+      return false
+    }
+  }
+
+  private stopMirror(): void {
+    for (const source of this.mirrorSources) {
+      try {
+        source.stop()
+      } catch {
+        // 已结束的 source 再 stop 会抛，忽略
+      }
+    }
+    this.mirrorSources.clear()
+    if (this.mirrorCtx) void this.mirrorCtx.close().catch(() => undefined)
+    this.mirrorCtx = null
+    this.mirrorGain = null
+    this.mirrorCursor = 0
+    this.mirrorDeviceId = null
   }
 
   /** 推入一块 PCM（sampleRate 为该块原始采样率）；返回 true 表示这是本次会话的第一块 */
@@ -51,6 +109,23 @@ class StreamPlayer {
     this.cursor = startAt + buffer.duration
     this.sources.add(source)
     source.onended = () => this.sources.delete(source)
+
+    // 镜像一路：AudioBuffer 不能跨上下文复用，得按镜像上下文的采样率重建
+    if (this.mirrorCtx && this.mirrorGain) {
+      const mirror = this.mirrorCtx
+      const mirrorBuffer = mirror.createBuffer(1, samples, sampleRate)
+      const mirrorChannel = mirrorBuffer.getChannelData(0)
+      mirrorChannel.set(channel)
+      const mirrorSource = mirror.createBufferSource()
+      mirrorSource.buffer = mirrorBuffer
+      mirrorSource.connect(this.mirrorGain)
+      const mirrorStart = Math.max(this.mirrorCursor, mirror.currentTime + 0.02)
+      mirrorSource.start(mirrorStart)
+      this.mirrorCursor = mirrorStart + mirrorBuffer.duration
+      this.mirrorSources.add(mirrorSource)
+      mirrorSource.onended = () => this.mirrorSources.delete(mirrorSource)
+    }
+
     return first
   }
 
@@ -74,6 +149,15 @@ class StreamPlayer {
     }
     this.sources.clear()
     this.cursor = 0
+    for (const source of this.mirrorSources) {
+      try {
+        source.stop()
+      } catch {
+        // 同上
+      }
+    }
+    this.mirrorSources.clear()
+    this.mirrorCursor = 0
   }
 
   get isPlaying(): boolean {

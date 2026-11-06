@@ -1,4 +1,5 @@
 import { audioEngine } from './engine'
+import { streamPlayer } from './streamPlayer'
 import { useAppStore } from '../stores/useAppStore'
 
 /**
@@ -55,12 +56,25 @@ export function pickOutputDevice(
   return fallback ? { deviceId: '', label: fallback.label } : { deviceId: '', label: '系统默认' }
 }
 
-/** 按当前配置把音频输出切到位（启动、保存设置、插拔设备后调） */
-export async function syncOutputDevice(): Promise<{ deviceId: string; label: string } | null> {
+/**
+ * 按当前配置把音频输出切到位（启动、保存设置、插拔设备后调）。
+ * dualOutput：主输出照常出声，同时把同一路 PCM 镜像到虚拟声卡给推流软件采集。
+ */
+export async function syncOutputDevice(): Promise<{
+  deviceId: string
+  label: string
+  mirrorLabel?: string
+} | null> {
   const { stream } = useAppStore.getState().config
   const devices = await listOutputDevices()
   if (devices.length === 0) return null
   const target = pickOutputDevice(devices, stream.autoVirtualCable, stream.outputDeviceId)
   const ok = await audioEngine.setOutputDevice(target.deviceId)
-  return ok ? target : null
+
+  const virtual = devices.find((device) => device.deviceId !== 'default' && isVirtualCable(device.label))
+  const primaryIsVirtual = isVirtualCable(target.label)
+  const mirrorId = stream.dualOutput && virtual && !primaryIsVirtual ? virtual.deviceId : null
+  const mirrorOk = await streamPlayer.setMirrorDevice(mirrorId)
+  const mirrorLabel = mirrorOk && mirrorId ? virtual?.label : undefined
+  return ok ? { ...target, mirrorLabel } : null
 }

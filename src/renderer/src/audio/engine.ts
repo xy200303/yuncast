@@ -72,6 +72,19 @@ class AudioEngine {
     return this.ctx
   }
 
+  /** 输出设备 id（空 = 系统默认）：伴侣模式靠它把声音送进虚拟声卡 */
+  async setOutputDevice(deviceId: string): Promise<boolean> {
+    const ctx = this.ensureGraph() as AudioContext & { setSinkId?: (id: string) => Promise<void> }
+    if (typeof ctx.setSinkId !== 'function') return false
+    try {
+      await ctx.setSinkId(deviceId || '')
+      return true
+    } catch (error) {
+      console.warn('[音频] 切换输出设备失败：', error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }
+
   // ---------- 麦克风总线（真人接管说话） ----------
 
   /**

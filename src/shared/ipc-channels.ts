@@ -269,6 +269,8 @@ export const IPC = {
   streamStatsEvent: 'stream:stats-event',
   /** 直推混音器：麦克风 PCM 帧（TTS/BGM 由主进程 AudioPipeline 直连混音器，不再经渲染层转手） */
   streamMicPcm: 'stream:mic-pcm',
+  /** 安装虚拟声卡（VB-CABLE）：下载官方安装包 + UAC 提权，用户显式触发 */
+  streamInstallVirtualCable: 'stream:install-virtual-cable',
 
   // 平台连接器
   connectorStatus: 'connector:status',

@@ -374,7 +374,13 @@ export interface LiveStateConfig {
 
 export const DEFAULT_LIVE_CONFIG: LiveStateConfig = { activeProgramId: '' }
 
-export const DEFAULT_STREAM_CONFIG: StreamConfig = { mode: 'companion', serverUrl: '', streamKey: '' }
+export const DEFAULT_STREAM_CONFIG: StreamConfig = {
+  mode: 'companion',
+  serverUrl: '',
+  streamKey: '',
+  outputDeviceId: '',
+  autoVirtualCable: true
+}
 
 export const DEFAULT_BGM_CONFIG: BgmConfig = { path: '', volume: 0.3 }
 
@@ -432,7 +438,9 @@ function parseStream(input: unknown): StreamConfig {
   return {
     mode: row.mode === 'direct' ? 'direct' : 'companion',
     serverUrl: typeof row.serverUrl === 'string' ? row.serverUrl : '',
-    streamKey: typeof row.streamKey === 'string' ? row.streamKey : ''
+    streamKey: typeof row.streamKey === 'string' ? row.streamKey : '',
+    outputDeviceId: typeof row.outputDeviceId === 'string' ? row.outputDeviceId : '',
+    autoVirtualCable: row.autoVirtualCable !== false
   }
 }
 
@@ -1824,6 +1832,10 @@ export interface StreamConfig {
   serverUrl: string
   /** 推流密钥（敏感字段，加密落盘（secretBox）） */
   streamKey: string
+  /** 本机输出设备 id（空 = 系统默认）。伴侣模式靠它把声音送进虚拟声卡，别让系统声音混进来 */
+  outputDeviceId: string
+  /** 有虚拟声卡（CABLE Input / VoiceMeeter Input）时自动用它当输出 */
+  autoVirtualCable: boolean
 }
 
 

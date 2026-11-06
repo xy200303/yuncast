@@ -578,6 +578,9 @@ const api = {
     stats: () => ipcRenderer.invoke(IPC.streamStats) as Promise<StreamStats>,
     /** 麦克风 PCM 帧（s16le 48k stereo）进混音器；TTS/BGM 由主进程 AudioPipeline 直连，不经这里 */
     pushMicPcm: (pcm: Uint8Array) => ipcRenderer.send(IPC.streamMicPcm, pcm),
+    /** 一键装虚拟声卡（VB-CABLE）：会弹 UAC 并安装驱动，装完重新枚举输出设备即可 */
+    installVirtualCable: () =>
+      ipcRenderer.invoke(IPC.streamInstallVirtualCable) as Promise<{ ok: boolean; error?: string }>,
     onStats: (cb: (stats: StreamStats) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, stats: StreamStats) => cb(stats)
       ipcRenderer.on(IPC.streamStatsEvent, listener)

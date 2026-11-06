@@ -8,6 +8,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAppStore } from '../../stores/useAppStore'
 import { type StreamConfig, type StreamMode } from '../../../../shared/types'
 import { DocLinks } from './shared'
+import { OutputDeviceSection } from './OutputDeviceSection'
 
 /** 推流表单：伴侣模式（推荐）或 FFmpeg 直推 RTMP */
 export function StreamSection() {
@@ -17,12 +18,22 @@ export function StreamSection() {
   const [form, setForm] = useState<StreamConfig>({ ...config.stream })
   const [saving, setSaving] = useState(false)
 
-  const dirty = JSON.stringify(form) !== JSON.stringify(config.stream)
+  const dirty =
+    form.mode !== config.stream.mode ||
+    form.serverUrl !== config.stream.serverUrl ||
+    form.streamKey !== config.stream.streamKey
   const patch = (part: Partial<StreamConfig>) => setForm((prev) => ({ ...prev, ...part }))
 
   const save = () => {
     setSaving(true)
-    saveConfig({ stream: form })
+    // 输出设备在下面的独立区块里即时保存，表单这份是旧的：保存推流时别把它覆盖回去
+    saveConfig({
+      stream: {
+        ...form,
+        outputDeviceId: config.stream.outputDeviceId,
+        autoVirtualCable: config.stream.autoVirtualCable
+      }
+    })
       .then(() => toast.success('推流配置已保存'))
       .catch((e) => toast.error('保存失败', { description: e instanceof Error ? e.message : String(e) }))
       .finally(() => setSaving(false))
@@ -37,6 +48,7 @@ export function StreamSection() {
   }
 
   return (
+    <>
     <div className="rounded-lg border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
         <div>
@@ -91,7 +103,9 @@ export function StreamSection() {
       {form.mode === 'direct' && (!form.serverUrl || !form.streamKey) && (
         <p className="mt-3 text-xs text-muted-foreground">直推模式需要服务器地址和推流密钥（抖音开播页可复制）</p>
       )}
-    </div>
+      </div>
+      <OutputDeviceSection />
+    </>
   )
 }
 

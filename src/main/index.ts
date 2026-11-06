@@ -141,6 +141,7 @@ import { ExportService } from './services/ExportService'
 import { UpdateService } from './services/UpdateService'
 import { listProviderModels, testModelConnection } from './services/llmModel'
 import { friendlyError } from './services/errorTranslate'
+import { installVirtualCable } from './services/VirtualCable'
 import { getLlmProvider, getTtsProvider, listLlmProviders, listTtsProviders, secretFieldKeys, ttsSecretFieldKeys } from './services/providers/registry'
 import { AudioPipeline } from './services/audio/AudioPipeline'
 import { PlaybackLoop } from './services/audio/PlaybackLoop'
@@ -1563,6 +1564,8 @@ function registerIpc(
   ipcMain.handle(IPC.streamStop, () => stream.stop())
   ipcMain.handle(IPC.streamStats, () => stream.getStats())
   ipcMain.on(IPC.streamMicPcm, (_e, pcm: Uint8Array) => stream.pushMicPcm(pcm))
+  // 虚拟声卡：用户点安装才跑，会弹 UAC（装的是系统驱动，不能静默）
+  ipcMain.handle(IPC.streamInstallVirtualCable, () => installVirtualCable())
 
   // ---------- 平台连接器 ----------
   ipcMain.handle(IPC.connectorStatus, () => connector.status())

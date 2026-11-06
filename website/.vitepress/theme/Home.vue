@@ -80,8 +80,19 @@ const tracks = [
 /** 更新日志：只写仓库里查得到的事实（与 CHANGELOG.md 对齐） */
 const changelog = [
   {
-    v: 'v0.4.1',
+    v: 'v0.4.2',
     when: '最新',
+    items: [
+      '录屏带声音：音轨从应用监听旁路采集，停止时并进视频',
+      '文案收口：清掉「主播/卡司」残留，统一成「导演」；统计页去掉恒为空的「主播排行」',
+      '音色可以按名字选；主播标识与音色分离——标识是任意字符串，只用来区分多角色',
+      '多语言口径：只有正文用本场语言，演法/场景/风格说明一律中文',
+      '项目结构升到 v8：旧项目拒绝打开，新增 draft_units.speaker 列'
+    ]
+  },
+  {
+    v: 'v0.4.1',
+    when: '存储收口',
     items: [
       '存储收口：合成音频进项目 audio/、附件进 assets/，整个目录拷走就是完整备份',
       'TTS 缓存改存项目库；应用级 BlobStore 与引用登记全部删除',
@@ -621,8 +632,8 @@ onUnmounted(() => {
         target="_blank"
         rel="noreferrer"
       >
-        <span class="notice-tag">v0.4.1</span>
-        <span class="notice-text">存储收口：音频与附件进项目目录，整个目录拷走就是备份</span>
+        <span class="notice-tag">v0.4.2</span>
+        <span class="notice-text">录屏带声音 · 音色按名字选 · 多角色主播标识</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">

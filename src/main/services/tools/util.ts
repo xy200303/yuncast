@@ -1,6 +1,7 @@
 import type { Program, ProgramLanguage } from '../../../shared/types'
 import { DRAFT_UNIT_STATUS_LABEL, PROGRAM_LANGUAGE_LABELS } from '../../../shared/types'
 import { stripSpeechTags } from '../../../shared/speechTags'
+import { resolveVoiceRef } from '../voiceRef'
 import type { ToolCtx } from './types'
 
 /**
@@ -19,11 +20,13 @@ export const MARKUP_HINT =
   '正文里用演法标记做单句级表演：<cot text=情绪>句子</cot> 给关键句套情绪（桥段至少挑一处：报价/悬念/反转句）、<fx>笑声</fx> 插音效、<pause>600</pause> 停顿；delivery 只整段语气，两者都要写。不支持的音色合成时自动剥掉标记，放心写'
 
 /**
- * 音色优先级：显式 voiceId > 本场默认音色。
- * 都没有返回 undefined（调用方必须报错，不兜底到音色库第一把）。
+ * 音色优先级：显式指定的主播名称/音色 id > 本场默认音色。
+ * 名称在这里统一解析成 voiceType；都没有返回 undefined（调用方必须报错，不兜底到音色库第一把）。
  */
 export function resolveVoice(ctx: ToolCtx, programId: string, voice?: string): string | undefined {
-  return voice?.trim() || (ctx.storage.sessionConfigLatest(programId)?.voiceId ?? '').trim() || undefined
+  const explicit = resolveVoiceRef(ctx.storage, voice)
+  if (explicit) return explicit
+  return resolveVoiceRef(ctx.storage, ctx.storage.sessionConfigLatest(programId)?.voiceId)
 }
 
 // ---------- 底稿/场景工具共用的小工具 ----------

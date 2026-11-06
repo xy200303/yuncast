@@ -29,7 +29,7 @@ import { Markdown } from '@/components/Markdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { ProgramGateDialog } from '@/components/ProgramGateDialog'
-import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
+import { SpeakerPicker } from './live/SpeakerPicker'
 import { VoicePickDialog } from '@/components/VoicePickDialog'
 import { useAppStore } from '../stores/useAppStore'
 import { useLiveStore } from '../stores/useLiveStore'
@@ -1694,13 +1694,8 @@ function ManualBroadcastDialog({
             </ToggleGroup>
           </div>
           <div className="flex flex-col gap-1.5">
-            <Label className="shrink-0 text-xs text-muted-foreground">音色</Label>
-            <UnifiedVoicePicker
-              voiceId={voice}
-              onPick={setVoice}
-              emptyLabel="留空用本场默认音色"
-              placeholder="留空用本场默认音色"
-            />
+            <Label className="shrink-0 text-xs text-muted-foreground">主播（留空 = 本场默认音色）</Label>
+            <SpeakerPicker value={voice} onChange={setVoice} emptyLabel="本场默认音色" />
           </div>
           <VoiceProviderHint voiceId={voice} />
         </div>

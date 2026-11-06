@@ -64,7 +64,7 @@ export const voiceTools = [
     risk: 'read',
     expose: { agent: true, mcp: true },
     description:
-      '列出音色库全部音色：id（音色库记录 id，voice_get/voice_update/voice_delete 用它）、voiceId（合成用标识 voiceType，tts_synthesize 的 voiceId 和 speak 的 voiceId 从这里取）、' +
+      '列出音色库全部音色：id（音色库记录 id，voice_get/voice_update/voice_delete 用它）、voiceId（合成用标识 voiceType）、名称（speak / draft_add / draft_write 的 voice 可以直接填这个名字）、' +
       '名称、服务商、模型、训练状态（training/ready/failed）、风格指令（instruction，没配则无此字段）、所属接入、版本号。换音色或删音色前用它拿 id。返回 JSON 数组。',
     parameters: Type.Object({}),
     handler: (ctx) => {

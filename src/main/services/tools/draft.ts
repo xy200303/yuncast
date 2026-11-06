@@ -125,6 +125,9 @@ export const draftTools = [
       pauseAfterMs: Type.Optional(
         Type.Number({ description: '播完这段后的停顿毫秒（0~10000，默认连续播）。播放时调度，不进合成' })
       ),
+      voice: Type.Optional(
+        Type.String({ description: '主播名称（音色库里的名字，如「小满」）或音色 id；不传 = 本场默认音色' })
+      ),
       sceneId: Type.Optional(
         Type.String({ description: '记到哪个场景（scene_list 拿 id）；不传记到当前场景，节目还没有编排则记为全场通用' })
       )
@@ -155,7 +158,7 @@ export const draftTools = [
           params.pauseAfterMs === undefined
             ? undefined
             : Math.max(0, Math.min(10000, Math.floor(Number(params.pauseAfterMs) || 0))),
-        voiceId: resolveVoice(ctx, programId, undefined) ?? '',
+        voiceId: resolveVoice(ctx, programId, params.voice) ?? '',
         source: 'initial',
         sources: []
       })
@@ -192,6 +195,9 @@ export const draftTools = [
           pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
           pauseAfterMs: Type.Optional(
             Type.Number({ description: '播完这段后的停顿毫秒（0~10000，默认连续播）。播放时调度，不进合成' })
+          ),
+          voice: Type.Optional(
+            Type.String({ description: '这一段的说话人：主播名称（音色库里的名字）或音色 id；不传 = 本场默认音色' })
           ),
           sources: Type.Optional(
             Type.Array(
@@ -230,7 +236,7 @@ export const draftTools = [
           text: item.text,
           textZh: item.textZh?.trim() || undefined,
           bitType: item.type,
-          voiceId: defaultVoice,
+          voiceId: resolveVoice(ctx, programId, item.voice) ?? defaultVoice,
           delivery: item.delivery,
           rate: item.rate,
           pitch: item.pitch,

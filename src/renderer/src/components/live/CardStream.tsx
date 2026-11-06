@@ -12,7 +12,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { Input } from '@/components/ui/input'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
+import { SpeakerPicker } from './SpeakerPicker'
 import { cn } from '@/lib/utils'
 import { ContentText } from '@/components/ContentText'
 import { useAppStore } from '../../stores/useAppStore'
@@ -295,7 +295,7 @@ export function CardStream() {
                 {ready && <span className="tabular-nums">{mmss(estimateMs(text))}</span>}
                 {playing && <span className="text-primary">◉ 在播</span>}
                 {voiceName && (
-                  <span className="flex min-w-0 shrink items-center gap-1" title={`本段音色：${voiceName}`}>
+                  <span className="flex min-w-0 shrink items-center gap-1" title={`本段主播：${voiceName}`}>
                     <Mic className="size-3 shrink-0" />
                     <span className="max-w-24 truncate">{voiceName}</span>
                   </span>
@@ -478,13 +478,8 @@ export function CardStream() {
             {synthRow ? stripSpeechTags(synthRow.item.text) : ''}
           </p>
           <div className="space-y-1.5">
-            <p className="text-[12px] text-muted-foreground">音色（留空 = 本场默认）</p>
-            <UnifiedVoicePicker
-              voiceId={synthVoice}
-              onPick={setSynthVoice}
-              emptyLabel="本场默认音色"
-              placeholder="选择音色"
-            />
+            <p className="text-[12px] text-muted-foreground">主播（留空 = 本场默认音色）</p>
+            <SpeakerPicker value={synthVoice} onChange={setSynthVoice} />
           </div>
 
           <div className="space-y-1.5">

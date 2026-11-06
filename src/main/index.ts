@@ -115,6 +115,7 @@ import {
 } from '../shared/types'
 import { StorageService } from './services/StorageService'
 import { ProjectFiles } from './services/ProjectFiles'
+import { resolveVoiceRef } from './services/voiceRef'
 import { TtsService, type TtsTestInput } from './services/TtsService'
 import { SpeechPool } from './services/SpeechPool'
 import { PromptTemplateService } from './services/PromptTemplateService'
@@ -776,13 +777,15 @@ function registerIpc(
   })
 
   // ---------- 话术池 ----------
-  ipcMain.handle(IPC.poolSay, (_e, input: PoolSayInput) => guard(() => pool.say(input)))
+  ipcMain.handle(IPC.poolSay, (_e, input: PoolSayInput) =>
+    guard(() => pool.say({ ...input, voiceId: resolveVoiceRef(storage, input.voiceId) }))
+  )
   ipcMain.handle(IPC.poolInsertNext, (_e, input: Omit<PoolSayInput, 'lane'>) =>
-    guard(() => pool.insertNext(input))
+    guard(() => pool.insertNext({ ...input, voiceId: resolveVoiceRef(storage, input.voiceId) }))
   )
   ipcMain.handle(IPC.poolRevoke, (_e, id: string) => guard(() => pool.revoke(id)))
   ipcMain.handle(IPC.sessionConfigSave, (_e, input: SessionConfigInput) => {
-    const result = programPlayback.configureSession(input)
+    const result = programPlayback.configureSession({ ...input, voiceId: resolveVoiceRef(storage, input.voiceId) ?? '' })
     if (result.ok) agent?.refreshProgramGate()
     return result
   })
@@ -1519,7 +1522,7 @@ function registerIpc(
     IPC.draftUnitSynthesize,
     async (_e, id: string, voiceId?: string, params?: { delivery?: string; rate?: number; pitch?: number }) => {
       try {
-        return await draftUnits.synthesizeOne(String(id), voiceId ? String(voiceId) : undefined, params)
+        return await draftUnits.synthesizeOne(String(id), resolveVoiceRef(storage, voiceId), params)
       } catch (error) {
         return { ok: false, error: friendlyError(error) }
       }

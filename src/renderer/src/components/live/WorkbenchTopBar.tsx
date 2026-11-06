@@ -116,11 +116,16 @@ export function WorkbenchTopBar({
             <DropdownMenuItem onSelect={() => onOpenDrawer('scenes')}>场次大纲</DropdownMenuItem>
             {prepared && <DropdownMenuItem onSelect={() => onOpenDrawer('chapters')}>章节点播</DropdownMenuItem>}
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => onOpenDrawer('interaction')}>自动响应设置</DropdownMenuItem>
             <DropdownMenuItem onSelect={onManualBroadcast}>人工播报</DropdownMenuItem>
             <RecordMenuSub />
-            <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={onOpenStreamSettings}>推流设置</DropdownMenuItem>
+            {/* 播出中只留播控与查看：配置类入口全部收起，免得一场里改出两套状态 */}
+            {!running && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => onOpenDrawer('interaction')}>自动响应设置</DropdownMenuItem>
+                <DropdownMenuItem onSelect={onOpenStreamSettings}>推流设置</DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

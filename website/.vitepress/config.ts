@@ -3,7 +3,7 @@ import { defineConfig } from 'vitepress'
 const SITE_URL = 'https://yuncast.xyun.dev'
 const SITE_NAME = '小云播客坊 YunCast'
 const SITE_DESC =
-  '面向不会直播的商家与实体店：桌面工作台把写稿、配音、播出、控场、互动串成一条流水线。声音可克隆成店家的，成品音频能整场导出。开源免费（MIT），Windows / macOS / Linux。'
+  '面向不会直播的商家与实体店：桌面工作台把写稿、配音、播出、控场、互动串成一条流水线。一个项目就是一个目录，声音可克隆成店家的，成品音频能整场导出。开源免费（MIT），当前发布 Windows 安装包。'
 const OG_IMAGE = `${SITE_URL}/og-image.png`
 
 const softwareJsonLd = {

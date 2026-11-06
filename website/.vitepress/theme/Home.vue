@@ -26,12 +26,12 @@ const ICONS = {
   code: svg('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>')
 }
 
-/** 首屏数字条：只放本仓库可验证的实测值，不编造"用户数 / 客户 logo"这类背书 */
+/** 首屏数字条：只放本仓库可验证的事实，不编造"用户数 / 客户 logo"这类背书 */
 const stats = [
-  { value: '712 ms', label: '单句合成实测延迟', note: '阿里云百炼 qwen3-tts-flash，本机实测' },
-  { value: '8 段 · 约 4 分钟', label: '一次预合成的量', note: '点合成前先报段数与预估时长' },
-  { value: '6 次/秒', label: '状态广播合并上限', note: '优化前 18.5 次/秒；流式期间长任务 0' },
-  { value: '0 服务端', label: '数据只落本机', note: '除你自配的云 API 外不外发任何数据' }
+  { value: '1 个项目', label: '一个目录就够', note: '场次、稿子、对话、记录都在 project.db' },
+  { value: '3 步', label: '写稿 → 合成 → 播放', note: '同一个弹窗，随时退回去改' },
+  { value: '0 服务端', label: '数据只落本机', note: '除你自配的云 API 外不外发任何数据' },
+  { value: 'MIT', label: '开源免费', note: '主进程与界面同仓，可自行构建' }
 ]
 
 /** 三条主线：写稿 / 播出 / 互动。每条 = 一句主张 + 四条能力 + 一个文档出口 */
@@ -39,14 +39,14 @@ const tracks = [
   {
     id: 'write',
     name: '写稿',
-    lead: '在建好的项目里说清商品、卖点和受众，导演按场次逐段写；语言、形态、风格随每次任务书传给它。',
+    lead: '在建好的项目里说清商品、卖点和受众，导演按场景逐段写；语言、形态、风格随每次任务书传给它。',
     to: '/guide/quickstart',
     toText: '看写稿流程',
     items: [
-      { t: '按场次写', d: '项目里定好的场景序列，开场、展开、收尾各写各的' },
+      { t: '按场景写', d: '项目里定好的场景序列，开场、展开、收尾各写各的' },
       { t: '报价必须查证', d: '价格只认查过资料的口径，查不到会明说而不是编' },
       { t: '逐条可改', d: '改一条只影响这一条，已经合成好的音频不会被动' },
-      { t: '语言不串', d: '日语节目写中文稿会被写稿工具直接拒收，要求整段重写' }
+      { t: '语言不串', d: '日语场景写中文稿会被写稿工具直接拒收，要求整段重写' }
     ]
   },
   {
@@ -134,7 +134,7 @@ const localFirst = [
   {
     icon: ICONS.drive,
     t: '数据只落本机',
-    d: '项目 = 目录：场次、底稿、对话、音频都在项目目录里；应用配置在用户数据目录，备份把两处一起带走。'
+    d: '项目 = 目录：场次、稿子、对话都在 project.db；「导出项目」连音频一起打包，应用配置另在用户数据目录。'
   },
   {
     icon: ICONS.key,
@@ -173,7 +173,7 @@ const modes = [
 
 /** 一条流水线：从写稿到复盘 */
 const pipeline = [
-  { icon: ICONS.pen, title: '写稿', desc: '导演按项目里的场次写底稿，进卡片流等你过目' },
+  { icon: ICONS.pen, title: '写稿', desc: '导演按项目里的场景写底稿，进卡片流等你过目' },
   { icon: ICONS.waveform, title: '合成', desc: '选本场音色与合成时机，已合成的段落会标出来' },
   { icon: ICONS.monitor, title: '播出', desc: '开播后按稿子顺序播，循环从第一段重来' },
   { icon: ICONS.message, title: '互动', desc: '评论进事件流，主播看一条回一条，或攒一批一起回' },
@@ -202,7 +202,7 @@ const specs = [
 
 /** 常见做法 vs 用工作台：写得客观，不贬低别的做法 */
 const compare = [
-  { scene: '开播前准备', manual: '手写话术、逐个试听、临时找配乐', app: '导演按项目里的场次写底稿，卡片流逐条过目，合成前先报要合多少段' },
+  { scene: '开播前准备', manual: '手写话术、逐个试听、临时找配乐', app: '导演按项目里的场景写底稿，卡片流逐条过目，合成前先报要合多少段' },
   { scene: '出声', manual: '真人一直守在麦前，或者放一段录好的音频循环', app: '主播按稿子顺序讲，插话优先播完；真人想接手随时插播' },
   { scene: '评论', manual: '边讲边瞄弹幕，回不过来就漏掉', app: '评论去重聚合后按批交给主播，它自己判断回一条还是回一批' },
   { scene: '改稿', manual: '改完得重新录一遍', app: '边播边合模式下，改稿只影响还没播的段，已播的音频不动' },
@@ -221,7 +221,7 @@ const faqs = [
   },
   {
     q: '不会写直播稿能用吗？',
-    a: '可以。建好项目后直接点「生成底稿」，导演按项目里的场次逐段写；写的时候你可以插话改口径，拿不准它会先问你。'
+    a: '可以。建好项目后直接点「生成底稿」，导演按项目里的场景逐段写；写的时候你可以插话改口径，拿不准它会先问你。'
   },
   {
     q: '能克隆店家的声音吗？',
@@ -249,7 +249,7 @@ const faqs = [
   },
   {
     q: '需要什么配置的电脑？',
-    a: 'Windows 10 及以上、macOS 13 及以上（只有 Apple 芯片版本）、主流 64 位 Linux。做推流时建议 8GB 内存以上；不推流、只做预制内容导出的话，普通办公本也够。'
+    a: '当前发布 Windows 10 及以上的 x64 安装包；macOS / Linux 可以从源码自行构建。做推流时建议 8GB 内存以上；不推流、只做预制内容导出的话，普通办公本也够。'
   },
   {
     q: '能在多个平台同时播吗？',
@@ -610,8 +610,8 @@ onUnmounted(() => {
         target="_blank"
         rel="noreferrer"
       >
-        <span class="notice-tag">v0.3.2</span>
-        <span class="notice-text">修复安装版语音合成全线失败（ffmpeg 路径）· 装过的请升级</span>
+        <span class="notice-tag">v0.4.0</span>
+        <span class="notice-text">项目制重构：一个项目 = 一个目录，可导入导出 ZIP · 支持一键装虚拟声卡</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">
@@ -803,7 +803,7 @@ onUnmounted(() => {
 
 
     <!-- ============ 功能演示 ============ -->
-    <section class="section video-section">
+    <section id="demo" class="section video-section">
       <div class="inner">
         <span class="eyebrow reveal"><i>05</i>功能演示</span>
         <h2 class="display reveal">一段<span>实机</span></h2>
@@ -976,7 +976,7 @@ $ npm run dev</code></pre>
             下载最新版
             <span class="arw" v-html="ICONS.arrow" />
           </a>
-          <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">四步上手</a>
+          <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">三步上手</a>
           <a v-press class="btn ghost" href="https://github.com/xy200303/yuncast" target="_blank" rel="noreferrer">GitHub</a>
         </div>
         <p class="footnote">MIT License · © 2026 小云播客坊 YunCast · 安装包未做代码签名，安装提示按文档处理</p>

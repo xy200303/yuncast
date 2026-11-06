@@ -219,7 +219,7 @@ export type TtsConnectionSafe = TtsConnection & {
   usableModels: string[]
 }
 
-// ---------- LLM 配置（主播 Agent 的大脑） ----------
+// ---------- LLM 配置（导演 Agent 的大脑） ----------
 
 export const LLM_PROVIDERS = ['deepseek', 'qwen', 'doubao', 'kimi', 'zai'] as const
 export type LlmProvider = (typeof LLM_PROVIDERS)[number]
@@ -617,8 +617,7 @@ export interface PoolItem {
   turnId: string
   /** 话轮内顺序 */
   seq: number
-  /** 这段归哪张主播卡（稳定寻址；改名/换音色不影响）。空 = 合成时用卡司第一张 */
-  /** 角色音色（写稿时按卡司分派），空串 = 用卡司第一张 */
+  /** 本段音色覆盖（voiceType）；空串 = 用本场默认音色 */
   voiceId: string
   source: { agentId: string; kind: PoolSourceKind }
   lane: PoolLane
@@ -764,7 +763,7 @@ export type SessionEndMode = 'stop' | 'loop' | 'forever'
 
 /**
  * 本场（一次开播）的唯一绑定处（docs/12 §2）：
- * 主播与嗓子、话术语言、三个播出开关、互动开关都在这里定；资产之间零引用。
+ * 本场音色、话术语言、三个播出开关、互动开关都在这里定；资产之间零引用。
  * 每次开播必须人点确认生成一条，字段可预填上一次的值。
  */
 /** 本场的播出节奏（由内容来源 + 合成时机推导；资产不再存 broadcastMode） */
@@ -793,7 +792,7 @@ export interface SessionConfig {
   endMode: SessionEndMode
   /** 音频策略：复用已有 / 清空重合成 */
   audioPolicy: 'reuse' | 'rebuild'
-  /** 是否把直播间动态（评论/礼物/进场）提供给主播 */
+  /** 是否把直播间动态（评论/礼物/进场）交给导演 */
   allowLiveEvents: boolean
   /** 本场启用的触发器 id */
   enabledTriggerIds: string[]
@@ -841,25 +840,22 @@ export type PoolResult<T = undefined> =
 export const POOL_LIMITS = {
   /** 池内容量上限（未播完条目）；超出节目的底稿按波次装载（轮播补货），不必一次全装 */
   capacity: 50,
-  /** 每来源每分钟限流（主播/触发器/人工的硬限） */
+  /** 每来源每分钟限流（导演/触发器/人工的硬限） */
   perSourcePerMinute: 20,
   /** 底稿库装载来源（library）的宽松限流：整版底稿按波次重装，一轮要装得下 */
   libraryPerSourcePerMinute: 300,
   /** 预合成窗口：队列前 N 条提前送 TTS */
   synthWindow: 5,
-  /** 低水位阈值（未播条目数）：降到这就发 pool.low 叫主播续写——等空了再叫必然冷场 */
+  /** 低水位阈值（未播条目数）：降到这就发 pool.low 叫导演续写——等空了再叫必然冷场 */
   lowWater: 3,
   /** 单条话术字数上限（桥段 = 多句连续讲述，90 秒约 500~700 字） */
   textMaxLength: 800
 } as const
 
-/** 底稿库装载进池的来源 id（限流走 library 档；不占主播自己的发言额度） */
+/** 底稿库装载进池的来源 id（限流走 library 档；不占导演自己的发言额度） */
 export const LIBRARY_SOURCE_ID = 'library'
 
-// ---------- 主播卡（Persona：纯数据卡，没有人格大脑；想的事全归导演） ----------
-
-
-// ---------- 主播 Agent 状态 ----------
+// ---------- 导演 Agent 状态 ----------
 
 export type AgentRunState = 'stopped' | 'starting' | 'running' | 'error'
 
@@ -903,7 +899,7 @@ export interface LiveComment {
 
 // ---------- 导演对话（docs/07 §8.8） ----------
 
-/** director=导演指令（右侧气泡）；ask=主播请示（高亮卡片+一键选项） */
+/** director=导演指令（右侧气泡）；ask=导演请示（高亮卡片+一键选项） */
 export type DirectorMessageKind = 'director' | 'ask'
 
 export interface DirectorMessage {
@@ -917,9 +913,9 @@ export interface DirectorMessage {
   answered?: string
   /** ask 的等待时限（秒）：超时未答即按默认策略继续，卡片标过期（docs/07 §8.8.6 ④） */
   timeoutSec?: number
-  /** ask 超时后主播打算走的默认策略（给导演看"不问会怎么走"） */
+  /** ask 超时后 AI 打算走的默认策略（给导演看"不问会怎么走"） */
   defaultAction?: string
-  /** 导演指令附带的文件（名称 + 本机路径，随指令一起发给主播） */
+  /** 导演指令附带的文件（名称 + 本机路径，随指令一起发给 AI） */
   attachments?: { name: string; path: string }[]
 }
 
@@ -930,7 +926,7 @@ export interface DirectorMessage {
  * - text：assistant 消息的正文。中间文本（还在调工具/还会继续说）final 为空，前端渲染成淡色流式行；
  *   本轮最后一条 assistant 消息带 final=true，渲染成独立气泡。
  * - tool：一次工具执行（toolCallId 就是 id），start 时 running，end 时同 id 更新为结果。
- * - ask：主播请示（ask_director）的高亮卡片——与文本/工具同一条单通道，切场/重启后照常恢复。
+ * - ask：导演请示（ask_director）的高亮卡片——与文本/工具同一条单通道，切场/重启后照常恢复。
  */
 export type DirectorTimelineEntry =
   | {
@@ -962,7 +958,7 @@ export type DirectorTimelineEntry =
     }
   | { type: 'ask'; id: string; message: DirectorMessage }
 
-/** 一条时间线事件：turnId = 本轮（一次派给主播的任务）内所有条目的分组键；渲染层按 entry.id upsert */
+/** 一条时间线事件：turnId = 本轮（一次派给 AI 的任务）内所有条目的分组键；渲染层按 entry.id upsert */
 export interface DirectorTimelineEvent {
   turnId: string
   entry: DirectorTimelineEntry
@@ -1016,7 +1012,7 @@ export interface DirectorTimelineReset {
   entries: ChatEntry[]
 }
 
-/** 播报控制（主播工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */
+/** 播报控制（AI 工具 pause_broadcast / resume_broadcast / skip_current → 渲染进程执行） */
 export type PlaybackControlAction = 'pause' | 'resume' | 'skip'
 
 // ---------- 提示词模板（设置 → 导演手册） ----------
@@ -1064,7 +1060,7 @@ export interface VoiceRecord {
   updatedAt: number
 }
 
-/** 音色在本场配置里的引用（最近几场用它做过主播嗓子） */
+/** 音色在本场配置里的引用（最近几场用它做过默认音色） */
 export interface VoiceUsageSession {
   id: string
   programName: string
@@ -1073,7 +1069,7 @@ export interface VoiceUsageSession {
 
 /**
  * 音色的引用关系（`voice:usage`）：删除前先看谁在用。
- * 资产不引用音色（主播卡没有嗓子），引用只可能来自本场配置与话术条目的音色快照。
+ * 资产不引用音色：引用只可能来自本场配置与话术条目的音色快照。
  */
 export interface VoiceUsage {
   /** 最近用过这把嗓子的场次数（最多 5 场，新的在前） */
@@ -1088,7 +1084,7 @@ export interface VoiceUsage {
 
 /**
  * 知识条目类型：商品只是其中一种——书籍/读物（有声书）、话题/节目（播客）、自定义都行。
- * 条目是主播的弹药库：搜素材走它；只有 product 参与价格护栏（check_price）。
+ * 条目是导演的弹药库：搜素材走它；只有 product 参与价格护栏（check_price）。
  */
 export const ENTRY_KINDS = ['product', 'book', 'topic', 'custom'] as const
 export type EntryKind = (typeof ENTRY_KINDS)[number]
@@ -1103,7 +1099,7 @@ export interface Material {
   name: string
   /** 条目类型（product/book/topic/custom） */
   kind: EntryKind
-  /** 价格（元）。价格护栏的数据源：主播报价只能出自这里（仅 product 有意义） */
+  /** 价格（元）。价格护栏的数据源：报价只能出自这里（仅 product 有意义） */
   price: number
   /** 要点：商品=卖点；书籍=内容要点；话题=节目要点 */
   sellingPoints: string
@@ -1171,7 +1167,7 @@ export interface ViewerProfile {
   asks: string[]
   /** 偏好/特征标签 */
   tags: string[]
-  /** 主播记的笔记（最近 20 条） */
+  /** 导演记的笔记（最近 20 条） */
   notes: string[]
   firstSeenAt: number
   lastSeenAt: number
@@ -1227,7 +1223,7 @@ export interface Trigger {
     agentId: string
     mode: TriggerMode
     toolAction?: TriggerToolAction
-    /** mode=steer/task 时给主播的提示模板，支持插值 */
+    /** mode=steer/task 时给导演的提示模板，支持插值 */
     promptTemplate?: string
   }
   throttle?: TriggerThrottle
@@ -1243,14 +1239,14 @@ export type RenderedAudioStatus = 'pending' | 'synthesizing' | 'ready' | 'failed
 /**
  * 预制音频引用：预制节目的正式产物，挂在 Scene（整章/整期）或 DraftUnit（段）上。
  * 与 DraftUnit.audioPath/status 的分工：后者是滚动合成的运行态字段；rendered 是长期资产，
- * 应用重启不随播出队列清理。开始预制合成时把卡司声音冻结成快照写进来，
- * 之后切换主播/改主播音色不改写已有 rendered。
+ * 应用重启不随播出队列清理。开始预制合成时把本场音色冻结成快照写进来，
+ * 之后改音色不改写已有 rendered。
  */
 export interface RenderedAudioRef {
   audioPath: string
   durationMs?: number
   status: RenderedAudioStatus
-  /** 合成时冻结的完整声音快照；换卡司不改写。外部音频记 'external' */
+  /** 合成时冻结的完整声音快照；换音色不改写。外部音频记 'external' */
   ttsConnectionId: string
   ttsModelId: string
   /** 音色或角色表的指纹（冻结快照的一部分） */
@@ -1429,9 +1425,9 @@ export interface LiveInboxEvent {
 
 export const LIVE_EVENT_STATE_LABELS: Record<LiveEventState, string> = {
   new: '聚合中',
-  seen: '已送达主播',
+  seen: '已送达导演',
   handled: '已回应',
-  ignored: '主播没理',
+  ignored: '未回应',
   expired: '已过期'
 }
 
@@ -1941,7 +1937,6 @@ export interface StatsGlobal {
   /** 节目排行：场次数 / 总时长（分钟）/ 场均评论 */
   byProgram: { programId: string; programName: string; sessions: number; minutes: number; avgComments: number }[]
   /** 主播排行：按场次卡司快照的 personaName 归集 */
-  byCast: { personaName: string; sessions: number; minutes: number }[]
   /** 全局评论热词 */
   commentWords: StatsHotWord[]
   /** 全局话术热词（实际播出的条目） */

@@ -58,10 +58,10 @@ import type { RecordingService } from './RecordingService'
 
 /**
  * 导演 Agent（单脑架构）：唯一话术生产者。恒定导演身份，从不开口——
- * 卡司（主播卡）只是它手上的资料与嗓音，谁说话由 speak 的 personaId（卡 id）决定。
+ * 说话用哪个音色由 speak 的 voice 决定——没有独立的「主播」资产，也没有卡司。
  * - 引擎：pi-agent-core 的 Agent 裸用。会话树/models.json/资源发现都不存在也不需要——
  *   每个项目一份会话（线性消息数组，key = 项目 id），system prompt 是导演手册 + 项目资料 + 场次
- * - 只挂主播工具（tools/ 目录，一切声音走话术池）；core 没有内置工具，不用 allowlist
+ * - 只挂直播工具（tools/ 目录，一切声音走话术池）；core 没有内置工具，不用 allowlist
  * - 模型：手工构造 Model（OpenAI 兼容 completions / OpenAI Responses，由接入协议决定），凭据随 stream options 注入不落盘；我们的 config 里 secretBox 加密
  * - 上下文压缩：transformContext 钩子里自研——估算超阈值就把旧消息发给 LLM 摘要，替换 state.messages
  * - text_delta 既累积成"AI 正在组织语言"预览（提词器），也推给对话时间线（docs/09 §11）
@@ -71,7 +71,7 @@ import type { RecordingService } from './RecordingService'
 /**
  * 事件接线：由**本场配置**决定（docs/12 §12），会话启动时冻结、开播装载时刷新（换节目不重启会话）。
  * allowLiveEvents=false → 评论/礼物/进场不派给 Agent；enabledTriggerIds → TriggerRuntime 只响这些触发器；
- * 内容来源/播出形态 → 水位类触发器在预制/无限生成里不放行（播完/循环是引擎决策，不需要主播救场）。
+ * 内容来源/播出形态 → 水位类触发器在预制/无限生成里不放行（播完/循环是引擎决策，不需要 AI 救场）。
  */
 export interface ProgramGate {
   allowLiveEvents: boolean
@@ -260,7 +260,7 @@ export class AgentService {
   }
 
   /**
-   * 状态里"重字段"的缓存：资产指纹（要 hash 全部提示词模板）、当前场景、卡司名、事件接线
+   * 状态里"重字段"的缓存：资产指纹（要 hash 全部提示词模板）、当前场景、音色、事件接线
    * ——这几项都得读库/算 hash，而 status() 会被每个 text_delta 触发。缓存 1 秒：
    * 黄条/场景/接线这类信息晚 1 秒无所谓，但省掉的同步查库与 hash 是实打实的。
    */
@@ -335,7 +335,7 @@ export class AgentService {
     this.broadcast(this.status())
   }
 
-  /** 开播时冻结的资产指纹：会话出生时读了一次导演/卡司/剧本，之后不再读（docs/07 §8.5）。
+  /** 开播时冻结的资产指纹：会话出生时读了一次导演/音色/剧本，之后不再读（docs/07 §8.5）。
    *  分两层：brain = 模型接入（变了只能重开会话）；prompt = 人设/剧本/手册/节目字段（热替换 system 消息即可） */
   private sessionBrainFp: string | null = null
   /** 工具表 schema 的固定 token 开销（出生时算好；热更新 system prompt 后只需重算 prompt 部分） */
@@ -400,8 +400,8 @@ export class AgentService {
   /**
    * 资产指纹分两层（热更新/冷重启的判据）：
    * brain = 导演模型配置 + 接入本身（换密钥/换模型/调窗口）——焊在 Agent 实例的 streamFn 闭包里，只能重开会话；
-   * prompt = 卡司内容/节目字段/剧本/导演手册——只进 system 消息，热替换首条消息即可生效。
-   * 都不含音色（每条话术现算）和卡司指针（谁说话由本场配置与逐条 personaId 决定）。
+   * prompt = 音色/节目字段/剧本/导演手册——只进 system 消息，热替换首条消息即可生效。
+   * 都不含音色（每条话术现算）：谁说话由本场配置与段落覆盖决定。
    */
   private brainFingerprint(): string {
     const cfg = this.storage.getConfig()
@@ -569,7 +569,7 @@ export class AgentService {
 
   async restart(): Promise<void> {
     await this.stop()
-    // stop 已把会话落库：start 默认读存档，带着历史重新就位（导演大脑/卡司/剧本按当前值重组装）
+    // stop 已把会话落库：start 默认读存档，带着历史重新就位（导演大脑/音色/剧本按当前值重组装）
     await this.start()
     // 给时间线补一条系统旁白：被打断的那轮不会再有条目落地，渲染层「正在生成回复中」
     // 靠第一条新条目收起——不发这条，重启前刚好发过消息的窗口会一直转圈
@@ -579,7 +579,7 @@ export class AgentService {
   /**
    * /clear：清空全局会话——停掉活着的会话（不复盘、不存回），删掉存的会话记录和
    * 当前节目的对话时间线，渲染层 reset 清屏。下次说话导演从零就位（system prompt 重新组装，
-   * 卡司/节目/剧本按当前值）。正在直播中不许清：主播还在台上，清了上下文就断片。
+   * 节目/剧本按当前值）。正在直播中不许清：AI 还在台上，清了上下文就断片。
    */
   async clearConversation(): Promise<{ ok: boolean; error?: string }> {
     if (this.liveActive) return { ok: false, error: '正在直播中，不能清空会话——先停播再清' }
@@ -715,7 +715,7 @@ export class AgentService {
    */
   directorSay(text: string, images?: ImageContent[]): void {
     if (!this.session || (this.state !== 'running' && this.state !== 'error')) {
-      throw new Error('主播没在跑：先在直播台启动节目')
+      throw new Error('直播还没启动：先在直播台启动节目')
     }
     let payload = this.prompts.render('user.director_wrap', { text })
     let pics = images?.length ? images : undefined
@@ -736,7 +736,7 @@ export class AgentService {
     this.directorSay(text, images)
   }
 
-  /** 时间线系统提示（卡司切换等）：以一段文本条目上屏，不走 LLM */
+  /** 时间线系统提示（切换音色/节目等）：以一段文本条目上屏，不走 LLM */
   private emitNote(text: string): void {
     this.emitTimeline({
       turnId: this.turnId,
@@ -768,7 +768,7 @@ export class AgentService {
    */
   private emitTimeline(event: DirectorTimelineEvent): void {
     const programId = this.sessionKey()
-    // 发言人标记：agent 侧条目盖卡司第一张的戳（多卡司时时间线看得出哪段是谁）
+    // 条目原样落库并广播
     const stamped = event.entry as DirectorTimelineEntry
     if (programId) {
       const entry = stamped
@@ -819,7 +819,7 @@ export class AgentService {
     await this.ensureSession()
   }
 
-  /** 导演就位（无会话时）：导演大脑 + 卡司 + 选中节目的上下文，恢复全局会话存下的对话（没有就新起） */
+  /** 导演就位（无会话时）：导演大脑 + 音色 + 选中节目的上下文，恢复全局会话存下的对话（没有就新起） */
   private async ensureSession(): Promise<void> {
     if (this.session) return
     const programId = this.storage.getConfig().live.activeProgramId
@@ -849,7 +849,7 @@ export class AgentService {
     this.script.setActiveProgram(program.id)
     this.refreshProgramGate()
     await this.ensureSession()
-    // 写稿必须有准头：刚换了节目/改过卡司，旧会话的 system prompt 里还是上一套（导演不知道现在手上有哪些主播）
+    // 写稿必须有准头：刚换了节目/改过音色，旧会话的 system prompt 里还是上一套
     // → 先把资产应用上：文本层热替换（不打断），脑层变了才重开会话
     if (this.assetsStale() !== 'none') await this.applyAssets()
     const brief = this.script.getScript(program.id)
@@ -889,7 +889,7 @@ export class AgentService {
   }
 
   /** 写稿任务书：场景行（id/时长/要点）代码拼好，主文案走导演手册（user.draft_brief）；
-   *  末尾附本场写作参数与卡司名单——写谁的词要钻进谁的人设，导演得先知道手上有哪些主播 */
+   *  末尾附本场写作参数与音色——台词都按本场风格写，没有卡司名单 */
   private composeDraftBrief(script: Script, params: DraftBriefParams): string {
     const scenes =
       script.scenes.length === 0
@@ -903,8 +903,6 @@ export class AgentService {
             .join('\n')
     return this.prompts.render('user.draft_brief', { scenes }) + this.draftParamsBlock(params)
   }
-
-  /** 任务书末尾的卡司段：本场配了卡司就点名，没配就报备稿可用名单 */
 
 
   /** 急停（配合 renderer 停播放 + 清池）：停会话即可，池由调用方清 */
@@ -1496,7 +1494,7 @@ ${recentActions}` : '')
     })
   }
 
-  /** 按当前资产现组装 system prompt（导演手册 + 卡司资料 + 节目上下文）：出生和热更新共用同一套拼装 */
+  /** 按当前资产现组装 system prompt（导演手册 + 音色资料 + 节目上下文）：出生和热更新共用同一套拼装 */
   private buildSystemPromptNow(): string {
     const { program, script } = this.script.getActive()
     const director = this.storage.getConfig().director
@@ -1581,7 +1579,7 @@ ${recentActions}` : '')
     // 记下出生时的资产指纹（分两层）：之后 UI 靠它判断"本场是不是旧版本"、热更新还是冷重启
     this.sessionBrainFp = this.brainFingerprint()
 
-    // system prompt = 导演手册 + 卡司资料 + 节目上下文，出生组装一次（之后文本层变更走 applyAssets 热替换）
+    // system prompt = 导演手册 + 音色资料 + 节目上下文，出生组装一次（之后文本层变更走 applyAssets 热替换）
     const systemPrompt = this.buildSystemPromptNow()
     const tools = this.buildToolsNow()
     // 上下文仪表：窗口 + 固定开销（system prompt + 实际进会话的工具表 schema）出生时就位
@@ -1601,7 +1599,7 @@ ${recentActions}` : '')
         model,
         // 思考强度来自接入的模型级配置（off=不思考）；思考流会进对话时间线的「思考过程」
         thinkingLevel,
-        // 主播工具（说话/写稿/播出控制）+ 系统控制工具（节目/剧本/主播/音色/触发器/全局状态，docs/10 §10.2），按场景裁剪后挂入
+        // 直播工具（说话/写稿/播出控制）+ 系统控制工具（节目/剧本/音色/触发器/全局状态，docs/10 §10.2），按场景裁剪后挂入
         tools,
         // 全局单会话：恢复时把存档消息重建进内存会话，上下文原样回来
         messages: restoredMessages

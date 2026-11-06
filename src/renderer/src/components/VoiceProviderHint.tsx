@@ -30,7 +30,7 @@ export function VoiceProviderHint({ voiceId }: { voiceId: string }) {
     if (!connection) {
       return (
         <p className="mt-1 text-xs text-destructive">
-          手动音色里的接入不存在：到主播团重新选一个带接入与模型的音色
+          手动音色里的接入不存在：到音色库重新选一个带接入与模型的音色
         </p>
       )
     }

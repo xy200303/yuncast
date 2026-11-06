@@ -16,7 +16,7 @@ export function validatePodcastRequest(
   request: PodcastRequest,
   caps: TtsModelCapabilities
 ): string | null {
-  if (request.turns.length === 0) return '双人播客轮次稿是空的：先让主播写稿，再生成节目音频'
+  if (request.turns.length === 0) return '双人播客轮次稿是空的：先让导演写稿，再生成节目音频'
   const unique = new Set(request.speakers)
   if (request.speakers.length !== caps.maxSpeakers || unique.size !== request.speakers.length) {
     return `Podcast 模型需要恰好 ${caps.maxSpeakers} 个不同的发音人（当前给了 ${request.speakers.length} 个）`

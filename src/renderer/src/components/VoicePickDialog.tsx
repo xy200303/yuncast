@@ -304,7 +304,7 @@ export function VoicePickDialog({
                   '本场默认音色',
                   programVoiceName
                     ? programVoiceName
-                    : '未选主播：本节目没配卡司，逐段用 personaId 指定，或在下面选其他音色'
+                    : '还没选本场默认音色：可以在下面选一个，或先到设置里配好'
                 )}
                 {optionRow('other', '选择其他音色…', '换一把嗓音合成这一次，不改节目配置')}
               </div>

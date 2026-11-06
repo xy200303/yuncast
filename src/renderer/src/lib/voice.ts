@@ -166,7 +166,7 @@ export function voiceRouteSummary(
   const specOf = (provider: TtsProvider, modelId: string): TtsModelSpec | null =>
     manifests.find((item) => item.id === provider)?.models.find((model) => model.id === modelId) ?? null
   if (!id) {
-    return { voiceName: '', providerShort: '', broken: '还没选音色：到主播团给这张主播卡选一个', modelSpec: null }
+    return { voiceName: '', providerShort: '', broken: '还没选音色：到音色库选一个', modelSpec: null }
   }
   const clone = voices.find((voice) => voice.voiceType === id)
   if (clone) {
@@ -186,7 +186,7 @@ export function voiceRouteSummary(
       return {
         voiceName: `手动 ID · ${short}`,
         providerShort: '',
-        broken: '这个音色挂的语音接入已经删除了：到主播团重选一次音色',
+        broken: '这个音色挂的语音接入已经删除了：到音色库重选一次音色',
         modelSpec: null
       }
     }
@@ -205,7 +205,7 @@ export function voiceRouteSummary(
     return {
       voiceName: id,
       providerShort: '',
-      broken: '这个音色系统里查不到（多半是旧数据里手输的）：到主播团重选一次音色',
+      broken: '这个音色系统里查不到（多半是旧数据里手输的）：到音色库重选一次音色',
       modelSpec: null
     }
   }

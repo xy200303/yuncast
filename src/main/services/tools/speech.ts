@@ -4,7 +4,7 @@ import { defineTool } from './types'
 import { activeProgramId, MARKUP_HINT, resolveVoice } from './util'
 
 const LANE_DESC = '车道：queue 排队顺序播（默认）/ next 当前这条播完就插播（回评论、急事用）/ interrupt 打断当前立刻说 / filler 垫底（没东西播时才轮到）'
-const VOICE_DESC = '直接指定音色 id（voice_list 返回的 voiceType）：一般不用传，用它就不看 personaId 指定的卡了'
+const VOICE_DESC = '直接指定音色 id（voice_list 返回的 voiceType）：一般不用传；传了就用它，不再看本场默认音色'
 
 /**
  * 播报域：开口说话 + 话术池管理 + 播出控制。

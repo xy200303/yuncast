@@ -13,9 +13,9 @@ import type { Program, Script, SessionConfig } from '../../../../shared/types'
 import { stripSpeechTags } from '../../../../shared/speechTags'
 
 /**
- * 直播台吸底播放条（docs/12 §7/§9）：像音乐播放器——**不放节目/主播选择**，
+ * 直播台吸底播放条（docs/12 §7/§9）：像音乐播放器——**不放节目/角色选择**，
  * 只回答「播到哪、还能撑多久」和播出操作：播放/暂停、上一段/下一段、分量进度、音量、更多、结束本场。
- * 本场配置（剧本/主播/语言/预设）在顶栏；这里不重复。
+ * 本场配置（语言/预设）在顶栏；这里不重复。
  */
 
 /** 粗估时长：中文 4.5 字/秒，只用于「还能播多久」 */
@@ -222,7 +222,7 @@ export function NowPlayingBar({
             size="icon"
             className="shrink-0 text-primary"
             onClick={() => (loopRunning ? pauseBroadcast() : resumeBroadcast())}
-            title={loopRunning ? '暂停：停播报，也让主播先别生成新话术' : '继续播报'}
+            title={loopRunning ? '暂停：停播报，也让导演先别生成新话术' : '继续播报'}
           >
             {loopRunning ? <Pause className="size-5" /> : <Play className="size-5" />}
           </Button>

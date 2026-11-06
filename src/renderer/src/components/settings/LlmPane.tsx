@@ -348,7 +348,7 @@ function ConnectionEditorView({
       }
       setConnections(result.connections)
       toast.success(connection ? '接入已保存' : '接入已新建', {
-        description: '已启动的主播重启后使用新模型'
+        description: '已启动的导演重启后使用新模型'
       })
       onClose()
     } finally {

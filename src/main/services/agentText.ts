@@ -61,7 +61,7 @@ export function estimateMsgTokens(message: AgentMessage): number {
 export function renderMessageForSummary(message: AgentMessage): string {
   const m = message as { role?: string; content?: unknown; toolName?: string }
   const roleLabel =
-    m.role === 'user' ? '导演/观众' : m.role === 'assistant' ? '主播' : m.role === 'toolResult' ? `工具结果(${m.toolName ?? ''})` : '系统'
+    m.role === 'user' ? '导演/观众' : m.role === 'assistant' ? '导演' : m.role === 'toolResult' ? `工具结果(${m.toolName ?? ''})` : '系统'
   const parts: string[] = []
   if (typeof m.content === 'string') {
     parts.push(m.content)

@@ -102,7 +102,7 @@ export function VoicesPage() {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <AudioLines className="size-4 shrink-0 text-primary" />
         <h1 className="shrink-0 text-sm font-medium">音色库</h1>
-        <p className="text-[13px] text-muted-foreground">克隆音色管理 · 主播可以调度各家的音色</p>
+        <p className="text-[13px] text-muted-foreground">克隆音色管理 · 本场默认音色从这里选</p>
         <p className="text-[13px] text-muted-foreground">共 {voices.length} 个</p>
         <Button variant="ghost" size="sm" className="h-7 text-xs" title="重新拉取音色库（克隆完成/agent 改动会自动刷新，这里是手动兜底）" onClick={() => reload()}>
           <RefreshCw className="size-3.5" />

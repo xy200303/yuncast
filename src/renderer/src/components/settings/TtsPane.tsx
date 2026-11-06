@@ -289,7 +289,7 @@ function TtsTestDialog({
 }) {
   const [modelId, setModelId] = useState(connection.models[0]?.id ?? '')
   const [voice, setVoice] = useState('')
-  const [text, setText] = useState('你好，欢迎来到直播间，这里是小云播客坊智能主播。')
+  const [text, setText] = useState('你好，欢迎来到直播间，这里是小云播客坊。')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{
     ok: boolean
@@ -554,7 +554,7 @@ function TtsConnectionEditor({
         return
       }
       setConnections(result.connections)
-      toast.success(connection ? '接入已保存' : '接入已新建', { description: '启动中的主播重启后使用新凭据' })
+      toast.success(connection ? '接入已保存' : '接入已新建', { description: '已启动的导演重启后使用新凭据' })
       onClose()
     } finally {
       setBusy(false)

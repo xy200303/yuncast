@@ -40,7 +40,7 @@ const triggerLabel = (ctx: ToolCtx, id: string): string => {
 }
 
 /**
- * 破坏性操作两段确认：内置主播（agent 侧）没 confirmed 时只发导演确认卡；
+ * 破坏性操作两段确认：内置 AI（agent 侧）没 confirmed 时只发导演确认卡；
  * 外部调用（MCP/CLI）本身就是导演角色，没有确认卡机制，直接放行（返回 null）。
  */
 function askConfirm(ctx: ToolCtx, summary: string): string | null {
@@ -124,11 +124,11 @@ export const programTools = [
               合成时机: session.synthMode,
               收尾: session.endMode,
               音频策略: session.audioPolicy,
-              直播间动态提供给主播: session.allowLiveEvents,
+              直播间动态交给AI: session.allowLiveEvents,
               启用触发器: session.enabledTriggerIds.map((id) => ({ id, 名称: triggerLabel(ctx, id) })),
               本场音色: session.voiceId || '（未配置）'
             }
-          : '（还没做过开播配置：开播前必须在弹窗里选主播、定嗓子）',
+          : '（还没做过开播配置：开播前先在弹窗里选本场音色）',
         场次: bound
           ? `${bound.scenes.length} 场（${bound.scenes.map((item) => item.title).join(' → ')}）`
           : '还没编排（scene_create 加场）',
@@ -198,7 +198,7 @@ export const programTools = [
       const status = ctx.getStatus?.()
       const runningNote =
         saved.id === activeId(ctx) && status && status.state !== 'stopped'
-          ? '。注意：这是当前剧本且主播会话在跑——结构改动重开会话/重新开播才完全生效'
+          ? '。注意：这是当前剧本且 AI 会话在跑——结构改动重开会话/重新开播才完全生效'
           : ''
       return `${existing ? '已更新' : '已新建'}剧本「${saved.name}」（id=${saved.id}，版本号 ${saved.updatedAt}）${runningNote}`
     }
@@ -212,7 +212,7 @@ export const programTools = [
     risk: 'write',
     expose: { agent: true, mcp: true },
     description:
-      '把某个节目设为当前节目（主播的上下文、底稿工具都跟着它走；选中后主播就位于该节目——预热，接着它原来的对话记录）。' +
+      '把某个节目设为当前节目（AI 的上下文、底稿工具都跟着它走；选中后 AI 就位于该节目——预热，接着它原来的对话记录）。' +
       '正在播出的节目不受影响——播出中想换节目要先结束再开播。programId 从 program_list 拿。',
     parameters: Type.Object({
       programId: Type.String({ description: '节目 id（program_list 拿）' })
@@ -225,7 +225,7 @@ export const programTools = [
       ctx.warmupProgram?.(program.id)
       const liveNote = ctx.getStatus?.()?.live
         ? '（当前正在播出的节目不受影响：这场结束后开播才用新选择）'
-        : '（主播已就位于这个节目）'
+        : '（AI 已就位于这个节目）'
       return `已选中节目「${program.name}」${liveNote}`
     }
   }),
@@ -238,10 +238,10 @@ export const programTools = [
     expose: { agent: true, mcp: true },
     description:
       '清空一个节目的全部底稿和已合成音频（不可恢复；节目配置与编排保留）。整节目推倒重写时用；正在播出的节目清不了。' +
-      '内置主播第一次调用不传 confirmed：向导演发确认卡；确认后带 confirmed=true 重调才执行。外部调用直接执行。',
+      '内置 AI 第一次调用不传 confirmed：向导演发确认卡；确认后带 confirmed=true 重调才执行。外部调用直接执行。',
     parameters: Type.Object({
       programId: Type.Optional(Type.String({ description: '节目 id（program_list 拿），不传 = 当前节目' })),
-      confirmed: Type.Optional(Type.Boolean({ description: '导演已确认 = true；不传 = 先发确认卡（仅内置主播侧）' }))
+      confirmed: Type.Optional(Type.Boolean({ description: '导演已确认 = true；不传 = 先发确认卡（仅内置 AI 侧）' }))
     }),
     handler: (ctx, params) => {
       const programId = params.programId?.trim() || activeId(ctx)
@@ -292,10 +292,10 @@ export const programTools = [
     expose: { agent: true, mcp: true },
     description:
       '正式启动节目开播（装载底稿、打开播出通道、开始接评论）。会真的开播。预检不过返回缺什么（先 program_preflight 看清单）。' +
-      '内置主播只有导演明说开播才用（备稿、闲聊、彩排阶段别碰），开播的是当前节目，不用传 programId；' +
+      '内置 AI 只有导演明说开播才用（备稿、闲聊、彩排阶段别碰），开播的是当前节目，不用传 programId；' +
       '外部调用必须传 programId，allowPartial=true 表示预制节目音频没全就绪时只播已完成部分（默认 false=拒绝）。',
     parameters: Type.Object({
-      programId: Type.Optional(Type.String({ description: '节目 id（program_list 拿）。外部调用必填；内置主播不用传（当前节目）' })),
+      programId: Type.Optional(Type.String({ description: '节目 id（program_list 拿）。外部调用必填；内置 AI 不用传（当前节目）' })),
       allowPartial: Type.Optional(Type.Boolean({ description: '预制节目音频没全就绪时，是否只播已完成部分（默认 false=拒绝）。仅外部调用有效' }))
     }),
     handler: async (ctx, params) => {
@@ -321,11 +321,11 @@ export const programTools = [
     description:
       '生成节目音频（统一生产入口）。rolling 边播边准备的节目是「提前合成全部」：立即返回、后台逐段跑（进度看 program_audio_progress）；' +
       'prepared 预制节目全量合成、同步跑完才返回汇总，段数多要等很久，且会真实调用语音合成服务、有外部费用。' +
-      '内置主播跑预制节目必须先向导演发确认卡（卡里写清范围、预计时长、将用的模型和音色快照），导演确认后带 confirmed=true 重调；外部调用本身是导演角色，直接执行。' +
+      '内置 AI 跑预制节目必须先向导演发确认卡（卡里写清范围、预计时长、将用的模型和音色快照），导演确认后带 confirmed=true 重调；外部调用本身是导演角色，直接执行。' +
       '开始合成时把卡司声音冻结成快照写进产物，之后换卡司不改写已有音频。已就绪且文稿没改过的单元会跳过不重蒸。programId 不传 = 当前节目。',
     parameters: Type.Object({
       programId: Type.Optional(Type.String({ description: '节目 id（program_list 拿），不传 = 当前节目' })),
-      confirmed: Type.Optional(Type.Boolean({ description: '导演已确认 = true；预制节目不传 = 先发确认卡（仅内置主播侧）' }))
+      confirmed: Type.Optional(Type.Boolean({ description: '导演已确认 = true；预制节目不传 = 先发确认卡（仅内置 AI 侧）' }))
     }),
     handler: async (ctx, params) => {
       const programId = params.programId?.trim() || activeId(ctx)
@@ -341,7 +341,7 @@ export const programTools = [
           ? `已开始为「${program.name}」提前合成全部文稿（后台逐段跑，不是播放门禁；进度用 program_audio_progress 看）`
           : `发起失败：${result.error}`
       }
-      // 预制：全量合成有外部费用。内置主播先确认（确认卡显示范围/预计时长/模型与音色快照）；外部调用直接执行
+      // 预制：全量合成有外部费用。内置 AI 先确认（确认卡显示范围/预计时长/模型与音色快照）；外部调用直接执行
       if (ctx.caller === 'agent') {
         if (!ctx.describeProducePlan) return '音频生产入口没接上，让导演在界面操作'
         const plan = ctx.describeProducePlan(program.id)
@@ -403,7 +403,7 @@ export const programTools = [
       '导出预制节目已生成的音频到本机目录：数据源是节目单元的预制音频资产，不重新调 TTS，导出和播放用同一批音频。' +
       '范围 = 全部章节；mode=separate 分章文件（默认）/ merged 合并为一个文件；format=mp3（默认）/ wav。' +
       '部分章节缺音频时默认阻断并列出缺哪些，明确带 onlyReady=true 才只导出已完成部分（不静默跳过）。' +
-      '对外副作用：往磁盘写文件。内置主播第一次调用不传 confirmed：向导演发确认卡（范围/方式/格式/输出目录/预计文件数）；确认后带 confirmed=true 重调才执行。外部调用直接执行。' +
+      '对外副作用：往磁盘写文件。内置 AI 第一次调用不传 confirmed：向导演发确认卡（范围/方式/格式/输出目录/预计文件数）；确认后带 confirmed=true 重调才执行。外部调用直接执行。' +
       'programId 从 program_list 拿，outputDir 必填（本机绝对路径）。',
     parameters: Type.Object({
       programId: Type.String({ description: '节目 id（program_list 拿）' }),
@@ -473,10 +473,10 @@ export const programTools = [
     description:
       '一条命令把一场戏搭起来：建节目（含风格指令/写稿默认语言）→ 按给的场景清单把编排排好 → 选中开播预热。' +
 
-      '它只搭骨架（不写稿）：搭完用 draft_write/program_produce_audio 补内容；开播前必须做一次开播配置（主播×音色×语言×播出开关）。' +
+      '它只搭骨架（不写稿）：搭完用 draft_write/program_produce_audio 补内容；开播前必须做一次开播配置（本场音色×语言×播出开关）。' +
       '以前这些要走 6~10 次调用且 scene_create 依赖"当前节目"，没切换就把场景写到别的节目上（实测踩过）。',
     parameters: Type.Object({
-      name: Type.String({ description: '节目名（也是主播卡名之外的唯一标识）' }),
+      name: Type.String({ description: '节目名（唯一标识）' }),
       theme: Type.Optional(Type.String({ description: '节目说明/主题' })),
 
       scenes: Type.Optional(
@@ -490,7 +490,7 @@ export const programTools = [
           { description: '场景清单（按顺序建）；不给就留空，之后用 scene_create 补' }
         )
       ),
-      activate: Type.Optional(Type.Boolean({ description: '建完就选中并预热主播会话（默认 true）' }))
+      activate: Type.Optional(Type.Boolean({ description: '建完就选中并预热 AI 会话（默认 true）' }))
     }),
     handler: (ctx, params) => {
       const name = params.name.trim()
@@ -525,8 +525,8 @@ export const programTools = [
           (latest && latest.scenes.length > 0
             ? `\n${latest.scenes.map((item, i) => `  ${i + 1}. ${item.title}｜${item.goal}`).join('\n')}`
             : ''),
-        params.activate !== false ? '已选中并把主播会话预热好。' : '没选中（activate=false）。',
-        '下一步：draft_write 按场景写稿（sceneId 从这里或 scene_list 拿）→ program_produce_audio 预合成 → program_launch 开播；也可以直接 program_launch 让主播现场补货。'
+        params.activate !== false ? '已选中并把 AI 会话预热好。' : '没选中（activate=false）。',
+        '下一步：draft_write 按场景写稿（sceneId 从这里或 scene_list 拿）→ program_produce_audio 预合成 → program_launch 开播；也可以直接 program_launch 让 AI 现场补货。'
       ]
       return lines.join('\n')
     }

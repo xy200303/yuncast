@@ -68,8 +68,8 @@ export class ProgramPlaybackService {
   ) {}
 
   /**
-   * 保存本场配置（开播弹窗确认、MCP 配置本场共用）：分配 id、校验主播/音色/触发器，
-   * 不写回节目或主播卡——本场的改动只属于这一场。
+   * 保存本场配置（开播弹窗确认、MCP 配置本场共用）：分配 id、校验音色/触发器，
+   * 不写回项目——本场的改动只属于这一场。
    */
   private voiceNameOf(voiceId: string): string {
     return (
@@ -111,14 +111,14 @@ export class ProgramPlaybackService {
     const items: PreflightItem[] = []
     const cfg = this.storage.getConfig()
 
-    // ① 本场卡司与嗓子：唯一来源是开播配置；没有它就没有"这场用什么人、什么嗓子"
+    // ① 本场音色：唯一来源是开播配置；没有它就没有"这场用什么嗓子"
     const sessionConfig = this.storage.sessionConfigLatest(programId)
     if (!sessionConfig) {
       items.push({
         level: 'block',
         code: 'session-config',
         label: '还没做开播配置',
-        detail: '点「启动直播」先过一遍配置：选本场主播、逐个定嗓子、语言与播出开关'
+        detail: '点「启动直播」先过一遍配置：选本场音色、确认收尾方式与播出开关'
       })
       return items
     }
@@ -169,7 +169,7 @@ export class ProgramPlaybackService {
         })
       }
     }
-    // ②a 语音合成：只认本场配置里给主主播定的嗓子，走和运行时完全相同的合成路由。
+    // ②a 语音合成：只认本场配置里的默认音色，走和运行时完全相同的合成路由。
     // 没音色 = 新内容合不成，存量音频照播——降级为警告
     const effectiveVoice = (this.storage.sessionConfigLatest(programId)?.voiceId ?? '').trim()
     let ttsReady = false
@@ -177,8 +177,8 @@ export class ProgramPlaybackService {
       items.push({
         level: 'warn',
         code: 'voice-missing',
-        label: '本场主播还没定嗓子：存量照播，新内容没法合成',
-        detail: '在开播配置里给本场主播逐个选音色，新话术才有声音'
+        label: '本场还没定音色：存量照播，新内容没法合成',
+        detail: '在开播配置里选本场默认音色，新话术才有声音'
       })
     } else {
       try {
@@ -219,7 +219,7 @@ export class ProgramPlaybackService {
     // ③ 编排（节目的场景序列）
     const script = this.script.getScript(program.id)
     if (!script) {
-      items.push({ level: 'warn', code: 'script-missing', label: '节目还没有编排', detail: '主播只能自由发挥，节奏容易散' })
+      items.push({ level: 'warn', code: 'script-missing', label: '节目还没有编排', detail: '导演只能自由发挥，节奏容易散' })
     } else if (script.scenes.length === 0) {
       items.push({ level: 'warn', code: 'script-missing', label: '编排里没有场景', detail: '编排至少要有一场' })
     } else {
@@ -234,20 +234,20 @@ export class ProgramPlaybackService {
       items.push({
         level: 'ok',
         label: '即兴播出：无需底稿',
-        detail: '主播根据导演指令和直播间动态现场发挥；没动静时允许自然安静'
+        detail: '导演根据指令和直播间动态现场发挥；没动静时允许自然安静'
       })
     } else {
     if (library.length === 0) {
       items.push({
         level: 'warn',
         label: '话术库是空的',
-        detail: '节目页让主播预生成整版底稿，开播才有骨架'
+        detail: '开播前先让导演生成整版底稿，开播才有骨架'
       })
     } else if (ready.length === 0) {
       items.push({
         level: 'warn',
         label: `没有就绪话术（共 ${library.length} 段）`,
-        detail: '可以先批量预合成，或让主播现场补货'
+        detail: '可以先批量预合成，或让导演现场补货'
       })
     } else {
       items.push({
@@ -258,7 +258,7 @@ export class ProgramPlaybackService {
     }
 
     // ⑤ 底稿管线状态：没写（阻断，去生成）→ 写了没合成（警告，去预合成）→ 有就绪（通过）。
-    // 0 就绪不是阻断：开场触发器会让主播现场 say、实时合成照样出声，只是不够平滑
+    // 0 就绪不是阻断：开场触发器会让导演现场 say、实时合成照样出声，只是不够平滑
     const covered = (ready.length * AVG_BIT_SECONDS) / 60
     if (library.length === 0) {
       items.push({
@@ -266,8 +266,8 @@ export class ProgramPlaybackService {
         level: 'block',
         label: '还没有底稿',
         detail: script
-          ? '点下方「去生成底稿」，让主播按场景写稿'
-          : '先给节目配一份编排，主播才能按场景出整版底稿'
+          ? '点下方「去生成底稿」，让导演按场景写稿'
+          : '先给项目配一份场景编排，导演才能按场景出整版底稿'
       })
     } else if (ready.length === 0) {
       items.push({
@@ -283,7 +283,7 @@ export class ProgramPlaybackService {
         label: `底稿就绪 ${ready.length} 段（约能播 ${formatMinutes(covered)}）`,
         detail:
           ready.length < library.length
-            ? `另有 ${library.length - ready.length} 段待合成，播完循环复用音频；池子水位低了主播会现场续写`
+            ? `另有 ${library.length - ready.length} 段待合成，播完循环复用音频；池子水位低了导演会现场续写`
             : '播完循环复用音频；池子水位低了主播会现场续写'
       })
     }
@@ -405,7 +405,7 @@ export class ProgramPlaybackService {
       }
     }
     const sessionConfig = this.storage.sessionConfigLatest(programId)
-    if (!sessionConfig) return { ok: false, error: '还没做开播配置：先确认本场主播、音色与播出开关' }
+    if (!sessionConfig) return { ok: false, error: '还没做开播配置：先确认本场音色与播出开关' }
     const blocked = this.preflight(programId).filter((item) => item.level === 'block')
     if (blocked.length > 0) {
       return { ok: false, error: `预检未通过：${blocked.map((item) => item.label).join('；')}` }
@@ -452,7 +452,7 @@ export class ProgramPlaybackService {
       policy.kickSynthesis(program)
       // 引擎先行：这场算开播了（播放循环只认话术池，不依赖 agent 会话）
       // 开播前先把改过的资产应用上：文本层热替换（不断片），脑层变了才重开会话（此刻还没置开播态，
-      // 重开不会触发下播复盘），导演带着本场的卡司与节目上下文中上场；否则她会按上一套写词
+      // 重开不会触发下播复盘），导演带着本场音色与节目上下文上场；否则它会按上一套写词
       if (this.agent.status().state !== 'stopped' && this.agent.status().assetsStale !== 'none') {
         await this.agent.applyAssets().catch(() => undefined)
       }
@@ -468,7 +468,7 @@ export class ProgramPlaybackService {
           this.agent.refreshProgramGate()
         }
       } catch (error) {
-        warning = `主播没起来（${friendlyError(error)}）：存量的合成音频照播，补货/互动等她就位后恢复`
+        warning = `导演没起来（${friendlyError(error)}）：存量的合成音频照播，补货/互动等它就位后恢复`
       }
       return { ok: true, loaded, warning, gate }
     } catch (error) {
@@ -564,7 +564,7 @@ export class ProgramPlaybackService {
   loadProgramDraftUnits(programId: string): number {
     const program = this.storage.programList().find((p) => p.id === programId) ?? null
     if (!program) return 0
-    // closer（收尾段）不进自动轮播：播到一半来句「下回接着聊」就穿帮了——主播要收尾时自己 say 出去
+    // closer（收尾段）不进自动轮播：播到一半来句「下回接着聊」就穿帮了——导演要收尾时自己 say 出去
     const ready = this.loadableDraftUnits(programId)
     // 叙事顺序：场景在剧本里的先后 → 场景内创作序号 seq（铺垫→展开→落点不乱）；
     // 轮播公平：主键「最久没进池」（队尾不饿死），首轮全部 lastLoaded=0，等于严格按叙事顺序播
@@ -691,7 +691,7 @@ export class ProgramPlaybackService {
     return this.loadableDraftUnits(programId).some((u) => !lastLoaded.has(u.id))
   }
 
-  /** 底稿是否到段数上限（到顶才允许循环重播；上限是防失控的成本闸，写稿规模由主播自己定） */
+  /** 底稿是否到段数上限（到顶才允许循环重播；上限是防失控的成本闸，写稿规模由导演自己定） */
   atDraftCap(programId: string): boolean {
     return this.draftUnits.list(programId).length >= DRAFT_HARD_CAP
   }

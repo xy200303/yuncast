@@ -43,7 +43,7 @@ const CHARS_PER_SECOND = 4.5
  *   合成路线由模型 capability 决定（docs/10 §7.6）：
  *   standard → 逐段合成后整章用 ffmpeg 拼接挂 Scene.rendered，段级产物挂 DraftUnit.rendered；
  *   podcast  → 该单元文稿组装成双人轮次稿，一次合成整章/整期双人音频挂 Scene.rendered；
- *   开始时把卡司声音冻结成快照写进产物（§9.6），换卡司不改写已有音频。
+ *   开始时把本场音色冻结成快照写进产物（§9.6），换音色不改写已有音频。
  * standard 路线文案只承诺「分段合成并拼接」，不承诺连续表演效果（§15.10）；
  * podcast 路线失败显式报错，绝不无提示降级回 standard（§15.9）。
  */
@@ -75,7 +75,7 @@ export class DraftUnitService {
   /**
    * 后台把节目里 pending/failed 的条目合成就绪（带节目锁）：
    * 预合成按钮、主播改/补底稿后的重合成都走这里。同时在跑就标 dirty，本轮结束自动补跑一轮。
-   * voiceOverride：声音选择弹窗里用户显式选的声音（docs/REDESIGN 4.4），空 = 卡司第一张/段落指定。
+   * voiceOverride：声音选择弹窗里用户显式选的声音（docs/REDESIGN 4.4），空 = 本场默认音色/段落指定。
    */
   async kickSynthesis(programId: string, voiceOverride?: ProduceVoiceOverride): Promise<void> {
     this.synthOverride.set(programId, voiceOverride)
@@ -463,13 +463,13 @@ export class DraftUnitService {
         pendingSegments: pending.length,
         totalChars,
         estMinutes: Math.round((totalChars / CHARS_PER_SECOND / 60) * 10) / 10,
-        modelDesc: '跟随本场配置（主主播的音色路由）',
+        modelDesc: '跟随本场配置（本场默认音色的路由）',
         voiceDesc: voice ? `本场默认音色：${this.voiceDisplayName(voice)}` : '本场还没选音色'
       }
     }
     const script = this.script.getScript(program.id)
     const units = listAudioUnits(program, script, this.storage.draftUnitList(program.id), session)
-    if (units.length === 0) return { ok: false, error: '剧本还没有文稿：先让主播写稿，再生成节目音频' }
+    if (units.length === 0) return { ok: false, error: '剧本还没有文稿：先让导演写稿，再生成节目音频' }
     let frozen: FrozenSnapshot
     try {
       frozen = this.resolveFrozenSnapshot(program)
@@ -527,7 +527,7 @@ export class DraftUnitService {
       failed: 0,
       skipped: 0
     }
-    if (units.length === 0) return { ...base, error: '节目还没有文稿：先让主播写稿，再生成节目音频' }
+    if (units.length === 0) return { ...base, error: '节目还没有文稿：先让导演写稿，再生成节目音频' }
     let frozen: FrozenSnapshot
     try {
       frozen = this.resolveFrozenSnapshot(program, voiceOverride)
@@ -710,7 +710,7 @@ export class DraftUnitService {
     return null
   }
 
-  /** 播客发音人解析：卡司里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id；手动复合串取音色段） */
+  /** 播客发音人解析：段落里的音色输入 → 发给火山的 speaker id（克隆音色用训练产物 speaker_id；手动复合串取音色段） */
   private resolvePodcastSpeaker(voiceId: string): string {
     const voice = voiceId.trim()
     const clone = findCloneVoice(this.storage.listVoices(), voice)
@@ -815,9 +815,9 @@ export class DraftUnitService {
   }
 
   /**
-   * 冻结声音快照（§9.6）：开始预制合成时把弹窗里的显式覆盖（优先）或节目卡司解析成具体接入/模型/音色，
-   * 连同音色（或角色表）指纹一起写进每个单元的 rendered；之后换卡司/改音色不改写已有产物。
-   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：podcastVoices（播客双主持）> voiceId（单音色）> 卡司第一张。
+   * 冻结声音快照（§9.6）：开始预制合成时把弹窗里的显式覆盖（优先）或本场默认音色解析成具体接入/模型/音色，
+   * 连同音色指纹一起写进每个单元的 rendered；之后换音色不改写已有产物。
+   * 覆盖优先级（docs/REDESIGN 4.4 声音选择弹窗）：podcastVoices（播客双主持）> voiceId（单音色）> 本场默认音色。
    */
   /** 音色级风格指令也进指纹：改 instruction 等于换了演法，预制音频要判过期重合成 */
   private voiceStyleSalt(voices: string[]): string {
@@ -945,7 +945,7 @@ export class DraftUnitService {
     return {
       voiceFor: (u) => {
         const voice = u.voiceId.trim() || this.defaultVoice(program.id)
-        if (!voice) throw new Error('文稿没有可用音色：本场没给主播定嗓子（先在合成弹窗里选一个）')
+        if (!voice) throw new Error('文稿没有可用音色：本场还没定音色（先在合成弹窗里选一个）')
         return voice
       },
       snapshotFor: (voices) => {
@@ -956,7 +956,7 @@ export class DraftUnitService {
           voiceOrCastFingerprint: stableHash([...new Set(voices)].sort().join(','))
         }
       },
-      modelDesc: '跟随本场配置（主主播的音色路由）',
+      modelDesc: '跟随本场配置（本场默认音色的路由）',
       voiceDesc: (() => {
         const voice = this.defaultVoice(program.id)
         return voice ? `本场默认音色：${this.voiceDisplayName(voice)}` : '本场还没选音色'
@@ -1109,7 +1109,7 @@ export class DraftUnitService {
   }
 }
 
-/** 冻结快照（一次预制生产用的卡司声音）：逐段取音色 + 单元级快照字段 + 确认卡展示文案 */
+/** 冻结快照（一次预制生产用的本场音色）：逐段取音色 + 单元级快照字段 + 确认卡展示文案 */
 type SnapshotFields = Pick<RenderedAudioRef, 'ttsConnectionId' | 'ttsModelId' | 'voiceOrCastFingerprint'>
 
 /** podcast 路线的冻结信息：两个主持人（原始音色输入 + 解析后的 speaker id）与音乐开关 */
@@ -1118,7 +1118,7 @@ interface PodcastRouteInfo {
   modelId: string
   /** 发给模型的两个发音人 id（顺序 = 主持人 A/B） */
   speakers: [string, string]
-  /** 卡司里的原始音色输入（文稿段落 voiceId 匹配用） */
+  /** 段落里的原始音色输入（文稿段落 voiceId 匹配用） */
   podcastVoices: [string, string]
   voicePairFingerprint: string
   maxCharsPerTurn: number

@@ -52,7 +52,7 @@ export function EventStream({ events }: { events: LiveInboxEvent[] }) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
         <Inbox className="size-8" strokeWidth={1.25} />
-        <p className="text-sm">还没有直播间动态：评论、礼物、触发器消息会按批送到主播</p>
+        <p className="text-sm">还没有直播间动态：评论、礼物、触发器消息会按批交给导演</p>
       </div>
     )
   }

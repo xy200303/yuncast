@@ -71,7 +71,7 @@ export function ttsModelBadges(spec: TtsModelSpec): ModelBadge[] {
   if (spec.capabilities?.kind === 'podcast' || spec.capabilities?.input === 'dialogueTurns') {
     badges.push({
       label: '双人播客',
-      title: '双人播客：两位主播轮次成片，整期一次合成（带片头/片尾处理）',
+      title: '双人播客：两个角色轮次成片，整期一次合成（带片头/片尾处理）',
       icon: Users,
       className: 'text-pink-600 dark:text-pink-400'
     })

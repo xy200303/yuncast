@@ -325,7 +325,7 @@ export class McpService {
   /** 导演指令 → 主播，等本轮 final 文本返回。正在生成时拒绝，别叠着发。 */
   private async agentChat(text: string, timeoutMs: number): Promise<string> {
     const { agent } = this.deps
-    if (agent.status().busy) throw new Error('主播正在生成上一轮的回复，等她说完再发（可先 agent_status 看 busy）')
+    if (agent.status().busy) throw new Error('导演正在生成上一轮的回复，等它说完再发（可先 agent_status 看 busy）')
     const waiting = new Promise<string>((resolve, reject) => {
       const waiter: ChatWaiter = {
         resolve,
@@ -333,7 +333,7 @@ export class McpService {
         texts: new Map(),
         timer: setTimeout(() => {
           this.waiters.delete(waiter)
-          reject(new Error(`等了 ${Math.round(timeoutMs / 1000)} 秒还没说完。主播可能卡在工具调用上，用 agent_status 看看 busy`))
+          reject(new Error(`等了 ${Math.round(timeoutMs / 1000)} 秒还没说完。AI 可能卡在工具调用上，用 agent_status 看看 busy`))
         }, timeoutMs)
       }
       this.waiters.add(waiter)

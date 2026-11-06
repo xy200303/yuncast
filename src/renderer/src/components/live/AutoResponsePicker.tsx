@@ -54,9 +54,9 @@ export function AutoResponsePicker({
     <div className={compact ? 'flex flex-col gap-2' : 'flex flex-col gap-3'}>
       <div className="flex items-start justify-between gap-3 rounded-lg border bg-muted/20 px-3 py-2">
         <div className="min-w-0">
-          <Label className="text-sm">让主播看到直播间动态</Label>
+          <Label className="text-sm">让导演看到直播间动态</Label>
           <p className="text-xs text-muted-foreground">
-            关掉后评论/礼物/进场都不派给主播，她只演自己的
+            关掉后评论/礼物/进场都不交给导演，只按稿子演
           </p>
         </div>
         <Switch
@@ -86,7 +86,7 @@ export function AutoResponsePicker({
       )}
       {!compact && (
         <p className="px-1 text-xs text-muted-foreground">
-          改完立刻生效，播出中也能调——不必下播、不用重启导演。
+          改完立刻生效，播出中也能调——不必下播、不用重启。
         </p>
       )}
     </div>

@@ -63,7 +63,7 @@ export function UnifiedVoicePicker({
   /** 锁定模型（播客主持人音色必须挂在选中的播客模型下）：模型下拉禁用并固定为这个 */
   fixedModelId?: string
   allowManual?: boolean
-  /** 允许清空（如「留空用主播自己的音色」）：传了就在音色下拉第一项放这个选项 */
+  /** 允许清空（如「留空用本场默认音色」）：传了就在音色下拉第一项放这个选项 */
   emptyLabel?: string
   placeholder?: string
 }) {

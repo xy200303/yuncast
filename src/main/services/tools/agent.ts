@@ -90,14 +90,14 @@ export const agentTools = [
 
   defineTool({
     name: 'agent_chat',
-    label: '和主播说话',
+    label: '和内置 AI 说话',
     domain: 'agent',
     risk: 'write',
     expose: { mcp: true },
     description:
-      '给主播 Agent 发一条导演指令，等它这轮说完再返回回复文本。需要先选中节目。' +
-      '主播正在生成时会拒绝，等上一轮说完再发（先 agent_status 看 busy）。timeoutSec 默认 120 秒。' +
-      '返回主播这一轮的回复文本；只说动作没说话时用 agent_status / pool_status 看结果。',
+      '给内置 AI 发一条导演指令，等它这轮说完再返回回复文本。需要先选中节目。' +
+      'AI 正在生成时会拒绝，等上一轮说完再发（先 agent_status 看 busy）。timeoutSec 默认 120 秒。' +
+      '返回 AI 这一轮的回复文本；只说动作没说话时用 agent_status / pool_status 看结果。',
     parameters: Type.Object({
       text: Type.String({ description: '导演指令，一两句话说清要什么' }),
       timeoutSec: Type.Optional(Type.Number({ description: '等待回复的秒数，默认 120' }))
@@ -110,12 +110,12 @@ export const agentTools = [
 
   defineTool({
     name: 'agent_status',
-    label: '主播状态',
+    label: '内置 AI 状态',
     domain: 'agent',
     risk: 'read',
     expose: { mcp: true },
     description:
-      '看主播 Agent 的运行状态：会话状态、是否开播、是否在生成（busy）、当前场景、上下文用量等。' +
+      '看内置 AI 的运行状态：会话状态、是否开播、是否在生成（busy）、当前场景、上下文用量等。' +
       '只读无副作用。发 agent_chat 前先调它确认 busy=false。返回状态 JSON。',
     parameters: Type.Object({}),
     handler: (ctx) => JSON.stringify(ctx.agent.status(), null, 2)
@@ -128,7 +128,7 @@ export const agentTools = [
     risk: 'read',
     expose: { agent: true, mcp: true },
     description:
-      '系统健康总览：当前节目/主播 Agent 状态/话术池/导演配置/语言模型接入/语音合成接入/评论连接器/RTMP 推流，附可操作的修复建议。' +
+      '系统健康总览：当前节目/AI 状态/话术池/导演配置/语言模型接入/语音合成接入/评论连接器/RTMP 推流，附可操作的修复建议。' +
       '只读无副作用；排查「为什么没动静/说不出话/收不到评论」先调它。密钥只报「已配置/未配置」，谁都读不到明文。返回聚合状态 JSON。',
     parameters: Type.Object({}),
     handler: (ctx) => {
@@ -182,11 +182,11 @@ export const agentTools = [
         节目: {
           当前节目: active ? active.name : null,
           播出中: status.live === true,
-          主播会话: status.state === 'stopped' ? '未启动' : `${status.state}（${status.live ? '直播' : '写稿/待命'}）`,
+          AI会话: status.state === 'stopped' ? '未启动' : `${status.state}（${status.live ? '直播' : '写稿/待命'}）`,
           正在生成: status.busy === true,
           当前场景: status.scene ?? null
         },
-        主播Agent: ctx.agent.status(),
+        AI状态: ctx.agent.status(),
         话术池: {
           未播队列: poolStatus.active,
           分车道: poolStatus.byLane,
@@ -263,13 +263,13 @@ export const agentTools = [
     risk: 'danger',
     expose: { agent: true, mcp: true },
     description:
-      '紧急停止：安全优先，直接执行不用确认——掐断所有声音、暂停播报、停止主播会话，并立即通知导演。' +
+      '紧急停止：安全优先，直接执行不用确认——掐断所有声音、暂停播报、停止 AI 会话，并立即通知导演。' +
       '说错话/内容违规/导演喊停时用。返回执行结果；恢复播出由导演确认后重新启动节目。',
     parameters: Type.Object({}),
     handler: async (ctx) => {
       try {
         await ctx.onEmergencyStop?.()
-        ctx.notifyTimeline?.('—— 主播执行了紧急停止：声音已掐断、播报已暂停、会话已停止。恢复播出请导演确认后重新启动节目 ——')
+        ctx.notifyTimeline?.('—— 已执行紧急停止：声音已掐断、播报已暂停、会话已停止。恢复播出请导演确认后重新启动节目 ——')
         return '已紧急停止：所有声音掐断、播报暂停、会话停止。已立即执行并通知导演'
       } catch (error) {
         return `紧急停止执行出错：${error instanceof Error ? error.message : String(error)}（请导演立即在直播台手动停止）`

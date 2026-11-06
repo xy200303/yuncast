@@ -1635,8 +1635,6 @@ export class StorageService {
       }))
       .sort((a, b) => b.sessions - a.sessions)
 
-    const byCast: { personaName: string; sessions: number; minutes: number }[] = []
-
     return {
       totals: {
         sessions: sessions.length,
@@ -1656,7 +1654,6 @@ export class StorageService {
         viewers: viewersByDay.get(day)?.size ?? 0
       })),
       byProgram,
-      byCast,
       commentWords: hotWords(comments.map((row) => str(parseJson<Record<string, unknown>>(row.payload, {}).content))),
       speechWords: hotWords(playedItems.map((row) => stripSpeechTags(str(row.text))))
     }

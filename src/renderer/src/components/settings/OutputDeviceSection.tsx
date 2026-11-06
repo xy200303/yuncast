@@ -77,7 +77,7 @@ export function OutputDeviceSection() {
         <p className="text-[13px] font-medium">输出设备（伴侣模式）</p>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        输出切到虚拟声卡，推流软件麦克风选 <code>CABLE Output</code>：只有主播的声音，系统声音进不来。
+        输出切到虚拟声卡，推流软件麦克风选 <code>CABLE Output</code>：只有 AI 的声音，系统声音进不来。
       </p>
 
       <div className="mt-3 grid gap-3">

@@ -46,7 +46,7 @@ export function AutoResponseDialog({
         <DialogHeader>
           <DialogTitle className="text-[15px]">自动响应</DialogTitle>
           <p className="text-[12px] leading-relaxed text-muted-foreground">
-            决定哪些直播间动态派给主播。实际收到的评论/礼物/系统通知在主区「事件流」里看；改完立刻生效，播出中也能调。
+            决定哪些直播间动态交给导演。实际收到的评论/礼物/系统通知在主区「事件流」里看；改完立刻生效，播出中也能调。
           </p>
         </DialogHeader>
         {!program ? (

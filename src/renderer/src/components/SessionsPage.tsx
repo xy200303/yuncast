@@ -447,7 +447,7 @@ function SessionDetailView({ id, onBack }: { id: string; onBack: () => void }) {
             </div>
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              这场没有复盘摘要（下播时主播有过对话才会自动复盘）
+              这场没有复盘摘要（下播时导演有过对话才会自动复盘）
             </div>
           )}
         </TabsContent>

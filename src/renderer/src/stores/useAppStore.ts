@@ -101,7 +101,7 @@ interface AppState {
   levels: { tts: number; master: number }
   setLevels: (levels: { tts: number; master: number }) => void
 
-  /** 主播 Agent 状态（含生成中预览 draft） */
+  /** 导演 Agent 状态（含生成中预览 draft） */
   agent: AgentStatus
   setAgent: (status: AgentStatus) => void
 
@@ -117,16 +117,16 @@ interface AppState {
   voices: VoiceRecord[]
   setVoices: (voices: VoiceRecord[]) => void
 
-  /** 供应商接入 + 服务商清单（设置 → 语言模型；状态栏徽章与主播卡的「大脑」下拉都读它） */
+  /** 供应商接入 + 服务商清单（设置 → 语言模型；状态栏徽章与导演配置都读它） */
   connections: ModelConnectionSafe[]
   llmProviders: LlmProviderManifest[]
   /** 语音合成服务商清单（设置 → 语音合成表单与音色分组都读它） */
   ttsProviders: TtsProviderManifest[]
   /** 语音合成的供应商接入（一家一条）：音色提示、筛选标记都按「这条接入在不在」判断 */
   ttsConnections: TtsConnectionSafe[]
-  /** 默认主播卡（展示用：状态栏的 LLM 徽章参考它选的接入与模型） */
+  /** 导演配置（展示用：状态栏的 LLM 徽章参考它选的接入与模型） */
   loadModelLibrary: () => Promise<void>
-  /** 接入库变了就调它：主播卡引用的接入可能已失效，徽章要跟着变 */
+  /** 接入库变了就调它：导演配置引用的接入可能已失效，徽章要跟着变 */
   setConnections: (connections: ModelConnectionSafe[]) => void
   setTtsConnections: (connections: TtsConnectionSafe[]) => void
 }

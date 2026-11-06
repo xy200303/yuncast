@@ -17,7 +17,7 @@ import {
 } from '../../../../shared/types'
 
 /**
- * 工作台顶栏（docs/12 §7）：本场 = 剧本 + 主播 + 语言 + 预设。
+ * 工作台顶栏（docs/12 §7）：本场 = 语言 + 预设 + 自动响应。
  * 等价于直播伴侣的「场景」：一眼看清这场用什么人、什么嗓子、什么语言、怎么播。
  * 语言/预设只是信息，不做入口（改配置走开播配置）；唯一可点的是「自动响应」，做成按钮让人看得出能点。
  */
@@ -74,7 +74,7 @@ export function WorkbenchTopBar({
         className="h-7 gap-1 px-2 text-xs"
         onClick={onOpenAutoResponse}
         disabled={!program}
-        title="自动响应：决定哪些直播间动态派给主播（欢迎/送礼/点赞/冷场自救…），改动立刻生效"
+        title="自动响应：决定哪些直播间动态交给导演（欢迎/送礼/点赞/冷场自救…），改动立刻生效"
       >
         <WandSparkles className="size-3.5" />
         自动响应

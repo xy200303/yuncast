@@ -88,7 +88,7 @@ function synthMs(chars: number): number {
   return (chars / 4) * 1000
 }
 
-/** 全局统计图表区（docs/REDESIGN 4.11 A）：KPI + 播出/互动趋势 + 节目/主播排行 + 热词云。
+/** 全局统计图表区（docs/REDESIGN 4.11 A）：KPI + 播出/互动趋势 + 节目排行 + 热词云。
  *  按 tab 拆两块渲染（同一个组件、同一套查询参数），切 tab 时 Radix 卸载旧内容所以不会双份轮询。 */
 function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
   const [programs, setPrograms] = useState<Program[]>([])
@@ -185,26 +185,6 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
     }
   }, [stats])
 
-  const byCastOption = useMemo(() => {
-    if (!stats) return {}
-    return {
-      tooltip: { trigger: 'axis' as const },
-      legend: { data: ['场次数', '时长（分钟）'], top: 0, right: 0, textStyle: { fontSize: 11 } },
-      grid: { left: 8, right: 16, top: 28, bottom: 0, containLabel: true },
-      xAxis: { type: 'value' as const, axisLabel: { fontSize: 10 } },
-      yAxis: {
-        type: 'category' as const,
-        inverse: true,
-        data: stats.byCast.map((entry) => entry.personaName),
-        axisLabel: { fontSize: 10 }
-      },
-      series: [
-        { name: '场次数', type: 'bar' as const, data: stats.byCast.map((entry) => entry.sessions), itemStyle: { color: '#c2693f' } },
-        { name: '时长（分钟）', type: 'bar' as const, data: stats.byCast.map((entry) => entry.minutes), itemStyle: { color: '#4f7fa8' } }
-      ]
-    }
-  }, [stats])
-
   return (
     <div className="flex flex-col gap-3 p-4">
       <div className="flex items-center justify-between gap-3">
@@ -289,19 +269,12 @@ function StatsBoard({ section }: { section: 'overview' | 'rank' }) {
 
           {section === 'rank' && (
             <>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3">
                 <ChartCard title="节目排行">
                   {stats.byProgram.length === 0 ? (
                     <EmptyChart text="还没有节目播出记录" />
                   ) : (
                     <EChart option={byProgramOption} className="mt-1 h-52 w-full" />
-                  )}
-                </ChartCard>
-                <ChartCard title="主播排行">
-                  {stats.byCast.length === 0 ? (
-                    <EmptyChart text="场次没有卡司快照（老场次不记主播）" />
-                  ) : (
-                    <EChart option={byCastOption} className="mt-1 h-52 w-full" />
                   )}
                 </ChartCard>
               </div>
@@ -514,7 +487,7 @@ function UsageBoard() {
           </div>
           <TabsContent value="llm" className="max-h-72 overflow-auto">
             {usageRecords.length === 0 ? (
-              <EmptyChart text="还没有 LLM 请求记录。主播说过话之后这里就有了" />
+              <EmptyChart text="还没有 LLM 请求记录。导演说过话之后这里就有了" />
             ) : (
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-card text-left text-muted-foreground">

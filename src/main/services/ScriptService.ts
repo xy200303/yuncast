@@ -21,7 +21,7 @@ export class ScriptService {
   onContentChanged: ((programId: string) => void) | null = null
 
   /**
-   * 节目配置落库后的回调（saveProgram / 卡司、白名单、互动总闸等都在里面）：
+   * 节目配置落库后的回调（saveProgram / 音色、白名单、互动总闸等都在里面）：
    * index.ts 接到 AgentService.refreshProgramGate，让播出中改的自动响应白名单/互动总闸立即生效
    */
   onProgramsChanged: ((programId: string) => void) | null = null

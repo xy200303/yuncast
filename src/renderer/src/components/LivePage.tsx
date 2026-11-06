@@ -68,7 +68,7 @@ export function LivePage() {
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
   const [comments, setComments] = useState<LiveComment[]>([])
-  /** 发给主播的直播间动态（事件流选项卡；主进程 250ms 节流推快照） */
+  /** 交给导演的直播间动态（事件流选项卡；主进程 250ms 节流推快照） */
   const [inboxEvents, setInboxEvents] = useState<LiveInboxEvent[]>([])
   /** 节目控制（选择/启动/暂停/结束 + 预检与门禁弹窗）：activeProgram 也由它给，只有一处真值 */
   const programControl = useProgramLauncher()
@@ -239,13 +239,13 @@ export function LivePage() {
     return window.api.playback.onControl((action) => {
       if (action === 'pause') {
         pauseBroadcast()
-        toast.message('主播暂停了播报', { description: '池里的内容保留' })
+        toast.message('播报已暂停', { description: '池里的内容保留' })
       } else if (action === 'resume') {
         resumeBroadcast()
-        toast.message('主播恢复了播报')
+        toast.message('播报已恢复')
       } else {
         audioEngine.stopCurrent()
-        toast.message('主播跳过了当前这条')
+        toast.message('已跳过当前这条')
       }
     })
   }, [])
@@ -294,7 +294,7 @@ export function LivePage() {
             <TabsTrigger
               value="events"
               className="px-3 text-xs"
-              title="发给主播的直播间动态（评论、礼物、系统通知）"
+              title="交给导演的直播间动态（评论、礼物、系统通知）"
             >
               事件流 · {inboxEvents.filter((event) => event.state === 'new' || event.state === 'seen').length}
             </TabsTrigger>
@@ -346,7 +346,7 @@ export function LivePage() {
       </Tabs>
 
       {/* 底栏 · 音乐播放器式：播放/暂停、03/23、分段水位、还能播多久、音量、跳过、更多、结束本场。
-          剧本/主播/语言/预设只在顶栏，这里不重复。 */}
+          语言/预设只在顶栏，这里不重复。 */}
       <div className="shrink-0 border-t bg-card/60">
         <NowPlayingBar
           program={activeProgram}
@@ -485,7 +485,7 @@ function useProgramLauncher() {
     )
   }, [activeProgramId, page])
 
-  /** 直播中的判定：开播态归引擎（agent.live）——主播会话没起来也照播存量，不算没开播 */
+  /** 直播中的判定：开播态归引擎（agent.live）——AI 会话没起来也照播存量，不算没开播 */
   const running = agent.live === true
   const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
 
@@ -562,14 +562,14 @@ function useProgramLauncher() {
         // 新一场从「播报中」开始（上一场可能是暂停状态停掉的）
         resumeBroadcast()
         if (result.warning) {
-          toast.warning(`直播已启动：${activeProgram?.name ?? ''}（主播还没就位）`, {
+          toast.warning(`直播已启动：${activeProgram?.name ?? ''}（导演还没就位）`, {
             description: result.warning
           })
         } else {
           toast.success(`直播已启动：${activeProgram?.name ?? ''}`, {
             description: result.loaded
               ? `已装载 ${result.loaded} 个播出单元，接着播`
-              : '本场没有就绪底稿，主播先现场生成'
+              : '本场没有就绪底稿，导演先现场生成'
           })
         }
       } else if (result.gate && activeProgram) {
@@ -681,7 +681,7 @@ function useProgramLauncher() {
           onLaunched={(result) => {
             resumeBroadcast()
             if (result.warning) {
-              toast.warning(`直播已启动：${activeProgram.name}（主播还没就位）`, {
+              toast.warning(`直播已启动：${activeProgram.name}（导演还没就位）`, {
                 description: result.warning
               })
             } else {
@@ -920,7 +920,6 @@ const TOOL_LABEL: Record<string, string> = {
   insert_next: '安排了下一条播报',
   save_program: '保存了节目',
   save_script: '保存了剧本',
-  save_persona: '保存了主播卡',
   session_history: '查了历史场次'
 }
 
@@ -1009,7 +1008,7 @@ function ToolCard({ entry }: { entry: Extract<ChatEntry, { type: 'tool' }> }) {
 }
 
 /**
- * 主播对话（docs/07 §8.8 / docs/09 §11）：导演 ↔ 主播的实时通道，右栏主区（铺满整栏高度）。
+ * 导演对话（docs/07 §8.8 / docs/09 §11）：导演的实时通道，右栏主区（铺满整栏高度）。
  * 时间线照 pi 事件流原样渲染：导演指令（右侧气泡）/ 中间文本（左侧淡色流式）/ 工具卡片 /
  * 最终回复（独立气泡）/ 请示卡片（一键作答）。不做二次抽文本，也没有单独的"汇报"通道。
  * 快速指令（暂停/跳过/恢复）本地解析直接执行，不过 LLM；其余文本 steer 插队给主播。
@@ -1400,7 +1399,7 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
           <Bot className="size-8" strokeWidth={1.25} />
           <p className="px-6 text-center text-xs leading-5">
-            这里能看到主播的想法、工具调用和最终回复。
+            这里能看到导演的想法、工具调用和最终回复。
             <br />
             消息只进对话，不会被播出去。
           </p>
@@ -1436,7 +1435,7 @@ export function DirectorConsole({ active, onUnread }: { active: boolean; onUnrea
         </div>
       )}
 
-      {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给主播 */}
+      {/* 快速指令：本地直执不过 LLM；「汇报下状态」发给导演 */}
       <div className="flex shrink-0 gap-1.5 overflow-x-auto px-3 pb-1.5">
         <Button
           variant="outline"
@@ -1699,8 +1698,8 @@ function ManualBroadcastDialog({
             <UnifiedVoicePicker
               voiceId={voice}
               onPick={setVoice}
-              emptyLabel="留空用主播自己的音色"
-              placeholder="留空用主播自己的音色"
+              emptyLabel="留空用本场默认音色"
+              placeholder="留空用本场默认音色"
             />
           </div>
           <VoiceProviderHint voiceId={voice} />

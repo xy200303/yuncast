@@ -213,7 +213,7 @@ export class TtsService {
   private route(voiceId?: string): TtsRoute {
     const voice = (voiceId ?? '').trim()
     if (!voice) {
-      throw new Error('这条话术没有音色：到主播团给人设卡选一个音色')
+      throw new Error('这条话术没有音色：到音色库选一个音色')
     }
     const voices = this.storage.listVoices()
     const clone = findCloneVoice(voices, voice)

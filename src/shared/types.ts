@@ -158,8 +158,6 @@ export interface TtsModelSpec {
  * 这份配置只剩迁移与「发音测试时间」在用。
  */
 export interface TtsConfig {
-  /** 实时合成：不预合成整段音频，播出时边合成边播（降低首包延迟；需要服务商支持流式） */
-  realtime: boolean
   /** 批量预合成队列：两次合成请求的最小间隔（毫秒）。0 = 跟随服务商默认（按官方限流文档配在 manifest 里：火山 50 / 百炼 400） */
   synthIntervalMs: number
   /** 批量预合成队列：瞬时错误的重试次数（指数退避 2s/4s）；鉴权类硬错误不重试 */
@@ -169,7 +167,6 @@ export interface TtsConfig {
 }
 
 export const DEFAULT_TTS_CONFIG: TtsConfig = {
-  realtime: false,
   synthIntervalMs: 0,
   synthRetries: 2,
   lastTestAt: 0
@@ -382,7 +379,6 @@ export const DEFAULT_STREAM_CONFIG: StreamConfig = {
   autoVirtualCable: true
 }
 
-export const DEFAULT_BGM_CONFIG: BgmConfig = { path: '', volume: 0.3 }
 
 export const DEFAULT_COMMENT_CONFIG: CommentConfig = { connectorPort: 8102, connectorToken: '' }
 
@@ -454,14 +450,6 @@ function parseComment(input: unknown): CommentConfig {
   }
 }
 
-function parseBgm(input: unknown): BgmConfig {
-  const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
-  return {
-    path: typeof row.path === 'string' ? row.path : '',
-    volume: typeof row.volume === 'number' && row.volume >= 0 && row.volume <= 1 ? row.volume : 0.3
-  }
-}
-
 /** 持久化到数据库 app_config 表（单行 JSON）的应用配置。 */
 /** 统一数据变更的 scope：界面订阅 data:changed 后按 scope 重拉对应数据 */
 export type DataChangeScope =
@@ -495,7 +483,6 @@ export interface AppConfig {
   trigger: TriggerConfig
   live: LiveStateConfig
   stream: StreamConfig
-  bgm: BgmConfig
   comment: CommentConfig
   director: DirectorConfig
   mcp: McpConfig
@@ -509,7 +496,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   trigger: DEFAULT_TRIGGER_CONFIG,
   live: DEFAULT_LIVE_CONFIG,
   stream: DEFAULT_STREAM_CONFIG,
-  bgm: DEFAULT_BGM_CONFIG,
   comment: DEFAULT_COMMENT_CONFIG,
   director: DEFAULT_DIRECTOR_CONFIG,
   mcp: DEFAULT_MCP_CONFIG,
@@ -525,11 +511,8 @@ export function parseAppConfig(input: unknown): AppConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
   const ttsRow = row.tts && typeof row.tts === 'object' ? (row.tts as Record<string, unknown>) : {}
   const tts: TtsConfig = {
-    realtime: ttsRow.realtime === true,
     synthIntervalMs:
-      // 迁移：500 是「全局限流」时代的默认，那时天天写进库；现在限流归服务商 manifest，
-      // 500 按没配过处理（跟随服务商），否则它就成了用户看不见也改不掉的隐藏覆盖
-      typeof ttsRow.synthIntervalMs === 'number' && ttsRow.synthIntervalMs >= 0 && ttsRow.synthIntervalMs !== 500
+      typeof ttsRow.synthIntervalMs === 'number' && ttsRow.synthIntervalMs >= 0
         ? ttsRow.synthIntervalMs
         : DEFAULT_TTS_CONFIG.synthIntervalMs,
     synthRetries:
@@ -577,7 +560,6 @@ export function parseAppConfig(input: unknown): AppConfig {
       activeProgramId: typeof liveRow.activeProgramId === 'string' ? liveRow.activeProgramId : ''
     },
     stream: parseStream(row.stream),
-    bgm: parseBgm(row.bgm),
     comment: parseComment(row.comment),
     director,
     audioStyle,
@@ -672,7 +654,7 @@ export interface PoolItem {
   emotion?: string
   /** 情感强度（火山 emotion_scale，1~5）：只在带了 emotion 时生效 */
   emotionScale?: number
-  /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播（tts.realtime 开启时） */
+  /** 实时合成条目：不预合成文件，播出时由主进程流式合成 + 排播 */
   stream?: boolean
   /** 取件来源：话术库条目 id（复盘溯源用，docs/07 §3） */
   originDraftUnitId?: string
@@ -1780,13 +1762,6 @@ export interface StreamConfig {
   outputDeviceId: string
   /** 有虚拟声卡（CABLE Input / VoiceMeeter Input）时自动用它当输出 */
   autoVirtualCable: boolean
-}
-
-
-export interface BgmConfig {
-  path: string
-  /** 0 - 1 */
-  volume: number
 }
 
 

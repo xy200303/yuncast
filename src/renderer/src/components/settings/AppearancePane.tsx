@@ -30,8 +30,6 @@ export function AppearancePane() {
 
   return (
     <section>
-      <h2 className="text-sm font-medium">外观</h2>
-
       <div className="mt-3 flex items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
         <div>
           <p className="text-[13px]">明暗模式</p>

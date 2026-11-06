@@ -51,10 +51,10 @@ export function StreamSection() {
     <>
     <div className="rounded-lg border bg-card px-4 py-4">
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-[13px] font-medium">推流</p>
-          <p className="text-xs text-muted-foreground">伴侣模式只出声（推荐）；直推模式 FFmpeg 静态帧 + 混音推 RTMP</p>
-        </div>
+        <p className="text-[13px] font-medium">
+          推流方式
+          <span className="ml-2 text-xs font-normal text-muted-foreground">伴侣模式只出声；直推模式自己推 RTMP</span>
+        </p>
         <div className="flex items-center gap-2">
           {stream.state === 'live' && (
             <Badge variant="secondary">推流中 · {stream.bitrateKbps} kbps</Badge>

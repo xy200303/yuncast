@@ -57,7 +57,7 @@ export function DirectorSection() {
       <div className="rounded-xl border bg-card px-5 py-4">
         <p className="text-base font-semibold">导演大脑</p>
         <p className="mt-1 text-sm text-muted-foreground">
-          全局唯一的大脑：导演思考、派活、写稿全靠它；主播团里的卡只是人设与嗓音
+          导演思考、派活、写稿都走这里；本场声音在项目的开播配置里选
         </p>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
           <div>

@@ -34,14 +34,7 @@ export function AudioStylePane() {
 
   return (
     <div className="flex max-w-2xl flex-col gap-4 p-5">
-      <div>
-        <h2 className="text-sm font-medium">音频理解（声音风格解析）</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          听一段人声样本，解析出「音色 / 语速 / 语气 / 句尾习惯 / 距离感」，产出 ≤100
-          字的风格指令。用在两处：音色库新建音色时起草 instruction；agent 的 voice_analyze_style
-          工具（写完可用 voice_update 落库）。
-        </p>
-      </div>
+      <p className="text-xs text-muted-foreground">听一段人声样本，解析出音色、语速、语气等风格特征。</p>
 
       <div>
         <Label className="mb-1">用哪条接入的密钥</Label>
@@ -67,9 +60,6 @@ export function AudioStylePane() {
             还没有阿里云百炼接入：到 设置 → 语音合成 添加一条（音频理解复用它的 API Key）
           </p>
         )}
-        <p className="mt-1 text-xs text-muted-foreground">
-          样本会先上传到临时文件站换公网直链（百炼音频理解只收 URL），链接最长 72 小时自动失效
-        </p>
       </div>
 
       <div>
@@ -79,10 +69,6 @@ export function AudioStylePane() {
           onChange={(e) => setModel(e.target.value)}
           placeholder="qwen3.8-omni-flash"
         />
-        <p className="mt-1 text-xs text-muted-foreground">
-          推荐 Qwen 全模态（Omni）系：qwen3.8-omni-flash（便宜）/ qwen3.5-omni-flash /
-          qwen3-omni-flash。老的 qwen-audio-turbo 在新账号上常没有额度（403 AllocationQuota）
-        </p>
       </div>
 
       <div className="flex items-center gap-2">

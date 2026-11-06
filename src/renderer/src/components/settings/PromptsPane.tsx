@@ -71,13 +71,9 @@ export function PromptsSection() {
 
   return (
     <section className="flex flex-col">
-      <div className="mb-3">
-        <h2 className="text-sm font-medium">导演手册</h2>
-        <p className="mt-1 text-xs text-muted-foreground">
-          导演的脑子由这些模板组装：身份与工作方式、指令包装、直播间动态注入、写稿任务书、上下文压缩等。
-          变量用 {'{{变量名}}'} 占位；改完保存，正在运行的会话标「资产已变」，重开会话后生效。
-        </p>
-      </div>
+      <p className="mb-3 text-xs text-muted-foreground">
+        导演的提示词模板，{'{{变量名}}'} 为占位；改完保存，重开会话后生效。
+      </p>
       <div className="flex min-w-0 gap-3">
         <div className="flex w-44 shrink-0 flex-col gap-1 overflow-y-auto pr-1" style={{ maxHeight: 420 }}>
           {templates.map((item) => (
@@ -98,7 +94,6 @@ export function PromptsSection() {
                   </Badge>
                 )}
               </div>
-              <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{item.key}</div>
             </button>
           ))}
         </div>

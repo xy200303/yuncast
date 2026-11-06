@@ -77,8 +77,7 @@ export function OutputDeviceSection() {
         <p className="text-[13px] font-medium">输出设备（伴侣模式）</p>
       </div>
       <p className="mt-1 text-xs text-muted-foreground">
-        播报的声音从哪个设备出去。装一个虚拟声卡后把输出切到它，推流软件把 <code>CABLE Output</code>{' '}
-        当麦克风采 —— 这样只有主播的声音，系统音乐和提示音不会混进来。
+        输出切到虚拟声卡，推流软件麦克风选 <code>CABLE Output</code>：只有主播的声音，系统声音进不来。
       </p>
 
       <div className="mt-3 grid gap-3">

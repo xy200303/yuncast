@@ -48,8 +48,6 @@ export function AboutPane() {
 
   return (
     <section>
-      <h2 className="text-sm font-medium">关于</h2>
-
       {/* 品牌卡 */}
       <div className="mt-3 flex items-center gap-4 rounded-lg border bg-card px-4 py-4">
         <img src={logoUrl} alt={BRAND_NAME_ZH} className="size-12 shrink-0" />

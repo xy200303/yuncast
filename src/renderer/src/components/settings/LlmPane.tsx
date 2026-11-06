@@ -81,10 +81,7 @@ export function LlmSection() {
         <>
           <div className="flex items-start justify-between gap-4">
             <div>
-              <p className="text-base font-semibold">语言模型</p>
-              <p className="mt-1 text-sm text-muted-foreground">
-                接入库（家底）：一条接入 = 一家服务商 + 一份凭据 + 一组模型；给导演用哪条在左边「导演」栏选
-              </p>
+              <p className="text-sm text-muted-foreground">一条接入 = 一家服务商 + 凭据 + 模型；导演用哪条在「导演」栏选</p>
             </div>
             <Button className="shrink-0" onClick={() => setEditing({})}>
               <Plus />

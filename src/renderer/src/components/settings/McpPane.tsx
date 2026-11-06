@@ -111,11 +111,7 @@ export function McpPane() {
 
   return (
     <section>
-      <h2 className="text-sm font-medium">开放接口</h2>
-      <p className="mt-1 text-xs text-muted-foreground">
-        把 YunCast 的能力开给本机的 AI Agent（MCP 协议 + 命令行）：对话、播出、TTS、节目制作。
-        只监听本机回环地址，带令牌鉴权，默认关闭。
-      </p>
+      <p className="text-xs text-muted-foreground">把能力开给本机 AI Agent（MCP + 命令行），只监听回环地址，默认关闭。</p>
 
       {/* 开关与端口 */}
       <div className="mt-3 rounded-lg border bg-card px-4 py-4">

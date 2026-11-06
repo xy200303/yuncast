@@ -37,9 +37,7 @@ export function CommentGatewayCard() {
       <div className="flex items-center justify-between">
         <div>
           <p className="text-[13px] font-medium">平台连接器</p>
-          <p className="text-xs text-muted-foreground">
-            连接器是单独的小软件（抖音「直播数据助手」）：装好并打开它，评论、礼物、进场这些直播消息就会流进这里
-          </p>
+          <p className="text-xs text-muted-foreground">抖音「直播数据助手」装好打开后，评论/礼物/进场会流进这里</p>
         </div>
         <Badge
           variant={connector.state === 'connected' ? 'secondary' : connector.state === 'error' ? 'destructive' : 'outline'}

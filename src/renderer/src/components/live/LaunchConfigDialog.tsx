@@ -91,7 +91,8 @@ function Field({
   )
 }
 
-/** 上次配置 / 默认值 → 本次预填（必须人点确认，预填值不写回资产） */
+/** 上次配置 / 默认值 → 本次预填（必须人点确认，预填值不写回资产）。
+ *  内容来源不再是选项：实时档=现场无限生成，其余=按本场话术，由合成时机唯一决定。 */
 function prefill(session: SessionConfig | null): LaunchConfig {
   if (session) {
     return {
@@ -99,7 +100,7 @@ function prefill(session: SessionConfig | null): LaunchConfig {
       contentType: session.contentType,
       instruction: session.instruction,
       preset: session.preset,
-      contentSource: session.contentSource,
+      contentSource: session.synthMode === 'realtime' ? 'infinite' : 'script',
       synthMode: session.synthMode,
       endMode: session.endMode,
       audioPolicy: 'reuse',
@@ -112,7 +113,6 @@ function prefill(session: SessionConfig | null): LaunchConfig {
     ...DEFAULT_SESSION_CONFIG
   }
 }
-
 export function LaunchConfigDialog({
   open,
   program,
@@ -152,8 +152,6 @@ export function LaunchConfigDialog({
     program ? prefill(session) : { ...DEFAULT_SESSION_CONFIG }
   )
   const [tab, setTab] = useState<'write' | 'synth' | 'play'>(defaultTab)
-  /** 切到实时档前的「内容来源」：切回来时恢复，别让实时档把用户的来源选择吃掉 */
-  const [sourceBeforeRealtime, setSourceBeforeRealtime] = useState<LaunchConfig['contentSource']>('script')
   // 打开时按真实进度落位：稿子还没写就一定从「写稿」开始；写好了就跳到「合成」/「播放」
   useEffect(() => {
     if (!open) return
@@ -175,7 +173,8 @@ export function LaunchConfigDialog({
     if (!found) return
     patch({
       preset,
-      contentSource: found.contentSource,
+      // 内容来源跟着合成时机走（预设里两者本来就一致，这里统一按规则推一次）
+      contentSource: found.synthMode === 'realtime' ? 'infinite' : 'script',
       synthMode: found.synthMode,
       endMode: found.endMode
     })
@@ -361,20 +360,13 @@ export function LaunchConfigDialog({
                     { value: 'async', label: '边播边合' },
                     { value: 'realtime', label: '实时' }
                   ]}
-                  // 实时档没有存量音频这回事：内容现场生成，顺手把内容来源切到「无限生成」，
-                  // 免得开播设置里出现一套互相打架的选项；切回来时恢复原来的来源
-                  onChange={(synthMode) => {
-                    if (synthMode === 'realtime') {
-                      if (config.synthMode !== 'realtime') setSourceBeforeRealtime(config.contentSource)
-                      patch({ synthMode, contentSource: 'infinite' })
-                    } else {
-                      patch({
-                        synthMode,
-                        contentSource:
-                          config.synthMode === 'realtime' ? sourceBeforeRealtime : config.contentSource
-                      })
-                    }
-                  }}
+                  // 内容来源不再是选项，由合成时机唯一决定：实时=现场无限生成，其余=按本场话术
+                  onChange={(synthMode) =>
+                    patch({
+                      synthMode,
+                      contentSource: synthMode === 'realtime' ? 'infinite' : 'script'
+                    })
+                  }
                 />
               </Field>
 
@@ -404,33 +396,20 @@ export function LaunchConfigDialog({
             <div className="flex flex-col gap-5">
               {config.synthMode === 'realtime' ? (
                 <p className="rounded-md bg-muted/60 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
-                  实时档：内容现场生成、逐句合成立刻播，没有「本场话术 / 无限生成」之分，也没有整轮
-                  播完再循环这回事——下面只留互动设置。
+                  实时档：内容现场生成、逐句合成立刻播，没有整轮播完再循环这回事——下面只留互动设置。
                 </p>
               ) : (
-                <>
-                  <Field label="内容来源">
-                    <Segmented
-                      value={config.contentSource}
-                      options={[
-                        { value: 'script', label: '本场话术' },
-                        { value: 'infinite', label: '边播边无限生成' }
-                      ]}
-                      onChange={(contentSource) => patch({ contentSource })}
-                    />
-                  </Field>
-                  <Field label="收尾">
-                    <Segmented
-                      value={config.endMode}
-                      options={[
-                        { value: 'stop', label: '一遍播完' },
-                        { value: 'loop', label: '循环返场' },
-                        { value: 'forever', label: '一直播' }
-                      ]}
-                      onChange={(endMode) => patch({ endMode })}
-                    />
-                  </Field>
-                </>
+                <Field label="收尾">
+                  <Segmented
+                    value={config.endMode}
+                    options={[
+                      { value: 'stop', label: '一遍播完' },
+                      { value: 'loop', label: '循环返场' },
+                      { value: 'forever', label: '一直播' }
+                    ]}
+                    onChange={(endMode) => patch({ endMode })}
+                  />
+                </Field>
               )}
 <div className="flex flex-col gap-4">
               <label className="flex items-center gap-2 text-[13px]">

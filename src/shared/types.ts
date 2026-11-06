@@ -798,6 +798,8 @@ export interface SessionConfig {
   enabledTriggerIds: string[]
   /** 本场默认音色（克隆音色 id 或复合串）；逐条还可以用 voiceId 覆盖 */
   voiceId: string
+  /** 主播标识 → 音色：稿子里标了 speaker 的段落优先用它，没配的跟随默认音色 */
+  speakerVoices: Record<string, string>
   createdAt: number
 }
 
@@ -828,7 +830,8 @@ export const DEFAULT_SESSION_CONFIG: Omit<SessionConfigInput, 'programId'> = {
   // 默认不接直播间动态：要接就去顶栏「自动响应」打开（那里是实时开关，开播中也能调）
   allowLiveEvents: false,
   enabledTriggerIds: [],
-  voiceId: ''
+  voiceId: '',
+  speakerVoices: {}
 }
 
 /** 池操作统一返回形状（IPC 层不抛异常，错误信息给 UI 用） */

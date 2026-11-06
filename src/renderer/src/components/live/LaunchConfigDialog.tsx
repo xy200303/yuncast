@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent } from '@/components/ui/tabs'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
+import { SpeakerPicker } from './SpeakerPicker'
 import { cn } from '@/lib/utils'
 import {
   CONTENT_TYPE_LABELS,
@@ -104,7 +105,8 @@ function prefill(session: SessionConfig | null): LaunchConfig {
       audioPolicy: 'reuse',
       allowLiveEvents: session.allowLiveEvents,
       enabledTriggerIds: session.enabledTriggerIds,
-      voiceId: session.voiceId ?? ''
+      voiceId: session.voiceId ?? '',
+      speakerVoices: session.speakerVoices ?? {}
     }
   }
   return {
@@ -148,6 +150,8 @@ export function LaunchConfigDialog({
     program ? prefill(session) : { ...DEFAULT_SESSION_CONFIG }
   )
   const [tab, setTab] = useState<'write' | 'synth' | 'play'>(defaultTab)
+  /** 稿子里出现的主播标识（自动识别，逐个配声） */
+  const [speakers, setSpeakers] = useState<string[]>([])
   // 打开时按真实进度落位：稿子还没写就一定从「写稿」开始；写好了就跳到「合成」/「播放」
   useEffect(() => {
     if (!open) return
@@ -159,6 +163,30 @@ export function LaunchConfigDialog({
     if (!open || !program) return
     setConfig(prefill(session))
   }, [open, program, session])
+
+  // 从稿子里自动识别主播标识：有几个角色，就在合成这一步给几个音色
+  useEffect(() => {
+    if (!open || !program) {
+      setSpeakers([])
+      return
+    }
+    let alive = true
+    void window.api.draftUnit
+      .list(program.id)
+      .then((units) => {
+        if (!alive) return
+        const labels = new Set<string>()
+        for (const unit of units) {
+          const label = (unit.speaker ?? '').trim()
+          if (label) labels.add(label)
+        }
+        setSpeakers([...labels])
+      })
+      .catch(() => alive && setSpeakers([]))
+    return () => {
+      alive = false
+    }
+  }, [open, program?.id, draftCount])
 
   const patch = (part: Partial<LaunchConfig>) => setConfig((prev) => ({ ...prev, ...part }))
 
@@ -325,7 +353,7 @@ export function LaunchConfigDialog({
             <div className="flex flex-col gap-5">
 <div className="flex flex-col gap-4">
               <p className="text-[12px] text-muted-foreground">
-                本场默认音色；段落可以在写稿时单独覆盖。没选音色时新内容没法合成，存量音频照播。
+                本场默认音色；稿子里出现的其他主播会自动列在下面，逐个配音色。没选音色时新内容没法合成，存量音频照播。
               </p>
               <Field label="默认音色">
                 <UnifiedVoicePicker
@@ -335,6 +363,28 @@ export function LaunchConfigDialog({
                   placeholder="选择音色"
                 />
               </Field>
+              {speakers.length > 0 && (
+                <Field label="主播音色" hint="从稿子里的主播标识自动识别；没配的跟随默认音色">
+                  <div className="flex flex-col gap-2">
+                    {speakers.map((label) => (
+                      <div key={label} className="flex items-center gap-2">
+                        <span className="w-24 shrink-0 truncate text-[12.5px] text-muted-foreground" title={label}>
+                          {label}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <SpeakerPicker
+                            value={config.speakerVoices?.[label] ?? ''}
+                            onChange={(voiceId) =>
+                              patch({ speakerVoices: { ...(config.speakerVoices ?? {}), [label]: voiceId } })
+                            }
+                            emptyLabel="跟随默认音色"
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Field>
+              )}
             </div>
 <div className="flex flex-col gap-5">
               

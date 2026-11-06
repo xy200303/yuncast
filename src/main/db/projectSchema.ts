@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite'
  *
  * 版本走 `PRAGMA user_version`：版本不一致直接拒绝打开；结构只有当前形态一份，不做迁移。
  */
-export const PROJECT_SCHEMA_VERSION = 8
+export const PROJECT_SCHEMA_VERSION = 9
 
 export type ProjectMeta = {
   id: string
@@ -35,6 +35,7 @@ const CONTENT_DDL = `
     allow_live_events INTEGER NOT NULL DEFAULT 1,
     enabled_trigger_ids TEXT NOT NULL DEFAULT '[]',
     voice_id TEXT NOT NULL DEFAULT '',
+    speaker_voices TEXT NOT NULL DEFAULT '{}',
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS session_configs_script ON session_configs(script_id, created_at DESC);

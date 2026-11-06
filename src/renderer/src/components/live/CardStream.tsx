@@ -77,19 +77,26 @@ export function CardStream() {
   const ttsConnections = useAppStore((s) => s.ttsConnections)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [defaultVoiceId, setDefaultVoiceId] = useState('')
+  const [speakerVoices, setSpeakerVoices] = useState<Record<string, string>>({})
   useEffect(() => {
     if (!activeProgramId) {
       setDefaultVoiceId('')
+      setSpeakerVoices({})
       return
     }
     let alive = true
     void window.api.sessionConfig
       .latest(activeProgramId)
       .then((session) => {
-        if (alive) setDefaultVoiceId((session?.voiceId ?? '').trim())
+        if (!alive) return
+        setDefaultVoiceId((session?.voiceId ?? '').trim())
+        setSpeakerVoices(session?.speakerVoices ?? {})
       })
       .catch(() => {
-        if (alive) setDefaultVoiceId('')
+        if (alive) {
+          setDefaultVoiceId('')
+          setSpeakerVoices({})
+        }
       })
     return () => {
       alive = false
@@ -236,8 +243,9 @@ export function CardStream() {
           const text = stripSpeechTags(item.text)
           // 译文只用于显示：老数据里可能带着 <cot>/<pause> 标记，渲染前剥掉
           const translation = item.textZh?.trim() ? stripSpeechTags(item.textZh.trim()) : undefined
-          // 这一段用谁的嗓子、什么演法：段落没指定就落到本场默认音色
-          const voiceId = (item.voiceId || defaultVoiceId).trim()
+          // 这一段用谁的嗓子、什么演法：主播映射 > 段落音色 > 本场默认音色
+          const mappedVoice = (row.draft?.speaker ? speakerVoices[row.draft.speaker] : '') ?? ''
+          const voiceId = (mappedVoice || item.voiceId || defaultVoiceId).trim()
           const voiceName = voiceId ? voiceRouteSummary(voices, ttsProviders, ttsConnections, voiceId).voiceName : ''
           const delivery = item.delivery?.trim() || row.draft?.delivery?.trim() || ''
           const isEditing = editing?.id === item.id

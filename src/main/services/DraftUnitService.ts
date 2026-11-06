@@ -331,8 +331,7 @@ export class DraftUnitService {
             this.storage.draftUnitSave(next)
             return next
           })()
-    const resolved =
-      (voice ?? '').trim() || unit.voiceId.trim() || this.defaultVoice(unit.programId)
+    const resolved = this.unitVoice(unit, unit.programId, voice)
     if (!resolved) return { ok: false, error: '这段没有可用音色：先选一个，或设置本场默认音色' }
     this.storage.draftUnitSetAudio(unit.id, 'synthesizing', unit.audioPath)
     this.onEvent?.({ ...unit, status: 'synthesizing' })
@@ -365,10 +364,7 @@ export class DraftUnitService {
       .filter((u) => u.status === 'pending' || u.status === 'failed')
     // 合成用的音色：弹窗显式选的声音 > 段落指定主播的本场嗓子 > 段落音色快照 > 本场主主播
     const explicit = voiceOverride?.voiceId?.trim() ?? ''
-    const voiceOf = (u: DraftUnit) => {
-      if (explicit) return explicit
-      return u.voiceId.trim() || this.defaultVoice(programId)
-    }
+    const voiceOf = (u: DraftUnit) => this.unitVoice(u, programId, explicit)
 
     let done = 0
     let failed = 0
@@ -638,7 +634,7 @@ export class DraftUnitService {
       }
       const turns = buildPodcastTurns(
         unit.draftUnits.map((u) => ({
-          voiceId: u.voiceId.trim() || this.defaultVoice(program.id),
+          voiceId: this.unitVoice(u, program.id),
           text: u.text
         })),
         route.podcastVoices,
@@ -702,7 +698,7 @@ export class DraftUnitService {
     const known = new Set([...route.podcastVoices, ...route.speakers])
     for (const unit of units) {
       for (const u of unit.draftUnits) {
-        const voice = u.voiceId.trim() || this.defaultVoice(u.programId)
+        const voice = this.unitVoice(u, u.programId)
         if (voice && !known.has(voice)) {
           return (
             `「${unit.title}」里有第三个音色（${voice}）：Podcast 双人播客模型只支持两个主持人。` +
@@ -901,7 +897,7 @@ export class DraftUnitService {
           ...new Set(
             this.storage
               .draftUnitList(program.id)
-              .map((u) => u.voiceId.trim() || firstVoice)
+              .map((u) => this.unitVoice(u, program.id))
               .filter(Boolean)
           )
         ]
@@ -948,7 +944,7 @@ export class DraftUnitService {
     // 跟随本场配置：快照取主主播音色路由出的接入/模型（只用于填充快照，不形成永久绑定）
     return {
       voiceFor: (u) => {
-        const voice = u.voiceId.trim() || this.defaultVoice(program.id)
+        const voice = this.unitVoice(u, program.id)
         if (!voice) throw new Error('文稿没有可用音色：本场还没定音色（先在合成弹窗里选一个）')
         return voice
       },
@@ -1080,6 +1076,23 @@ export class DraftUnitService {
   /** 本场默认音色（开播配置里选的唯一音色；段落可用自己的 voiceId 覆盖） */
   private defaultVoice(programId: string): string {
     return (this.storage.sessionConfigLatest(programId)?.voiceId ?? '').trim()
+  }
+
+  /** 开播配置里「按主播配的音色」：稿子里标了 speaker 的段落优先用它 */
+  private speakerVoice(unit: DraftUnit, programId: string): string {
+    const label = (unit.speaker ?? '').trim()
+    if (!label) return ''
+    return (this.storage.sessionConfigLatest(programId)?.speakerVoices?.[label] ?? '').trim()
+  }
+
+  /** 一条底稿最终用哪把嗓子：显式覆盖 > 主播映射 > 段落音色 > 本场默认 */
+  private unitVoice(unit: DraftUnit, programId: string, overrideVoice?: string): string {
+    return (
+      (overrideVoice ?? '').trim() ||
+      this.speakerVoice(unit, programId) ||
+      unit.voiceId.trim() ||
+      this.defaultVoice(programId)
+    )
   }
 
   private async synthesizeWithRetry(

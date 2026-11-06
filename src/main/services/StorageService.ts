@@ -275,7 +275,8 @@ function rowToSessionConfig(row: Record<string, unknown>): SessionConfig {
     audioPolicy: str(row.audio_policy) === 'rebuild' ? 'rebuild' : 'reuse',
     allowLiveEvents: num(row.allow_live_events) !== 0,
     enabledTriggerIds: Array.isArray(triggerIds) ? triggerIds.map(String).filter(Boolean) : [],
-    voiceId: str(row.voice_id) || parseJson<{ voiceId?: string }[]>(row.cast, [])[0]?.voiceId || '',
+    voiceId: str(row.voice_id),
+    speakerVoices: parseJson<Record<string, string>>(row.speaker_voices, {}),
     createdAt: num(row.created_at) ?? 0
   }
 }
@@ -551,8 +552,8 @@ export class StorageService {
     this.db
       .prepare(
         `INSERT INTO session_configs (id, script_id, language, content_type, instruction, preset, content_source,
-                                      synth_mode, end_mode, audio_policy, allow_live_events, enabled_trigger_ids, voice_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      synth_mode, end_mode, audio_policy, allow_live_events, enabled_trigger_ids, voice_id, speaker_voices, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(script_id) DO UPDATE SET
            language = excluded.language,
            content_type = excluded.content_type,
@@ -565,6 +566,7 @@ export class StorageService {
            allow_live_events = excluded.allow_live_events,
            enabled_trigger_ids = excluded.enabled_trigger_ids,
            voice_id = excluded.voice_id,
+           speaker_voices = excluded.speaker_voices,
            created_at = excluded.created_at`
       )
       .run(
@@ -581,6 +583,7 @@ export class StorageService {
         config.allowLiveEvents ? 1 : 0,
         JSON.stringify(config.enabledTriggerIds),
         config.voiceId ?? '',
+        JSON.stringify(config.speakerVoices ?? {}),
         config.createdAt
       )
   }
@@ -608,6 +611,7 @@ export class StorageService {
       allowLiveEvents: true,
       enabledTriggerIds: this.triggerList().filter((trigger) => trigger.enabled).map((trigger) => trigger.id),
       voiceId: '',
+      speakerVoices: {},
       createdAt: Date.now()
     }
     this.sessionConfigSave(config)

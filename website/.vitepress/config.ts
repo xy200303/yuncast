@@ -14,7 +14,7 @@ const softwareJsonLd = {
   description: SITE_DESC,
   url: SITE_URL,
   downloadUrl: 'https://github.com/xy200303/yuncast/releases/latest',
-  softwareVersion: '0.4.2',
+  softwareVersion: '0.4.3',
   applicationCategory: 'MultimediaApplication',
   operatingSystem: 'Windows',
   inLanguage: 'zh-CN',

@@ -132,7 +132,7 @@ npm run build        # 构建到 out/
 npm run dist:win     # 打包 Windows 安装包（产物在 release/）
 ```
 
-打上与 `package.json` 版本一致的 tag（如 `v0.4.2`）后发布 Release。
+打上与 `package.json` 版本一致的 tag（如 `v0.4.3`）后发布 Release。
 
 > 打包时如果 Electron 下载超时，可设 `ELECTRON_MIRROR` / `ELECTRON_BUILDER_BINARIES_MIRROR` 走镜像。
 

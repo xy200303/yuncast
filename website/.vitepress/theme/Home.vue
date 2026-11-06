@@ -80,8 +80,20 @@ const tracks = [
 /** 更新日志：只写仓库里查得到的事实（与 CHANGELOG.md 对齐） */
 const changelog = [
   {
-    v: 'v0.4.2',
+    v: 'v0.4.3',
     when: '最新',
+    items: [
+      '合成前按稿子自动识别主播，每个主播单独配音色；卡片显示的就是这一段实际用的嗓子',
+      '输出设备像直播软件一样从播放条喇叭配：设备可多选、每台单独调音量，同时送扬声器与虚拟声卡',
+      '项目可删除：仅移出列表，或连同项目目录一起删（二次确认）',
+      '直播台修正：主播标识/在播不再重复显示，旧场次卡在「在播」的条目自动清掉，进度条与卡片段数一致',
+      '收播即清场：下一场从稿子第一段重新装载，不承接上一场的队列与历史',
+      '项目结构升到 v9：旧项目拒绝打开，新增 session_configs.speaker_voices 列'
+    ]
+  },
+  {
+    v: 'v0.4.2',
+    when: '录屏带声音',
     items: [
       '录屏带声音：音轨从应用监听旁路采集，停止时并进视频',
       '文案收口：清掉「主播/卡司」残留，统一成「导演」；统计页去掉恒为空的「主播排行」',
@@ -632,8 +644,8 @@ onUnmounted(() => {
         target="_blank"
         rel="noreferrer"
       >
-        <span class="notice-tag">v0.4.2</span>
-        <span class="notice-text">录屏带声音 · 音色按名字选 · 多角色主播标识</span>
+        <span class="notice-tag">v0.4.3</span>
+        <span class="notice-text">多主播逐个配音色 · 输出设备多选 · 收播即清场</span>
         <span class="notice-arrow" v-html="ICONS.arrow" />
       </a>
       <div class="hero-inner">

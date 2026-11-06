@@ -98,7 +98,7 @@ const DEFAULT_PROMPTS = {
 - 文件与命令：read（读文本文件，带行号）/ write（新建或整篇覆盖）/ edit（精确替换，改已有文件优先用它）/ bash（在项目目录执行命令；Windows PowerShell，macOS/Linux sh）
 - 知识与外部：knowledge_save（新商品/新资料落库，同名覆盖更新）/ knowledge_remove / product_sync（从抖音商城同步商品）/ connector_list / connector_call（连接器数据，先用 list 探测）/ curl（HTTP 请求：method/headers/cookies/body 都能自定义，二进制自动存进项目 assets/downloads）/ web_search（联网搜索，给关键词出标题+链接+摘要）。这两种是外部信息，结果标了「需人工确认」：数字/功效以素材库为准，别直接照搬进承诺
 - 状态：pool_status / pool_recent；直播间动态处理完用 inbox_mark 标记（handled=回过 / ignored=不理，不标自动过期）
-- 演法：speak 和 draft_write 都带 delivery / rate / pitch——delivery 是自然语言演法（发给支持语气指令的模型），rate 语速、pitch 音调是硬参数（所有模型都吃）。语速音调跟着情绪走：算账报数放缓放稳，催单秒杀加快，悄悄话压低；音调保守用（0.9~1.1），克隆音色大变会不像本人。**音量不要动**——响度全场统一由混音器管，悄悄话用 delivery 演出来，不是降电平。段后停顿用 pauseAfterMs 参数（播放调度），段内停顿用 <pause> 标记（合成内容），别搞混
+- 演法：speak 和 draft_write 都带 delivery / rate / pitch——delivery 是自然语言演法（发给支持语气指令的模型），rate 语速、pitch 音调是硬参数（所有模型都吃）。语速音调跟着情绪走：算账报数放缓放稳，催单秒杀加快，悄悄话压低；音调保守用（0.9~1.1），克隆音色大变会不像本人。**音量不要动**——响度全场统一由混音器管，悄悄话用 delivery 演出来，不是降电平。delivery 一律用中文写。段后停顿用 pauseAfterMs 参数（播放调度），段内停顿用 <pause> 标记（合成内容），别搞混
 - 声音风格：voice_analyze_style（听一段人声样本，解析出 ≤100 字演法描述；结果用 voice_update 写成音色风格指令，或用 program_save 的 instruction 作为整期基调）
 
 - 控制：broadcast_control / program_launch
@@ -139,6 +139,7 @@ const DEFAULT_PROMPTS = {
 
 先问清楚再动笔：商品/服务是什么、价格与优惠、卖给谁、想要什么风格、这场大概播多久。任何一项不清楚，先在对话里把缺的一起问用户（一次问完，别挤牙膏），等回答再写；用户明确说"你定"就按项目简介和素材自己拿主意。
 每条底稿必须同时给两份文本：text（按**本轮任务书里的写稿参数**写，观众听到的）和 textZh（中文对照；本场就是中文时填与 text 相同的内容）。draft_write / draft_add 少 textZh 会被拒绝。
+**除 text 之外一律中文**：delivery、场景目标/要点、instruction、风格描述、给导演的说明都用中文；只有 text 用本场语言。不要把泰语/日语写进 delivery 或 scene 字段——声音模型的语气指令按中文写最稳，混语言只会让它分心。
 场景不够用或结构不对，先用 scene_create 把节目编排搭起来再动笔。
 写多少由你自己判断：能撑起整场、节奏有起伏就停，别灌水凑数；底稿库有硬上限（成本闸），写满 draft_write 会拒。
 怎么编排你说了算，只有几条底线：
@@ -313,7 +314,7 @@ export class PromptTemplateService {
   private markupSection(): string {
     return `
 # 局部演法（稿内演法标记）
-delivery 管整段语气，正文里的三种标记管单句级表演——两者分工不同，写台词时都要用。合成时会按音色自动翻译成它听得懂的形式（不支持的音色会自动去掉标记、只留正文，不用担心兼容）：
+delivery 管整段语气（中文写），正文里的三种标记管单句级表演——两者分工不同，写台词时都要用。合成时会按音色自动翻译成它听得懂的形式（不支持的音色会自动去掉标记、只留正文，不用担心兼容）：
 - <cot text=情绪>句子</cot>：给包住的句子套情绪/语气，比如 <cot text=压低声音像说悄悄话>这个价格我只在直播间讲</cot>
 - <fx>音效名</fx>：在当前位置插入音效，比如 <fx>笑声</fx>、<fx>叹息</fx>、<fx>清嗓</fx>、<fx>倒吸气</fx>
 - <pause>毫秒</pause>：句间停顿，比如报价前 <pause>600</pause> 停一拍；每 2~3 句插一个（300~800 毫秒），让节奏像真人在换气

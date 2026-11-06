@@ -1,7 +1,7 @@
 import { Type } from 'typebox'
 import type { PoolLane } from '../../../shared/types'
 import { defineTool } from './types'
-import { activeProgramId, MARKUP_HINT, resolveVoice } from './util'
+import { activeProgramId, deliveryLanguageIssue, MARKUP_HINT, resolveVoice } from './util'
 
 const LANE_DESC = '车道：queue 排队顺序播（默认）/ next 当前这条播完就插播（回评论、急事用）/ interrupt 打断当前立刻说 / filler 垫底（没东西播时才轮到）'
 const VOICE_DESC = '主播名称（音色库里的名字，如「小满」）或音色 id（voice_list 的 voiceId）：一般不用传；传了就用它，不再看本场默认音色'
@@ -32,7 +32,7 @@ export const speechTools = [
       ),
       voiceId: Type.Optional(Type.String({ description: VOICE_DESC })),
       delivery: Type.Optional(
-        Type.String({ description: '表演指示（情绪/语气，一句话，如「压低声音像说悄悄话」）——会真的拿去控制合成语气，模型支持语气指令才生效' })
+        Type.String({ description: '表演指示（情绪/语气，一句话，中文，如「压低声音像说悄悄话」）——会真的拿去控制合成语气，模型支持语气指令才生效' })
       ),
       rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3）：催单加快、讲故事放慢' })),
       pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守）：激动拔高、悄悄话压低' })),
@@ -55,6 +55,8 @@ export const speechTools = [
         if (ctx.getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
       }
       const programId = activeProgramId(ctx) ?? ''
+      const badDelivery = deliveryLanguageIssue(params.delivery)
+      if (badDelivery) return badDelivery
       const voiceId = resolveVoice(ctx, programId, params.voiceId)
       if (!voiceId) {
         return '本场还没给主播定嗓子：先在开播配置里选主播与音色，或 speak 显式传 voiceId'

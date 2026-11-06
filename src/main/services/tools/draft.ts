@@ -12,6 +12,7 @@ import {
   currentSceneId,
   bitTypeMonotony,
   resolveVoice,
+  deliveryLanguageIssue,
   languageMismatch,
   languageMismatchOf
 } from './util'
@@ -119,7 +120,7 @@ export const draftTools = [
             '桥段类型（hook/story/scene/math/compare/punchline/interact/cta/transition/closer/general；closer=收尾段，不进自动轮播）'
         })
       ),
-      delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
+      delivery: Type.Optional(Type.String({ description: '表演指示，一句话，用中文（只有正文 text 用本场语言）' })),
       rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
       pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
       pauseAfterMs: Type.Optional(
@@ -138,6 +139,8 @@ export const draftTools = [
       const capped = draftCapHit(ctx)
       if (capped) return capped
       if (!params.textZh.trim()) return 'textZh 必填：播出文本和中文对照都要给（中文节目填与 text 相同的内容）'
+      const badDelivery = deliveryLanguageIssue(params.delivery)
+      if (badDelivery) return badDelivery
       const wrongLanguage = languageMismatch(ctx, params.text)
       if (wrongLanguage) return wrongLanguage
       const programId = activeProgramId(ctx)!
@@ -190,7 +193,7 @@ export const draftTools = [
             description:
               '中文对照（必填）：播出语言不是中文时给准确中文翻译；中文节目填与 text 相同的内容。界面上贴在原文下面'
           }),
-          delivery: Type.Optional(Type.String({ description: '表演指示，一句话' })),
+          delivery: Type.Optional(Type.String({ description: '表演指示，一句话，用中文（只有正文 text 用本场语言）' })),
           rate: Type.Optional(Type.Number({ description: '语速倍率（1.0 基准，0.85~1.3），不传用默认' })),
           pitch: Type.Optional(Type.Number({ description: '音调倍率（1.0 基准，0.9~1.1 保守），不传用默认' })),
           pauseAfterMs: Type.Optional(
@@ -222,6 +225,8 @@ export const draftTools = [
       if (missing >= 0) {
         return `第 ${missing + 1} 段缺 textZh：每段都要同时给播出文本和中文对照（中文节目填与 text 相同的内容）`
       }
+      const badDelivery = params.items.findIndex((item) => deliveryLanguageIssue(item.delivery))
+      if (badDelivery >= 0) return `第 ${badDelivery + 1} 段：${deliveryLanguageIssue(params.items[badDelivery].delivery)}`
       const wrongLanguage = languageMismatchOf(
         ctx,
         params.items.map((item) => item.text)

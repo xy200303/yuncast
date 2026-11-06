@@ -141,6 +141,15 @@ export function languageMismatch(ctx: ToolCtx, text: string): string | null {
   return `这段不是${label}：本场播出语言是「${label}」，正文必须用${label}写（中文只放 textZh 做对照）。请整段用${label}重写后再入库`
 }
 
+/** 演法/风格这类元数据一律中文：只有正文用本场语言。出现泰/日/韩/俄文字却一个汉字都没有就让人重写 */
+export function deliveryLanguageIssue(delivery: string | undefined): string | null {
+  const text = (delivery ?? '').trim()
+  if (!text) return null
+  if (/[一-鿿]/.test(text)) return null
+  if (!/[฀-๿぀-ヿ가-힯Ѐ-ӿ]/.test(text)) return null
+  return '演法要用中文写（只有正文 text 用本场语言）：把它改成中文的一句话，比如「压低声音、语速放慢」'
+}
+
 /** 多条一起查（draft_write 一批）：返回第几段不合格 + 原因 */
 export function languageMismatchOf(
   ctx: ToolCtx,

@@ -158,6 +158,16 @@ export class ProjectService {
     this.onChanged?.()
   }
 
+  /** 把 WAL 收回主文件：导出/拷贝目录前调，目录才是一个完整快照 */
+  checkpoint(): void {
+    if (!this.db) return
+    try {
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    } catch {
+      // 库不可用时 checkpoint 会抛，导出侧再兜底
+    }
+  }
+
 
 }
 

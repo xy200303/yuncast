@@ -175,6 +175,29 @@ export default function App() {
               })()
             }}
             onAbout={() => useAppStore.getState().openSettings('about')}
+            onExportProject={() => {
+              void (async () => {
+                const result = await window.api.project.exportProject()
+                if (result.ok) {
+                  toast.success('已导出项目', { description: result.file })
+                  return
+                }
+                if (result.canceled) return
+                toast.error('导出失败', { description: result.error })
+              })()
+            }}
+            onImportProject={() => {
+              void (async () => {
+                const result = await window.api.project.importProject()
+                if (result.ok) {
+                  await useProjectStore.getState().open(result.item.id)
+                  toast.success('已导入项目', { description: result.item.name })
+                  return
+                }
+                if (result.canceled) return
+                toast.error('导入失败', { description: result.error })
+              })()
+            }}
           />
           {project ? (
             <>

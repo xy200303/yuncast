@@ -125,6 +125,7 @@ import { EventBus } from './services/EventBus'
 import { TriggerRuntime } from './services/TriggerRuntime'
 import { ScriptService } from './services/ScriptService'
 import { ProjectService } from './services/ProjectService'
+import { ProjectTransferService } from './services/ProjectTransferService'
 import { StreamService } from './services/stream/StreamService'
 import { ConnectorService } from './services/ConnectorService'
 import { VoiceService, type VoiceCloneInput } from './services/VoiceService'
@@ -1302,6 +1303,7 @@ function registerIpc(
 
   // ---------- 剧本 ----------
   // ---------- 项目（一个项目 = 一个目录 = 一个 project.db）----------
+  const projectTransfer = new ProjectTransferService(projects, storage)
   ipcMain.handle(IPC.projectList, () => projects.list())
   ipcMain.handle(IPC.projectCreate, (_e, input: { name: string; dir?: string }) =>
     guard(() => projects.create({ name: String(input?.name ?? ''), dir: input?.dir ? String(input.dir) : undefined }))
@@ -1321,6 +1323,40 @@ function registerIpc(
       ? await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
     return { ok: !picked.canceled && picked.filePaths.length > 0, path: picked.filePaths[0] ?? '' }
+  })
+  // 项目导入/导出：一个 .yuncast 包 = 项目目录 + 项目目录之外的音频资产
+  ipcMain.handle(IPC.projectExport, async (_e, projectId?: string) => {
+    const record = storage.projectRows().find((row) => row.id === (projectId ?? projects.currentProject()?.id))
+    if (!record) return { ok: false, error: '没有可导出的项目' }
+    const win = BrowserWindow.getAllWindows()[0]
+    const picked = await dialog.showSaveDialog(win, {
+      title: '导出项目',
+      defaultPath: join(app.getPath('documents'), `${record.name.replace(/[\\/:*?"<>|]/g, '_')}.yuncast`),
+      filters: [{ name: 'YunCast 项目', extensions: ['yuncast'] }]
+    })
+    if (picked.canceled || !picked.filePath) return { ok: false, canceled: true }
+    try {
+      const result = projectTransfer.exportProject(picked.filePath, record.id)
+      return { ok: true, file: result.file }
+    } catch (error) {
+      return { ok: false, error: friendlyError(error) }
+    }
+  })
+  ipcMain.handle(IPC.projectImport, async () => {
+    if (agent?.status().live) return { ok: false, error: '直播中不能导入项目：先结束本场' }
+    const win = BrowserWindow.getAllWindows()[0]
+    const picked = await dialog.showOpenDialog(win, {
+      title: '导入项目',
+      properties: ['openFile'],
+      filters: [{ name: 'YunCast 项目', extensions: ['yuncast'] }]
+    })
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, canceled: true }
+    try {
+      const record = projectTransfer.importProject(picked.filePaths[0])
+      return { ok: true, item: record }
+    } catch (error) {
+      return { ok: false, error: friendlyError(error) }
+    }
   })
 
   // ---------- 节目 ----------

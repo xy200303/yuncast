@@ -4,6 +4,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
@@ -20,11 +21,15 @@ export function MenuBar({
   onCreateProject,
   onOpenProject,
   onOpenFolder,
+  onExportProject,
+  onImportProject,
   onAbout
 }: {
   onCreateProject: () => void
   onOpenProject: () => void
   onOpenFolder: () => void
+  onExportProject: () => void
+  onImportProject: () => void
   onAbout: () => void
 }) {
   const win32 = window.api.platform === 'win32'
@@ -38,6 +43,9 @@ export function MenuBar({
         <DropdownMenuItem onSelect={onCreateProject}>新建项目…</DropdownMenuItem>
         <DropdownMenuItem onSelect={onOpenProject}>打开项目…</DropdownMenuItem>
         <DropdownMenuItem onSelect={onOpenFolder}>打开已存在项目…</DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={onExportProject}>导出项目…</DropdownMenuItem>
+        <DropdownMenuItem onSelect={onImportProject}>导入项目…</DropdownMenuItem>
       </Menu>
       <Menu label="编辑" style={noDrag}>
         {(

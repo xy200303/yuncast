@@ -187,6 +187,10 @@ export const IPC = {
   projectRemove: 'project:remove',
   /** 新建项目时选一个父目录 */
   projectPickDir: 'project:pick-dir',
+  /** 导出项目到单个 .yuncast 包（tar.gz） */
+  projectExport: 'project:export',
+  /** 从 .yuncast 包导入项目（解包后登记并打开） */
+  projectImport: 'project:import',
   /** main → renderer：项目列表或当前项目变化 */
   projectChanged: 'project:changed',
 

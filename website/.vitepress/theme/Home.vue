@@ -802,6 +802,27 @@ onUnmounted(() => {
     </section>
 
 
+    <!-- ============ 功能演示 ============ -->
+    <section class="section video-section">
+      <div class="inner">
+        <span class="eyebrow reveal"><i>05</i>功能演示</span>
+        <h2 class="display reveal">一段<span>实机</span></h2>
+        <p class="lead reveal d1">19 秒，无声：直播台卡片流 → 自动响应 → 导演面板。</p>
+        <div class="video-wrap reveal d2">
+          <video
+            class="video-player"
+            src="/demo-feature.mp4"
+            poster="/demo-poster.jpg"
+            controls
+            muted
+            loop
+            playsinline
+            preload="metadata"
+          />
+        </div>
+      </div>
+    </section>
+
     <!-- ============ 界面 ============ -->
     <section class="section">
       <div class="inner">

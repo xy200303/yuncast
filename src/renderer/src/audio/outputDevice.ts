@@ -15,9 +15,15 @@ export interface OutputDevice {
 
 /** 常见虚拟声卡的设备名（输出端）：VB-CABLE / VoiceMeeter / 中文名兜底 */
 const VIRTUAL_CABLE_RE = /cable input|voicemeeter input|vb-audio|virtual cable|虚拟声卡/i
+/**
+ * VB-CABLE 新版安装包会同时装两个设备：经典立体声 `CABLE Input` 和 16 声道版
+ * `CABLE In 16ch`。16ch 是给多声道场景的、还要求两端采样率一致，
+ * 推流用不到，混进下拉框只会选错——统一排除。
+ */
+const MULTICHANNEL_CABLE_RE = /16\s*ch|hi-?fi\s*cable/i
 
 export function isVirtualCable(label: string): boolean {
-  return VIRTUAL_CABLE_RE.test(label)
+  return VIRTUAL_CABLE_RE.test(label) && !MULTICHANNEL_CABLE_RE.test(label)
 }
 
 export async function listOutputDevices(): Promise<OutputDevice[]> {
@@ -25,6 +31,7 @@ export async function listOutputDevices(): Promise<OutputDevice[]> {
   const devices = await navigator.mediaDevices.enumerateDevices()
   return devices
     .filter((device) => device.kind === 'audiooutput')
+    .filter((device) => !MULTICHANNEL_CABLE_RE.test(device.label))
     .map((device) => ({
       deviceId: device.deviceId,
       label: device.label || `输出设备 ${device.deviceId.slice(0, 6)}`

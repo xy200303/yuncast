@@ -30,7 +30,12 @@ export function OutputDeviceSection() {
   }, [refresh])
 
   const virtual = devices.find((device) => device.deviceId !== 'default' && isVirtualCable(device.label))
-  const current = devices.find((device) => device.deviceId === (stream.outputDeviceId || 'default'))
+  // 存着的设备可能已经拔掉/被卸载（比如换了个声卡）：下拉回落到「系统默认」，别显示空白
+  const selectedId =
+    stream.outputDeviceId && devices.some((device) => device.deviceId === stream.outputDeviceId)
+      ? stream.outputDeviceId
+      : 'default'
+  const current = devices.find((device) => device.deviceId === selectedId)
 
   const apply = async (patch: Partial<typeof stream>): Promise<void> => {
     await saveConfig({ stream: patch })
@@ -80,7 +85,7 @@ export function OutputDeviceSection() {
         <div>
           <Label className="mb-1">输出到</Label>
           <Select
-            value={stream.outputDeviceId || 'default'}
+            value={selectedId}
             onValueChange={(value) => void apply({ outputDeviceId: value === 'default' ? '' : value })}
           >
             <SelectTrigger className="h-9 w-full">

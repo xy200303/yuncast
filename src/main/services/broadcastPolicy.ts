@@ -9,11 +9,14 @@ import type { ProgramPlaybackService } from './ProgramPlaybackService'
  * 模式由「剧本的播出形态 + 本场内容来源」共同决定：
  * - 本场 contentSource=infinite：无底稿，边播边无限生成（内容来源覆盖形态）
  * - 其余按剧本 broadcastMode：prepared（全部做好再播）/ rolling（边播边准备）
- * 收尾只认本场 endMode：stop=一遍播完停，loop/forever=循环返场。
+ * 收尾只认本场 endMode：
+ * - stop：一遍播完，收尾下播
+ * - loop：播完一轮，回卷重播同一批稿子
+ * - forever：一直播下去——这一轮播完叫主播写新桥段接着播，不重播旧段
  */
 
-/** 池见底决策：wrap-up=走两阶段收播；reload=循环重装；wait=内容在路上（允许冷场）；ignore=与本模式无关 */
-export type PoolEmptyAction = 'wrap-up' | 'reload' | 'wait' | 'ignore'
+/** 池见底决策：wrap-up=走两阶段收播；reload=循环重装；grow=继续写新内容；wait=内容在路上（允许冷场）；ignore=与本模式无关 */
+export type PoolEmptyAction = 'wrap-up' | 'reload' | 'grow' | 'wait' | 'ignore'
 
 export interface BroadcastPolicy {
   /** 启动装载：返回装进池的条数（无限生成恒 0） */
@@ -48,7 +51,9 @@ function rollingPolicy(pb: ProgramPlaybackService, session: SessionConfig): Broa
         if (pb.hasIncomingDraftUnits(program.id)) return 'wait'
         return 'wrap-up'
       }
-      // 首轮没播完 = 接着播（不是循环）；全播过了要到段数上限才允许循环重播
+      // 一直播：不重播旧段，叫主播接着写新桥段（到硬上限才退化成等）
+      if (session.endMode === 'forever') return 'grow'
+      // 循环返场：首轮没播完 = 接着播（不是循环）；全播过了才允许回卷重播
       if (!pb.hasFreshDraftUnits(program.id) && !pb.atDraftCap(program.id)) return 'wait'
       return 'reload'
     },
@@ -58,7 +63,7 @@ function rollingPolicy(pb: ProgramPlaybackService, session: SessionConfig): Broa
   }
 }
 
-/** 预制节目：门禁后装 rendered 音频单元；见底按本场收尾，loop/forever 复用音频重装；永不续写 */
+/** 预制节目：门禁后装 rendered 音频单元；见底 stop→收播 / 其余回卷重播；永不续写（forever 在这里退化成循环） */
 function preparedPolicy(pb: ProgramPlaybackService, session: SessionConfig): BroadcastPolicy {
   return {
     autoReloadOnReady: false,
@@ -71,6 +76,7 @@ function preparedPolicy(pb: ProgramPlaybackService, session: SessionConfig): Bro
         if (pb.hasIncomingRendered(program.id)) return 'wait'
         return 'wrap-up'
       }
+      // 预制档没有「边播边写」这回事：forever 只能退化成循环重播（界面已保证不会选到这个组合）
       return 'reload'
     },
     reload: (program) => pb.rewindPool() || pb.reloadPreparedUnits(program.id),

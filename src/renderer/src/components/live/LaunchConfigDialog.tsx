@@ -399,7 +399,10 @@ export function LaunchConfigDialog({
                   实时档：内容现场生成、逐句合成立刻播，没有整轮播完再循环这回事——下面只留互动设置。
                 </p>
               ) : (
-                <Field label="收尾">
+                <Field
+                  label="收尾"
+                  hint="一遍播完＝播完就收尾下播；循环返场＝回卷重播同一批稿子；一直播＝这一轮播完接着写新内容一直播下去（预合成做不了边播边写，会改用边播边合）"
+                >
                   <Segmented
                     value={config.endMode}
                     options={[
@@ -407,7 +410,13 @@ export function LaunchConfigDialog({
                       { value: 'loop', label: '循环返场' },
                       { value: 'forever', label: '一直播' }
                     ]}
-                    onChange={(endMode) => patch({ endMode })}
+                    onChange={(endMode) =>
+                      patch(
+                        endMode === 'forever' && config.synthMode === 'pre'
+                          ? { endMode, synthMode: 'async' }
+                          : { endMode }
+                      )
+                    }
                   />
                 </Field>
               )}

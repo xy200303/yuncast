@@ -494,6 +494,8 @@ export class ProgramPlaybackService {
     const units = listAudioUnits(program, script, this.draftUnits.list(program.id), session)
     let loaded = 0
     units.forEach((unit, index) => {
+      // 本场装过就不再装（同 loadProgramDraftUnits：补装只补新的，重播走回卷）
+      if (this.pool.hasLoadedInSession(`rendered:${unit.kind}:${unit.id}`)) return
       const rendered = unit.rendered
       const usable =
         rendered?.status === 'ready' &&
@@ -580,6 +582,8 @@ export class ProgramPlaybackService {
 
     let loaded = 0
     ready.forEach((u, index) => {
+      // 本场装过就不再装：回卷复用原条目，补装只补新稿（否则每来一批新稿，旧稿会被整库重装一遍）
+      if (this.pool.hasLoadedInSession(`ut:${u.id}`)) return
       // 口径：段落音色快照 > 本场默认音色
       const voice = u.voiceId.trim() || (this.storage.sessionConfigLatest(program.id)?.voiceId ?? '').trim()
       const reusable = Boolean(u.audioPath) && (u.synthVoice ?? '') === voice

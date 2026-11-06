@@ -1693,7 +1693,18 @@ if (!single) {
       broadcastDataChanged(scope, detail)
     }
     recorder.onChanged = () => broadcastDataChanged('sessions')
-    draftUnits.onDraftChanged = (programId) => broadcastDataChanged('drafts', programId)
+    draftUnits.onDraftChanged = (programId) => {
+      broadcastDataChanged('drafts', programId)
+      // 边播边合 / 一直播：直播中写进来或改过的底稿立刻送合成。
+      // 不然新稿停在「待合成」，池子永远等不到声音（预合成档策略里是空操作，不影响备稿节奏）
+      const status = agent?.status()
+      if (status?.state !== 'running' || status.live !== true) return
+      if (storage.getConfig().live.activeProgramId !== programId) return
+      const program = storage.programList().find((p) => p.id === programId)
+      const session = storage.sessionConfigLatest(programId)
+      if (!program || !session) return
+      policyFor(program, session, programPlayback).kickSynthesis(program)
+    }
     agent.getAudioStyle = () => audioStyle
 
     // 节目底稿库 + 节目播放（docs/07 §8.5）
@@ -1761,13 +1772,15 @@ if (!single) {
     const broadcastDraftUnitOnly = draftUnits.onEvent
     draftUnits.onEvent = (u) => {
       broadcastDraftUnitOnly?.(u)
-      if (u.status !== 'ready' || !u.id) return
+      if (!u.id) return
       if (storage.getConfig().live.activeProgramId !== u.programId) return
       const status = agent?.status()
       if (status?.state !== 'running' || status.live !== true) return
       const program = storage.programList().find((p) => p.id === u.programId)
       const session = storage.sessionConfigLatest(u.programId)
-      if (!program || !session || !policyFor(program, session, programPlayback).autoReloadOnReady) return
+      if (!program || !session) return
+      const policy = policyFor(program, session, programPlayback)
+      if (u.status !== 'ready' || !policy.autoReloadOnReady) return
       const loaded = programPlayback.loadActiveSceneDraftUnits()
       if (loaded > 0) console.log(`[YunCast] 新就绪底稿补装 ${loaded} 条`)
     }
@@ -1786,8 +1799,8 @@ if (!single) {
     }
     // 水位事件统一走播出策略（broadcastPolicy.ts）：引擎只问策略要决策，不写模式分叉。
     // rolling：低水位引擎直发续写（冷却 180s；导演也可随时在对话里人工叫写）；
-    //          见底时 stop→两阶段收播 / 内容在路上就等（允许冷场）/ 到上限才循环重播。
-    // prepared：见底 stop→收播（音频还在出就等）/ loop→重装 rendered 单元（复用不重新合成）；永不续写。
+    //          见底时 stop→两阶段收播 / forever→叫写新桥段 / 循环返场→回卷重播。
+    // prepared：见底 stop→收播（音频还在出就等）/ 其余回卷重放；永不续写。
     // improvised：无底稿，水位与播出内容无关，忽略。
     let lastLowWaterAt = 0
     bus.subscribe((event) => {
@@ -1818,6 +1831,20 @@ if (!single) {
         case 'reload': {
           const loaded = policy.reload(program)
           if (loaded > 0) console.log(`[YunCast] 池见底，装回 ${loaded} 条继续播出`)
+          return
+        }
+        case 'grow': {
+          // 一直播：不重播旧段，叫主播接着写新桥段（写完合成完自动进池）
+          if (!policy.shouldAutoWrite(program)) {
+            console.log('[YunCast] 池空且底稿到硬上限：一直播没有新内容可写了，停在暂停态等人处理')
+            autoPauseWhenDry()
+            return
+          }
+          if (Date.now() - lastLowWaterAt >= 60_000) {
+            lastLowWaterAt = Date.now()
+            agent?.notifyLowWater(0)
+          }
+          console.log('[YunCast] 池见底（一直播）：已叫主播续写新桥段')
           return
         }
         case 'wait': {

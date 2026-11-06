@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import {
   LIBRARY_SOURCE_ID,
   POOL_LIMITS,
@@ -367,6 +368,21 @@ export class SpeechPool {
     this.haltedIds.clear()
     if (count) this.refresh()
     return count
+  }
+
+  /**
+   * 本场是否已经装过这条稿子（含已播）。用于「补装」判断：
+   * 一场里同一段稿子只该进池一次——回卷/重播走 rewind 复用原条目，不走重新装载，
+   * 否则一轮播完再来一批新稿，旧稿会被整库重装一遍（话术库看起来像被复制了）。
+   * 例外：已播但音频文件没了（清空音频/重新合成），允许重装。
+   */
+  hasLoadedInSession(dedupeKey: string): boolean {
+    if (!this.sessionId) return false
+    const row = this.storage.poolItemFindByDedupeKey(dedupeKey, this.sessionId)
+    if (!row) return false
+    if (row.status === 'failed' || row.status === 'skipped' || row.status === 'expired') return false
+    if (row.status === 'done') return Boolean(row.audioPath && existsSync(row.audioPath))
+    return true
   }
 
   /**

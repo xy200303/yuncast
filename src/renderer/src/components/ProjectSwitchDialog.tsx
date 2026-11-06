@@ -3,7 +3,7 @@ import { Folder } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { cn } from '@/lib/utils'
+import { cn, slashPath } from '@/lib/utils'
 import { useProjectStore } from '@/stores/useProjectStore'
 
 /** 打开项目：列出已登记的项目，点一条就切过去（等价于在磁盘上打开那个目录） */
@@ -64,7 +64,7 @@ export function ProjectSwitchDialog({
                 <Folder className="size-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-[13px]">{project.name}</span>
-                  <span className="block truncate text-[11px] text-muted-foreground">{project.path}</span>
+                  <span className="block truncate text-[11px] text-muted-foreground">{slashPath(project.path)}</span>
                 </span>
                 {current?.id === project.id && (
                   <span className="shrink-0 text-[11px] text-muted-foreground">当前</span>

@@ -38,6 +38,17 @@ export default function App() {
   const project = useProjectStore((s) => s.current)
   const [createOpen, setCreateOpen] = useState(false)
   const [switchOpen, setSwitchOpen] = useState(false)
+
+  /** 按目录打开项目（菜单和欢迎页共用一份实现） */
+  const openFolder = async (): Promise<void> => {
+    const picked = await window.api.project.pickDir()
+    if (!picked.ok) return
+    try {
+      await useProjectStore.getState().openAt(picked.path)
+    } catch (error) {
+      toast.error('打开项目失败', { description: error instanceof Error ? error.message : String(error) })
+    }
+  }
   const agentPanelMode = useAppStore((s) => s.agentPanelMode)
   const agentPanelWidth = useAppStore((s) => s.agentPanelWidth)
   const loadConfig = useAppStore((s) => s.loadConfig)
@@ -173,19 +184,7 @@ export default function App() {
           <MenuBar
             onCreateProject={() => setCreateOpen(true)}
             onOpenProject={() => setSwitchOpen(true)}
-            onOpenFolder={() => {
-              void (async () => {
-                const picked = await window.api.project.pickDir()
-                if (!picked.ok) return
-                try {
-                  await useProjectStore.getState().openAt(picked.path)
-                } catch (error) {
-                  toast.error('打开项目失败', {
-                    description: error instanceof Error ? error.message : String(error)
-                  })
-                }
-              })()
-            }}
+            onOpenFolder={() => void openFolder()}
             onAbout={() => useAppStore.getState().openSettings('about')}
             onExportProject={() => {
               void (async () => {
@@ -228,7 +227,11 @@ export default function App() {
               <AuditionBar />
             </>
           ) : (
-            <ProjectWelcome />
+            <ProjectWelcome
+              onCreate={() => setCreateOpen(true)}
+              onOpenList={() => setSwitchOpen(true)}
+              onOpenFolder={() => void openFolder()}
+            />
           )}
           <StatusBar />
         </SidebarInset>

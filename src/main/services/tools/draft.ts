@@ -1,5 +1,6 @@
 import { Type } from 'typebox'
 import type { DraftUnitSource } from '../../../shared/types'
+import { voiceDisplayName } from '../voiceRef'
 import { defineTool } from './types'
 import {
   MARKUP_HINT,
@@ -13,7 +14,6 @@ import {
   bitTypeMonotony,
   resolveVoice,
   deliveryLanguageIssue,
-  speakerLabel,
   speakerRefIssue,
   languageMismatch,
   languageMismatchOf
@@ -32,8 +32,8 @@ export const draftTools = [
     expose: { agent: true, mcp: true },
     description:
       '看本场底稿库（开播前写好的桥段，轮播的骨架）：按关键词搜，或看当前场景的。改/删底稿前先用它拿条目 id。' +
-      '返回每条的 id/场景/状态/类型/主播/前 100 字概要（只读不改任何东西）；要看全文用 draft_get。' +
-      '稿子里有多个人说话时，先看每条标的主播是谁，再决定怎么接。',
+      '返回每条的 id/场景/状态/类型/主播标识/前 100 字概要（只读不改任何东西）；要看全文用 draft_get。' +
+      '稿子里有多个人说话时，先看每条的主播标识，再决定怎么接。',
     parameters: Type.Object({
       keyword: Type.Optional(Type.String({ description: '按文本内容过滤，比如旧价格、卖点词' })),
       scope: Type.Optional(
@@ -91,7 +91,8 @@ export const draftTools = [
         场景id: found.sceneId,
         状态: DRAFT_STATUS[found.status],
         类型: found.bitType || '（旧式单句）',
-        主播: speakerLabel(ctx, activeProgramId(ctx)!, found.voiceId),
+        主播标识: found.speaker || '（未标）',
+        音色: found.voiceId ? voiceDisplayName(ctx.storage, found.voiceId) : '跟随本场默认音色',
         演法: found.delivery || '（未设定）',
         语速: found.rate ?? '默认',
         音调: found.pitch ?? '默认',
@@ -130,7 +131,10 @@ export const draftTools = [
         Type.Number({ description: '播完这段后的停顿毫秒（0~10000，默认连续播）。播放时调度，不进合成' })
       ),
       voice: Type.Optional(
-        Type.String({ description: '主播名称（音色库里的名字，如「小满」）或音色 id；不传 = 本场默认音色' })
+        Type.String({ description: '这段用哪个音色：音色库里的名字（如「小满」）或音色 id；不传 = 本场默认音色' })
+      ),
+      speaker: Type.Optional(
+        Type.String({ description: '主播标识（任意字符串，≤20 字，如「旁白」「客服小美」）：多人直播时用来区分谁说的，不影响合成' })
       ),
       sceneId: Type.Optional(
         Type.String({ description: '记到哪个场景（scene_list 拿 id）；不传记到当前场景，节目还没有编排则记为全场通用' })
@@ -167,6 +171,7 @@ export const draftTools = [
             ? undefined
             : Math.max(0, Math.min(10000, Math.floor(Number(params.pauseAfterMs) || 0))),
         voiceId: resolveVoice(ctx, programId, params.voice) ?? '',
+        speaker: cleanSpeaker(params.speaker),
         source: 'initial',
         sources: []
       })
@@ -205,7 +210,10 @@ export const draftTools = [
             Type.Number({ description: '播完这段后的停顿毫秒（0~10000，默认连续播）。播放时调度，不进合成' })
           ),
           voice: Type.Optional(
-            Type.String({ description: '这一段的说话人：主播名称（音色库里的名字）或音色 id；不传 = 本场默认音色' })
+            Type.String({ description: '这一段的音色：音色库里的名字或音色 id；不传 = 本场默认音色' })
+          ),
+          speaker: Type.Optional(
+            Type.String({ description: '这一段的主播标识（任意字符串，≤20 字）：多人直播时区分角色，不影响合成' })
           ),
           sources: Type.Optional(
             Type.Array(
@@ -249,6 +257,7 @@ export const draftTools = [
           textZh: item.textZh?.trim() || undefined,
           bitType: item.type,
           voiceId: resolveVoice(ctx, programId, item.voice) ?? defaultVoice,
+          speaker: cleanSpeaker(item.speaker),
           delivery: item.delivery,
           rate: item.rate,
           pitch: item.pitch,
@@ -372,3 +381,13 @@ export const draftTools = [
     }
   })
 ]
+
+/** 主播标识：任意字符串，去掉换行/控制字符，最长 20 字；空 = 未标 */
+function cleanSpeaker(input: string | undefined): string {
+  let out = ''
+  for (const ch of String(input ?? '')) {
+    const code = ch.codePointAt(0) ?? 0
+    out += code < 0x20 || code === 0x7f ? ' ' : ch
+  }
+  return out.replace(/ +/g, ' ').trim().slice(0, 20)
+}

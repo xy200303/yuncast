@@ -132,8 +132,11 @@ export function CardStream() {
     const seen = new Set(draftRows.map((row) => row.item.id))
     return [...draftRows, ...failedRows.filter((row) => !seen.has(row.item.id))]
   }, [live, history, pool.items, pool.failed, drafts])
-  const speakerOf = (_row: CardRow): { name: string; color: string } => ({ name: '', color: '#1d4ed8' })
-  const multiSpeaker = false
+  const speakerOf = (row: CardRow): { name: string; color: string } => ({
+    name: (row.draft?.speaker ?? '').trim(),
+    color: '#1d4ed8'
+  })
+  const multiSpeaker = drafts.some((unit) => (unit.speaker ?? '').trim().length > 0)
 
   const saveEdit = async (row: CardRow): Promise<void> => {
     if (!editing) return
@@ -294,8 +297,13 @@ export function CardStream() {
                 </span>
                 {ready && <span className="tabular-nums">{mmss(estimateMs(text))}</span>}
                 {playing && <span className="text-primary">◉ 在播</span>}
+                {speaker.name && (
+                  <span className="flex min-w-0 shrink items-center gap-1 text-foreground/70" title={`主播标识：${speaker.name}`}>
+                    <span className="max-w-20 truncate">{speaker.name}</span>
+                  </span>
+                )}
                 {voiceName && (
-                  <span className="flex min-w-0 shrink items-center gap-1" title={`本段主播：${voiceName}`}>
+                  <span className="flex min-w-0 shrink items-center gap-1" title={`本段音色：${voiceName}`}>
                     <Mic className="size-3 shrink-0" />
                     <span className="max-w-24 truncate">{voiceName}</span>
                   </span>
@@ -478,8 +486,8 @@ export function CardStream() {
             {synthRow ? stripSpeechTags(synthRow.item.text) : ''}
           </p>
           <div className="space-y-1.5">
-            <p className="text-[12px] text-muted-foreground">主播（留空 = 本场默认音色）</p>
-            <SpeakerPicker value={synthVoice} onChange={setSynthVoice} />
+            <p className="text-[12px] text-muted-foreground">音色（留空 = 本场默认）</p>
+            <SpeakerPicker value={synthVoice} onChange={setSynthVoice} placeholder="选择音色" />
           </div>
 
           <div className="space-y-1.5">

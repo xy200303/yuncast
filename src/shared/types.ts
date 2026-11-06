@@ -1468,7 +1468,9 @@ export interface DraftUnit {
   pitch?: number
   /** 播完这段后的停顿毫秒（播放时调度，不进合成）：空 = 连续播 */
   pauseAfterMs?: number
-  /** 写稿时的音色快照；空 = 用本场默认音色 */
+  /** 主播标识（任意字符串，多人直播时区分角色；只用于读稿/展示，不参与合成路由） */
+  speaker?: string
+  /** 合成用的音色；空 = 用本场默认音色 */
   voiceId: string
   /** 中文对照（外语节目的播出稿才需要）：只用于显示，不参与合成 */
   textZh?: string

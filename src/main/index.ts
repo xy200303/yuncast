@@ -1520,7 +1520,7 @@ function registerIpc(
   )
   ipcMain.handle(
     IPC.draftUnitSynthesize,
-    async (_e, id: string, voiceId?: string, params?: { delivery?: string; rate?: number; pitch?: number }) => {
+    async (_e, id: string, voiceId?: string, params?: { delivery?: string; rate?: number; pitch?: number; speaker?: string }) => {
       try {
         return await draftUnits.synthesizeOne(String(id), resolveVoiceRef(storage, voiceId), params)
       } catch (error) {

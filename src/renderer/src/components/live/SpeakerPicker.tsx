@@ -15,7 +15,7 @@ export function SpeakerPicker({
   value,
   onChange,
   emptyLabel = '本场默认音色',
-  placeholder = '选择主播'
+  placeholder = '选择音色'
 }: {
   value: string
   onChange: (voiceId: string) => void

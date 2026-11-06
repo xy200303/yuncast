@@ -118,6 +118,7 @@ export class DraftUnitService {
       pauseAfterMs?: number
       personaId?: string
       voiceId?: string
+      speaker?: string
       sources?: DraftUnit['sources']
     }[]
   ): DraftUnit[] {
@@ -138,6 +139,7 @@ export class DraftUnitService {
           pitch: item.pitch,
           pauseAfterMs: item.pauseAfterMs,
           voiceId: item.voiceId?.trim() ?? '',
+          speaker: item.speaker,
           source: 'initial',
           sources: item.sources ?? []
         })
@@ -166,6 +168,7 @@ export class DraftUnitService {
       textZh: input.textZh?.trim() ? stripSpeechTags(input.textZh.trim()) : existing?.textZh,
       bitType: input.bitType?.trim() ?? existing?.bitType ?? '',
       delivery: input.delivery?.trim() ?? existing?.delivery ?? '',
+      speaker: input.speaker !== undefined ? input.speaker.trim().slice(0, 20) : existing?.speaker,
       rate: input.rate ?? existing?.rate,
       pitch: input.pitch ?? existing?.pitch,
       pauseAfterMs: input.pauseAfterMs ?? existing?.pauseAfterMs,
@@ -309,7 +312,7 @@ export class DraftUnitService {
   async synthesizeOne(
     id: string,
     voice?: string,
-    overrides?: { delivery?: string; rate?: number; pitch?: number }
+    overrides?: { delivery?: string; rate?: number; pitch?: number; speaker?: string }
   ): Promise<{ ok: boolean; error?: string }> {
     const found = this.storage.draftUnitGet(id)
     if (!found) return { ok: false, error: '底稿不存在' }
@@ -322,7 +325,8 @@ export class DraftUnitService {
               ...found,
               delivery: overrides.delivery ?? found.delivery,
               rate: overrides.rate,
-              pitch: overrides.pitch
+              pitch: overrides.pitch,
+              speaker: overrides.speaker ?? found.speaker
             }
             this.storage.draftUnitSave(next)
             return next

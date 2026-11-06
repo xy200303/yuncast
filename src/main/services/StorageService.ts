@@ -2222,12 +2222,12 @@ export class StorageService {
   draftUnitSave(u: DraftUnit): void {
     this.db
       .prepare(
-        `INSERT INTO draft_units (id, script_id, scene_id, variant_idx, seq, text, bit_type, delivery, rate, pitch, pause_after_ms, voice_id, audio_path,
+        `INSERT INTO draft_units (id, script_id, scene_id, variant_idx, seq, text, bit_type, delivery, speaker, rate, pitch, pause_after_ms, voice_id, audio_path,
                                  status, error, source, sources, rendered, created_at, text_zh)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            scene_id = excluded.scene_id, variant_idx = excluded.variant_idx, seq = excluded.seq,
-           text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery,
+           text = excluded.text, bit_type = excluded.bit_type, delivery = excluded.delivery, speaker = excluded.speaker,
            rate = excluded.rate, pitch = excluded.pitch, pause_after_ms = excluded.pause_after_ms,
            voice_id = excluded.voice_id, audio_path = excluded.audio_path,
            status = excluded.status, error = excluded.error, source = excluded.source,
@@ -2242,6 +2242,7 @@ export class StorageService {
         u.text,
         u.bitType,
         u.delivery,
+        u.speaker ?? '',
         u.rate ?? null,
         u.pitch ?? null,
         u.pauseAfterMs ?? null,
@@ -2255,6 +2256,11 @@ export class StorageService {
         u.createdAt,
         u.textZh ?? ''
       )
+  }
+
+  /** 只改主播标识（不碰音频/文稿）：多人直播时改角色名不影响已合成产物 */
+  draftUnitSetSpeaker(id: string, speaker: string): void {
+    this.db.prepare('UPDATE draft_units SET speaker = ? WHERE id = ?').run(speaker, id)
   }
 
   /** 只更新预制音频资产（rendered 列）：生产入口/导入外部音频/stale 检测用，不动运行态字段 */
@@ -2426,6 +2432,7 @@ function rowToDraftUnit(r: Record<string, unknown>): DraftUnit {
     text: str(r.text),
     bitType: str(r.bit_type),
     delivery: str(r.delivery),
+    speaker: str(r.speaker) || undefined,
     rate: num(r.rate),
     pitch: num(r.pitch),
     pauseAfterMs: num(r.pause_after_ms),

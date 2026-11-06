@@ -69,7 +69,6 @@ interface AppState {
   setSettingsOpen: (open: boolean) => void
   openSettings: (pane?: SettingsPaneId) => void
 
-  /** 首跑引导页（docs/REDESIGN 4.9）：全屏覆盖层，完成标记在 localStorage（lib/onboarding） */
 
   agentPanelMode: AgentPanelMode
   agentPanelContext: AgentPanelContext | null

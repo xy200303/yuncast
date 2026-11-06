@@ -354,7 +354,7 @@ delivery 管整段语气，正文里的三种标记管单句级表演——两�
     program: Program,
     script: Script | null,
     session: SessionConfig | null,
-    projectRoot: string | null
+    _projectRoot: string | null
   ): string {
     const endMode = session?.endMode ?? 'loop'
     const shape: SessionPromptShape = session ?? {

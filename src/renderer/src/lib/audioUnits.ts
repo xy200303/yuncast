@@ -70,7 +70,7 @@ function segmentTitle(text: string): string {
 
 /** 列出节目的全部合成单元，并算出每个单元的当前有效状态 */
 export function listProgramAudioUnits(
-  program: Program,
+  _program: Program,
   script: Script | null,
   draftUnits: DraftUnit[],
   session?: SessionConfig | null

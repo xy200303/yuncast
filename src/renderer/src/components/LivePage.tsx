@@ -1,18 +1,14 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  AlertTriangle,
-  AudioWaveform,
   Bot,
   Brain,
   CheckCircle2,
-  Check,
   ChevronRight,
   Copy,
   Eraser,
   Loader2,
   Paperclip,
   Play,
-  RefreshCw,
   SendHorizontal,
   Sparkles,
   Square,
@@ -31,12 +27,11 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { cn } from '@/lib/utils'
 import { Markdown } from '@/components/Markdown'
 import { VoiceProviderHint } from '@/components/VoiceProviderHint'
-import { AutoResponsePicker } from './live/AutoResponsePicker'
 import { DraftMinutesDialog } from '@/components/DraftMinutesDialog'
 import { ProgramGateDialog } from '@/components/ProgramGateDialog'
 import { UnifiedVoicePicker } from '@/components/UnifiedVoicePicker'
 import { VoicePickDialog } from '@/components/VoicePickDialog'
-import { useAppStore, type NavPage, type SettingsPaneId } from '../stores/useAppStore'
+import { useAppStore } from '../stores/useAppStore'
 import { useLiveStore } from '../stores/useLiveStore'
 import { useDataRefresh } from '../lib/useDataRefresh'
 import { audioEngine } from '../audio/engine'
@@ -49,7 +44,7 @@ import { CardStream } from './live/CardStream'
 import { LaunchConfigDialog, type LaunchConfig } from './live/LaunchConfigDialog'
 import { WorkbenchTopBar } from './live/WorkbenchTopBar'
 import { AutoResponseDialog } from './live/AutoResponseDialog'
-import { CONTENT_TYPE_LABELS, llmReady } from '../../../shared/types'
+import { llmReady } from '../../../shared/types'
 import type {
   ChatEntry,
   DirectorMessage,
@@ -59,21 +54,8 @@ import type {
   PreflightItem,
   ProduceVoiceOverride,
   ProgramGateResult,
-  PoolItem,
   SessionConfig
 } from '../../../shared/types'
-
-/**
- * 预检「去修复」深链：按检查项 code 跳到对应设置栏目。
- * 主播卡/剧本都不再是资产：缺嗓子的修复口是项目的开播配置，缺编排的修复口是导演对话。
- */
-const PREFLIGHT_FIX: Record<string, { label: string; pane?: SettingsPaneId; page?: NavPage }> = {
-  'director-brain': { label: '去配大脑', pane: 'director' },
-  'tts-broken': { label: '去检查合成', pane: 'tts' },
-  'voice-test': { label: '去测发音', pane: 'tts' },
-  connector: { label: '去连接', pane: 'comment' },
-  stream: { label: '去推流设置', pane: 'stream' }
-}
 
 export function LivePage() {
   const pool = useAppStore((s) => s.pool)
@@ -82,7 +64,6 @@ export function LivePage() {
   /** 清空确认：稿子 / 音频 */
   const [confirmClear, setConfirmClear] = useState<'drafts' | 'audio' | null>(null)
   const [clearing, setClearing] = useState(false)
-  const [synthing, setSynthing] = useState(false)
   /** 自动响应弹窗开关（本场唯一的互动接线入口） */
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
@@ -456,7 +437,6 @@ export function LivePage() {
  */
 function useProgramLauncher() {
   const agent = useAppStore((s) => s.agent)
-  const director = useAppStore((s) => s.config.director)
   const activeProgramId = useAppStore((s) => s.config.live.activeProgramId)
   const [programs, setPrograms] = useState<Program[]>([])
   /** 本场配置（最近一次）：卡司/语言/互动/收尾都以它为准；开播配置确认后更新 */
@@ -510,25 +490,8 @@ function useProgramLauncher() {
   const activeProgram = programs.find((p) => p.id === activeProgramId) ?? null
 
 
-  const blocked = (checks ?? []).some((item) => item.level === 'block')
-  /** 底稿管线动作入口（code 驱动按钮）：没写 → 去生成底稿；写了没合成 → 预合成全部 */
-  const draftEmpty = (checks ?? []).some((item) => item.code === 'draft-empty')
-  const presynthShort = (checks ?? []).some((item) => item.code === 'presynth')
-
   const patchProgram = (saved: Program): void =>
     setPrograms((prev) => prev.map((p) => (p.id === saved.id ? saved : p)))
-
-  const goGenerate = (): void => {
-    if (!activeProgramId) return
-    setChecks(null)
-    setDraftAsk(true)
-  }
-
-  const startPresynth = (): void => {
-    if (!activeProgramId) return
-    // 合成入口统一先过声音选择弹窗（docs/REDESIGN 4.4），确认后才发起
-    setVoicePickOpen(true)
-  }
 
   const confirmPresynth = async (voiceOverride?: ProduceVoiceOverride, rebuildAll?: boolean): Promise<void> => {
     if (!activeProgramId) return
@@ -579,15 +542,6 @@ function useProgramLauncher() {
     } finally {
       setChecking(false)
     }
-  }
-
-  /** 预检「去修复」：按检查项 code 深链到对应设置栏目/页面 */
-  const goFix = (code: string): void => {
-    const fix = PREFLIGHT_FIX[code]
-    if (!fix) return
-    setChecks(null)
-    if (fix.pane) useAppStore.getState().openSettings(fix.pane)
-    else if (fix.page) useAppStore.getState().setPage(fix.page)
   }
 
   const openPreflight = async (): Promise<void> => {

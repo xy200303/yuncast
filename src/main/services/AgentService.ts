@@ -1,10 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { Agent, type AgentMessage, type AgentTool } from '@earendil-works/pi-agent-core'
 import {
-  createInitialSystemMessage,
   normalizeContext,
   retryAssistantCall,
-  toToolDeclaration,
   type AssistantMessage,
   type ImageContent,
   type Message,
@@ -26,7 +24,6 @@ import {
   type DraftBriefParams,
   type LiveComment,
   type PlaybackControlAction,
-  type Program,
   type Script,
   type SessionConfig,
   type UsageKind

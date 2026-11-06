@@ -1,10 +1,8 @@
 import { Type } from 'typebox'
 import {
-  BROADCAST_MODE_LABELS,
-  CONTENT_TYPE_LABELS,
   PROGRAM_LANGUAGE_LABELS,
+  CONTENT_TYPE_LABELS,
   type Program,
-  type ProgramInput
 } from '../../../shared/types'
 import { audioProgress } from '../programUnits'
 import { defineTool, type ToolCtx } from './types'
@@ -16,9 +14,6 @@ import { defineTool, type ToolCtx } from './types'
  * MCP program_list/program_launch/program_preflight/program_produce_audio/
  * program_audio_progress/program_export。
  */
-
-const CONTENT_TYPES = Object.keys(CONTENT_TYPE_LABELS) as (keyof typeof CONTENT_TYPE_LABELS)[]
-const BROADCAST_MODES = Object.keys(BROADCAST_MODE_LABELS) as (keyof typeof BROADCAST_MODE_LABELS)[]
 
 // ---------- 本域共用助手 ----------
 

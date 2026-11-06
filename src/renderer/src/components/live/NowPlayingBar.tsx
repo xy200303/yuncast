@@ -8,7 +8,7 @@ import { useAppStore } from '../../stores/useAppStore'
 import { useLiveStore } from '../../stores/useLiveStore'
 import { audioEngine } from '../../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../../audio/liveControl'
-import { formatDurationMs, listProgramAudioUnits, type ProgramAudioUnit } from '../../lib/audioUnits'
+import { listProgramAudioUnits, type ProgramAudioUnit } from '../../lib/audioUnits'
 import type { Program, Script, SessionConfig } from '../../../../shared/types'
 import { stripSpeechTags } from '../../../../shared/speechTags'
 

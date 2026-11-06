@@ -27,7 +27,6 @@ import {
   type ModelConnectionSafe,
   type PartialDeep,
   type Program,
-  type ProgramKnowledgeScope,
   type ProjectRecord,
   type ProgramLanguage,
   type Material,
@@ -1281,23 +1280,9 @@ export class StorageService {
         setPath(raw, key, plain ?? '')
       }
     }
-    // 导演大脑迁移（导演模型，破坏性）：没有 directorConfig 时取当前主播卡摘下来的
-    // modelConnectionId/model 落盘——这是主播卡摘脑后唯一保留的迁移
+    // 导演大脑：配置里没有这一段就写默认（主播卡时代的「摘大脑」迁移已随卡司删除作废）
     if (!('director' in raw)) {
-      // 旧版从主播卡摘下来的大脑：v5 之后这两列已删除，查不到就用默认值
-      let legacy: { connectionId?: unknown; model?: unknown } | undefined
-      try {
-        legacy = this.db
-          .prepare('SELECT model_connection_id AS connectionId, model FROM personas LIMIT 1')
-          .get() as { connectionId?: unknown; model?: unknown } | undefined
-      } catch {
-        legacy = undefined
-      }
-      raw.director = {
-        name: DEFAULT_DIRECTOR_CONFIG.name,
-        modelConnectionId: typeof legacy?.connectionId === 'string' && legacy.connectionId ? legacy.connectionId : null,
-        model: typeof legacy?.model === 'string' ? legacy.model : ''
-      }
+      raw.director = { name: DEFAULT_DIRECTOR_CONFIG.name, modelConnectionId: null, model: '' }
       migrated = true
     }
     const config = parseAppConfig(raw)

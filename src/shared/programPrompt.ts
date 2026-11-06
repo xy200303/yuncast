@@ -1,4 +1,4 @@
-import type { BroadcastMode, ContentType, SessionConfig } from './types'
+import type { BroadcastMode, SessionConfig } from './types'
 
 /**
  * 「本场」提示词模块：只放播出方式（宏观运行方式）。

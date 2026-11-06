@@ -98,7 +98,7 @@ function infinitePolicy(): BroadcastPolicy {
 }
 
 /** 策略工厂：本场的三个开关决定装载/合成/收尾路线（剧本资产不参与） */
-export function policyFor(program: Program, session: SessionConfig, pb: ProgramPlaybackService): BroadcastPolicy {
+export function policyFor(_program: Program, session: SessionConfig, pb: ProgramPlaybackService): BroadcastPolicy {
   if (session.contentSource === 'infinite') return infinitePolicy()
   return session.synthMode === 'pre' ? preparedPolicy(pb, session) : rollingPolicy(pb, session)
 }

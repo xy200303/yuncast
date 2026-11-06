@@ -797,15 +797,6 @@ export type SessionEndMode = 'stop' | 'loop' | 'forever'
  * 主播与嗓子、话术语言、三个播出开关、互动开关都在这里定；资产之间零引用。
  * 每次开播必须人点确认生成一条，字段可预填上一次的值。
  */
-/** 本场缺省时的行为：备稿/还没配置时按「单人、本场话术、边播边合」处理 */
-export const DEFAULT_SESSION_BEHAVIOR = {
-  contentType: 'solo' as ContentType,
-  instruction: '',
-  contentSource: 'script' as SessionContentSource,
-  synthMode: 'async' as SessionSynthMode,
-  endMode: 'loop' as SessionEndMode
-}
-
 /** 本场的播出节奏（由内容来源 + 合成时机推导；资产不再存 broadcastMode） */
 export function broadcastModeOf(
   session: Pick<SessionConfig, 'contentSource' | 'synthMode'> | null | undefined
@@ -814,11 +805,6 @@ export function broadcastModeOf(
   if (session.contentSource === 'infinite') return 'improvised'
   if (session.synthMode === 'pre') return 'prepared'
   return 'rolling'
-}
-
-/** 本场内容形态（没配置 = 单人） */
-export function contentTypeOf(session: Pick<SessionConfig, 'contentType'> | null | undefined): ContentType {
-  return session?.contentType ?? 'solo'
 }
 
 export interface SessionConfig {
@@ -1137,13 +1123,6 @@ export interface VoiceUsage {
 export const ENTRY_KINDS = ['product', 'book', 'topic', 'custom'] as const
 export type EntryKind = (typeof ENTRY_KINDS)[number]
 
-export const ENTRY_KIND_LABEL: Record<EntryKind, string> = {
-  product: '商品',
-  book: '书籍/读物',
-  topic: '话题/节目',
-  custom: '自定义'
-}
-
 /**
  * 素材（Material）：知识库里唯一的主对象。
  * 产品/书籍/话题/自定义条目都是它；上传的资料文件变成它的**附件**（MaterialFile），
@@ -1342,8 +1321,6 @@ export interface Script {
   updatedAt: number
 }
 
-export type ScriptInput = Omit<Script, 'id' | 'createdAt' | 'updatedAt'>
-
 // ---------- 节目（Program，原场次升级：一场直播/一期播客/一本有声书都是一个节目） ----------
 
 /**
@@ -1368,12 +1345,6 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
 
 /** 播出方式：现场发挥=无底稿实时说 / 边播边准备=滚动合成窗口 / 全部做好再播=预制全量合成 */
 export type BroadcastMode = 'improvised' | 'rolling' | 'prepared'
-
-export const BROADCAST_MODE_LABELS: Record<BroadcastMode, string> = {
-  improvised: '现场发挥',
-  rolling: '边播边准备',
-  prepared: '全部做好再播'
-}
 
 /**
  * 节目语言（多语言节目/跨境电商用）：影响写稿语言、TTS 语种提示与标记编译。
@@ -1444,13 +1415,6 @@ export interface Program {
 }
 
 export type ProgramInput = Omit<Program, 'id' | 'createdAt' | 'updatedAt' | 'currentSceneIdx'>
-
-export const DEFAULT_PROGRAM_INPUT: ProgramInput = {
-  name: '',
-  theme: '',
-  plan: { scenes: [] },
-  knowledgeScope: DEFAULT_PROGRAM_KNOWLEDGE_SCOPE
-}
 
 // ---------- 项目（一个项目 = 一个目录 = 一个 project.db） ----------
 
@@ -1559,26 +1523,6 @@ export type DraftUnitInput = Omit<DraftUnit, 'id' | 'createdAt' | 'status' | 'au
   /** 不传 = 自动排到这个场景末尾（编辑已有条目时保留原序号） */
   seq?: number
 }
-
-/** 桥段类型（内容形态标签）：写稿/展示/防单调都用它；自定义类型也允许（存档原样展示）。
- *  closer 特殊：收尾段不进自动轮播（播到一半来句「下回接着聊」就穿帮了），主播要收尾时自己 say 出去 */
-export const BIT_TYPES = [
-  { id: 'hook', label: '开场钩' },
-  { id: 'story', label: '故事' },
-  { id: 'scene', label: '场景化' },
-  { id: 'math', label: '算账' },
-  { id: 'compare', label: '对比' },
-  { id: 'punchline', label: '包袱' },
-  { id: 'interact', label: '互动' },
-  { id: 'cta', label: '催单' },
-  { id: 'transition', label: '转场' },
-  { id: 'closer', label: '收尾' },
-  { id: 'general', label: '通用' }
-] as const
-
-export const BIT_TYPE_LABEL: Record<string, string> = Object.fromEntries(
-  BIT_TYPES.map((t) => [t.id, t.label])
-)
 
 /** 底稿合成状态的中文名（agent 工具的 list_drafts 与话术库 UI 共用一份，别各写各的） */
 export const DRAFT_UNIT_STATUS_LABEL: Record<DraftUnitStatus, string> = {

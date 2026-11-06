@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Download, ExternalLink, Globe, Loader2, RefreshCw, Sparkles } from 'lucide-react'
+import { CheckCircle2, Download, ExternalLink, Globe, Loader2, RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import logoUrl from '../../../assets/logo.svg'
 import { BRAND_DISPLAY, BRAND_NAME_ZH } from '../../../../shared/brand'
 import type { AppInfo, UpdateStatus } from '../../../../shared/types'
-import { useAppStore } from '../../stores/useAppStore'
 
 /** GitHub 品牌图标（lucide 已移除品牌图标，用官方 mark 的 path） */
 function GithubIcon({ className }: { className?: string }) {

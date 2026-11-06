@@ -19,8 +19,14 @@ import { MiniMarkdown } from './MiniMarkdown'
  * 表格/任务列表立刻解析不出来（踩过：原始内容是合法 GFM 表格却渲染成一行竖线）。
  */
 const Streamdown = lazy(async () => {
-  const mod = await import('streamdown')
-  const remarkPlugins = [...Object.values(mod.defaultRemarkPlugins), remarkBreaks]
+  const [mod, cjkMod] = await Promise.all([import('streamdown'), import('@streamdown/cjk')])
+  // 中文换行/标点需要 CJK 插件；它分「gfm 前」「gfm 后」两段，顺序错了会顶掉表格解析
+  const remarkPlugins = [
+    ...cjkMod.cjk.remarkPluginsBefore,
+    ...Object.values(mod.defaultRemarkPlugins),
+    ...cjkMod.cjk.remarkPluginsAfter,
+    remarkBreaks
+  ]
   /** 透传 streamdown 的 props（包装层不重复声明它的完整 props 类型） */
   const Wrapped = (props: Record<string, unknown>): React.ReactElement => (
     <mod.Streamdown {...(props as Record<string, never>)} remarkPlugins={remarkPlugins} />

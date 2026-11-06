@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
-import { AlertTriangle, AudioWaveform, Check, Play, Sparkles, Star, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { AlertTriangle, AudioWaveform, Check, Play, Sparkles } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'

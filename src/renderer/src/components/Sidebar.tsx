@@ -2,7 +2,6 @@ import type { CSSProperties } from 'react'
 import {
   AudioLines,
   BarChart3,
-  FolderOpen,
   History,
   PanelLeft,
   Radio,

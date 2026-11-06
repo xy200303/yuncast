@@ -72,14 +72,14 @@ export const agentTools = [
     risk: 'read',
     expose: { agent: true, mcp: true },
     description:
-      '把应用界面切到指定页（live=直播台 / programs=节目 / personas=主播团 / knowledge=素材 / voices=音色 / sessions=场次 / stats=统计）。' +
+      '把应用界面切到指定页（live=直播台 / voices=音色库 / sessions=场次记录 / stats=统计）。' +
       '做演示、录屏、远程指导时用：外部调用切到直播台，观众就能看到话术队列在流动。只影响界面显示，不动任何数据。',
     parameters: Type.Object({
-      page: Type.String({ description: '目标页面：live/programs/personas/knowledge/voices/sessions/stats' })
+      page: Type.String({ description: '目标页面：live/voices/sessions/stats' })
     }),
     handler: (_ctx, params) => {
       const page = params.page.trim()
-      const allowed = ['live', 'programs', 'personas', 'knowledge', 'voices', 'sessions', 'stats']
+      const allowed = ['live', 'voices', 'sessions', 'stats']
       if (!allowed.includes(page)) return `没有这个页面：${page}（可选 ${allowed.join(' / ')}）`
       for (const win of BrowserWindow.getAllWindows()) {
         if (!win.isDestroyed()) win.webContents.send(IPC.uiNavigate, page)
@@ -136,11 +136,6 @@ export const agentTools = [
       const cfg = ctx.storage.getConfig()
       const activeId = cfg.live.activeProgramId
       const active = activeId ? ctx.storage.programList().find((p) => p.id === activeId) : undefined
-      const voiceLabel = (voiceId: string): string => {
-        if (!voiceId.trim()) return '（未设置）'
-        const found = ctx.voices?.list().find((v) => v.voiceType === voiceId.trim())
-        return found ? `${found.name}（${voiceId.trim()}）` : voiceId.trim()
-      }
       const llmConnections = ctx.storage.connectionListSafe().map((c) => ({
         id: c.id,
         名称: c.name,

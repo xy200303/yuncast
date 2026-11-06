@@ -42,7 +42,7 @@ export function narrativeOrder(list: DraftUnit[]): DraftUnit[] {
 }
 
 export function listAudioUnits(
-  program: Program,
+  _program: Program,
   script: Script | null,
   draftUnits: DraftUnit[],
   session?: SessionConfig | null

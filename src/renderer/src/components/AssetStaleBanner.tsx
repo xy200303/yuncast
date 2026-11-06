@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, Loader2, RefreshCw, Zap } from 'lucide-react'
+import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'

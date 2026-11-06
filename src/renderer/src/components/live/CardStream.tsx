@@ -29,8 +29,6 @@ import type { PoolItem, PoolItemStatus } from '../../../../shared/types'
  * 每张卡只有一个 ⋯ 入口，动作收在菜单里，不铺按钮。
  */
 
-const SPEAKER_COLORS = ['#1d4ed8', '#b45309', '#15803d', '#6d28d9']
-
 const STATUS_TEXT: Record<PoolItemStatus, string> = {
   pending: '待合成',
   synthesizing: '合成中',

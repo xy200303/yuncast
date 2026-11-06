@@ -268,7 +268,7 @@ function createWindow(storage: StorageService): void {
   // 通用录屏授权闸门：渲染层 getDisplayMedia 只在 RecordingService 发起的录制会话激活期
   // 自动放行「本应用窗口 + 系统回放声」，不弹系统选择器；其余请求一律拒绝（正式包同样走这道闸门）。
   // 只采本窗口（WGC 窗口采集）：其它窗口遮挡、用户鼠标的真实操作都不会进画面。
-  win.webContents.session.setDisplayMediaRequestHandler((request, callback) => {
+  win.webContents.session.setDisplayMediaRequestHandler((_request, callback) => {
     if (!screenRecorder?.isArmed) {
       callback({})
       return

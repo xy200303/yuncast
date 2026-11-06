@@ -26,7 +26,6 @@ import { MANUAL_VOICE_SEP } from '../../../shared/voiceProvider'
 /** 「其他」手动选择的本地记忆（下次合成默认带出来）；带 :v1 版本标识，以后字段变了换版本号即可整体作废 */
 const LAST_PICK_KEY = 'yuncast.voicePick.last:v1'
 /** 版本化之前的旧 key：只在还没写过新 key 时读一次，读到就搬过去，免得升级后上次的选音丢失 */
-const LAST_PICK_LEGACY_KEY = 'yuncast.voicePick.last'
 
 interface LastPick {
   modelValue: string
@@ -37,19 +36,10 @@ interface LastPick {
 
 function readLastPick(): LastPick | null {
   try {
-    const legacyRaw = localStorage.getItem(LAST_PICK_LEGACY_KEY)
-    const raw = localStorage.getItem(LAST_PICK_KEY) ?? legacyRaw
+    const raw = localStorage.getItem(LAST_PICK_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as Partial<LastPick>
     if (typeof parsed.modelValue !== 'string') return null
-    if (legacyRaw && !localStorage.getItem(LAST_PICK_KEY)) {
-      try {
-        localStorage.setItem(LAST_PICK_KEY, raw)
-        localStorage.removeItem(LAST_PICK_LEGACY_KEY)
-      } catch {
-        // 迁移写不进去（配额/隐私模式）不影响本次读取，下次再来
-      }
-    }
     return {
       modelValue: parsed.modelValue,
       voiceId: typeof parsed.voiceId === 'string' ? parsed.voiceId : '',

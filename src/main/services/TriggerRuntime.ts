@@ -56,40 +56,6 @@ interface AggregateBuffer {
   timer: ReturnType<typeof setTimeout>
 }
 
-/**
- * 旧版默认模板（模板升级迁移用）：播种时若库里的模板还跟这些一字不差，
- * 说明用户没改过，跟着升级到新版；改过的一律不动。
- */
-const LEGACY_TEMPLATES: Record<string, string[]> = {
-  冷场自救: [
-    '话术池空了，直播不能冷场。主动带节奏：用 speak 补 2-3 句（聊产品、唠家常、做互动都行），别和最近播过的重复。'
-  ],
-  价格变动提醒: [
-    '商品「{{payload.name}}」的价格从 ¥{{payload.oldPrice}} 改成了 ¥{{payload.newPrice}}。用 get_pool_status 看看池里还没播的话术，凡是报价口径不对的用 revise_item 改掉；没有要改的就照常继续，不用特意播报。'
-  ],
-  点赞里程碑: ['点赞破 {{payload.count}} 了，谢谢家人们！']
-}
-
-/**
- * 默认关闭的内建触发器（定时闹钟类：没事也叫 agent，白烧 token）。
- * 老库里的行如果模板还是内置默认（用户没改过），启动时跟着关；改过的尊重用户。
- */
-const BUILTIN_DEFAULT_DISABLED = new Set(['整点带节奏'])
-
-/**
- * 已下线的内建触发器：模板没改过的旧行直接删掉。
- * 开场白下线——开场由底稿 hook 段承担（按 seq 第一个播，预合成零 token），
- * 不再让 agent 例行 speak（烧 token、刷对话区、还和底稿重复）
- * 续写补给下线——低水位续写升级为引擎行为（broadcastPolicy rolling.shouldAutoWrite →
- * AgentService.notifyLowWater），不再依赖节目勾选触发器；导演要自定义写法直接在对话里说
- */
-const BUILTIN_REMOVED: Record<string, string> = {
-  开场白:
-    '直播开始了。用 speak 工具来一段开场白：打招呼、说说今天在播什么、号召大家点点关注，然后按自己的节奏再补 1-2 句常规话术。',
-  续写补给:
-    '话术池只剩 {{payload.remaining}} 段了，撑不了几分钟。list_drafts 看看底稿库：还有没轮到的存货就按节奏播（循环会接上）；存货见底了就现场写一个新桥段直接 speak 播出——接着刚才的内容往下讲，返场不返词，别冷场。'
-}
-
 /** 内建触发器模板（首次启动播种，用户可关可改） */
 export function builtinTriggers(): TriggerInput[] {
   return [
@@ -200,47 +166,12 @@ export class TriggerRuntime {
     bus.subscribe((event) => this.onEvent(event))
   }
 
-  /** 内建触发器按名播种：库里缺的补上；模板升级时，没被用户改过的旧默认模板跟着换新版 */
+  /** 内建触发器按名播种：库里缺的补上，已有的不动（改过的模板不覆盖） */
   private seedMissingBuiltins(): void {
-    const byName = new Map(this.storage.triggerList().map((t) => [t.name, t]))
-    // 已下线的内建触发器：模板没改过的旧行清掉
-    for (const [name, template] of Object.entries(BUILTIN_REMOVED)) {
-      const row = byName.get(name)
-      if (row && (row.target.promptTemplate ?? '') === template) this.storage.triggerDelete(row.id)
-    }
+    const byName = new Set(this.storage.triggerList().map((t) => t.name))
     for (const input of builtinTriggers()) {
-      const row = byName.get(input.name)
-      if (!row) {
-        this.storage.triggerSave({ ...input, id: `tr-${randomUUID().replace(/-/g, '').slice(0, 10)}` })
-        continue
-      }
-      // 默认关的内建触发器：模板没改过的旧行跟着关
-      if (
-        BUILTIN_DEFAULT_DISABLED.has(input.name) &&
-        row.enabled &&
-        (row.target.promptTemplate ?? '') === (input.target.promptTemplate ?? '')
-      ) {
-        this.storage.triggerSave({ ...row, enabled: false })
-        row.enabled = false
-      }
-      const legacy = LEGACY_TEMPLATES[input.name]
-      // steer/task 的模板在 promptTemplate，tool 直连的在 toolAction.template——两处都可能藏着旧默认
-      const isTool = row.target.mode === 'tool'
-      const rowTemplate = (isTool ? row.target.toolAction?.template : row.target.promptTemplate) ?? ''
-      if (legacy?.includes(rowTemplate)) {
-        this.storage.triggerSave({
-          ...row,
-          target: isTool
-            ? {
-                ...row.target,
-                toolAction: {
-                  template: input.target.toolAction?.template ?? '',
-                  lane: row.target.toolAction?.lane ?? input.target.toolAction?.lane ?? 'normal'
-                }
-              }
-            : { ...row.target, promptTemplate: input.target.promptTemplate }
-        })
-      }
+      if (byName.has(input.name)) continue
+      this.storage.triggerSave({ ...input, id: `tr-${randomUUID().replace(/-/g, '').slice(0, 10)}` })
     }
   }
 

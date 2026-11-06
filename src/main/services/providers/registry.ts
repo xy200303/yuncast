@@ -133,7 +133,7 @@ export function secretFieldKeys(providerId: string): string[] {
 }
 
 /**
- * 接入模型列表里的第一个。只在「调用方没指定模型」的场景用（连通性测试、老库补大脑）：
+ * 接入模型列表里的第一个。只在「调用方没指定模型」的场景用（连通性测试等）：
  * 运行时用哪个模型一律由人设卡显式指定，接入没有默认模型这一档。
  */
 export function connectionFirstModel(

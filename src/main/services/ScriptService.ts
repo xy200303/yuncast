@@ -70,10 +70,6 @@ export class ScriptService {
     return scenes
   }
 
-  /**
-   * 清理孤儿编排（一键迁移用）：没人引用的剧本导出成 JSON 后删除，返回 { exported, removed }。
-   * 自动建剧本留下的垃圾就是从这里清的。
-   */
   listPrograms(): Program[] {
     return this.storage.programList()
   }

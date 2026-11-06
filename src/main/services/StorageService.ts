@@ -1,5 +1,5 @@
-import { app, safeStorage } from 'electron'
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { app } from 'electron'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
@@ -67,25 +67,17 @@ import {
 
 /**
  * 持久化层（统一 SQLite，userData/yuncast.db，Node 内置、WAL、免原生重编译）：
- * - 应用配置：app_config 表单行 JSON（tts.accessToken / tts.apiKey / llm.apiKey 等加密内联）；
- *   旧版 config.json 启动时一次性迁入并改名留底
+ * - 应用配置：app_config 表单行 JSON（tts.accessToken / tts.apiKey / llm.apiKey 等加密内联）
  * - 业务数据：各业务表（话术池/节目/底稿/触发器…）
  * - 供应商接入（llm_connections / tts_connections）：密钥字段在 params 里内联加密
  * - 凭据加密用应用自管的 secretBox（AES-256-GCM + userData/secret.key，见 secretBox.ts），
- *   不用系统钥匙串——避免系统密钥轮换后凭据全哑，且行为跨平台一致；
- *   旧 safeStorage 密文启动时尝试迁移（解不开则按凭据缺失提示重填）
+ *   不用系统钥匙串——避免系统密钥轮换后凭据全哑，且行为跨平台一致
  */
 
 type StoredValue = string | { __enc: string }
 
-/**
- * 以 dot path 标记的敏感字段，写入前加密、读出后解密。
- * tts.accessToken / tts.apiKey 只剩迁移用（旧配置的凭据要能解密读出来才能搬进 tts_connections）。
- */
+/** 以 dot path 标记的敏感字段，写入前加密、读出后解密 */
 const SECRET_KEYS = [
-  'tts.accessToken',
-  'tts.apiKey',
-  'llm.apiKey',
   'stream.streamKey',
   'comment.connectorToken',
   'mcp.token'
@@ -315,8 +307,6 @@ function rowToEvent(row: Record<string, unknown>): BroadcastEvent {
 }
 
 export class StorageService {
-  /** 旧版配置文件路径：只用于启动时向数据库迁移，迁完改名留底 */
-  private readonly configFile: string
   private config: AppConfig
   private configListeners = new Set<(config: AppConfig) => void>()
   /** 应用库（全局）：设置/凭据、音色库、接入、用量、项目清单 */
@@ -335,35 +325,17 @@ export class StorageService {
   private launchApp = ''
   private launchArgs: string[] = []
 
-  /** 数据库文件名：项目早期叫 agentanchor.db，现在跟产品名统一成 yuncast.db */
+  /** 应用库文件名 */
   private static readonly DB_FILE = 'yuncast.db'
-  private static readonly LEGACY_DB_FILE = 'agentanchor.db'
 
-  /**
-   * 开库路径：老库在就原地改名（-wal/-shm 一起搬，否则新库只看到半份日志）。
-   * 改名失败（旧版进程还占着文件）就退回老路径继续用，下次启动再搬——不为了改名让应用起不来。
-   */
   private static dbFile(dir: string): string {
-    const next = join(dir, StorageService.DB_FILE)
-    const legacy = join(dir, StorageService.LEGACY_DB_FILE)
-    if (existsSync(next) || !existsSync(legacy)) return next
-    try {
-      renameSync(legacy, next)
-      for (const suffix of ['-wal', '-shm']) {
-        if (existsSync(legacy + suffix)) renameSync(legacy + suffix, next + suffix)
-      }
-      return next
-    } catch (error) {
-      console.error('[YunCast] 数据库改名失败，继续用旧文件名:', error)
-      return legacy
-    }
+    return join(dir, StorageService.DB_FILE)
   }
 
   constructor() {
     const dir = app.getPath('userData')
     mkdirSync(dir, { recursive: true })
     initSecretBox(dir)
-    this.configFile = join(dir, 'config.json')
 
     this.appDb = new DatabaseSync(StorageService.dbFile(dir))
     this.appDb.exec('PRAGMA journal_mode = WAL')
@@ -388,12 +360,9 @@ export class StorageService {
    * 建表 + 启动清扫。**必须在 app.whenReady 里 await 过再往下装配服务**——
    * 本类其余方法都假定结构已经就位。
    *
-   * 结构只有「当前形态」一份：没有迁移历史；老库缺的列由 ensureColumn 就地补齐，
-   * 多出来的历史列/表不影响读写。
+   * 结构只有「当前形态」一份，不做迁移。
    */
   async init(): Promise<void> {
-    // 迁移器时代的执行记录表：不再使用
-    this.adb.exec('DROP TABLE IF EXISTS _migrations')
     // 应用库只留全局数据：项目内容在各自的 <目录>/project.db（见 ProjectService / projectSchema）
     this.adb.exec(`
       CREATE TABLE IF NOT EXISTS triggers (
@@ -434,6 +403,9 @@ export class StorageService {
         name TEXT NOT NULL,
         provider TEXT NOT NULL DEFAULT 'volcano',
         voice_type TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        connection_id TEXT NOT NULL DEFAULT '',
+        instruction TEXT NOT NULL DEFAULT '',
         sample_path TEXT NOT NULL DEFAULT '',
         status TEXT NOT NULL DEFAULT 'training',
         error TEXT NOT NULL DEFAULT '',
@@ -444,7 +416,6 @@ export class StorageService {
       )
     `)
     this.createModelConnectionsTable()
-    this.ensureModelConnectionWindows()
     // 语音合成的服务商接入（设置 → 语音合成）：一个条目 = 一个服务商账号 + 一份凭据 + 它的模型与参数
     this.adb.exec(`
       CREATE TABLE IF NOT EXISTS tts_connections (
@@ -458,7 +429,6 @@ export class StorageService {
         updated_at INTEGER NOT NULL
       )
     `)
-    this.ensureColumn('tts_connections', 'realtime', 'INTEGER NOT NULL DEFAULT 0')
     // 用量采集（数据页用量看板）：LLM 每次请求一条 usage_records，TTS 每次合成一条 tts_records
     this.adb.exec(`
       CREATE TABLE IF NOT EXISTS usage_records (
@@ -493,11 +463,7 @@ export class StorageService {
     `)
     this.adb.exec('CREATE INDEX IF NOT EXISTS tts_records_ts ON tts_records(ts)')
     this.adb.exec('CREATE INDEX IF NOT EXISTS tts_records_script ON tts_records(script_id, ts)')
-    this.ensureColumn('voices', 'model', "TEXT NOT NULL DEFAULT ''")
-    this.ensureColumn('voices', 'connection_id', "TEXT NOT NULL DEFAULT ''")
-    this.ensureColumn('voices', 'instruction', "TEXT NOT NULL DEFAULT ''")
-    // 凭据加密自管化：旧 safeStorage 密文能解就转 v2（见 secretBox.ts）
-    this.migrateLegacySecrets()
+
   }
 
   /** 挂上当前项目库：之后所有内容读写都落在它上面 */
@@ -795,26 +761,13 @@ export class StorageService {
       if (Number.isFinite(maxTokens) && maxTokens >= 1024) clean.maxTokens = maxTokens
       if (Object.keys(clean).length > 0) modelParams[id2] = clean
     }
-    // 模型级单价（已停用：UI 不再发送，仅为兼容旧调用与旧库数据保留读写；两个价都空的键不落盘）
-    const modelPrices: Record<string, { input?: number; output?: number }> = {}
-    for (const [key, value] of Object.entries(input.modelPrices ?? {})) {
-      const id2 = key.trim()
-      if (!models.includes(id2) || !value || typeof value !== 'object') continue
-      const clean: { input?: number; output?: number } = {}
-      const inputPrice = Number(value.input)
-      if (Number.isFinite(inputPrice) && inputPrice >= 0) clean.input = inputPrice
-      const outputPrice = Number(value.output)
-      if (Number.isFinite(outputPrice) && outputPrice >= 0) clean.output = outputPrice
-      if (clean.input !== undefined || clean.output !== undefined) modelPrices[id2] = clean
-    }
-
     this.adb
       .prepare(
-        `INSERT INTO llm_connections (id, name, provider_id, params, models, model_windows, model_thinking, model_params, model_prices, created_at, updated_at)
-         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @modelParams, @modelPrices, @createdAt, @updatedAt)
+        `INSERT INTO llm_connections (id, name, provider_id, params, models, model_windows, model_thinking, model_params, created_at, updated_at)
+         VALUES (@id, @name, @providerId, @params, @models, @modelWindows, @modelThinking, @modelParams, @createdAt, @updatedAt)
          ON CONFLICT(id) DO UPDATE SET
            name = @name, provider_id = @providerId, params = @params,
-           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, model_params = @modelParams, model_prices = @modelPrices, updated_at = @updatedAt`
+           models = @models, model_windows = @modelWindows, model_thinking = @modelThinking, model_params = @modelParams, updated_at = @updatedAt`
       )
       .run({
         id,
@@ -825,7 +778,6 @@ export class StorageService {
         modelWindows: JSON.stringify(modelContextWindows),
         modelThinking: JSON.stringify(modelThinkingLevels),
         modelParams: JSON.stringify(modelParams),
-        modelPrices: JSON.stringify(modelPrices),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now
       })
@@ -889,19 +841,6 @@ export class StorageService {
         }
       }
     }
-    const rawPrices = parseJson<unknown>(r.model_prices, {})
-    const modelPrices: ModelConnection['modelPrices'] = {}
-    if (rawPrices && typeof rawPrices === 'object' && !Array.isArray(rawPrices)) {
-      for (const [key, value] of Object.entries(rawPrices as Record<string, unknown>)) {
-        if (value && typeof value === 'object' && !Array.isArray(value)) {
-          const v = value as Record<string, unknown>
-          const price: { input?: number; output?: number } = {}
-          if (typeof v.input === 'number' && v.input >= 0) price.input = v.input
-          if (typeof v.output === 'number' && v.output >= 0) price.output = v.output
-          if (price.input !== undefined || price.output !== undefined) modelPrices[key] = price
-        }
-      }
-    }
     return {
       id: str(r.id),
       name: str(r.name),
@@ -911,7 +850,6 @@ export class StorageService {
       modelContextWindows,
       modelThinkingLevels,
       modelParams,
-      modelPrices,
       createdAt: num(r.created_at) ?? 0,
       updatedAt: num(r.updated_at) ?? 0
     }
@@ -1059,20 +997,11 @@ export class StorageService {
     return this.decryptSecrets(raw, ttsSecretFieldKeys(providerId))
   }
 
-  /**
-   * 解一个密文值：v2 走 secretBox；旧 safeStorage 密文尝试解开（解得开则由启动迁移统一转 v2）。
-   * 解不开返回 null，调用方置空——界面按"凭据缺失"提示重填。
-   */
+  /** 解一个密文值；解不开返回 null，调用方置空——界面按「凭据缺失」提示重填 */
   private unsealValue(sealed: string): string | null {
-    if (isV2Sealed(sealed)) {
-      try {
-        return openSeal(sealed)
-      } catch {
-        return null
-      }
-    }
+    if (!isV2Sealed(sealed)) return null
     try {
-      return safeStorage.decryptString(Buffer.from(sealed, 'base64'))
+      return openSeal(sealed)
     } catch {
       return null
     }
@@ -1107,50 +1036,6 @@ export class StorageService {
     return out
   }
 
-  /**
-   * 启动迁移：库里的旧 safeStorage 密文统一转成 v2（secretBox）。
-   * 解不开的（系统密钥已轮换）保持原样——读出时会落为空，界面照常提示重填，重填后即是 v2。
-   */
-  private migrateLegacySecrets(): void {
-    for (const table of ['llm_connections', 'tts_connections']) {
-      let rows: { id: unknown; provider_id: unknown; params: unknown }[]
-      try {
-        rows = this.adb.prepare(`SELECT id, provider_id, params FROM ${table}`).all() as typeof rows
-      } catch {
-        continue // 表还没建（全新库）就跳过
-      }
-      const update = this.adb.prepare(`UPDATE ${table} SET params = ? WHERE id = ?`)
-      let migrated = 0
-      let unmigratable = 0
-      for (const row of rows) {
-        const secrets = table === 'tts_connections' ? ttsSecretFieldKeys(str(row.provider_id)) : secretFieldKeys(str(row.provider_id))
-        const parsed = parseJson<Record<string, unknown>>(row.params, {})
-        let dirty = false
-        for (const [key, value] of Object.entries(parsed)) {
-          if (!secrets.includes(key)) continue
-          if (!value || typeof value !== 'object' || !('__enc' in value)) continue
-          const sealed = String((value as { __enc: unknown }).__enc)
-          if (isV2Sealed(sealed)) continue
-          try {
-            const plain = safeStorage.decryptString(Buffer.from(sealed, 'base64'))
-            parsed[key] = { __enc: seal(plain) }
-            dirty = true
-          } catch {
-            unmigratable++
-          }
-        }
-        if (dirty) {
-          update.run(JSON.stringify(parsed), str(row.id))
-          migrated++
-        }
-      }
-      if (migrated > 0 || unmigratable > 0) {
-        console.log(`[凭据] ${table} 旧密文迁移：转 v2 ${migrated} 行；解不开 ${unmigratable} 个字段（读出时按缺失提示重填）`)
-      }
-    }
-  }
-
-
   private createModelConnectionsTable(): void {
     this.adb.exec(`
       CREATE TABLE IF NOT EXISTS llm_connections (
@@ -1160,39 +1045,12 @@ export class StorageService {
         params TEXT NOT NULL DEFAULT '{}',
         models TEXT NOT NULL DEFAULT '[]',
         model_windows TEXT NOT NULL DEFAULT '{}',
+        model_thinking TEXT NOT NULL DEFAULT '{}',
+        model_params TEXT NOT NULL DEFAULT '{}',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       )
     `)
-  }
-
-  /** 模型级上下文窗口列（model_windows）与思考强度列（model_thinking）：老库补列，幂等 */
-  private ensureModelConnectionWindows(): void {
-    const columns = this.adb
-      .prepare('PRAGMA table_info(llm_connections)')
-      .all()
-      .map((row) => str((row as Record<string, unknown>).name))
-    if (!columns.includes('model_windows')) {
-      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_windows TEXT NOT NULL DEFAULT '{}'")
-    }
-    if (!columns.includes('model_thinking')) {
-      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_thinking TEXT NOT NULL DEFAULT '{}'")
-    }
-    // 模型级高级参数列（model_params，JSON：模型 id → { vision/temperature/maxTokens }）
-    if (!columns.includes('model_params')) {
-      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_params TEXT NOT NULL DEFAULT '{}'")
-    }
-    // 模型级单价列（model_prices，JSON：模型 id → { input/output }，元/百万 tokens）
-    if (!columns.includes('model_prices')) {
-      this.adb.exec("ALTER TABLE llm_connections ADD COLUMN model_prices TEXT NOT NULL DEFAULT '{}'")
-    }
-  }
-
-  /** 兼容老库的加列 */
-  private ensureColumn(table: string, column: string, definition: string): void {
-    const rows = this.adb.prepare(`PRAGMA table_info(${table})`).all()
-    if (rows.some((row) => (row as Record<string, unknown>).name === column)) return
-    this.adb.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
   }
 
   // ---------- 应用配置 ----------
@@ -1205,16 +1063,6 @@ export class StorageService {
       if (row && typeof row.data === 'string') {
         return this.parseStoredConfig(JSON.parse(row.data) as Record<string, unknown>)
       }
-      // 旧版 config.json 一次性迁入数据库（统一存储前版本）；迁完改名留底，不再使用
-      if (existsSync(this.configFile)) {
-        const raw = JSON.parse(readFileSync(this.configFile, 'utf8')) as Record<string, unknown>
-        const config = this.parseStoredConfig(raw)
-        this.config = config
-        this.saveConfig()
-        renameSync(this.configFile, `${this.configFile}.migrated`)
-        console.log('[YunCast] config.json 已并入数据库，原文件改名 config.json.migrated 留底')
-        return config
-      }
       return structuredClone(DEFAULT_CONFIG)
     } catch (error) {
       console.error('[YunCast] 读取配置失败，用默认值:', error)
@@ -1222,25 +1070,23 @@ export class StorageService {
     }
   }
 
-  /** 解密敏感字段 + 校验成 AppConfig（数据库行与旧 config.json 共用一套读写） */
+  /** 解密敏感字段 + 校验成 AppConfig */
   private parseStoredConfig(raw: Record<string, unknown>): AppConfig {
-    // 解密敏感字段；解开的旧 safeStorage 密文标记一下，读完落盘时转 v2
-    let migrated = false
+    let dirty = false
     for (const key of SECRET_KEYS) {
       const value = getPath(raw, key) as StoredValue | undefined
       if (value && typeof value === 'object' && '__enc' in value) {
-        const plain = this.unsealValue(value.__enc)
-        if (!isV2Sealed(value.__enc) && plain) migrated = true
-        setPath(raw, key, plain ?? '')
+        setPath(raw, key, this.unsealValue(value.__enc) ?? '')
+        dirty = true
       }
     }
-    // 导演大脑：配置里没有这一段就写默认（主播卡时代的「摘大脑」迁移已随卡司删除作废）
+    // 配置里没有导演这一段就补默认值
     if (!('director' in raw)) {
       raw.director = { name: DEFAULT_DIRECTOR_CONFIG.name, modelConnectionId: null, model: '' }
-      migrated = true
+      dirty = true
     }
     const config = parseAppConfig(raw)
-    if (migrated) {
+    if (dirty) {
       this.config = config
       this.saveConfig()
     }

@@ -54,15 +54,11 @@ function fromPosix(path: string): string {
 /** 把库和 JSON 字段里引用的文件路径都过一遍（导出改相对 / 导入改绝对共用） */
 function rewriteFilePaths(db: DatabaseSync, remap: (path: string) => string): void {
   const rewriteColumn = (selectSql: string, updateSql: string, column: string): void => {
-    try {
-      for (const row of db.prepare(selectSql).all() as Record<string, unknown>[]) {
-        const oldPath = String(row[column] ?? '').trim()
-        if (!oldPath) continue
-        const next = remap(oldPath)
-        if (next !== oldPath) db.prepare(updateSql).run(next, oldPath)
-      }
-    } catch {
-      // 老库缺列/缺表
+    for (const row of db.prepare(selectSql).all() as Record<string, unknown>[]) {
+      const oldPath = String(row[column] ?? '').trim()
+      if (!oldPath) continue
+      const next = remap(oldPath)
+      if (next !== oldPath) db.prepare(updateSql).run(next, oldPath)
     }
   }
   rewriteColumn(
@@ -86,58 +82,31 @@ function rewriteFilePaths(db: DatabaseSync, remap: (path: string) => string): vo
     'path'
   )
 
-  try {
-    const rows = db.prepare('SELECT id, rendered FROM draft_units WHERE rendered IS NOT NULL').all() as {
-      id: string
-      rendered: string
-    }[]
-    const update = db.prepare('UPDATE draft_units SET rendered = ? WHERE id = ?')
-    for (const row of rows) {
-      try {
-        const ref = JSON.parse(row.rendered) as { audioPath?: string }
-        if (!ref?.audioPath) continue
-        const next = remap(ref.audioPath)
-        if (next === ref.audioPath) continue
-        update.run(JSON.stringify({ ...ref, audioPath: next }), row.id)
-      } catch {
-        // 坏 JSON 跳过
-      }
-    }
-  } catch {
-    // 老库没有 rendered 列
+  const units = db.prepare('SELECT id, rendered FROM draft_units WHERE rendered IS NOT NULL').all() as {
+    id: string
+    rendered: string
+  }[]
+  const updateUnit = db.prepare('UPDATE draft_units SET rendered = ? WHERE id = ?')
+  for (const row of units) {
+    const ref = JSON.parse(row.rendered) as { audioPath?: string }
+    if (!ref?.audioPath) continue
+    const next = remap(ref.audioPath)
+    if (next !== ref.audioPath) updateUnit.run(JSON.stringify({ ...ref, audioPath: next }), row.id)
   }
 
-  try {
-    const row = db.prepare('SELECT scenes FROM project LIMIT 1').get() as { scenes?: string } | undefined
-    if (row?.scenes) {
-      const scenes = JSON.parse(row.scenes) as { rendered?: { audioPath?: string } }[]
-      let changed = false
-      for (const scene of Array.isArray(scenes) ? scenes : []) {
-        if (!scene.rendered?.audioPath) continue
-        const next = remap(scene.rendered.audioPath)
-        if (next !== scene.rendered.audioPath) {
-          scene.rendered.audioPath = next
-          changed = true
-        }
+  const project = db.prepare('SELECT scenes FROM project LIMIT 1').get() as { scenes?: string } | undefined
+  if (project?.scenes) {
+    const scenes = JSON.parse(project.scenes) as { rendered?: { audioPath?: string } }[]
+    let changed = false
+    for (const scene of scenes) {
+      if (!scene.rendered?.audioPath) continue
+      const next = remap(scene.rendered.audioPath)
+      if (next !== scene.rendered.audioPath) {
+        scene.rendered.audioPath = next
+        changed = true
       }
-      if (changed) db.prepare('UPDATE project SET scenes = ?').run(JSON.stringify(scenes))
     }
-  } catch {
-    // 老库没有 scenes 列 / 坏 JSON
-  }
-
-  try {
-    const rows = db.prepare("SELECT id, file_path FROM material_files WHERE file_path <> ''").all() as {
-      id: string
-      file_path: string
-    }[]
-    const update = db.prepare('UPDATE material_files SET file_path = ? WHERE id = ?')
-    for (const row of rows) {
-      const next = remap(row.file_path)
-      if (next !== row.file_path) update.run(next, row.id)
-    }
-  } catch {
-    // 老库没有 material_files
+    if (changed) db.prepare('UPDATE project SET scenes = ?').run(JSON.stringify(scenes))
   }
 }
 
@@ -153,18 +122,10 @@ function remapProjectId(db: DatabaseSync, nextId: string): void {
     'event_log'
   ]
   for (const table of tables) {
-    try {
-      db.prepare(`UPDATE ${table} SET script_id = ?`).run(nextId)
-    } catch {
-      // 老库缺表/缺列
-    }
+    db.prepare(`UPDATE ${table} SET script_id = ?`).run(nextId)
   }
   db.prepare('UPDATE project SET id = ?').run(nextId)
-  try {
-    db.prepare("UPDATE meta SET value = ? WHERE key = 'projectId'").run(nextId)
-  } catch {
-    // 老库没有 meta
-  }
+  db.prepare("UPDATE meta SET value = ? WHERE key = 'projectId'").run(nextId)
 }
 
 export class ProjectTransferService {

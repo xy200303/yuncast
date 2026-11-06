@@ -10,7 +10,7 @@ import type { AudioPipeline, PlayResult } from './AudioPipeline'
  * 音频归一后它搬到这里：主进程取条目 → AudioPipeline 解码/排播（同时喂推流与本机监听）→ 播完 markDone。
  * 渲染层不再参与播放调度，只把管路推来的 PCM 丢给声卡。
  *
- * 循环语义与迁移前保持一致：没有 ready 条目就睡眠等快照事件唤醒（kick）。
+ * 没有 ready 条目就睡眠等快照事件唤醒（kick）。
  */
 
 const IDLE_WAIT_MS = 1500

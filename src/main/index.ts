@@ -964,7 +964,6 @@ function registerIpc(
         modelContextWindows: {},
         modelThinkingLevels: {},
         modelParams: {},
-        modelPrices: {},
         createdAt: existing?.createdAt ?? 0,
         updatedAt: existing?.updatedAt ?? 0
       },
@@ -1585,7 +1584,7 @@ if (!single) {
     watchSystemChrome()
 
     const storage = new StorageService()
-    // 结构迁移必须先落地再装配服务：迁移会改表结构，服务构造时就假定结构已就位
+    // 建表必须先落地再装配服务：服务构造时就假定结构已就位
     await storage.init()
     // 启动时没有打开任何项目：config 里上次的 activeProgramId 是陈旧指针，先清掉，
     // 让「当前项目」只有一个真值（ProjectService.current）——打开项目时再写回来

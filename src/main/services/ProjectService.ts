@@ -82,12 +82,20 @@ export class ProjectService {
     if (this.current?.id === id && this.db) return this.current
 
     this.close()
-    const db = openProjectDatabase(file)
-    const version = readSchemaVersion(db)
-    if (version > PROJECT_SCHEMA_VERSION) {
-      db.close()
-      throw new Error(`这个项目是用更新版本的软件建的（库版本 ${version}），请升级后再打开`)
+    // 先只读探一下结构版本再真开：openProjectDatabase 会把 user_version 写成当前值
+    const probe = openProjectDatabase(file, { create: false })
+    let version = 0
+    try {
+      version = readSchemaVersion(probe)
+    } finally {
+      probe.close()
     }
+    if (version !== PROJECT_SCHEMA_VERSION) {
+      throw new Error(
+        `项目结构版本不一致（项目 ${version} / 当前 ${PROJECT_SCHEMA_VERSION}）：旧项目不再兼容，请新建项目`
+      )
+    }
+    const db = openProjectDatabase(file)
     this.db = db
     this.current = record
     this.storage.attachProject(db)

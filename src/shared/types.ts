@@ -153,9 +153,8 @@ export interface TtsModelSpec {
 }
 
 /**
- * 语音合成的遗留偏好。凭据、模型、实时开关都在 tts_connections 接入里（一条 = 一个服务商账号），
+ * 语音合成的批量偏好。凭据、模型、实时开关都在 tts_connections 接入里（一条 = 一个服务商账号），
  * 合成时按生效音色的归属路由到对应接入（见 TtsService.route）：没有默认接入，也没有默认音色。
- * 这份配置只剩迁移与「发音测试时间」在用。
  */
 export interface TtsConfig {
   /** 批量预合成队列：两次合成请求的最小间隔（毫秒）。0 = 跟随服务商默认（按官方限流文档配在 manifest 里：火山 50 / 百炼 400） */
@@ -272,12 +271,6 @@ export interface ModelAdvancedParams {
   maxTokens?: number
 }
 
-/** 模型级单价（历史遗留）：DB 的 model_prices 列与旧数据保留，但单价配置已停用——UI 不再提供录入，用量看板不折算金额 */
-export interface LlmModelPrice {
-  input?: number
-  output?: number
-}
-
 export interface ModelConnection {
   id: string
   /** 显示名，默认取服务商 label，可改 */
@@ -293,8 +286,6 @@ export interface ModelConnection {
   modelThinkingLevels: Record<string, ThinkingLevelChoice>
   /** 模型级高级参数：模型 id → { vision/温度/maxTokens }；缺省走官方/内置默认 */
   modelParams: Record<string, ModelAdvancedParams>
-  /** 模型级单价（已停用，仅为旧库数据回读保留；UI 不再录入，看板不折算金额） */
-  modelPrices: Record<string, LlmModelPrice>
   createdAt: number
   updatedAt: number
 }
@@ -320,8 +311,6 @@ export interface ModelConnectionInput {
   modelThinkingLevels?: Record<string, ThinkingLevelChoice>
   /** 模型级高级参数（可选，只保留 models 里存在的 id；空对象键不落盘） */
   modelParams?: Record<string, ModelAdvancedParams>
-  /** 模型级单价（已停用：UI 不再发送，仅为兼容旧调用保留；空对象键不落盘） */
-  modelPrices?: Record<string, LlmModelPrice>
 }
 
 /**
@@ -442,8 +431,7 @@ function parseStream(input: unknown): StreamConfig {
 
 function parseComment(input: unknown): CommentConfig {
   const row = input && typeof input === 'object' ? (input as Record<string, unknown>) : {}
-  let port = Number(row.connectorPort)
-  if (port === 8101) port = 8102 // v1（WS 事件面）→ v2（MCP）端口迁移
+  const port = Number(row.connectorPort)
   return {
     connectorPort: Number.isInteger(port) && port > 0 && port < 65536 ? port : 8102,
     connectorToken: typeof row.connectorToken === 'string' ? row.connectorToken : ''
@@ -1113,7 +1101,7 @@ export type EntryKind = (typeof ENTRY_KINDS)[number]
 export interface Material {
   id: string
   name: string
-  /** 条目类型（product/book/topic/custom）；老库默认 product */
+  /** 条目类型（product/book/topic/custom） */
   kind: EntryKind
   /** 价格（元）。价格护栏的数据源：主播报价只能出自这里（仅 product 有意义） */
   price: number

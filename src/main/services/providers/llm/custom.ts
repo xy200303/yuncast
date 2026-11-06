@@ -1,7 +1,7 @@
 import type { LlmProviderDef } from '../registry'
 
 /**
- * 自定义接口（id 沿用 local-openai，旧库接入不用迁移）：地址、协议、模型全自己填。
+ * 自定义接口：地址、协议、模型全自己填。
  * 覆盖本地服务（Ollama / vLLM / LM Studio）和任何兼容网关（One API / OpenRouter 转发等）。
  */
 export const customProvider: LlmProviderDef = {

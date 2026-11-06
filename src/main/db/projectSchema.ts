@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
  * 一个项目 = 一个目录 = 一个库：项目信息、场次、底稿、导演对话都在同一个文件里，
  * 拷走目录就是完整备份。应用级数据（音色库、模型接入、全局设置）不在这里，见 StorageService。
  *
- * 版本走 `PRAGMA user_version`：老项目打开时按需迁移；比当前 app 新的库拒绝打开。
+ * 版本走 `PRAGMA user_version`：版本不一致直接拒绝打开；结构只有当前形态一份，不做迁移。
  */
 export const PROJECT_SCHEMA_VERSION = 6
 
@@ -45,9 +45,17 @@ const CONTENT_DDL = `
     script_id TEXT NOT NULL,
     scene_id TEXT NOT NULL DEFAULT '',
     variant_idx INTEGER NOT NULL DEFAULT 0,
+    seq INTEGER NOT NULL DEFAULT 0,
     text TEXT NOT NULL,
+    bit_type TEXT NOT NULL DEFAULT '',
+    delivery TEXT NOT NULL DEFAULT '',
+    rate REAL,
+    pitch REAL,
+    pause_after_ms INTEGER,
     voice_id TEXT NOT NULL DEFAULT '',
+    synth_voice TEXT NOT NULL DEFAULT '',
     audio_path TEXT,
+    rendered TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     error TEXT,
     source TEXT NOT NULL DEFAULT 'initial',
@@ -76,6 +84,15 @@ const CONTENT_DDL = `
     error TEXT,
     sort_order INTEGER,
     queue_seq INTEGER,
+    origin_draft_unit_id TEXT,
+    stream INTEGER NOT NULL DEFAULT 0,
+    speech_text TEXT,
+    delivery TEXT,
+    rate REAL,
+    pitch REAL,
+    emotion TEXT,
+    emotion_scale REAL,
+    pause_after_ms INTEGER,
     created_at INTEGER NOT NULL,
     played_at INTEGER,
     text_zh TEXT NOT NULL DEFAULT ''
@@ -86,10 +103,12 @@ const CONTENT_DDL = `
     id TEXT PRIMARY KEY,
     script_id TEXT NOT NULL,
     program_name TEXT NOT NULL DEFAULT '',
+    director_model_desc TEXT NOT NULL DEFAULT '',
     started_at INTEGER NOT NULL,
     ended_at INTEGER NOT NULL DEFAULT 0,
     end_reason TEXT NOT NULL DEFAULT '',
-    stats TEXT NOT NULL DEFAULT '{}'
+    stats TEXT NOT NULL DEFAULT '{}',
+    summary TEXT NOT NULL DEFAULT ''
   );
   CREATE INDEX IF NOT EXISTS live_sessions_script ON live_sessions(script_id, started_at);
 
@@ -167,31 +186,6 @@ const MATERIAL_DDL = `
   );
 `
 
-/** 老库补列：项目库头一次建是全新结构，但同一台机器上已经存在的 project.db 需要补齐后续加的列 */
-const CONTENT_COLUMNS: [string, string, string][] = [
-  ['draft_units', 'synth_voice', "TEXT NOT NULL DEFAULT ''"],
-  ['draft_units', 'bit_type', "TEXT NOT NULL DEFAULT ''"],
-  ['draft_units', 'delivery', "TEXT NOT NULL DEFAULT ''"],
-  ['draft_units', 'rate', 'REAL'],
-  ['draft_units', 'pitch', 'REAL'],
-  ['draft_units', 'pause_after_ms', 'INTEGER'],
-  ['draft_units', 'seq', 'INTEGER NOT NULL DEFAULT 0'],
-  ['draft_units', 'rendered', 'TEXT'],
-  ['draft_units', 'text_zh', "TEXT NOT NULL DEFAULT ''"],
-  ['pool_items', 'origin_draft_unit_id', 'TEXT'],
-  ['pool_items', 'stream', 'INTEGER NOT NULL DEFAULT 0'],
-  ['pool_items', 'speech_text', 'TEXT'],
-  ['pool_items', 'delivery', 'TEXT'],
-  ['pool_items', 'rate', 'REAL'],
-  ['pool_items', 'pitch', 'REAL'],
-  ['pool_items', 'emotion', 'TEXT'],
-  ['pool_items', 'emotion_scale', 'REAL'],
-  ['pool_items', 'pause_after_ms', 'INTEGER'],
-  ['pool_items', 'queue_seq', 'INTEGER'],
-  ['live_sessions', 'summary', "TEXT NOT NULL DEFAULT ''"],
-  ['live_sessions', 'director_model_desc', "TEXT NOT NULL DEFAULT ''"]
-]
-
 const DDL = `
   CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -231,18 +225,9 @@ export function openProjectDatabase(file: string, options: { create?: boolean } 
     db.exec(DDL)
     db.exec(CONTENT_DDL)
     db.exec(MATERIAL_DDL)
-    ensureContentColumns(db)
     db.exec(`PRAGMA user_version = ${PROJECT_SCHEMA_VERSION}`)
   }
   return db
-}
-
-function ensureContentColumns(db: DatabaseSync): void {
-  for (const [table, column, decl] of CONTENT_COLUMNS) {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
-    if (cols.some((item) => item.name === column)) continue
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${decl}`)
-  }
 }
 
 export function readSchemaVersion(db: DatabaseSync): number {

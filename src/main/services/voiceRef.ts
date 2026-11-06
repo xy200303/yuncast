@@ -30,3 +30,40 @@ export function resolveVoiceRef(storage: StorageService, input: string | null | 
   }
   return raw
 }
+
+/** 合成参数 → 给人看的称呼（音色库名字 / 系统音色名 / 手动 ID 的音色段）；认不出原样返回 */
+export function voiceDisplayName(storage: StorageService, input: string | null | undefined): string {
+  const raw = String(input ?? '').trim()
+  if (!raw) return ''
+  const hit = storage
+    .listVoices()
+    .find((voice) => voice.voiceType === raw || voice.id === raw || voice.name === raw)
+  if (hit) return hit.name
+  for (const provider of listTtsProviders()) {
+    for (const model of provider.models) {
+      for (const group of model.voices ?? []) {
+        const found = group.voices.find((voice) => voice.id === raw || voice.name === raw)
+        if (found) return found.name
+      }
+    }
+  }
+  const manual = raw.split('::')
+  if (manual.length === 3) return manual[2]
+  return raw
+}
+
+/** 这个引用认不认得出来（手动复合串视为合法，交给路由自己解） */
+export function isKnownVoiceRef(storage: StorageService, input: string | null | undefined): boolean {
+  const raw = String(input ?? '').trim()
+  if (!raw) return true
+  if (raw.includes('::')) return true
+  if (storage.listVoices().some((voice) => voice.voiceType === raw || voice.id === raw || voice.name === raw)) return true
+  for (const provider of listTtsProviders()) {
+    for (const model of provider.models) {
+      for (const group of model.voices ?? []) {
+        if (group.voices.some((voice) => voice.id === raw || voice.name === raw)) return true
+      }
+    }
+  }
+  return false
+}

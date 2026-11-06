@@ -1,7 +1,7 @@
 import { Type } from 'typebox'
 import type { PoolLane } from '../../../shared/types'
 import { defineTool } from './types'
-import { activeProgramId, deliveryLanguageIssue, MARKUP_HINT, resolveVoice } from './util'
+import { activeProgramId, deliveryLanguageIssue, MARKUP_HINT, resolveVoice, speakerRefIssue } from './util'
 
 const LANE_DESC = '车道：queue 排队顺序播（默认）/ next 当前这条播完就插播（回评论、急事用）/ interrupt 打断当前立刻说 / filler 垫底（没东西播时才轮到）'
 const VOICE_DESC = '主播名称（音色库里的名字，如「小满」）或音色 id（voice_list 的 voiceId）：一般不用传；传了就用它，不再看本场默认音色'
@@ -55,6 +55,8 @@ export const speechTools = [
         if (ctx.getSpeakingPaused?.()) return '播报已暂停：说的话暂时播不出去，等导演恢复再说'
       }
       const programId = activeProgramId(ctx) ?? ''
+      const badSpeaker = speakerRefIssue(ctx, params.voiceId)
+      if (badSpeaker) return badSpeaker
       const badDelivery = deliveryLanguageIssue(params.delivery)
       if (badDelivery) return badDelivery
       const voiceId = resolveVoice(ctx, programId, params.voiceId)

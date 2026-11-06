@@ -1,7 +1,7 @@
 import type { Program, ProgramLanguage } from '../../../shared/types'
 import { DRAFT_UNIT_STATUS_LABEL, PROGRAM_LANGUAGE_LABELS } from '../../../shared/types'
 import { stripSpeechTags } from '../../../shared/speechTags'
-import { resolveVoiceRef } from '../voiceRef'
+import { isKnownVoiceRef, resolveVoiceRef, voiceDisplayName } from '../voiceRef'
 import type { ToolCtx } from './types'
 
 /**
@@ -27,6 +27,24 @@ export function resolveVoice(ctx: ToolCtx, programId: string, voice?: string): s
   const explicit = resolveVoiceRef(ctx.storage, voice)
   if (explicit) return explicit
   return resolveVoiceRef(ctx.storage, ctx.storage.sessionConfigLatest(programId)?.voiceId)
+}
+
+/**
+ * 这一段谁来念：有显式音色就给名字；空 = 跟随本场默认音色，标成「默认」让读稿的人分得清。
+ * 给 agent 读稿用，不暴露 voiceType 那串技术 id。
+ */
+export function speakerLabel(ctx: ToolCtx, programId: string, voiceId: string): string {
+  const explicit = voiceDisplayName(ctx.storage, voiceId)
+  if (explicit) return explicit
+  const fallback = voiceDisplayName(ctx.storage, ctx.storage.sessionConfigLatest(programId)?.voiceId)
+  return fallback ? `${fallback}（默认）` : '未定音色'
+}
+
+/** 指了个不存在的主播就当场拦下：静默落成默认音色会让读稿的人以为换人了 */
+export function speakerRefIssue(ctx: ToolCtx, voice: string | undefined): string | null {
+  const raw = (voice ?? '').trim()
+  if (!raw || isKnownVoiceRef(ctx.storage, raw)) return null
+  return `没有叫「${raw}」的主播：先用 voice_list 看音色库里的名字（或用本场默认音色，不传 voice）`
 }
 
 // ---------- 底稿/场景工具共用的小工具 ----------

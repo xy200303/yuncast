@@ -13,6 +13,8 @@ import {
   bitTypeMonotony,
   resolveVoice,
   deliveryLanguageIssue,
+  speakerLabel,
+  speakerRefIssue,
   languageMismatch,
   languageMismatchOf
 } from './util'
@@ -30,7 +32,8 @@ export const draftTools = [
     expose: { agent: true, mcp: true },
     description:
       '看本场底稿库（开播前写好的桥段，轮播的骨架）：按关键词搜，或看当前场景的。改/删底稿前先用它拿条目 id。' +
-      '返回每条的 id/场景/状态/类型和前 100 字概要（只读不改任何东西）；要看全文用 draft_get。',
+      '返回每条的 id/场景/状态/类型/主播/前 100 字概要（只读不改任何东西）；要看全文用 draft_get。' +
+      '稿子里有多个人说话时，先看每条标的主播是谁，再决定怎么接。',
     parameters: Type.Object({
       keyword: Type.Optional(Type.String({ description: '按文本内容过滤，比如旧价格、卖点词' })),
       scope: Type.Optional(
@@ -72,7 +75,7 @@ export const draftTools = [
     risk: 'read',
     expose: { agent: true, mcp: true },
     description:
-      '读一条底稿的完整内容：全文+场景+合成状态+类型/演法/语速/音调参数（只读不改）。' +
+      '读一条底稿的完整内容：全文+场景+合成状态+主播+类型/演法/语速/音调参数（只读不改）。' +
       'draft_list 只给前 100 字概要，改稿前用它看全文。unitId 从 draft_list 拿。',
     parameters: Type.Object({
       unitId: Type.String({ description: '底稿条目 id（draft_list 拿）' })
@@ -88,11 +91,11 @@ export const draftTools = [
         场景id: found.sceneId,
         状态: DRAFT_STATUS[found.status],
         类型: found.bitType || '（旧式单句）',
+        主播: speakerLabel(ctx, activeProgramId(ctx)!, found.voiceId),
         演法: found.delivery || '（未设定）',
         语速: found.rate ?? '默认',
         音调: found.pitch ?? '默认',
         段后停顿: found.pauseAfterMs !== undefined ? `${found.pauseAfterMs}ms` : '连续播',
-        音色: found.voiceId || '（跟随本场默认音色）',
         参考来源: found.sources.map((s) => `${s.name}：${s.snippet}`),
         全文: found.text
       })
@@ -139,6 +142,8 @@ export const draftTools = [
       const capped = draftCapHit(ctx)
       if (capped) return capped
       if (!params.textZh.trim()) return 'textZh 必填：播出文本和中文对照都要给（中文节目填与 text 相同的内容）'
+      const badSpeaker = speakerRefIssue(ctx, params.voice)
+      if (badSpeaker) return badSpeaker
       const badDelivery = deliveryLanguageIssue(params.delivery)
       if (badDelivery) return badDelivery
       const wrongLanguage = languageMismatch(ctx, params.text)
@@ -225,6 +230,8 @@ export const draftTools = [
       if (missing >= 0) {
         return `第 ${missing + 1} 段缺 textZh：每段都要同时给播出文本和中文对照（中文节目填与 text 相同的内容）`
       }
+      const badSpeaker = params.items.findIndex((item) => speakerRefIssue(ctx, item.voice))
+      if (badSpeaker >= 0) return `第 ${badSpeaker + 1} 段：${speakerRefIssue(ctx, params.items[badSpeaker].voice)}`
       const badDelivery = params.items.findIndex((item) => deliveryLanguageIssue(item.delivery))
       if (badDelivery >= 0) return `第 ${badDelivery + 1} 段：${deliveryLanguageIssue(params.items[badDelivery].delivery)}`
       const wrongLanguage = languageMismatchOf(

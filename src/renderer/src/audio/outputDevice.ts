@@ -39,42 +39,32 @@ export async function listOutputDevices(): Promise<OutputDevice[]> {
     }))
 }
 
-/** 按「显式选择 > 自动找虚拟声卡 > 系统默认」挑一个设备 */
-export function pickOutputDevice(
-  devices: OutputDevice[],
-  preferVirtualCable: boolean,
-  preferredId: string
-): { deviceId: string; label: string } {
-  if (preferredId && devices.some((device) => device.deviceId === preferredId)) {
-    return devices.find((device) => device.deviceId === preferredId)!
-  }
-  if (preferVirtualCable) {
-    const virtual = devices.find((device) => device.deviceId !== 'default' && isVirtualCable(device.label))
-    if (virtual) return virtual
-  }
-  const fallback = devices.find((device) => device.deviceId === 'default') ?? devices[0]
-  return fallback ? { deviceId: '', label: fallback.label } : { deviceId: '', label: '系统默认' }
-}
-
 /**
- * 按当前配置把音频输出切到位（启动、保存设置、插拔设备后调）。
- * dualOutput：主输出照常出声，同时把同一路 PCM 镜像到虚拟声卡给推流软件采集。
+ * 按当前配置把音频输出切到位（启动、保存设置、插拔设备后调）：
+ * 选了几个设备就同时送几个——第一个走主音频图（音量/静音/避让都生效），其余镜像过去。
+ * 一个都没选 = 系统默认。
  */
-export async function syncOutputDevice(): Promise<{
-  deviceId: string
-  label: string
-  mirrorLabel?: string
-} | null> {
+export async function syncOutputDevices(): Promise<{ labels: string[] } | null> {
   const { stream } = useAppStore.getState().config
   const devices = await listOutputDevices()
   if (devices.length === 0) return null
-  const target = pickOutputDevice(devices, stream.autoVirtualCable, stream.outputDeviceId)
-  const ok = await audioEngine.setOutputDevice(target.deviceId)
+  const fallback = devices.find((device) => device.deviceId === 'default') ?? devices[0]
+  const configured = stream.outputDevices.length
+    ? stream.outputDevices
+    : [{ deviceId: 'default', volume: 1 }]
+  const selected = configured
+    .map((entry) => {
+      const device = devices.find((item) => item.deviceId === entry.deviceId)
+      return device ? { ...entry, label: device.label } : null
+    })
+    .filter((entry): entry is { deviceId: string; volume: number; label: string } => entry !== null)
+  const targets = selected.length ? selected : [{ deviceId: 'default', volume: 1, label: fallback.label }]
 
-  const virtual = devices.find((device) => device.deviceId !== 'default' && isVirtualCable(device.label))
-  const primaryIsVirtual = isVirtualCable(target.label)
-  const mirrorId = stream.dualOutput && virtual && !primaryIsVirtual ? virtual.deviceId : null
-  const mirrorOk = await streamPlayer.setMirrorDevice(mirrorId)
-  const mirrorLabel = mirrorOk && mirrorId ? virtual?.label : undefined
-  return ok ? { ...target, mirrorLabel } : null
+  const primary = targets[0]
+  const ok = await audioEngine.setOutputDevice(primary.deviceId === 'default' ? '' : primary.deviceId)
+  audioEngine.setDeviceVolume(primary.volume)
+  await streamPlayer.setMirrorDevices(
+    targets.slice(1).map((entry) => ({ deviceId: entry.deviceId, volume: entry.volume }))
+  )
+  return ok ? { labels: targets.map((entry) => entry.label) } : null
 }

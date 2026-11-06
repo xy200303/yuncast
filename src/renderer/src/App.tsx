@@ -21,7 +21,7 @@ import { AuditionBar } from './components/AuditionBar'
 import { useAppStore, type NavPage } from './stores/useAppStore'
 import { useProjectStore } from './stores/useProjectStore'
 import { audioEngine } from './audio/engine'
-import { syncOutputDevice } from './audio/outputDevice'
+import { syncOutputDevices } from './audio/outputDevice'
 import { initScreenRecorder } from './audio/screenRecorder'
 import { initVirtualCursor } from './overlay/virtualCursor'
 import { streamPlayer } from './audio/streamPlayer'
@@ -79,16 +79,14 @@ export default function App() {
   }, [loadConfig, loadModelLibrary, syncSystemTheme])
 
   // 输出设备：按本场配置把声音送到指定声卡（装了虚拟声卡就自动切过去），插拔设备也重新选
-  const outputDeviceId = useAppStore((s) => s.config.stream.outputDeviceId)
-  const autoVirtualCable = useAppStore((s) => s.config.stream.autoVirtualCable)
-  const dualOutput = useAppStore((s) => s.config.stream.dualOutput)
+  const outputDevices = useAppStore((s) => s.config.stream.outputDevices)
   useEffect(() => {
     if (!('api' in window)) return
-    void syncOutputDevice()
-    const onChange = () => void syncOutputDevice()
+    void syncOutputDevices()
+    const onChange = () => void syncOutputDevices()
     navigator.mediaDevices?.addEventListener('devicechange', onChange)
     return () => navigator.mediaDevices?.removeEventListener('devicechange', onChange)
-  }, [outputDeviceId, autoVirtualCable, dualOutput])
+  }, [JSON.stringify(outputDevices)])
 
   // 音频终端 + 话术池订阅（应用级单例，挂载即运行）。
   // 播放调度在主进程：这里只把推来的 PCM 排播出声、把电平显示出来。

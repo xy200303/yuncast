@@ -364,9 +364,7 @@ export const DEFAULT_STREAM_CONFIG: StreamConfig = {
   mode: 'companion',
   serverUrl: '',
   streamKey: '',
-  outputDeviceId: '',
-  autoVirtualCable: true,
-  dualOutput: false
+  outputDevices: []
 }
 
 
@@ -425,9 +423,18 @@ function parseStream(input: unknown): StreamConfig {
     mode: row.mode === 'direct' ? 'direct' : 'companion',
     serverUrl: typeof row.serverUrl === 'string' ? row.serverUrl : '',
     streamKey: typeof row.streamKey === 'string' ? row.streamKey : '',
-    outputDeviceId: typeof row.outputDeviceId === 'string' ? row.outputDeviceId : '',
-    autoVirtualCable: row.autoVirtualCable !== false,
-    dualOutput: row.dualOutput === true
+    outputDevices: Array.isArray(row.outputDevices)
+      ? row.outputDevices
+          .map((item) => {
+            const entry = (item ?? {}) as Record<string, unknown>
+            const deviceId = typeof entry.deviceId === 'string' ? entry.deviceId : ''
+            const volume = Number(entry.volume)
+            return deviceId
+              ? { deviceId, volume: Number.isFinite(volume) ? Math.max(0, Math.min(1, volume)) : 1 }
+              : null
+          })
+          .filter((item): item is { deviceId: string; volume: number } => item !== null)
+      : []
   }
 }
 
@@ -1749,12 +1756,11 @@ export interface StreamConfig {
   serverUrl: string
   /** 推流密钥（敏感字段，加密落盘（secretBox）） */
   streamKey: string
-  /** 本机输出设备 id（空 = 系统默认）。伴侣模式靠它把声音送进虚拟声卡，别让系统声音混进来 */
-  outputDeviceId: string
-  /** 有虚拟声卡（CABLE Input / VoiceMeeter Input）时自动用它当输出 */
-  autoVirtualCable: boolean
-  /** 双路输出：主输出照常（自己监听），同时把同一路声音送进虚拟声卡给推流软件采集 */
-  dualOutput: boolean
+  /**
+   * 输出设备（可多选，每台一个音量）：选几个就同时送几个，第一个是主输出。
+   * 空数组 = 系统默认、音量 100%。
+   */
+  outputDevices: { deviceId: string; volume: number }[]
 }
 
 

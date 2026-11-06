@@ -20,6 +20,8 @@ class AudioEngine {
   private masterGain: GainNode | null = null
   private ttsGain: GainNode | null = null
   private analyser: AnalyserNode | null = null
+  /** 当前主输出设备的音量（多设备可选，每台一个增益） */
+  private deviceGain: GainNode | null = null
 
   private aiMuted = false
   private masterVolume = 1
@@ -64,12 +66,21 @@ class AudioEngine {
     this.ttsGain = this.ctx.createGain()
     this.analyser = this.ctx.createAnalyser()
     this.analyser.fftSize = 256
+    this.deviceGain = this.ctx.createGain()
+    this.deviceGain.gain.value = 1
     this.ttsGain.connect(this.masterGain)
     this.masterGain.connect(this.analyser)
-    this.analyser.connect(this.ctx.destination)
+    this.analyser.connect(this.deviceGain)
+    this.deviceGain.connect(this.ctx.destination)
     this.applyTtsGain()
     void this.ctx.resume().catch(() => undefined)
     return this.ctx
+  }
+
+  /** 主输出设备的音量（0~1）：多设备各自调音量时用，不影响镜像那几路 */
+  setDeviceVolume(volume: number): void {
+    const value = Math.max(0, Math.min(1, volume))
+    if (this.deviceGain) this.deviceGain.gain.value = value
   }
 
   /** 输出设备 id（空 = 系统默认）：伴侣模式靠它把声音送进虚拟声卡 */

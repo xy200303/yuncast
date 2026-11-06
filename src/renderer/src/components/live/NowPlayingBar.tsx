@@ -4,6 +4,7 @@ import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { Slider } from '@/components/ui/slider'
 import { RecordIndicator } from './RecordControl'
+import { AudioOutputDialog } from './AudioOutputDialog'
 import { useAppStore } from '../../stores/useAppStore'
 import { useLiveStore } from '../../stores/useLiveStore'
 import { audioEngine } from '../../audio/engine'
@@ -49,8 +50,7 @@ export function NowPlayingBar({
   const [prepared, setPrepared] = useState(false)
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null)
   const [masterVolume, setMasterVolume] = useState(Math.round(audioEngine.volume * 100))
-  /** 上一次"有声"的音量：点静音再点回来时恢复它 */
-  const lastAudible = useRef(masterVolume > 0 ? masterVolume : 100)
+  const [audioOpen, setAudioOpen] = useState(false)
 
   const applyVolume = (value: number): void => {
     const next = Math.max(0, Math.min(100, Math.round(value)))
@@ -58,7 +58,6 @@ export function NowPlayingBar({
     audioEngine.setMasterVolume(next / 100)
     void window.api.audio.setMasterVolume(next / 100)
     void window.api.audio.setMuted(next === 0)
-    if (next > 0) lastAudible.current = next
   }
 
   useEffect(() => {
@@ -280,8 +279,8 @@ export function NowPlayingBar({
           <Button
             variant="ghost"
             size="icon-sm"
-            onClick={() => applyVolume(masterVolume > 0 ? 0 : lastAudible.current)}
-            title={masterVolume > 0 ? `静音（当前 ${masterVolume}%）` : '取消静音，恢复到原音量'}
+            onClick={() => setAudioOpen(true)}
+            title="声音输出：选择设备、调各自音量"
           >
             {masterVolume > 0 ? <Volume2 /> : <VolumeX />}
           </Button>
@@ -325,6 +324,8 @@ export function NowPlayingBar({
 
         {running && endAction}
       </div>
+
+      <AudioOutputDialog open={audioOpen} onOpenChange={setAudioOpen} />
     </div>
   )
 }

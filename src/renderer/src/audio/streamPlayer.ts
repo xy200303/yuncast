@@ -8,9 +8,20 @@ import { audioEngine } from './engine'
  *
  * PCM 约定：s16le、48kHz、**单声道**（主进程推来的就是管线口径；立体声转换只在主进程喂混音器时做）。
  * 增益 / 静音 / 真人避让都挂在引擎的 tts 总线上，所以 master 音量与紧急静音天然生效。
+ *
+ * 多输出：主输出走引擎那条图；另外勾选的设备各开一个独立 AudioContext 镜像同一批 PCM
+ * （典型是扬声器 + 虚拟声卡：自己听，推流软件同时采 CABLE Output）。
  */
 
 const SAMPLE_RATE = 48000
+
+interface Mirror {
+  ctx: AudioContext
+  gain: GainNode
+  /** 下一块应该排播的时刻（该上下文的 AudioContext 时间轴） */
+  cursor: number
+  sources: Set<AudioBufferSourceNode>
+}
 
 class StreamPlayer {
   private ctx: AudioContext | null = null
@@ -18,13 +29,8 @@ class StreamPlayer {
   /** 下一块应该排播的时刻（AudioContext 时间轴） */
   private cursor = 0
   private sources = new Set<AudioBufferSourceNode>()
-
-  // 第二路输出（同时送虚拟声卡）：独立 AudioContext，同一批 PCM 镜像过去
-  private mirrorCtx: AudioContext | null = null
-  private mirrorGain: GainNode | null = null
-  private mirrorCursor = 0
-  private mirrorSources = new Set<AudioBufferSourceNode>()
-  private mirrorDeviceId: string | null = null
+  /** 额外输出设备：deviceId → 独立音频图 */
+  private mirrors = new Map<string, Mirror>()
 
   private ensureGraph(): AudioContext {
     if (this.ctx) return this.ctx
@@ -37,54 +43,49 @@ class StreamPlayer {
   }
 
   /**
-   * 第二路输出设备（虚拟声卡）：
-   * - deviceId 非空 = 开一路镜像，同一批 PCM 同时送过去（自己听主输出，推流软件采 CABLE Output）
-   * - null = 关掉镜像
+   * 设置镜像输出设备集合：多退少补（已有的不重建，避免播放中途断音）。
+   * 主输出不在这里——它由 audioEngine.setOutputDevice 管。
    */
-  async setMirrorDevice(deviceId: string | null): Promise<boolean> {
-    if (!deviceId) {
-      this.stopMirror()
-      return true
-    }
-    if (this.mirrorCtx && this.mirrorDeviceId === deviceId) return true
-    this.stopMirror()
-    try {
-      const ctx = new AudioContext() as AudioContext & { setSinkId?: (id: string) => Promise<void> }
-      if (typeof ctx.setSinkId !== 'function') {
-        void ctx.close()
-        return false
+  async setMirrorDevices(items: { deviceId: string; volume: number }[]): Promise<void> {
+    const want = new Map(items.filter((item) => item.deviceId).map((item) => [item.deviceId, item.volume]))
+    for (const [id, mirror] of [...this.mirrors.entries()]) {
+      if (want.has(id)) {
+        mirror.gain.gain.value = Math.max(0, Math.min(1, want.get(id) ?? 1))
+        continue
       }
-      await ctx.setSinkId(deviceId)
-      const gain = ctx.createGain()
-      gain.gain.value = 1
-      gain.connect(ctx.destination)
-      void ctx.resume().catch(() => undefined)
-      this.mirrorCtx = ctx
-      this.mirrorGain = gain
-      this.mirrorCursor = 0
-      this.mirrorDeviceId = deviceId
-      return true
-    } catch (error) {
-      console.warn('[音频] 第二路输出接不上：', error instanceof Error ? error.message : String(error))
-      this.stopMirror()
-      return false
+      this.stopMirror(mirror)
+      this.mirrors.delete(id)
+    }
+    for (const [id, volume] of want) {
+      if (this.mirrors.has(id)) continue
+      try {
+        const ctx = new AudioContext() as AudioContext & { setSinkId?: (sinkId: string) => Promise<void> }
+        if (typeof ctx.setSinkId !== 'function') {
+          void ctx.close().catch(() => undefined)
+          continue
+        }
+        await ctx.setSinkId(id)
+        const gain = ctx.createGain()
+        gain.gain.value = Math.max(0, Math.min(1, volume))
+        gain.connect(ctx.destination)
+        void ctx.resume().catch(() => undefined)
+        this.mirrors.set(id, { ctx, gain, cursor: 0, sources: new Set() })
+      } catch (error) {
+        console.warn('[音频] 额外输出接不上：', error instanceof Error ? error.message : String(error))
+      }
     }
   }
 
-  private stopMirror(): void {
-    for (const source of this.mirrorSources) {
+  private stopMirror(mirror: Mirror): void {
+    for (const source of mirror.sources) {
       try {
         source.stop()
       } catch {
         // 已结束的 source 再 stop 会抛，忽略
       }
     }
-    this.mirrorSources.clear()
-    if (this.mirrorCtx) void this.mirrorCtx.close().catch(() => undefined)
-    this.mirrorCtx = null
-    this.mirrorGain = null
-    this.mirrorCursor = 0
-    this.mirrorDeviceId = null
+    mirror.sources.clear()
+    void mirror.ctx.close().catch(() => undefined)
   }
 
   /** 推入一块 PCM（sampleRate 为该块原始采样率）；返回 true 表示这是本次会话的第一块 */
@@ -110,23 +111,24 @@ class StreamPlayer {
     this.sources.add(source)
     source.onended = () => this.sources.delete(source)
 
-    // 镜像一路：AudioBuffer 不能跨上下文复用，得按镜像上下文的采样率重建
-    if (this.mirrorCtx && this.mirrorGain) {
-      const mirror = this.mirrorCtx
-      const mirrorBuffer = mirror.createBuffer(1, samples, sampleRate)
-      const mirrorChannel = mirrorBuffer.getChannelData(0)
-      mirrorChannel.set(channel)
-      const mirrorSource = mirror.createBufferSource()
-      mirrorSource.buffer = mirrorBuffer
-      mirrorSource.connect(this.mirrorGain)
-      const mirrorStart = Math.max(this.mirrorCursor, mirror.currentTime + 0.02)
-      mirrorSource.start(mirrorStart)
-      this.mirrorCursor = mirrorStart + mirrorBuffer.duration
-      this.mirrorSources.add(mirrorSource)
-      mirrorSource.onended = () => this.mirrorSources.delete(mirrorSource)
-    }
-
+    for (const mirror of this.mirrors.values()) this.pushMirror(mirror, channel, samples, sampleRate)
     return first
+  }
+
+  /** AudioBuffer 不能跨上下文复用：按镜像上下文的采样率重建一份，再按它自己的时间轴排 */
+  private pushMirror(mirror: Mirror, channel: Float32Array, samples: number, sampleRate: number): void {
+    const ctx = mirror.ctx
+    void ctx.resume().catch(() => undefined)
+    const buffer = ctx.createBuffer(1, samples, sampleRate)
+    buffer.getChannelData(0).set(channel)
+    const source = ctx.createBufferSource()
+    source.buffer = buffer
+    source.connect(mirror.gain)
+    const startAt = Math.max(mirror.cursor, ctx.currentTime + 0.02)
+    source.start(startAt)
+    mirror.cursor = startAt + buffer.duration
+    mirror.sources.add(source)
+    source.onended = () => mirror.sources.delete(source)
   }
 
   /**
@@ -149,15 +151,17 @@ class StreamPlayer {
     }
     this.sources.clear()
     this.cursor = 0
-    for (const source of this.mirrorSources) {
-      try {
-        source.stop()
-      } catch {
-        // 同上
+    for (const mirror of this.mirrors.values()) {
+      for (const source of mirror.sources) {
+        try {
+          source.stop()
+        } catch {
+          // 同上
+        }
       }
+      mirror.sources.clear()
+      mirror.cursor = 0
     }
-    this.mirrorSources.clear()
-    this.mirrorCursor = 0
   }
 
   get isPlaying(): boolean {

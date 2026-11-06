@@ -8,7 +8,7 @@ import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import { useAppStore } from '../../stores/useAppStore'
 import { type StreamConfig, type StreamMode } from '../../../../shared/types'
 import { DocLinks } from './shared'
-import { OutputDeviceSection } from './OutputDeviceSection'
+import { VirtualCableCard } from './VirtualCableCard'
 
 /** 推流表单：伴侣模式（推荐）或 FFmpeg 直推 RTMP */
 export function StreamSection() {
@@ -30,8 +30,7 @@ export function StreamSection() {
     saveConfig({
       stream: {
         ...form,
-        outputDeviceId: config.stream.outputDeviceId,
-        autoVirtualCable: config.stream.autoVirtualCable
+        outputDevices: config.stream.outputDevices
       }
     })
       .then(() => toast.success('推流配置已保存'))
@@ -104,7 +103,7 @@ export function StreamSection() {
         <p className="mt-3 text-xs text-muted-foreground">直推模式需要服务器地址和推流密钥（抖音开播页可复制）</p>
       )}
       </div>
-      <OutputDeviceSection />
+      <VirtualCableCard />
     </>
   )
 }

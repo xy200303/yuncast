@@ -82,7 +82,7 @@ export function NowPlayingBar({
   const playing = pool.items.find((item) => item.status === 'playing') ?? null
   const running = agent.live === true
 
-  // —— 预制节目的段级进度（口径同 PreparedPanel 段列表） ——
+  // —— 预制节目的段级进度（按合成单元列的段列表） ——
   const [units, setUnits] = useState<ProgramAudioUnit[]>([])
   const [progress, setProgress] = useState<{ itemId: string; positionMs: number } | null>(null)
   const [dragMs, setDragMs] = useState<number | null>(null)

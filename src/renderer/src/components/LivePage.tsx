@@ -47,7 +47,7 @@ import { EventStream } from './live/EventStream'
 import { NowPlayingBar } from './live/NowPlayingBar'
 import { CardStream } from './live/CardStream'
 import { LaunchConfigDialog, type LaunchConfig } from './live/LaunchConfigDialog'
-import { WorkbenchTopBar, type DrawerTab } from './live/WorkbenchTopBar'
+import { WorkbenchTopBar } from './live/WorkbenchTopBar'
 import { WorkbenchDrawer } from './live/WorkbenchDrawer'
 import { CONTENT_TYPE_LABELS, llmReady } from '../../../shared/types'
 import type {
@@ -83,8 +83,8 @@ export function LivePage() {
   const [confirmClear, setConfirmClear] = useState<'drafts' | 'audio' | null>(null)
   const [clearing, setClearing] = useState(false)
   const [synthing, setSynthing] = useState(false)
-  /** 工作台抽屉：剧本大纲 / 章节 / 互动（docs/12 §7，平时不占版面） */
-  const [drawer, setDrawer] = useState<DrawerTab | null>(null)
+  /** 本场资料抽屉：只有自动响应一件事（场次/章节在主区卡片流里，不重复） */
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
   const [comments, setComments] = useState<LiveComment[]>([])
   /** 发给主播的直播间动态（事件流选项卡；主进程 250ms 节流推快照） */
@@ -272,14 +272,13 @@ export function LivePage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {/* 顶栏 · 本场配置（docs/12 §7）：剧本 / 主播 / 语言 / 预设，⋯ 收导演、大纲、评论事件、推流互动 */}
+      {/* 顶栏 · 本场状态：项目 / 语言 / 预设 / 自动响应；⋯ 收导演、人工播报、录屏、推流 */}
       <WorkbenchTopBar
         program={activeProgram}
         session={programControl.session}
         running={programControl.running}
-        prepared={programControl.session?.synthMode === 'pre'}
         onConfigure={() => programControl.setLaunchConfigOpen(true)}
-        onOpenDrawer={setDrawer}
+        onOpenDrawer={() => setDrawerOpen(true)}
         onOpenDirector={() => useAppStore.getState().openAgentPanel()}
         onManualBroadcast={() => setManualOpen(true)}
         onOpenStreamSettings={() => useAppStore.getState().openSettings('stream')}
@@ -376,15 +375,12 @@ export function LivePage() {
         />
       </div>
 
-      {/* 抽屉：剧本大纲 / 评论 / 事件 / 章节 / 互动 */}
+      {/* 本场资料抽屉：只有自动响应（实时开关） */}
       <WorkbenchDrawer
-        open={drawer !== null}
-        tab={drawer ?? 'scenes'}
-        onTab={setDrawer}
-        onClose={() => setDrawer(null)}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
         program={activeProgram}
         session={programControl.session}
-        prepared={programControl.session?.synthMode === 'pre'}
         onSessionSaved={programControl.setSession}
       />
 

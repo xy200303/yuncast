@@ -22,13 +22,10 @@ import {
  * 具体设置都在开播配置里改，这里只显示与进入。
  */
 
-export type DrawerTab = 'scenes' | 'chapters' | 'interaction'
-
 export function WorkbenchTopBar({
   program,
   session,
   running,
-  prepared,
   onConfigure,
   onOpenDrawer,
   onOpenDirector,
@@ -39,9 +36,9 @@ export function WorkbenchTopBar({
   program: Program | null
   session: SessionConfig | null
   running: boolean
-  prepared: boolean
   onConfigure: () => void
-  onOpenDrawer: (tab: DrawerTab) => void
+  /** 打开自动响应抽屉（本场唯一的互动接线入口） */
+  onOpenDrawer: () => void
   onOpenDirector: () => void
   onManualBroadcast: () => void
   onOpenStreamSettings: () => void
@@ -105,7 +102,7 @@ export function WorkbenchTopBar({
       {/* 自动响应是播出中的实时开关（改完立刻生效），不算「一场的配置」，播出中也能点 */}
       <button
         type="button"
-        onClick={() => onOpenDrawer('interaction')}
+        onClick={onOpenDrawer}
         disabled={!program}
         className={cn(metaClass, 'hover:bg-muted/60 disabled:pointer-events-none disabled:opacity-50')}
         title="自动响应：决定哪些直播间动态派给主播（欢迎/送礼/点赞/冷场自救…），改动立刻生效"
@@ -119,15 +116,13 @@ export function WorkbenchTopBar({
         </span>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" title="更多：导演 / 场次大纲 / 评论事件 / 推流与互动">
+            <Button variant="ghost" size="icon-sm" title="更多：导演 / 人工播报 / 录屏 / 推流">
               <MoreHorizontal />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-52">
             <DropdownMenuItem onSelect={onFocusQueue}>回到当前</DropdownMenuItem>
             <DropdownMenuItem onSelect={onOpenDirector}>导演对话</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onOpenDrawer('scenes')}>场次大纲</DropdownMenuItem>
-            {prepared && <DropdownMenuItem onSelect={() => onOpenDrawer('chapters')}>章节点播</DropdownMenuItem>}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={onManualBroadcast}>人工播报</DropdownMenuItem>
             <RecordMenuSub />

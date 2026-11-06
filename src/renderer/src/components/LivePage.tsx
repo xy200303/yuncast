@@ -277,7 +277,6 @@ export function LivePage() {
         program={activeProgram}
         session={programControl.session}
         running={programControl.running}
-        onConfigure={() => programControl.setLaunchConfigOpen(true)}
         onOpenAutoResponse={() => setDrawerOpen(true)}
         onOpenDirector={() => useAppStore.getState().openAgentPanel()}
         onManualBroadcast={() => setManualOpen(true)}

@@ -49,16 +49,9 @@ export function NowPlayingBar({
 
   const [prepared, setPrepared] = useState(false)
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null)
-  const [masterVolume, setMasterVolume] = useState(Math.round(audioEngine.volume * 100))
+  const masterVolume = useAppStore((s) => s.masterVolume)
+  const setMasterVolume = useAppStore((s) => s.setMasterVolume)
   const [audioOpen, setAudioOpen] = useState(false)
-
-  const applyVolume = (value: number): void => {
-    const next = Math.max(0, Math.min(100, Math.round(value)))
-    setMasterVolume(next)
-    audioEngine.setMasterVolume(next / 100)
-    void window.api.audio.setMasterVolume(next / 100)
-    void window.api.audio.setMuted(next === 0)
-  }
 
   useEffect(() => {
     if (!('api' in window)) return
@@ -291,7 +284,7 @@ export function NowPlayingBar({
             max={100}
             step={1}
             aria-label="主音量"
-            onValueChange={([v]) => applyVolume(v)}
+            onValueChange={([v]) => setMasterVolume(v)}
           />
         </div>
 

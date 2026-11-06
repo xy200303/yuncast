@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite'
  *
  * 版本走 `PRAGMA user_version`：版本不一致直接拒绝打开；结构只有当前形态一份，不做迁移。
  */
-export const PROJECT_SCHEMA_VERSION = 6
+export const PROJECT_SCHEMA_VERSION = 7
 
 export type ProjectMeta = {
   id: string

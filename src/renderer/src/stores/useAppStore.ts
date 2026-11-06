@@ -1,5 +1,4 @@
 import { create } from 'zustand'
-import { audioEngine } from '../audio/engine'
 import {
   APP_ACCENTS,
   APP_THEMES,
@@ -97,10 +96,6 @@ interface AppState {
   /** 播报循环开关镜像（真值在主进程：agent 状态广播的 speakingPaused 同步来；暂停/继续时先本地乐观更新） */
   loopRunning: boolean
   setLoopRunning: (running: boolean) => void
-
-  /** 总音量（0~100，所有输出设备共用）：播放条与声音输出弹窗读同一份 */
-  masterVolume: number
-  setMasterVolume: (volume: number) => void
 
   /** 输出电平（主进程 AudioPipeline 按片推来，渲染层只显示） */
   levels: { tts: number; master: number }
@@ -215,15 +210,6 @@ export const useAppStore = create<AppState>()((set, get) => ({
 
   loopRunning: false,
   setLoopRunning: (loopRunning) => set({ loopRunning }),
-
-  masterVolume: Math.round(audioEngine.volume * 100),
-  setMasterVolume: (value) => {
-    const next = Math.max(0, Math.min(100, Math.round(value)))
-    set({ masterVolume: next })
-    audioEngine.setMasterVolume(next / 100)
-    void window.api.audio.setMasterVolume(next / 100)
-    void window.api.audio.setMuted(next === 0)
-  },
 
   levels: { tts: 0, master: 0 },
   setLevels: (levels) => set({ levels }),

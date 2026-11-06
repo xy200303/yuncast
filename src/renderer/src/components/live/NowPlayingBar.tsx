@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Loader2, Pause, Play, SkipBack, SkipForward, Volume2, VolumeX } from 'lucide-react'
+import { Loader2, Pause, Play, SkipBack, SkipForward, Volume2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
 import { RecordIndicator } from './RecordControl'
@@ -48,7 +48,6 @@ export function NowPlayingBar({
 
   const [prepared, setPrepared] = useState(false)
   const [sessionConfig, setSessionConfig] = useState<SessionConfig | null>(null)
-  const masterVolume = useAppStore((s) => s.masterVolume)
   const [audioOpen, setAudioOpen] = useState(false)
 
   useEffect(() => {
@@ -272,7 +271,7 @@ export function NowPlayingBar({
           onClick={() => setAudioOpen(true)}
           title="声音输出：选择设备、调音量"
         >
-          {masterVolume > 0 ? <Volume2 /> : <VolumeX />}
+          <Volume2 />
         </Button>
 
         {/* 传输控制：上一段（预制）/ 下一段 / 队列 / 结束 */}

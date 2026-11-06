@@ -13,8 +13,6 @@ import { useAppStore } from '../../stores/useAppStore'
 export function AudioOutputDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const stream = useAppStore((state) => state.config.stream)
   const saveConfig = useAppStore((state) => state.saveConfig)
-  const masterVolume = useAppStore((state) => state.masterVolume)
-  const setMasterVolume = useAppStore((state) => state.setMasterVolume)
   const [devices, setDevices] = useState<OutputDevice[]>([])
 
   useEffect(() => {
@@ -65,22 +63,6 @@ export function AudioOutputDialog({ open, onOpenChange }: { open: boolean; onOpe
           </DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-3">
-          <div className="rounded-lg border px-3 py-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[12.5px]">总音量（所有设备）</span>
-              <span className="text-[11px] tabular-nums text-muted-foreground">{masterVolume}</span>
-            </div>
-            <div className="mt-2">
-              <Slider
-                value={[masterVolume]}
-                min={0}
-                max={100}
-                step={1}
-                aria-label="总音量"
-                onValueChange={([value]) => setMasterVolume(value)}
-              />
-            </div>
-          </div>
           {options.map((device) => {
             const volume = enabled.get(device.deviceId)
             const on = volume !== undefined

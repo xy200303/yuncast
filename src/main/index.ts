@@ -1674,6 +1674,8 @@ if (!single) {
     // 播放循环搬到了主进程：渲染层不再参与播放调度。段间不留白，停顿由主播用 <pause> 标记写在内容里
     playback = new PlaybackLoop(pool, () => ttsStream, pipeline)
     playback.start()
+    // 录屏录音：直接接本机监听那一路 PCM（与用户听到的同源），不用系统回环、不受输出设备影响
+    pipeline.onMonitorFrame = (pcm) => screenRecorder?.pushAudio(pcm)
 
     // 合成彻底失败（退避重试耗尽，或 401/403 这类重试无意义的）：一条合不出来就停播——
     // 走统一暂停（播报停 + 主播产出停），点「继续」时 playbackSetPaused 里 retryFailed 重新触发合成

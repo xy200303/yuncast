@@ -1,6 +1,7 @@
 /**
  * 录屏采集端（渲染进程是录制本体）：主进程 RecordingService 发命令，这里执行。
- * start → getDisplayMedia（整屏 + 系统回放声，授权闸门在主进程）+ MediaRecorder 分块回传；
+ * start → getDisplayMedia（只采本应用窗口画面）+ MediaRecorder 分块回传；
+ * 停止后主进程把本机监听的 PCM 并进成片（音轨走 AudioPipeline 旁路，不靠系统回环）。
  * stop → 收尾 flush 后回报 done。采集开始后先报 ready（带上实际容器格式，主进程按此定扩展名），失败报 fail。
  * 返回取消订阅函数；重复调用是幂等的（StrictMode 双挂载/热更新不会叠出第二个录制器）。
  *
@@ -44,7 +45,9 @@ export function initScreenRecorder(): () => void {
           width: { ideal: 8192 },
           height: { ideal: 8192 }
         } as MediaTrackConstraints & { cursor?: string },
-        audio: true
+        // 不向系统要声音：窗口采集拿不到可用的回环音轨（录出来是一条静音 AAC）。
+        // 音轨由主进程从 AudioPipeline 旁路直接收，见 RecordingService.beginAudio。
+        audio: false
       })
       if (showCursor) showVirtualCursor()
       const picked = MIME_CANDIDATES.find((c) => MediaRecorder.isTypeSupported(c.mime))

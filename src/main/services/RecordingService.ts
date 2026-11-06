@@ -1,6 +1,6 @@
 import { app, BrowserWindow, type WebContents } from 'electron'
-import { appendFileSync, copyFileSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { execFile } from 'node:child_process'
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { join } from 'node:path'
 import type { RecordingState } from '../../shared/types'
 import { IPC } from '../../shared/ipc-channels'
@@ -17,6 +17,10 @@ import { getFfmpegPath } from './stream/ffmpeg/bin'
  * mp4 说明：Chromium 的 mp4 封装有时间戳毛病（音频 dts 大量重复、样本边界错位），
  * 所以停止后自动用 ffmpeg 重封装一次（-c copy，不重编码，秒级），出来的成品干净。
  */
+
+/** 监听 PCM 的口径：mono 48k s16le（见 AudioPipeline） */
+const AUDIO_RATE = 48_000
+const AUDIO_BYTES_PER_SAMPLE = 2
 
 /** 文件名清洗：只去掉 Windows/macOS 路径非法字符，中文原样保留 */
 function safeFileName(name: string | undefined, fallback: string): string {
@@ -49,12 +53,52 @@ function remuxMp4(file: string): Promise<void> {
     )
   })
 }
+/** 把录音并进录像（视频流 copy，音轨编码）；成功返回 true，失败保留原视频 */
+function muxAudio(videoFile: string, wavFile: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const webm = videoFile.endsWith('.webm')
+    const tmp = `${videoFile}.mux.${webm ? 'webm' : 'mp4'}`
+    const args = [
+      '-v', 'error',
+      '-fflags', '+genpts',
+      '-i', videoFile,
+      '-i', wavFile,
+      '-map', '0:v:0',
+      '-map', '1:a:0',
+      '-c:v', 'copy',
+      ...(webm ? ['-c:a', 'libopus', '-b:a', '96k'] : ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart']),
+      '-shortest',
+      '-y', tmp
+    ]
+    execFile(getFfmpegPath(), args, { timeout: 180_000 }, (error) => {
+      if (error) {
+        rmSync(tmp, { force: true })
+        resolve(false)
+        return
+      }
+      try {
+        copyFileSync(tmp, videoFile)
+        rmSync(tmp, { force: true })
+        resolve(true)
+      } catch {
+        rmSync(tmp, { force: true })
+        resolve(false)
+      }
+    })
+  })
+}
+
 export class RecordingService {
   private recording = false
   private armed = false
   private file: string | null = null
   private startedAt = 0
   private showCursor = true
+  /** 音轨：主进程接 AudioPipeline 的监听 PCM，实时写 wav，停止时并进视频 */
+  private audioProc: ChildProcess | null = null
+  private audioFile: string | null = null
+  private audioStartedAt = 0
+  private audioBytes = 0
   /** 等待渲染层握手/收尾的 resolver */
   private waitReady: ((ok: boolean, error?: string) => void) | null = null
   private waitDone: (() => void) | null = null
@@ -128,10 +172,13 @@ export class RecordingService {
     }
     this.recording = true
     this.startedAt = Date.now()
+    // ready 握手可能把扩展名改成 webm，用改后的名字
+    const actual = this.file ?? file
+    this.beginAudio(actual)
     const state = this.state()
     this.onStateChange?.(state)
-    this.onEvent?.('record.start', { file })
-    return { ok: true, file }
+    this.onEvent?.('record.start', { file: actual })
+    return { ok: true, file: actual }
   }
 
   async stop(): Promise<{ ok: true; file: string } | { ok: false; error: string }> {
@@ -152,8 +199,10 @@ export class RecordingService {
     this.recording = false
     this.armed = false
     this.file = null
-    // mp4 成品先过一道 ffmpeg 重封装：Chromium 封装的 dts/样本边界有毛病，remux 后才算干净成品
-    if (file && file.endsWith('.mp4')) await remuxMp4(file)
+    // 音轨先收尾并进视频；没有音频帧（整段没出声）则退回纯视频
+    const muxed = file ? await this.endAudio(file) : false
+    // mp4 成品再重封装一道：Chromium 封装的 dts/样本边界有毛病，remux 后才算干净成品
+    if (file && !muxed && file.endsWith('.mp4')) await remuxMp4(file)
     const state = this.state()
     this.onStateChange?.(state)
     this.onEvent?.('record.stop', { file, durationMs: Date.now() - this.startedAt })
@@ -185,6 +234,76 @@ export class RecordingService {
   }
 
   // ---------- 渲染层回调（IPC handlers 里调） ----------
+
+  // ---------- 音轨（AudioPipeline 监听 PCM → wav → 并进成片） ----------
+
+  /**
+   * 每 50ms 一片（mono 48k s16le）。没在录就丢；按墙钟补齐静音，
+   * 暂停、段间空档、开播前的空白都不会让音画错位。
+   */
+  pushAudio(pcm: Buffer): void {
+    const proc = this.audioProc
+    if (!proc || pcm.length === 0) return
+    this.padTo(proc, Date.now())
+    proc.stdin?.write(pcm)
+    this.audioBytes += pcm.length
+  }
+
+  /** 把音轨补齐到「录制开始到现在」的墙钟长度 */
+  private padTo(proc: ChildProcess, now: number): void {
+    const target = Math.floor(((now - this.audioStartedAt) / 1000) * AUDIO_RATE) * AUDIO_BYTES_PER_SAMPLE
+    let gap = target - this.audioBytes
+    if (gap <= 0) return
+    const silence = Buffer.alloc(AUDIO_RATE * AUDIO_BYTES_PER_SAMPLE) // 1 秒
+    while (gap > 0) {
+      const size = Math.min(gap, silence.length)
+      proc.stdin?.write(silence.subarray(0, size))
+      gap -= size
+      this.audioBytes += size
+    }
+  }
+
+  private beginAudio(videoFile: string): void {
+    const wav = videoFile.replace(/\.\w+$/, '') + '.wav'
+    rmSync(wav, { force: true })
+    const proc = spawn(
+      getFfmpegPath(),
+      ['-v', 'error', '-f', 's16le', '-ar', String(AUDIO_RATE), '-ac', '1', '-i', 'pipe:0', '-c:a', 'pcm_s16le', '-y', wav],
+      { stdio: ['pipe', 'ignore', 'ignore'] }
+    )
+    proc.on('error', () => {
+      if (this.audioProc === proc) {
+        this.audioProc = null
+        this.audioFile = null
+      }
+    })
+    this.audioProc = proc
+    this.audioFile = wav
+    this.audioStartedAt = Date.now()
+    this.audioBytes = 0
+  }
+
+  /** 收尾音轨并并进视频；返回是否真的合入了音轨 */
+  private async endAudio(videoFile: string): Promise<boolean> {
+    const proc = this.audioProc
+    const wav = this.audioFile
+    const bytes = this.audioBytes
+    this.audioProc = null
+    this.audioFile = null
+    if (!proc) return false
+    this.padTo(proc, Date.now())
+    await new Promise<void>((resolve) => {
+      proc.once('close', () => resolve())
+      proc.stdin?.end()
+    })
+    if (!wav || bytes === 0 || !existsSync(wav)) {
+      if (wav) rmSync(wav, { force: true })
+      return false
+    }
+    const ok = await muxAudio(videoFile, wav)
+    rmSync(wav, { force: true })
+    return ok
+  }
 
   appendChunk(base64: string): boolean {
     if (!this.file) return false

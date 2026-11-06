@@ -220,6 +220,8 @@ export class AudioPipeline {
     aux: Buffer.alloc(CHUNK_BYTES)
   }
   private monitorScratch = Buffer.alloc(CHUNK_BYTES)
+  /** 本机监听的旁路（录屏录音用）：每片一份副本，不参与混音，回调里别阻塞 */
+  onMonitorFrame: ((pcm: Buffer) => void) | null = null
 
   constructor(private readonly sinks: AudioPipelineSinks) {}
 
@@ -568,6 +570,8 @@ export class AudioPipeline {
       // 送出的必须是副本：scratch 下一片还要复用
       this.sinks.sendPcm({ pcm: Buffer.from(frame.monitor), sampleRate: SAMPLE_RATE, seq: this.seq })
     }
+    // 录屏录音旁路：与送声卡的那一路同源（含主音量/静音），只多一次 9.6KB 拷贝
+    this.onMonitorFrame?.(Buffer.from(frame.monitor))
     // 推流那一路：同一份 TTS PCM（复制成立体声）喂混音器；静音期间不喂 = 直播间也哑
     if (frame.hasTts && !this.muted) this.sinks.feedStream(toStereo48k(frame.tts))
 

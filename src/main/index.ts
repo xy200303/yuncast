@@ -623,8 +623,10 @@ async function launchAndAnnounce(
   resetStopWrap()
   if ((result.loaded ?? 0) === 0) {
     bus?.emit('pool.low', { remaining: 0 }, 'system')
-    // 一条都没装进来，且没有在合成/没存货：直接停到「暂停」态等内容，别让界面显示在播却没声音
+    // 一条都没装进来，且没有在合成/没存货：直接停到「暂停」态等内容，别让界面显示在播却没声音。
+    // 无限生成（实时档）本来就是空池起播——现场生成内容，不能因此把主播按成暂停（按了就说不出来）
     const incoming =
+      player.sessionContentSource(programId) === 'infinite' ||
       player.hasIncomingDraftUnits(programId) ||
       player.hasFreshDraftUnits(programId) ||
       player.hasIncomingRendered(programId)

@@ -152,6 +152,8 @@ export function LaunchConfigDialog({
     program ? prefill(session) : { ...DEFAULT_SESSION_CONFIG }
   )
   const [tab, setTab] = useState<'write' | 'synth' | 'play'>(defaultTab)
+  /** 切到实时档前的「内容来源」：切回来时恢复，别让实时档把用户的来源选择吃掉 */
+  const [sourceBeforeRealtime, setSourceBeforeRealtime] = useState<LaunchConfig['contentSource']>('script')
   // 打开时按真实进度落位：稿子还没写就一定从「写稿」开始；写好了就跳到「合成」/「播放」
   useEffect(() => {
     if (!open) return
@@ -240,6 +242,11 @@ export function LaunchConfigDialog({
 
           <TabsContent value="write" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
             <div className="flex flex-col gap-5">
+              {config.synthMode === 'realtime' && (
+                <p className="rounded-md bg-muted/60 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
+                  当前是实时档：内容现场生成、逐句合成，不靠备稿库存。要备稿先把合成时机切回预合成或边播边合。
+                </p>
+              )}
               <Field label="预设" hint="只负责套「内容来源 / 合成时机 / 收尾」三个开关，套完仍可逐项改">
                 <Select
                   value={config.preset || '__custom'}
@@ -354,55 +361,77 @@ export function LaunchConfigDialog({
                     { value: 'async', label: '边播边合' },
                     { value: 'realtime', label: '实时' }
                   ]}
-                  onChange={(synthMode) => patch({ synthMode })}
+                  // 实时档没有存量音频这回事：内容现场生成，顺手把内容来源切到「无限生成」，
+                  // 免得开播设置里出现一套互相打架的选项；切回来时恢复原来的来源
+                  onChange={(synthMode) => {
+                    if (synthMode === 'realtime') {
+                      if (config.synthMode !== 'realtime') setSourceBeforeRealtime(config.contentSource)
+                      patch({ synthMode, contentSource: 'infinite' })
+                    } else {
+                      patch({
+                        synthMode,
+                        contentSource:
+                          config.synthMode === 'realtime' ? sourceBeforeRealtime : config.contentSource
+                      })
+                    }
+                  }}
                 />
               </Field>
 
-              
-
-              <Field label="音频策略">
-                <Segmented
-                  value={config.audioPolicy}
-                  options={[
-                    { value: 'reuse', label: `复用现有（${readyCount} 段）` },
-                    { value: 'rebuild', label: '清空重合成' }
-                  ]}
-                  onChange={(audioPolicy) => patch({ audioPolicy })}
-                />
-                {config.audioPolicy === 'rebuild' && (
-                  <p className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-2 text-[11.5px] leading-relaxed text-amber-800">
-                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-                    会清空本场全部音频，按当前音色/语言重新合成，期间不能开播，并按次计费。
-                  </p>
-                )}
-              </Field>
+              {config.synthMode !== 'realtime' && (
+                <Field label="音频策略">
+                  <Segmented
+                    value={config.audioPolicy}
+                    options={[
+                      { value: 'reuse', label: `复用现有（${readyCount} 段）` },
+                      { value: 'rebuild', label: '清空重合成' }
+                    ]}
+                    onChange={(audioPolicy) => patch({ audioPolicy })}
+                  />
+                  {config.audioPolicy === 'rebuild' && (
+                    <p className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-2 text-[11.5px] leading-relaxed text-amber-800">
+                      <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                      会清空本场全部音频，按当前音色/语言重新合成，期间不能开播，并按次计费。
+                    </p>
+                  )}
+                </Field>
+              )}
             </div>
             </div>
                     </TabsContent>
 
           <TabsContent value="play" className="min-h-0 flex-1 overflow-y-auto px-7 py-5">
             <div className="flex flex-col gap-5">
-<Field label="内容来源">
-                <Segmented
-                  value={config.contentSource}
-                  options={[
-                    { value: 'script', label: '本场话术' },
-                    { value: 'infinite', label: '边播边无限生成' }
-                  ]}
-                  onChange={(contentSource) => patch({ contentSource })}
-                />
-              </Field>
-<Field label="收尾">
-                <Segmented
-                  value={config.endMode}
-                  options={[
-                    { value: 'stop', label: '一遍播完' },
-                    { value: 'loop', label: '循环返场' },
-                    { value: 'forever', label: '一直播' }
-                  ]}
-                  onChange={(endMode) => patch({ endMode })}
-                />
-              </Field>
+              {config.synthMode === 'realtime' ? (
+                <p className="rounded-md bg-muted/60 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
+                  实时档：内容现场生成、逐句合成立刻播，没有「本场话术 / 无限生成」之分，也没有整轮
+                  播完再循环这回事——下面只留互动设置。
+                </p>
+              ) : (
+                <>
+                  <Field label="内容来源">
+                    <Segmented
+                      value={config.contentSource}
+                      options={[
+                        { value: 'script', label: '本场话术' },
+                        { value: 'infinite', label: '边播边无限生成' }
+                      ]}
+                      onChange={(contentSource) => patch({ contentSource })}
+                    />
+                  </Field>
+                  <Field label="收尾">
+                    <Segmented
+                      value={config.endMode}
+                      options={[
+                        { value: 'stop', label: '一遍播完' },
+                        { value: 'loop', label: '循环返场' },
+                        { value: 'forever', label: '一直播' }
+                      ]}
+                      onChange={(endMode) => patch({ endMode })}
+                    />
+                  </Field>
+                </>
+              )}
 <div className="flex flex-col gap-4">
               <label className="flex items-center gap-2 text-[13px]">
                 <Checkbox
@@ -442,9 +471,12 @@ export function LaunchConfigDialog({
             取消
           </Button>
           {tab === 'write' ? (
-            <Button disabled={launching || !onWrite} onClick={() => onWrite?.(config)}>
+            <Button
+              disabled={launching || !onWrite || config.synthMode === 'realtime'}
+              onClick={() => onWrite?.(config)}
+            >
               <Sparkles />
-              {draftCount > 0 ? '重新写稿' : '开始写稿'}
+              {config.synthMode === 'realtime' ? '实时档不备稿' : draftCount > 0 ? '重新写稿' : '开始写稿'}
             </Button>
           ) : tab === 'synth' ? (
             config.synthMode === 'pre' ? (

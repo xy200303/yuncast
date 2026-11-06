@@ -9,7 +9,8 @@ import {
   type ProgramGateResult,
   type DraftUnit,
   type SessionConfig,
-  type SessionConfigInput
+  type SessionConfigInput,
+  type SessionContentSource
 } from '../../shared/types'
 import { DRAFT_HARD_CAP } from './tools/util'
 import type { AgentService } from './AgentService'
@@ -546,6 +547,11 @@ export class ProgramPlaybackService {
   /** 预制节目还有音频在出（生成中）：pool.empty 的收播决策区分「真播完」和「音频在路上」 */
   hasIncomingRendered(programId: string): boolean {
     return this.playGate(programId).synthesizing > 0
+  }
+
+  /** 本场内容来源：无限生成（实时档）的场次本来就没有底稿，装载 0 条是常态 */
+  sessionContentSource(programId: string): SessionContentSource | null {
+    return this.storage.sessionConfigLatest(programId)?.contentSource ?? null
   }
 
   /**

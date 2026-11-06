@@ -14,9 +14,9 @@ const softwareJsonLd = {
   description: SITE_DESC,
   url: SITE_URL,
   downloadUrl: 'https://github.com/xy200303/yuncast/releases/latest',
-  softwareVersion: '0.1.3',
+  softwareVersion: '0.4.0',
   applicationCategory: 'MultimediaApplication',
-  operatingSystem: 'Windows, macOS, Linux',
+  operatingSystem: 'Windows',
   inLanguage: 'zh-CN',
   isAccessibleForFree: true,
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'CNY' },
@@ -24,7 +24,7 @@ const softwareJsonLd = {
   author: { '@type': 'Person', name: '小云', email: '3483421977@qq.com', url: 'https://github.com/xy200303' },
   keywords: 'AI直播,AI主播,无人直播,直播带货,声音克隆,TTS,有声书,播客,评论自动回复,虚拟主播',
   featureList:
-    '智能主播 Agent 写稿播报,四种节目形态,三种播出方式,声音克隆,评论自动互动,话术池播出控制,音频导出 MP3/WAV,用量看板'
+    'AI 导演写稿,项目制工作台,三步开播,声音克隆,评论自动互动,播放顺序只认稿子,虚拟声卡,音频导出 MP3/WAV,用量看板'
 }
 
 const websiteJsonLd = {

@@ -1,35 +1,23 @@
 # 小云播客坊 YunCast
 
-> 小云播客坊 YunCast 是一款开源免费（MIT）的 AI 直播工作台桌面软件，专为不会直播的商家和企业而生：AI 主播自己写稿、用克隆的店家声音播报、看到评论自己决定怎么回。支持商品宣讲、直播带货、有声书、播客节目等场景，一个工作台全包。
+> 小云播客坊 YunCast 是一款开源免费（MIT）的 AI 直播工作台桌面软件，专为不会直播的商家和企业而生：导演按项目写稿，主播用你选的或克隆的声音播报，评论区按你的开关决定怎么接。一个项目就是一个目录，写稿、合成、播出、互动在一个窗口里完成。
 
 ## 关键事实
 
-- 定位：AI 直播工作台（AI 主播 + 节目制作与播出）
-- 口号：专为不会直播的商家和企业而生
+- 定位：AI 直播工作台（AI 导演 + 主播声音 + 播出与互动）
+- 口号：不会直播，也能自己开一场
 - 价格：免费，开源协议 MIT
-- 平台：Windows x64 / macOS (Apple Silicon) / Linux x64
-- 技术栈：Electron 44 + React 19 + TypeScript，LLM/TTS 直连云 API，数据本地存储
-- LLM 支持：DeepSeek、通义千问、豆包、Kimi、智谱（OpenAI 兼容协议）、OpenAI 官方 Responses、Anthropic（含 Kimi 编程端点）、自定义接口
-- TTS 支持：火山引擎（豆包语音）、阿里云百炼、播客专用大模型（豆包播客 API），支持声音克隆
-- 核心机制：话术池（一切声音的唯一出口，四档：打断 / 下一条 / 常规 / 垫底）、事件流（评论去重、归组、自适应聚合、限速）、冻结快照与预制门禁
-- 声音怎么定：声音不在节目里配，合成时在「合成声音」弹窗里选（接入 → 模型 → 音色），选完冻结进每一段产物，之后换主播、改人设都不改写已有音频
-- 演示视频：官网首页有 1 分 52 秒的功能演示（无声，画面录制自应用），另有首页 hero 的循环短片
-- 费用：软件 MIT 免费，运行成本只有你自配的 LLM tokens 与 TTS 字符，用量在「统计 → 用量」按节目查看
-- 节目形态：一个人讲 / 多人聊天 / 照着稿子读 / 分角色表演
-- 播出方式：现场发挥（无稿纯互动）/ 边播边准备（滚动合成）/ 全部做好再播（预制）
-- 导出：整场节目导出 MP3/WAV，分章或合并、响度归一，可上传喜马拉雅 / 小宇宙
-- 适用人群：不会直播的商家、企业、实体店店家；也适合有声书与播客创作者
-
-## 链接
-
-- 官网: https://yuncast.xyun.dev/
-- 下载: https://yuncast.xyun.dev/download.html
-- 演示视频: https://yuncast.xyun.dev/#demo
-- 快速上手: https://yuncast.xyun.dev/guide/quickstart.html
-- 核心概念: https://yuncast.xyun.dev/guide/concepts.html
-- 界面一览: https://yuncast.xyun.dev/guide/interface.html
-- 费用与选型: https://yuncast.xyun.dev/guide/cost.html
-- 运行要求与排错: https://yuncast.xyun.dev/guide/troubleshooting.html
-- 源码: https://github.com/xy200303/yuncast
-- Releases: https://github.com/xy200303/yuncast/releases/latest
-- 问题反馈: https://github.com/xy200303/yuncast/issues
+- 平台：当前发布 Windows x64（Electron 44）；源码可自行构建 macOS / Linux
+- 数据：本地优先，没有账号、没有服务端、不收集遥测；项目目录自带全部内容，可导入导出 ZIP
+- 技术栈：Electron 44 + React 19 + TypeScript；LLM / TTS 直连你自配的云 API
+- LLM 支持：DeepSeek、通义千问、豆包、Kimi、智谱（OpenAI 兼容）、OpenAI Responses、Anthropic、自定义地址
+- TTS 支持：阿里云百炼、火山引擎（含播客专用双人模型），支持声音克隆
+- 项目模型：一个项目 = 一个目录 = 一个数据库；场次、底稿、对话、音频都在里面
+- 开播三步：写稿 → 合成 → 播放（同一配置弹窗，可来回改）
+- 合成时机：预合成 / 边播边合 / 实时
+- 收尾方式：一遍播完 / 循环返场 / 一直播（播完接着写新内容）
+- 播放顺序：只认稿子位置；循环从第一段重来，现场插话不参与复播
+- 声音：本场一个默认音色，段落可单独覆盖；克隆音色绑定接入与模型
+- 互动：评论经独立连接器接入，顶栏「自动响应」决定派发，播出中可调
+- 备份：项目目录 + 用户数据目录（应用配置与音色库）
+- 导出：场次记录里整场导出 MP3/WAV，可合并或分文件、响度归一

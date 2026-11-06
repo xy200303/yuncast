@@ -5,9 +5,6 @@ import DotField from './components/DotField.vue'
 import SignalStrip from './components/SignalStrip.vue'
 import { EASE, hasFinePointer, initSmoothScroll, loadMotion, prefersReduced } from './motion/engine'
 import shotLive from '../../guide/screenshots/live.png'
-import shotPrograms from '../../guide/screenshots/programs.png'
-import shotAnchors from '../../guide/screenshots/anchors.png'
-import shotKnowledge from '../../guide/screenshots/knowledge.png'
 import shotVoices from '../../guide/screenshots/voices.png'
 import shotSessions from '../../guide/screenshots/sessions.png'
 import shotStats from '../../guide/screenshots/stats.png'
@@ -42,39 +39,39 @@ const tracks = [
   {
     id: 'write',
     name: '写稿',
-    lead: '绑好编排与素材范围，说一句「给这场写稿」，它按场景逐段写、查素材核对价格，产出进底稿库等你过目。',
+    lead: '在建好的项目里说清商品、卖点和受众，导演按场次逐段写；语言、形态、风格随每次任务书传给它。',
     to: '/guide/quickstart',
     toText: '看写稿流程',
     items: [
-      { t: '按编排分幕', d: '开场、痛点、讲解、收尾各写各的，不用你交代结构' },
-      { t: '报价必须查证', d: '价格只认素材库核过的口径，查不到会明说而不是编' },
+      { t: '按场次写', d: '项目里定好的场景序列，开场、展开、收尾各写各的' },
+      { t: '报价必须查证', d: '价格只认查过资料的口径，查不到会明说而不是编' },
       { t: '逐条可改', d: '改一条只影响这一条，已经合成好的音频不会被动' },
-      { t: '过程留痕', d: '思考过程、调用过哪些工具，时间线上都看得见' }
+      { t: '语言不串', d: '日语节目写中文稿会被写稿工具直接拒收，要求整段重写' }
     ]
   },
   {
     id: 'play',
     name: '播出',
-    lead: '三种播出方式覆盖不同场景，声音在合成那一刻定死，之后换主播、改人设都不会改写已经出好的音频。',
+    lead: '写稿、合成、开播是同一个配置弹窗里的三步，随时能退回去改；播出后顺序只认稿子，循环不会复制话术库。',
     to: '/guide/concepts',
     toText: '看播出机制',
     items: [
-      { t: '现场发挥', d: '没有底稿，说一句合成一句，像真人一样接话' },
-      { t: '边播边准备', d: '边播边合成，随时改后面的稿，已播的不受影响' },
-      { t: '全部做好再播', d: '整本合成完，过门禁才开播，缺项不静默跳过' },
-      { t: '四档话术池', d: '打断 / 下一条 / 常规 / 垫底，人工播报可以插队' }
+      { t: '三步开播', d: '写稿 → 合成 → 播放，每步的按钮跟着当前状态变' },
+      { t: '合成时机三档', d: '预合成 / 边播边合 / 实时，开播前要不要合成完由你定' },
+      { t: '收尾三档', d: '一遍播完 / 循环返场 / 一直播（播完接着写新内容）' },
+      { t: '顺序只认稿子', d: '循环从第一段重来、上一段复用同一段、现场插话不复播' }
     ]
   },
   {
     id: 'chat',
     name: '互动',
-    lead: '评论先进事件流去重、归组、按批交给主播；回一条还是回一批由它判断，拿不准的事会递一张请示卡给你。',
+    lead: '评论先进事件流去重、归组、按批交给主播；要不要接由顶栏「自动响应」开关决定，播出中改完立刻生效。',
     to: '/guide/interface',
     toText: '看界面说明',
     items: [
-      { t: '先聚合再给主播', d: '30 秒同人同内容去重、5–30 秒自适应聚合、每分钟最多 6 次唤醒' },
+      { t: '先聚合再给主播', d: '同人同内容去重、按批送达，评论洪峰也不刷屏' },
       { t: '自己判断回不回', d: '不值得回的话就不回，不会为了热闹硬刷话' },
-      { t: '人工随时插播', d: '人工播报可插为下一条，打断优先级最高的是它' },
+      { t: '人工随时插播', d: '插话排在最前播完，队列从原位置继续，不参与循环复播' },
       { t: '拿不准就问你', d: '价格、承诺、违规风险这类，弹请示卡等你点一下' }
     ]
   }
@@ -83,8 +80,21 @@ const tracks = [
 /** 更新日志：只写仓库里查得到的事实（与 CHANGELOG.md 对齐） */
 const changelog = [
   {
-    v: 'v0.3.2',
+    v: 'v0.4.0',
     when: '最新',
+    items: [
+      '项目制：一个项目 = 一个目录 = 一个数据库；欢迎页直接进最近项目，项目可导入导出（ZIP，包内相对路径）',
+      '直播台收敛成单窗口：卡片流 + 带水位的播放条，评论流/事件流常驻，场次大纲与章节点播不再重复一份',
+      '开播配置三步可回退；收尾新增「一直播」——播完接着写新桥段继续播',
+      '播放顺序只认稿子：循环回卷复用同一批音频，不复制话术库；上一段回到同一行',
+      '写稿参数随每轮任务书下发，写稿工具按本场语言校验；卡片显示本段音色与演法',
+      '推流设置支持选输出设备、自动路由到虚拟声卡，并可一键安装 VB-CABLE',
+      '工程清理：删除数据库迁移历史与历史兼容层，结构只保留当前形态'
+    ]
+  },
+  {
+    v: 'v0.3.2',
+    when: '维护版',
     items: [
       '修复安装版语音合成全线失败：ffmpeg 被打进 app.asar，spawn 必然 ENOENT',
       '改为解析到 app.asar.unpacked 再校验存在，三端同一套处理',
@@ -92,24 +102,14 @@ const changelog = [
     ]
   },
   {
-    v: 'v0.3.1',
-    when: '维护版',
-    items: [
-      '数据库文件改名 yuncast.db：升级首次启动自动搬（含 -wal/-shm），数据一行不动',
-      '结构迁移交给 umzug：一个版本一个文件，执行明细落 _migrations，失败整体回滚',
-      '修全新安装起不来：迁移里那句无条件断言在空库上必炸，升级上来的老库反而没事',
-      '术语收尾：剧本 → 编排、知识库 → 素材，应用与文档同步'
-    ]
-  },
-  {
     v: 'v0.3.0',
     when: '命名收口',
     items: [
-      '编排并入节目：独立的「剧本」表退役，场景序列就是节目本身，节目卡上直接「编排」',
-      '素材统一：条目带正文 / 附件 / 链接，节目只绑条目，主播需要时才读（material_read）',
-      '播完自动暂停：池子见底且没有在途内容才暂停，新内容进池自动续播，手动暂停不会被顶掉',
-      '克隆 AB 验收：先转写样本，再用样本原话合成探针，6 维对比出相似分并自动校准语速',
-      '应用自带录屏与截图；官网功能演示换成真实操作 + 克隆音色配音'
+      '编排并入节目：独立的「剧本」表退役，场景序列就是节目本身',
+      '素材统一：条目带正文 / 附件 / 链接',
+      '播完自动暂停：池子见底且没有在途内容才暂停，新内容进池自动续播',
+      '克隆 AB 验收：同文本重合成探针，输出相似分并自动校准语速',
+      '应用自带录屏与截图'
     ]
   },
   {
@@ -120,16 +120,6 @@ const changelog = [
       '声音统一到一个选择器，合成那一刻选定并冻结进每段产物',
       '时间线与流式的性能改造：状态广播 18.5 → 6.0 次/秒，长任务 0'
     ]
-  },
-  {
-    v: 'v0.1.2',
-    when: '修复版',
-    items: ['结束节目会同时停掉播放循环，存货保留但不再续播', 'Debian 包元数据补全']
-  },
-  {
-    v: 'v0.1.1',
-    when: '首个公开版',
-    items: ['三端发布；写稿、合成、播出、评论互动跑通', '节目音频导出与用量看板']
   }
 ]
 
@@ -144,12 +134,12 @@ const localFirst = [
   {
     icon: ICONS.drive,
     t: '数据只落本机',
-    d: '编排、底稿、素材、音频、评论记录都在用户数据目录；卸载不会删，整目录拷走即备份。'
+    d: '项目 = 目录：场次、底稿、对话、音频都在项目目录里；应用配置在用户数据目录，备份把两处一起带走。'
   },
   {
     icon: ICONS.key,
     t: '云 API 只走你配的 Key',
-    d: 'LLM 与 TTS 直连服务商，用多少、花多少在「统计 → 用量」里按节目可查。'
+    d: 'LLM 与 TTS 直连服务商，用多少、花多少在「统计 → 用量」里按项目可查。'
   },
   {
     icon: ICONS.code,
@@ -159,75 +149,42 @@ const localFirst = [
   }
 ]
 
-/** 三个节目各录一段：同一条界面，三种形态 */
-const demos = [
-  {
-    key: 'reading',
-    title: '深夜朗读 · 有声书形态',
-    desc: '全部做好再播：章节先整体合成，开播按顺序念，段落带气口与情绪标记',
-    src: '/demos/demo-reading.mp4',
-    poster: '/demos/demo-reading.jpg',
-    meta: '云溪 · 中文 · 50 秒'
-  },
-  {
-    key: 'commerce',
-    title: '抖音带货 · 边播边备',
-    desc: '滚动合成：话术池见底自动续写，开播中改稿、插播、催单都在同一屏',
-    src: '/demos/demo-commerce.mp4',
-    poster: '/demos/demo-commerce.jpg',
-    meta: '小满 · 中文 · 50 秒'
-  },
-  {
-    key: 'crossborder',
-    title: '跨境好物 · 英文直播',
-    desc: '多语言节目：稿子、演法、合成语言都按 English 走，成交话术一套英文模板',
-    src: '/demos/demo-crossborder.mp4',
-    poster: '/demos/demo-crossborder.jpg',
-    meta: 'Ava · English · 50 秒'
-  }
-]
-
 /** 三种播出方式：对应「合成策略 / 播放策略」，写法与节目编辑弹窗里的选项一致 */
 const modes = [
   {
-    name: '现场发挥',
-    tag: '无底稿',
-    synth: '说一句合成一句',
-    play: '不循环，播完即停',
-    fit: '纯互动：陪聊、答疑、带货时临场答观众'
+    name: '预合成',
+    tag: '开播前做完',
+    synth: '整版底稿一次合成完，逐单元可重试、可导入外部录音',
+    fit: '有声书、播客、需要导出的成片内容'
   },
   {
-    name: '边播边准备',
+    name: '边播边合',
     tag: '滚动',
-    synth: '一段一段滚动合成，池子水位低了自动续',
-    play: '循环复用已合成音频，随时插播改稿',
+    synth: '播一段备几段，补货跟不上时等一下',
     fit: '直播带货：边播边写，后面的稿子还能改'
   },
   {
-    name: '全部做好再播',
-    tag: '预制',
-    synth: '整本一次合成完，逐单元可重试、可导入外部录音',
-    play: '开播前过门禁，音频不齐不会静默开播',
-    fit: '有声书、播客、需要导出的成片内容'
+    name: '实时',
+    tag: '流式',
+    synth: '逐句合成、边生成边播，首句最快出声',
+    fit: '纯互动 / 闲聊：没有整版底稿，现场生成'
   }
 ]
 
 /** 一条流水线：从写稿到复盘 */
 const pipeline = [
-  { icon: ICONS.pen, title: '写稿', desc: '导演按编排与素材写底稿，进底稿库等你过目' },
-  { icon: ICONS.waveform, title: '配音', desc: '在「合成声音」里定这次用哪把嗓子，选完冻结进每段音频' },
-  { icon: ICONS.monitor, title: '播出', desc: '直播台启动节目，话术池按四档优先级出声音' },
+  { icon: ICONS.pen, title: '写稿', desc: '导演按项目里的场次写底稿，进卡片流等你过目' },
+  { icon: ICONS.waveform, title: '合成', desc: '选本场音色与合成时机，已合成的段落会标出来' },
+  { icon: ICONS.monitor, title: '播出', desc: '开播后按稿子顺序播，循环从第一段重来' },
   { icon: ICONS.message, title: '互动', desc: '评论进事件流，主播看一条回一条，或攒一批一起回' },
   { icon: ICONS.chart, title: '留档', desc: '每场留下逐条话术、评论与用量，方便复盘和再播' }
 ]
 
 const showcase = [
-  { src: shotPrograms, title: '节目', desc: '内容类型 × 播出方式 × 播完策略，底稿与音频状态直接标在卡上' },
-  { src: shotAnchors, title: '主播团', desc: '人设卡：名字、音色、性格、口癖、禁区，一个主播串多个节目' },
-  { src: shotKnowledge, title: '素材', desc: '条目带正文、附件与链接；报价只认这里核过的价格' },
-  { src: shotVoices, title: '音色库', desc: '云端音色与克隆音色，克隆前可试听，音色绑死接入与模型' },
-  { src: shotSessions, title: '场次记录', desc: '每场留档，逐条试听、整场导出、观众画像' },
-  { src: shotStats, title: '统计', desc: '概览、排行与热词、用量，按节目归组看 30 天趋势' }
+  { src: shotLive, title: '直播台', desc: '一条卡片流看全部内容，底部播放条管进度与上一段/下一段' },
+  { src: shotVoices, title: '音色库', desc: '云端音色与克隆音色，克隆前可试听，音色绑定接入与模型' },
+  { src: shotSessions, title: '场次记录', desc: '每场留档，逐条试听、整场导出' },
+  { src: shotStats, title: '统计', desc: '概览、排行与热词、用量，按项目归组看趋势' }
 ]
 
 /** 技术规格：给专业用户的一张表 */
@@ -236,19 +193,19 @@ const specs = [
   { k: '语音合成接入', v: '火山引擎（豆包语音）、阿里云百炼、火山播客专用大模型（双人整期合成）' },
   { k: '声音克隆', v: '10–30 秒干净人声；百炼复刻需要公网可访问的样本地址（界面内提供临时上传）' },
   { k: '评论接入', v: '独立的平台连接器小软件，经本机 MCP（Bearer 令牌 + 端口）接入，默认端口 8102' },
-  { k: '输出与推流', v: '伴侣模式（本应用只出声，画面交给直播软件）或直推 RTMP（FFmpeg 随包分发）' },
-  { k: '导出', v: 'MP3 / WAV，分章文件或合并单文件，响度归一' },
-  { k: '数据落盘', v: '全部存本机：Windows %APPDATA%\\YunCast、macOS ~/Library/Application Support/YunCast、Linux ~/.config/YunCast' },
-  { k: '运行环境', v: 'Windows 10+ / macOS 13+（Apple 芯片）/ 主流 64 位 Linux；推流场景建议 8GB 内存以上' },
+  { k: '输出与推流', v: '伴侣模式（本应用只出声，可自动路由到虚拟声卡）或直推 RTMP（FFmpeg 随包分发）' },
+  { k: '导出', v: '场次记录里整场导出 MP3 / WAV，可合并或分文件，响度归一' },
+  { k: '数据落盘', v: '项目在「文档 / YunCast Projects / <项目名>」，应用配置在 %APPDATA%\\YunCast；全都本机' },
+  { k: '运行环境', v: 'Windows 10+（当前发布 Windows 安装包）；源码可自行构建 macOS / Linux；推流场景建议 8GB 内存以上' },
   { k: '许可与技术栈', v: 'MIT 许可 · Electron + React + TypeScript · 无服务端，除你自配的云 API 外不发数据' }
 ]
 
 /** 常见做法 vs 用工作台：写得客观，不贬低别的做法 */
 const compare = [
-  { scene: '开播前准备', manual: '手写话术、逐个试听、临时找配乐', app: '导演按编排写底稿，底稿库逐条过目，合成前先出「本次合成 N 段」的清单' },
-  { scene: '出声', manual: '真人一直守在麦前，或者放一段录好的音频循环', app: '主播按人设讲话，四档话术池排顺序；真人想接手随时插播' },
+  { scene: '开播前准备', manual: '手写话术、逐个试听、临时找配乐', app: '导演按项目里的场次写底稿，卡片流逐条过目，合成前先报要合多少段' },
+  { scene: '出声', manual: '真人一直守在麦前，或者放一段录好的音频循环', app: '主播按稿子顺序讲，插话优先播完；真人想接手随时插播' },
   { scene: '评论', manual: '边讲边瞄弹幕，回不过来就漏掉', app: '评论去重聚合后按批交给主播，它自己判断回一条还是回一批' },
-  { scene: '改稿', manual: '改完得重新录一遍', app: '边播边准备模式下，改稿只影响还没播的段，已播的音频不动' },
+  { scene: '改稿', manual: '改完得重新录一遍', app: '边播边合模式下，改稿只影响还没播的段，已播的音频不动' },
   { scene: '收尾', manual: '凭印象复盘，数据靠平台后台翻', app: '每场留档：逐条话术、评论、事件、观众画像与用量统计' }
 ]
 
@@ -260,11 +217,11 @@ const faqs = [
   },
   {
     q: '收费吗？运行成本大概多少？',
-    a: '软件本身免费且开源（MIT），没有账号也没有服务端。运行时需要自配语言模型与语音合成的 API Key，按服务商单价计费；用量在「统计 → 用量」里按节目归组查看。估算方法见使用文档的「费用与选型」。'
+    a: '软件本身免费且开源（MIT），没有账号也没有服务端。运行时需要自配语言模型与语音合成的 API Key，按服务商单价计费；用量在「统计 → 用量」里按项目归组查看。估算方法见使用文档的「费用与选型」。'
   },
   {
     q: '不会写直播稿能用吗？',
-    a: '可以。绑好编排与素材范围后，直接对导演说「给这场写稿」，它按场景逐段写、查素材核对价格口径，产出进底稿库，你可以逐条改；改完再合成音频。'
+    a: '可以。建好项目后直接点「生成底稿」，导演按项目里的场次逐段写；写的时候你可以插话改口径，拿不准它会先问你。'
   },
   {
     q: '能克隆店家的声音吗？',
@@ -276,19 +233,19 @@ const faqs = [
   },
   {
     q: '直播听起来像真人吗？',
-    a: '声音来自你选的克隆音色或云端音色，本身是真人录音训练的模型；说话内容由语言模型按人设卡生成（性格、口癖、禁区都能约束）。口播质量取决于所选模型与你的底稿，建议先跑一两场校对口径。'
+    a: '声音来自你选的克隆音色或云端音色，本身是真人录音训练的模型；说话内容由语言模型按本场风格与稿子生成。口播质量取决于所选模型与你的底稿，建议先跑一两场校对口径。'
   },
   {
     q: '一边播一边改稿，已播的音频会变吗？',
-    a: '不会。每次合成选定的声音会冻结进那一段产物，改稿只让还没播或文稿已变的段落重新合成；「全部做好再播」的节目开播前会过一道门禁，音频不齐不会静默开播。'
+    a: '不会。每次合成选定的声音会冻结进那一段产物，改稿只让还没播或文稿已变的段落重新合成；选「预合成」的场次开播前会过一道门禁，音频不齐不会静默开播。'
   },
   {
     q: '数据会上传到云端吗？',
-    a: '不会。除了调用你自己配置的 LLM / TTS 云 API，其余数据（编排、底稿、素材、音频、评论记录、用量）都存在本机用户数据目录里，软件没有服务端，也不收集遥测。'
+    a: '不会。除了调用你自己配置的 LLM / TTS 云 API，其余数据（项目、底稿、对话、音频、评论记录、用量）都存在本机用户数据目录里，软件没有服务端，也不收集遥测。'
   },
   {
     q: '平台会不会判定成录播、违规？',
-    a: '判定规则在平台，不在软件。软件这边能保证的是：声音由模型实时合成而不是播录音、话术按你绑定的素材范围生成、涉及价格必须查过素材库口径。建议先用小号试播一场，把话术和承诺逐条审一遍。'
+    a: '判定规则在平台，不在软件。软件这边能保证的是：声音由模型实时合成而不是播录音、话术按你项目的设定生成、涉及价格必须查过资料口径。建议先用小号试播一场，把话术和承诺逐条审一遍。'
   },
   {
     q: '需要什么配置的电脑？',
@@ -304,7 +261,7 @@ const faqs = [
 const marquee = [
   '写稿',
   '声音克隆',
-  '四档话术池',
+  '播放顺序只认稿子',
   '评论去重',
   '直播台',
   '场次留档',
@@ -312,7 +269,7 @@ const marquee = [
   '有声书导出',
   '播客双人',
   '导入外部音频',
-  '素材库核价',
+  '项目导入导出',
   '虚拟声卡'
 ]
 
@@ -633,31 +590,10 @@ onMounted(async () => {
 /* ---------- 三条主线的 tab 状态 ---------- */
 const track = ref('write')
 
-/* ---------- 演示视频弹窗 ---------- */
-const videoOpen = ref(false)
-const videoEl = ref<HTMLVideoElement | null>(null)
-let onKey: ((e: KeyboardEvent) => void) | null = null
-
-const openVideo = () => {
-  videoOpen.value = true
-}
-const closeVideo = () => {
-  videoOpen.value = false
-  videoEl.value?.pause()
-}
-
-onMounted(() => {
-  onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape' && videoOpen.value) closeVideo()
-  }
-  window.addEventListener('keydown', onKey)
-})
-
 onUnmounted(() => {
   document.getElementById('faq-jsonld')?.remove()
   for (const off of teardowns) off()
   stopScroll?.()
-  if (onKey) window.removeEventListener('keydown', onKey)
 })
 </script>
 
@@ -691,17 +627,13 @@ onUnmounted(() => {
           </span>
         </h1>
         <p class="hero-sub reveal d1">
-          写稿、配音、播出、控场、互动，一条流水线都在一个桌面工作台里。
+          写稿、合成、播出、控场、互动，都在一个窗口里。
         </p>
         <div class="hero-cta reveal d2">
           <a v-press class="btn primary" :href="withBase('/download')">
             下载安装包
             <span class="arw" v-html="ICONS.arrow" />
           </a>
-          <button v-press class="btn ghost" type="button" @click="openVideo">
-            <span class="btn-ico" v-html="ICONS.play" />
-            看演示（1 分 08 秒）
-          </button>
           <a v-press class="btn ghost" :href="withBase('/guide/quickstart')">使用文档</a>
         </div>
 
@@ -709,13 +641,10 @@ onUnmounted(() => {
           <div ref="shotEl" class="shot-frame">
             <div class="window">
               <div class="window-bar"><i /><i /><i /><span class="window-url">小云播客坊 YunCast</span></div>
-              <video class="hero-video" src="/demo-loop.mp4" poster="/demo-poster.jpg" autoplay muted loop playsinline />
-              <button v-press class="play-hint" type="button" @click="openVideo" aria-label="播放功能演示">
-                <span v-html="ICONS.play" />
-              </button>
+              <img class="hero-video" :src="shotLive" alt="直播台" />
             </div>
             <!-- 细线标注：把界面上的三个位置直接指出来，比下面的说明文字更有用 -->
-            <span class="call call--left call-a"><em>四档话术池</em><i /></span>
+            <span class="call call--left call-a"><em>卡片流</em><i /></span>
             <span class="call call--left call-b"><em>吸底播放条</em><i /></span>
             <span class="call call--right call-c"><i /><em>导演面板</em></span>
           </div>
@@ -843,12 +772,12 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <!-- ============ 三种播出方式 ============ -->
+    <!-- ============ 合成时机 ============ -->
     <section class="section">
       <div class="inner">
-        <span class="eyebrow reveal"><i>04</i>播出方式</span>
-        <h2 class="display reveal">三种播出方式，<span>先想清楚再开播</span></h2>
-        <p class="lead reveal d1">节目上选一次，之后合成与播放都按它来。</p>
+        <span class="eyebrow reveal"><i>04</i>合成时机</span>
+        <h2 class="display reveal">什么时候合成，<span>开播前定一次</span></h2>
+        <p class="lead reveal d1">在开播配置的「合成」这一步选，选完按钮也跟着变。</p>
         <div class="modes">
           <article
             v-for="(m, i) in modes"
@@ -865,58 +794,13 @@ onUnmounted(() => {
             <dl>
               <dt>合成</dt>
               <dd>{{ m.synth }}</dd>
-              <dt>播放</dt>
-              <dd>{{ m.play }}</dd>
-              <dt>适合</dt>
-              <dd>{{ m.fit }}</dd>
             </dl>
+            <p class="fit">{{ m.fit }}</p>
           </article>
         </div>
-        <p class="more reveal">
-          形态与播出方式怎么搭配，见 <a :href="withBase('/guide/concepts')">核心概念</a>
-        </p>
       </div>
     </section>
 
-    <!-- ============ 演示视频 ============ -->
-    <section id="demo" class="section alt video-section">
-      <div class="inner">
-        <span class="eyebrow reveal"><i>05</i>功能演示</span>
-        <h2 class="display reveal">功能<span>演示</span></h2>
-        <p class="lead reveal d1">
-          上面这段 1 分 08 秒带配音，全部是真实操作——让导演写稿、一句话建节目、新建素材条目、看音色库、回直播台；下面三段是应用自己录的节目实录，画面里写的就是耳朵里听到的。
-        </p>
-        <div class="video-wrap reveal d2">
-          <video
-            ref="videoEl"
-            class="video-player"
-            src="/demo-feature.mp4"
-            poster="/demo-feature.jpg"
-            controls
-            preload="none"
-            playsinline
-          />
-        </div>
-        <div class="demo-grid reveal d3">
-          <figure v-for="d in demos" :key="d.key" class="demo-card">
-            <video :src="d.src" :poster="d.poster" controls preload="none" playsinline />
-            <figcaption>
-              <strong>{{ d.title }}</strong>
-              <p>{{ d.desc }}</p>
-              <span class="demo-meta">{{ d.meta }}</span>
-            </figcaption>
-          </figure>
-        </div>
-        <ul class="video-notes reveal d3">
-          <li>上面是功能演示（1 分 08 秒）：让导演写稿 → 一句话建节目 → 新建素材条目 → 音色库 → 回直播台；旁白本身就是应用内克隆音色合成的</li>
-          <li><b>三段 50 秒节目实录</b>：有声书（全部做好再播）、带货（边播边备）、跨境（English 多语言）</li>
-          <li>节目 = 配置 + 编排（场景序列）+ 卡司 + 素材范围；播到哪一场，左边话术池就高亮到哪一段</li>
-          <li>素材是唯一挂料入口：条目里可以写正文、传附件、贴链接，主播需要时才读</li>
-          <li>播完没内容会自动暂停（不是空转），新内容进池自动接着播</li>
-          <li>想看每一步的细节说明，翻 <a :href="withBase('/guide/interface')">界面一览</a></li>
-        </ul>
-      </div>
-    </section>
 
     <!-- ============ 界面 ============ -->
     <section class="section">
@@ -1011,7 +895,7 @@ $ npm run dev</code></pre>
         <span class="eyebrow reveal"><i>10</i>持续迭代</span>
         <h2 class="display reveal">在持续迭代</h2>
         <p class="lead reveal d1">
-          每个版本都发布三端安装包与更新说明，应用内「设置 → 关于」可以直接检查更新。
+          每个版本都发布安装包与更新说明，应用内「设置 → 关于」可以直接检查更新。
         </p>
         <ol class="releases">
           <li
@@ -1078,19 +962,6 @@ $ npm run dev</code></pre>
       </div>
     </section>
 
-    <!-- ============ 视频弹窗 ============ -->
-    <div v-if="videoOpen" class="video-modal" @click.self="closeVideo">
-      <div class="video-modal-inner">
-        <header>
-          <div>
-            <strong>小云播客坊 · 功能演示</strong>
-            <span>1 分 08 秒 · 真实操作 + 应用合成配音</span>
-          </div>
-          <button type="button" class="modal-close" aria-label="关闭" @click="closeVideo">✕</button>
-        </header>
-        <video src="/demo-feature.mp4" controls autoplay playsinline />
-      </div>
-    </div>
   </div>
 </template>
 

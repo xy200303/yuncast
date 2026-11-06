@@ -332,7 +332,10 @@ export function CardStream() {
                           <AudioWaveform /> 单独合成
                         </DropdownMenuItem>
                       )}
-                      <DropdownMenuItem disabled={row.played || playing} onSelect={() => setEditing({ id: item.id, text })}>
+                      <DropdownMenuItem
+                        disabled={row.played || playing}
+                        onSelect={() => setEditing({ id: item.id, text: item.text })}
+                      >
                         <Pencil /> 改稿
                       </DropdownMenuItem>
                       <DropdownMenuSeparator />
@@ -366,6 +369,9 @@ export function CardStream() {
                     <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
                       取消
                     </Button>
+                    <span className="text-[11px] text-muted-foreground">
+                      编辑的是原文，演法标记（&lt;cot&gt; / &lt;pause&gt; / &lt;fx&gt;）照常保留
+                    </span>
                   </div>
                 </div>
               ) : (

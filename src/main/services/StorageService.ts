@@ -2107,40 +2107,6 @@ export class StorageService {
     this.adb.prepare('DELETE FROM tts_cache WHERE param_key = ?').run(paramKey)
   }
 
-  /** 所有音频路径及其 owner（BlobStore 老缓存迁移用）：pool_items + draft_units 两表并集 */
-  audioPathOwners(): { path: string; ownerKind: 'draft_unit' | 'pool_item'; ownerId: string }[] {
-    const rows = this.db
-      .prepare(
-        `SELECT audio_path AS path, 'pool_item' AS kind, id AS oid FROM pool_items WHERE audio_path IS NOT NULL AND audio_path != ''
-         UNION ALL
-         SELECT audio_path AS path, 'draft_unit' AS kind, id AS oid FROM draft_units WHERE audio_path IS NOT NULL AND audio_path != ''`
-      )
-      .all() as Record<string, unknown>[]
-    return rows.map((row) => ({
-      path: str(row.path),
-      ownerKind: str(row.kind) as 'draft_unit' | 'pool_item',
-      ownerId: str(row.oid)
-    }))
-  }
-
-  /** 迁移期路径改写：把 owner 行的文件路径改成 newPath。按行 id 定位（库内路径斜杠风格不一，不做字符串比对）；不触发引用钩子——迁移过程已显式登记过引用 */
-  rewriteOwnerPath(
-    ownerKind: 'draft_unit' | 'pool_item' | 'voice' | 'knowledge_file',
-    ownerId: string,
-    newPath: string
-  ): void {
-    const target =
-      ownerKind === 'draft_unit'
-        ? { table: 'draft_units', column: 'audio_path' }
-        : ownerKind === 'pool_item'
-          ? { table: 'pool_items', column: 'audio_path' }
-          : ownerKind === 'voice'
-            ? { table: 'voices', column: 'sample_path' }
-            : { table: 'material_files', column: 'file_path' }
-    const db = ownerKind === 'voice' ? this.adb : this.db
-    db.prepare(`UPDATE ${target.table} SET ${target.column} = ? WHERE id = ?`).run(newPath, ownerId)
-  }
-
   // ---------- 知识库 ----------
 
   materialList(): Material[] {
@@ -2555,30 +2521,6 @@ export class StorageService {
     }))
   }
 
-  /** 迁移期 rendered 路径改写（不触发引用钩子——迁移过程已显式登记） */
-  rewriteRenderedPath(ownerKind: 'draft_unit_rendered' | 'scene_rendered', ownerId: string, newPath: string): void {
-    if (ownerKind === 'draft_unit_rendered') {
-      const row = this.db.prepare('SELECT rendered AS r FROM draft_units WHERE id = ?').get(ownerId) as Record<string, unknown> | undefined
-      const rendered = parseJson<RenderedAudioRef | null>(row?.r, null)
-      if (!rendered) return
-      this.db
-        .prepare('UPDATE draft_units SET rendered = ? WHERE id = ?')
-        .run(JSON.stringify({ ...rendered, audioPath: newPath }), ownerId)
-      return
-    }
-    for (const row of this.db.prepare('SELECT id, plan FROM scripts').all() as Record<string, unknown>[]) {
-      const plan = parseJson<{ scenes: { id?: string; rendered?: RenderedAudioRef }[] }>(row.plan, { scenes: [] })
-      const index = plan.scenes.findIndex((scene) => scene.id === ownerId)
-      if (index < 0) continue
-      const rendered = plan.scenes[index].rendered
-      if (!rendered) return
-      const scenes = [...plan.scenes]
-      scenes[index] = { ...scenes[index], rendered: { ...rendered, audioPath: newPath } }
-      this.db.prepare('UPDATE scripts SET plan = ? WHERE id = ?').run(JSON.stringify({ scenes }), str(row.id))
-      return
-    }
-  }
-
   // ---------- 剧本资产 ----------
 
   // ---------- 项目清单（应用库）----------
@@ -2666,24 +2608,6 @@ export class StorageService {
 
   programSetSceneIdx(id: string, idx: number): void {
     this.db.prepare('UPDATE project SET scene_idx = ?, updated_at = ? WHERE id = ?').run(idx, Date.now(), id)
-  }
-
-  /** 场景推进进度落库（断播能续） */
-  renderedPathOwners(): { path: string; ownerKind: 'draft_unit_rendered' | 'scene_rendered'; ownerId: string }[] {
-    const out: { path: string; ownerKind: 'draft_unit_rendered' | 'scene_rendered'; ownerId: string }[] = []
-    for (const row of this.db.prepare('SELECT id, rendered FROM draft_units').all() as Record<string, unknown>[]) {
-      const rendered = parseJson<RenderedAudioRef | null>(row.rendered, null)
-      if (rendered?.audioPath) out.push({ path: rendered.audioPath, ownerKind: 'draft_unit_rendered', ownerId: str(row.id) })
-    }
-    for (const row of this.db.prepare('SELECT id, plan FROM scripts').all() as Record<string, unknown>[]) {
-      const plan = parseJson<{ scenes: { id?: string; rendered?: RenderedAudioRef }[] }>(row.plan, { scenes: [] })
-      for (const scene of plan.scenes) {
-        if (scene.rendered?.audioPath && scene.id) {
-          out.push({ path: scene.rendered.audioPath, ownerKind: 'scene_rendered', ownerId: scene.id })
-        }
-      }
-    }
-    return out
   }
 
   // ---------- 话术库（draft_units） ----------

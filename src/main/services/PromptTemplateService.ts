@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto'
 import { buildBroadcastPromptModule, type SessionPromptShape } from '../../shared/programPrompt'
 import {
   type DirectorConfig,
@@ -7,8 +6,6 @@ import {
   type SessionConfig
 } from '../../shared/types'
 import type { StorageService } from './StorageService'
-
-const sha256 = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex')
 
 /**
  * 提示词模板服务（导演手册）：所有发给 LLM 的模板文本集中在这里。
@@ -31,23 +28,6 @@ export interface PromptTemplateInfo extends PromptTemplateDef {
   /** 走内置默认（表里没有这一行） */
   isDefault: boolean
 }
-
-/**
- * 历史默认文本的 sha256 指纹：只用于启动时清理存量库——老版本的播种机制会把默认文本写进表，
- * 这些行看着像"用户改过"，其实是旧默认。命中指纹的直接删掉，等于让它回到"走默认"。
- * 幂等、每次都跑（十几行哈希，成本可忽略）；等确认没人还留着老库了，整块删掉即可。
- */
-const LEGACY_DEFAULT_HASHES = new Set([
-  '8d3f1e71e0c40f3cee3b0aa933a11f60dc2edc1e8d4aaedfeb2ce2b4518fb791',
-  '4d32c75ef7d8f153fadfd6aec9fd7abf8597b6bf417816e9a033272e033d2a09',
-  '429a56ea8cac9d9cfee267177785b58fc84f3e3bf13d635bef8aa5258b62938b',
-  '00fb585aff2f3a53cc43ac72dfff1903002f49893f00b348cb6fa1e481d943aa',
-  '813e178b76541895c3928b435021d72dcc8dd1ed8d62f9200ddb969158fd4a92',
-  '06fe4d503a1205e9ac2a3f4a9bdc370bf843f5b9dce239344e16537b0e12b1b6',
-  '6cbb4f3b0516c3494dcc1580541ac8b49859661f8ce71e92f080753ba6b8293c',
-  'fd7800a3d2293c2dbab58553f4d6842a59e8c646a8ceac1ced9cfa62faa0cffd',
-  '8cbbea384c0f9c0395dc0fbb9bade5cc1bc0488beb3caa5a150b965e69ab5684'
-])
 
 const DEFAULT_PROMPTS = {
   'system.director': {
@@ -238,16 +218,15 @@ export type PromptKey = keyof typeof DEFAULT_PROMPTS
 
 export class PromptTemplateService {
   constructor(private readonly storage: StorageService) {
-    // 启动只做一件事：清掉存量库里的残留行——代码里已经不存在的死 key，
-    // 以及老播种机制写进去的默认文本（命中历史指纹）。清完这些行就等于「走默认」。
-    // 表里留下的每一行，从此都确定是用户手改过的内容。
+    // 启动只做一件事：清掉代码里已经不存在的死 key，以及内容与默认一致的行。
+    // 表里留下来的每一行，从此都确定是用户手改过的内容。
     for (const row of this.storage.promptTemplateRows()) {
       const def = DEFAULT_PROMPTS[row.key as PromptKey]
       if (!def) {
         this.storage.promptTemplateDelete(row.key)
         continue
       }
-      if (row.content === def.content || LEGACY_DEFAULT_HASHES.has(sha256(row.content))) {
+      if (row.content === def.content) {
         this.storage.promptTemplateDelete(row.key)
       }
     }

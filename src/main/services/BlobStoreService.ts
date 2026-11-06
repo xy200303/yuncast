@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream, existsSync } from 'node:fs'
-import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
-import { join, resolve } from 'node:path'
+import { mkdir, rename, rm, stat } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { app } from 'electron'
@@ -10,8 +10,8 @@ import type { StorageService } from './StorageService'
 /** 无引用 blob 的宽限期：撤销/导出/写一半的竞态都靠它兜底——磁盘多占几天不是事，误删是事故 */
 const GRACE_MS = 7 * 24 * 3600_000
 
-/** 缓存级 blob（有 TTS 别名但没 owner 引用）的容量上限，超出按最久未见逐出；AGENT_ANCHOR_AUDIO_CACHE_MB 可覆盖 */
-const CACHE_MAX_BYTES = Math.max(0, Number(process.env.AGENT_ANCHOR_AUDIO_CACHE_MB ?? 500)) * 1024 * 1024
+/** 缓存级 blob（有 TTS 别名但没 owner 引用）的容量上限，超出按最久未见逐出；YUN_CAST_AUDIO_CACHE_MB 可覆盖 */
+const CACHE_MAX_BYTES = Math.max(0, Number(process.env.YUN_CAST_AUDIO_CACHE_MB ?? 500)) * 1024 * 1024
 
 const EXT_MIME: Record<string, string> = {
   mp3: 'audio/mpeg',
@@ -25,9 +25,6 @@ const EXT_MIME: Record<string, string> = {
   webp: 'image/webp',
   mp4: 'video/mp4'
 }
-
-/** 老 audio-cache 文件名里的 TTS 参数指纹（迁移时提成 tts_cache 别名） */
-const LEGACY_TTS_NAME = /^tts-([0-9a-f]{20})\.(\w+)$/
 
 export interface BlobPutResult {
   hash: string
@@ -227,170 +224,6 @@ export class BlobStoreService {
       console.log(`[BlobStore] GC：回收 ${removed} 个 blob（${(freedBytes / 1024 / 1024).toFixed(1)}MB）`)
     }
     return { removed, freedBytes }
-  }
-
-  /**
-   * 一次性迁移：老 audio-cache 全部文件搬进 blobs。
-   * 文件名里的参数指纹（tts-<sha1-20>.<ext>）提成 tts_cache 别名，缓存语义无缝延续；
-   * 被 pool_items/draft_units 引用的补登记引用，并把行内路径改写到新位置。
-   */
-  async migrateLegacyAudioCache(): Promise<{ moved: number }> {
-    const legacyDir = join(app.getPath('userData'), 'audio-cache')
-    const names = await readdir(legacyDir).catch(() => [] as string[])
-    if (names.length === 0) return { moved: 0 }
-    // 迁移期间引用快照：同一路径可能被多个 owner 引用，逐个补登记。
-    // 库里存的路径可能是正斜杠，join 出来的是反斜杠——两边都 resolve+小写归一化再比对
-    const referenced = this.storage.poolItemReferencedAudioPaths()
-    const ownersByPath = new Map<string, { kind: 'draft_unit' | 'pool_item'; id: string }[]>()
-    if (referenced.length > 0) {
-      for (const row of this.storage.audioPathOwners()) {
-        const key = resolve(row.path).toLowerCase()
-        const list = ownersByPath.get(key) ?? []
-        list.push({ kind: row.ownerKind, id: row.ownerId })
-        ownersByPath.set(key, list)
-      }
-    }
-    let moved = 0
-    for (const name of names) {
-      const src = join(legacyDir, name)
-      const srcKey = resolve(src).toLowerCase()
-      const info = await stat(src).catch(() => null)
-      if (!info?.isFile()) continue
-      const match = LEGACY_TTS_NAME.exec(name)
-      const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : 'mp3'
-      try {
-        const put = await this.putFile(src, ext)
-        moved += 1
-        if (match) this.storage.ttsCachePut(`tts-${match[1]}`, put.hash)
-        const owners = ownersByPath.get(srcKey) ?? []
-        for (const owner of owners) {
-          this.storage.blobAddRef(put.hash, owner.kind, owner.id)
-          this.storage.rewriteOwnerPath(owner.kind, owner.id, put.path)
-        }
-      } catch (error) {
-        console.warn(`[BlobStore] 迁移老缓存失败（留在原处）：${name}`, error)
-      }
-    }
-    if (moved > 0) console.log(`[BlobStore] 老缓存迁移完成：${moved} 个文件入 blobs`)
-    return { moved }
-  }
-
-  /**
-   * 一次性迁移：老 voices/ 目录里的克隆音色样本搬进 blobs（asset 档）。
-   * 样本是用户原始录音、不可再生，所以是资产级；迁移后 voices.sample_path 改写到 blob 路径并登记引用。
-   * 文件已丢失的行保持原样（试听本来就坏了，路径留着便于诊断）。
-   */
-  async migrateVoiceSamples(): Promise<{ moved: number }> {
-    const voices = this.storage.listVoices()
-    let moved = 0
-    for (const voice of voices) {
-      const samplePath = voice.samplePath
-      if (!samplePath || this.isBlobPath(samplePath)) continue
-      const info = await stat(samplePath).catch(() => null)
-      if (!info?.isFile()) continue
-      const ext = samplePath.includes('.') ? samplePath.split('.').pop()!.toLowerCase() : 'mp3'
-      try {
-        const put = await this.putFile(samplePath, ext, { tier: 'asset' })
-        this.storage.blobAddRef(put.hash, 'voice', voice.id)
-        this.storage.rewriteOwnerPath('voice', voice.id, put.path)
-        moved += 1
-      } catch (error) {
-        console.warn(`[BlobStore] 音色样本迁移失败（留在原处）：${voice.name}`, error)
-      }
-    }
-    if (moved > 0) console.log(`[BlobStore] 音色样本迁移完成：${moved} 个入 blobs（asset 档）`)
-    // 收尾：老 voices 目录里没被任何音色引用的残留（旧 saveSample 的遗弃暂存，新版走 temp 档不再漏）清掉
-    const legacyDir = join(app.getPath('userData'), 'voices')
-    const keep = new Set(
-      this.storage
-        .listVoices()
-        .map((voice) => voice.samplePath)
-        .filter(Boolean)
-        .map((path) => resolve(path).toLowerCase())
-    )
-    let cleaned = 0
-    for (const name of await readdir(legacyDir).catch(() => [] as string[])) {
-      const file = join(legacyDir, name)
-      if (keep.has(resolve(file).toLowerCase())) continue
-      const info = await stat(file).catch(() => null)
-      if (!info?.isFile()) continue
-      await rm(file, { force: true }).then(() => (cleaned += 1)).catch(() => undefined)
-    }
-    if (cleaned > 0) console.log(`[BlobStore] 老 voices 目录残留清理：${cleaned} 个遗弃暂存文件`)
-    return { moved }
-  }
-
-  /**
-   * 一次性迁移：老 program-audio/ 目录（整章拼接产物 + 导入的外部音频）搬进 blobs（cache 档）。
-   * owner 是 rendered JSON（draftUnits.rendered / scripts.scenes[].rendered），迁移后改写 JSON 里的
-   * audioPath 并登记引用（ownerKind = draft_unit_rendered / scene_rendered）。
-   * 没被任何 rendered 引用的残留文件不入库——cache 档无引用宽限期会清，直接删掉。
-   */
-  async migrateProgramAudio(): Promise<{ moved: number }> {
-    const legacyDir = join(app.getPath('userData'), 'program-audio')
-    const names = await readdir(legacyDir).catch(() => [] as string[])
-    if (names.length === 0) return { moved: 0 }
-    const ownersByPath = new Map<string, { kind: 'draft_unit_rendered' | 'scene_rendered'; id: string }[]>()
-    for (const row of this.storage.renderedPathOwners()) {
-      const key = resolve(row.path).toLowerCase()
-      const list = ownersByPath.get(key) ?? []
-      list.push({ kind: row.ownerKind, id: row.ownerId })
-      ownersByPath.set(key, list)
-    }
-    let moved = 0
-    let dropped = 0
-    for (const name of names) {
-      const src = join(legacyDir, name)
-      const srcKey = resolve(src).toLowerCase()
-      const info = await stat(src).catch(() => null)
-      if (!info?.isFile()) continue
-      const owners = ownersByPath.get(srcKey) ?? []
-      if (owners.length === 0) {
-        // 无引用的历史残留（旧版孤儿清理漏网的）：不迁移，直接删
-        await rm(src, { force: true }).then(() => (dropped += 1)).catch(() => undefined)
-        continue
-      }
-      const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : 'mp3'
-      try {
-        const put = await this.putFile(src, ext)
-        moved += 1
-        for (const owner of owners) {
-          this.storage.blobAddRef(put.hash, owner.kind, owner.id)
-          this.storage.rewriteRenderedPath(owner.kind, owner.id, put.path)
-        }
-      } catch (error) {
-        console.warn(`[BlobStore] program-audio 迁移失败（留在原处）：${name}`, error)
-      }
-    }
-    if (moved > 0 || dropped > 0) {
-      console.log(`[BlobStore] program-audio 迁移完成：${moved} 个入 blobs，${dropped} 个无引用残留清除`)
-    }
-    return { moved }
-  }
-
-  /**
-   * 一次性迁移：知识库附件复制进 blobs（asset 档——用户文档，GC 永不主动删）。
-   * 注意是 copy（move=false）：老库 file_path 指向用户自己的文件，不能拿走；
-   * 迁移后 file_path 指向 blob，用户移动/删除原文件不影响重新解析。
-   */
-  async migrateMaterialFiles(): Promise<{ moved: number }> {
-    let moved = 0
-    for (const file of this.storage.materialFileList()) {
-      if (!file.filePath || this.isBlobPath(file.filePath)) continue
-      const info = await stat(file.filePath).catch(() => null)
-      if (!info?.isFile()) continue
-      const ext = file.filePath.includes('.') ? file.filePath.split('.').pop()!.toLowerCase() : ''
-      try {
-        const put = await this.putFile(file.filePath, ext, { tier: 'asset', move: false })
-        this.storage.blobAddRef(put.hash, 'knowledge_file', file.id)
-        this.storage.rewriteOwnerPath('knowledge_file', file.id, put.path)
-        moved += 1
-      } catch (error) {
-        console.warn(`[BlobStore] 知识库附件迁移失败（留在原处）：${file.name}`, error)
-      }
-    }
-    if (moved > 0) console.log(`[BlobStore] 知识库附件迁移完成：${moved} 个入 blobs（asset 档）`)
-    return { moved }
   }
 
   /** 启动时清写入残留的临时目录（崩溃安全的一环） */

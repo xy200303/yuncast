@@ -2,7 +2,7 @@ import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, shell } fro
 import { randomUUID } from 'node:crypto'
 import { followAppTheme, paintAllWindows, titleBarOverlay, watchSystemChrome, windowBackground } from './window-chrome'
 import { join } from 'node:path'
-import { appendFileSync, existsSync, mkdirSync, readlinkSync, renameSync, symlinkSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readlinkSync, symlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { readFile } from 'node:fs/promises'
 import { IPC } from '../shared/ipc-channels'
@@ -152,19 +152,9 @@ import { getFfmpegPath } from './services/stream/ffmpeg/bin'
 
 // 固定到 %APPDATA%\YunCast。必须在 ready 之前设置，
 // 否则开发时和打包后目录名不一致，配置会看起来"丢了"。
-// 旧品牌目录 AgentAnchor 做一次性整体搬迁；测试/并行实例可用 YUN_CAST_USER_DATA（兼容 AGENT_ANCHOR_USER_DATA）指向别的目录。
-const userDataOverride = process.env['YUN_CAST_USER_DATA'] ?? process.env['AGENT_ANCHOR_USER_DATA']
+// 测试/并行实例可用 YUN_CAST_USER_DATA 指向别的目录；打包和开发都固定 %APPDATA%YunCast
+const userDataOverride = process.env['YUN_CAST_USER_DATA']
 const userDataDir = join(app.getPath('appData'), 'YunCast')
-if (!userDataOverride && !existsSync(userDataDir)) {
-  const legacyDir = join(app.getPath('appData'), 'AgentAnchor')
-  if (existsSync(legacyDir)) {
-    try {
-      renameSync(legacyDir, userDataDir)
-    } catch {
-      // 目录被占用等原因搬不动就放弃，新目录从零开始
-    }
-  }
-}
 app.setPath('userData', userDataOverride ?? userDataDir)
 
 let mainWindow: BrowserWindow | null = null
@@ -1932,19 +1922,9 @@ if (!single) {
       console.warn('[YunCast] ffmpeg 不可用:', error instanceof Error ? error.message : error)
     }
 
-    // BlobStore：启动清临时区 → 异步迁移老目录（audio-cache / voices / program-audio / 知识库附件，不阻塞窗口）→ 之后每 30 分钟 GC
+    // BlobStore：启动清临时区 → 异步扫一遍孤儿/超容量缓存 → 之后每 30 分钟 GC
     void blobs.sweepTmp()
-    void (async () => {
-      try {
-        await blobs.migrateLegacyAudioCache()
-        await blobs.migrateVoiceSamples()
-        await blobs.migrateProgramAudio()
-        await blobs.migrateMaterialFiles()
-        await blobs.sweep()
-      } catch (error) {
-        console.warn('[BlobStore] 启动迁移失败:', error)
-      }
-    })()
+    void blobs.sweep().catch((error) => console.warn('[BlobStore] 启动清扫失败:', error))
     audioCacheSweep = setInterval(() => void blobs.sweep(), 30 * 60_000)
     audioCacheSweep.unref?.()
     timerInterval.unref?.()

@@ -533,17 +533,15 @@ export class AgentService {
   }
 
   /** 当前项目上次存下的消息（没有 = 全新对话）。
-   *  兼容旧格式：pi-coding-agent 时代的 FileEntry 树形 entries 一次性转成线性消息（我们从不分叉，文件序即时间序）。 */
+   *  旧版 FileEntry 树形存档不再支持：读到就当作全新对话，别把历史格式带进会话。 */
   private restoredMessages(): AgentMessage[] | undefined {
     const saved = this.storage.loadProgramSession(this.sessionKey())
     if (!saved) return undefined
     try {
       const parsed = JSON.parse(saved.entries) as Record<string, unknown>[]
       if (!Array.isArray(parsed) || parsed.length === 0) return undefined
-      const legacy = typeof parsed[0]?.type === 'string' && !('role' in parsed[0])
-      let messages = (
-        legacy ? parsed.filter((e) => e.type === 'message').map((e) => e.message) : parsed
-      ) as AgentMessage[]
+      if (typeof parsed[0]?.type === 'string' && !('role' in parsed[0])) return undefined
+      let messages = parsed as AgentMessage[]
       // 剥掉首部 system 消息：恢复时让当前导演手册重新 prepend
       while (messages.length > 0 && (messages[0] as { role?: string }).role === 'system') {
         messages = messages.slice(1)

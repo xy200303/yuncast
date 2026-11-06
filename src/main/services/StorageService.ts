@@ -1277,15 +1277,24 @@ export class StorageService {
    * 最近播完的条目。
    * programId 传了就只取这个节目的（直播台的历史必须按节目隔离——否则切到别的节目，
    * 中间会混进上一场甚至别的节目的残留，看着像"这段话我没说过"）。
+   * sessionId 传了就只取这一场的（播出中卡片流只展示本场播过什么，不混上一场）。
    */
-  poolItemRecentPlayed(n: number, programId?: string): PoolItem[] {
-    const sql = programId
-      ? `SELECT p.* FROM pool_items p
-           JOIN live_sessions s ON s.id = p.live_session_id
-          WHERE p.status IN ('done', 'interrupted') AND s.script_id = ?
-          ORDER BY p.played_at DESC LIMIT ?`
-      : "SELECT * FROM pool_items WHERE status IN ('done', 'interrupted') ORDER BY played_at DESC LIMIT ?"
-    const rows = (programId ? this.db.prepare(sql).all(programId, n) : this.db.prepare(sql).all(n)) as unknown[]
+  poolItemRecentPlayed(n: number, programId?: string, sessionId?: string): PoolItem[] {
+    const conditions = ["p.status IN ('done', 'interrupted')"]
+    const args: string[] = []
+    if (programId) {
+      conditions.push('s.script_id = ?')
+      args.push(programId)
+    }
+    if (sessionId) {
+      conditions.push('p.live_session_id = ?')
+      args.push(sessionId)
+    }
+    const sql = `SELECT p.* FROM pool_items p
+      ${programId ? 'JOIN live_sessions s ON s.id = p.live_session_id' : ''}
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY p.played_at DESC LIMIT ?`
+    const rows = this.db.prepare(sql).all(...args, n) as unknown[]
     return rows.map((row) => rowToItem(row as PoolItemRow))
   }
 

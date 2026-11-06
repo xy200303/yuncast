@@ -41,6 +41,16 @@ export function narrativeOrder(list: DraftUnit[]): DraftUnit[] {
   return [...list].sort((a, b) => a.seq - b.seq || a.createdAt - b.createdAt)
 }
 
+/**
+ * 一段底稿最终用哪把嗓子：主播映射 > 段落音色快照 > 本场默认音色。
+ * 合成、装载、卡片展示都走这一个口径，避免「库里合的是苏瑶、界面显示芊悦」。
+ */
+export function resolveDraftVoice(unit: DraftUnit, session?: SessionConfig | null): string {
+  const speaker = (unit.speaker ?? '').trim()
+  const mapped = speaker ? (session?.speakerVoices?.[speaker] ?? '').trim() : ''
+  return mapped || unit.voiceId.trim() || (session?.voiceId ?? '').trim()
+}
+
 export function listAudioUnits(
   _program: Program,
   script: Script | null,

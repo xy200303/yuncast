@@ -1609,6 +1609,9 @@ if (!single) {
     // 目录被拷到别处时先把失效路径按哈希重绑回来，再清临时区、扫孤儿文件
     projects.onSwitched = (id) => {
       if (!id) return
+      // 上次进程被杀/崩溃时停在「在播」的条目没有消费者了，切项目时退回队列外，
+      // 否则卡片会一直显示在播、改稿/跳过全被禁掉
+      pool?.resetStalePlaying()
       files.rebind()
       files.cleanTemp()
       void files.sweep().catch((error) => console.warn('[项目文件] 清扫失败:', error))

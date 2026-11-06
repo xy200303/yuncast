@@ -25,7 +25,7 @@ import { resolveModelForDirector } from './llmModel'
 import { friendlyError } from './errorTranslate'
 import { getLlmProvider } from './providers/registry'
 import { findCloneVoice } from '../../shared/voiceProvider'
-import { audioProgress, evaluateGate, listAudioUnits, narrativeOrder } from './programUnits'
+import { audioProgress, evaluateGate, listAudioUnits, narrativeOrder, resolveDraftVoice } from './programUnits'
 import { policyFor } from './broadcastPolicy'
 
 /** 超过这么久没重测发音，预检提醒重测（docs/07 §8.5 语音可用性） */
@@ -584,8 +584,8 @@ export class ProgramPlaybackService {
     ready.forEach((u, index) => {
       // 本场装过就不再装：回卷复用原条目，补装只补新稿（否则每来一批新稿，旧稿会被整库重装一遍）
       if (this.pool.hasLoadedInSession(`ut:${u.id}`)) return
-      // 口径：段落音色快照 > 本场默认音色
-      const voice = u.voiceId.trim() || (this.storage.sessionConfigLatest(program.id)?.voiceId ?? '').trim()
+      // 口径与合成一致：主播映射 > 段落音色快照 > 本场默认音色
+      const voice = resolveDraftVoice(u, this.storage.sessionConfigLatest(program.id))
       const reusable = Boolean(u.audioPath) && (u.synthVoice ?? '') === voice
       try {
         this.pool.say({

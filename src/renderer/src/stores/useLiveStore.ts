@@ -143,10 +143,12 @@ function rowKey(item: PoolItem): string {
  */
 export function mergeRows(history: PoolItem[], queue: PoolItem[], drafts: DraftUnit[] = []): CardRow[] {
   const ranks = scriptRanks(drafts)
+  const draftById = new Map(drafts.map((draft) => [draft.id, draft]))
   const rows = new Map<string, CardRow>()
   for (const item of [...history, ...queue]) {
     const key = rowKey(item)
-    const next: CardRow = { item, played: item.status === 'done' }
+    const draft = item.originDraftUnitId ? draftById.get(item.originDraftUnitId) : undefined
+    const next: CardRow = { item, played: item.status === 'done', draft }
     const prev = rows.get(key)
     // 队列里还有这条（没播完/刚回卷）就以队列为准，历史那份是上一轮的
     if (!prev || prev.played) rows.set(key, next)

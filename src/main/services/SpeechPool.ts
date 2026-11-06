@@ -101,13 +101,24 @@ export class SpeechPool {
     private readonly tts: TtsService,
     private readonly broadcast: (snapshot: PoolSnapshot) => void
   ) {
-    // 重启后上次留下的未播完条目全部作废——音频可能还在但播放上下文没了
-    for (const item of this.storage.poolItemActive()) {
-      this.storage.poolItemUpdate(item.id, { status: 'skipped', error: '应用重启，队列重置' })
-    }
     // 时效清扫兜底（正常路径在每次 refresh 里做）
     this.sweepTimer = setInterval(() => this.refresh(), 5000)
     this.sweepTimer.unref?.()
+  }
+
+  /**
+   * 打开/切换项目时清场：上次进程被杀或崩溃时停在「在播」的条目没有任何消费者了，
+   * 留着会让卡片永远显示在播、编辑/跳过全被禁掉。退回队列外的「已跳过」，等稿子重新装载。
+   */
+  resetStalePlaying(): number {
+    let count = 0
+    for (const item of this.storage.poolItemActive()) {
+      if (item.status !== 'playing') continue
+      this.storage.poolItemUpdate(item.id, { status: 'skipped', error: '上次退出时未播完，队列已重置' })
+      count++
+    }
+    if (count > 0) this.refresh()
+    return count
   }
 
   /** 当前剧本：池的读路径（播放/快照/容量/重排）只认这本剧本的条目，别本剧本的存货不参与 */
@@ -454,7 +465,9 @@ export class SpeechPool {
   }
 
   getRecentPlayed(n: number, programId?: string): PoolItem[] {
-    return this.storage.poolItemRecentPlayed(Math.max(1, Math.min(n, 50)), programId)
+    // 播出中只回本场的已播（卡片流/进度条都跟着这一场走，不混上一场的存货）
+    const sessionId = this.sessionId && this.sessionId !== DEFAULT_SESSION_ID ? this.sessionId : undefined
+    return this.storage.poolItemRecentPlayed(Math.max(1, Math.min(n, 50)), programId, sessionId)
   }
 
   snapshot(): PoolSnapshot {

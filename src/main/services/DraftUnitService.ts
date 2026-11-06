@@ -24,7 +24,7 @@ import type { TtsService } from './TtsService'
 import type { ScriptService } from './ScriptService'
 import { findTtsCatalogVoice, ttsModelCapabilities } from './providers/registry'
 import { getFfmpegPath } from './stream/ffmpeg/bin'
-import { listAudioUnits, narrativeOrder, type AudioUnit } from './programUnits'
+import { listAudioUnits, narrativeOrder, resolveDraftVoice, type AudioUnit } from './programUnits'
 
 /** 外部音频允许导入的格式（与克隆样本的交集一致） */
 const IMPORT_AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a'])
@@ -1078,20 +1078,11 @@ export class DraftUnitService {
     return (this.storage.sessionConfigLatest(programId)?.voiceId ?? '').trim()
   }
 
-  /** 开播配置里「按主播配的音色」：稿子里标了 speaker 的段落优先用它 */
-  private speakerVoice(unit: DraftUnit, programId: string): string {
-    const label = (unit.speaker ?? '').trim()
-    if (!label) return ''
-    return (this.storage.sessionConfigLatest(programId)?.speakerVoices?.[label] ?? '').trim()
-  }
-
   /** 一条底稿最终用哪把嗓子：显式覆盖 > 主播映射 > 段落音色 > 本场默认 */
   private unitVoice(unit: DraftUnit, programId: string, overrideVoice?: string): string {
     return (
       (overrideVoice ?? '').trim() ||
-      this.speakerVoice(unit, programId) ||
-      unit.voiceId.trim() ||
-      this.defaultVoice(programId)
+      resolveDraftVoice(unit, this.storage.sessionConfigLatest(programId))
     )
   }
 

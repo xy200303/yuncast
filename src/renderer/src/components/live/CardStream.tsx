@@ -51,6 +51,15 @@ function mmss(ms: number): string {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
+/** 主播标识 → 圆点颜色：同一个标识固定同色，多人直播时一眼区分 */
+const SPEAKER_COLORS = ['#2563eb', '#c026d3', '#0d9488', '#ea580c', '#7c3aed', '#db2777']
+
+function speakerColor(label: string): string {
+  let hash = 0
+  for (let i = 0; i < label.length; i++) hash = (hash * 31 + label.charCodeAt(i)) >>> 0
+  return SPEAKER_COLORS[hash % SPEAKER_COLORS.length]
+}
+
 export function CardStream() {
   const pool = useAppStore((s) => s.pool)
   const history = useLiveStore((s) => s.history)
@@ -139,10 +148,10 @@ export function CardStream() {
     const seen = new Set(draftRows.map((row) => row.item.id))
     return [...draftRows, ...failedRows.filter((row) => !seen.has(row.item.id))]
   }, [live, history, pool.items, pool.failed, drafts])
-  const speakerOf = (row: CardRow): { name: string; color: string } => ({
-    name: (row.draft?.speaker ?? '').trim(),
-    color: '#1d4ed8'
-  })
+  const speakerOf = (row: CardRow): { name: string; color: string } => {
+    const name = (row.draft?.speaker ?? '').trim()
+    return { name, color: name ? speakerColor(name) : '#1d4ed8' }
+  }
   const multiSpeaker = drafts.some((unit) => (unit.speaker ?? '').trim().length > 0)
 
   const saveEdit = async (row: CardRow): Promise<void> => {
@@ -241,11 +250,15 @@ export function CardStream() {
           const dim = row.played
           const speaker = speakerOf(row)
           const text = stripSpeechTags(item.text)
-          // 译文只用于显示：老数据里可能带着 <cot>/<pause> 标记，渲染前剥掉
-          const translation = item.textZh?.trim() ? stripSpeechTags(item.textZh.trim()) : undefined
-          // 这一段用谁的嗓子、什么演法：主播映射 > 段落音色 > 本场默认音色
+          // 译文只用于显示：老数据里可能带着 <cot>/<pause> 标记，渲染前剥掉；
+          // 中文节目的「译文」就是原文，双显时别再重复一遍
+          const translated = item.textZh?.trim() ? stripSpeechTags(item.textZh.trim()) : ''
+          const translation = translated && translated !== text.trim() ? translated : undefined
+          // 这一段用谁的嗓子：已合成出来的声音优先（那才是耳朵听到的），没合成再按配置预告
+          // 顺序：合成音色 > 主播映射 > 条目音色 > 本场默认
           const mappedVoice = (row.draft?.speaker ? speakerVoices[row.draft.speaker] : '') ?? ''
-          const voiceId = (mappedVoice || item.voiceId || defaultVoiceId).trim()
+          const synthesized = row.draft?.status === 'ready' ? (row.draft.synthVoice ?? '').trim() : ''
+          const voiceId = (synthesized || mappedVoice || item.voiceId || defaultVoiceId).trim()
           const voiceName = voiceId ? voiceRouteSummary(voices, ttsProviders, ttsConnections, voiceId).voiceName : ''
           const delivery = item.delivery?.trim() || row.draft?.delivery?.trim() || ''
           const isEditing = editing?.id === item.id
@@ -278,7 +291,7 @@ export function CardStream() {
                 {playing && <span className="h-3 w-[3px] shrink-0 rounded-full bg-primary" />}
                 {failed && <span className="h-3 w-[3px] shrink-0 rounded-full bg-amber-500" />}
                 {multiSpeaker && speaker.name && (
-                  <span className="flex shrink-0 items-center gap-1">
+                  <span className="flex shrink-0 items-center gap-1" title={`主播标识：${speaker.name}`}>
                     <i className="size-1.5 rounded-full" style={{ background: speaker.color }} />
                     <span className="text-foreground/70">{speaker.name}</span>
                   </span>
@@ -287,7 +300,7 @@ export function CardStream() {
                   <span className="rounded bg-muted px-1 py-px text-[10px] text-muted-foreground">章节</span>
                 )}
                 <span className="tabular-nums">{String(index + 1).padStart(2, '0')}</span>
-                <span className="truncate">
+                <span className={cn('truncate', playing && 'text-primary')}>
                   {!live ? (
                     item.status === 'ready' ? (
                       <span className="inline-flex items-center gap-1">
@@ -304,12 +317,6 @@ export function CardStream() {
                   )}
                 </span>
                 {ready && <span className="tabular-nums">{mmss(estimateMs(text))}</span>}
-                {playing && <span className="text-primary">◉ 在播</span>}
-                {speaker.name && (
-                  <span className="flex min-w-0 shrink items-center gap-1 text-foreground/70" title={`主播标识：${speaker.name}`}>
-                    <span className="max-w-20 truncate">{speaker.name}</span>
-                  </span>
-                )}
                 {voiceName && (
                   <span className="flex min-w-0 shrink items-center gap-1" title={`本段音色：${voiceName}`}>
                     <Mic className="size-3 shrink-0" />

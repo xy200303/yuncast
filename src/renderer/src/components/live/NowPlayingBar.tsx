@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { RecordIndicator } from './RecordControl'
 import { AudioOutputDialog } from './AudioOutputDialog'
 import { useAppStore } from '../../stores/useAppStore'
-import { useLiveStore } from '../../stores/useLiveStore'
+import { mergeRows, useLiveStore } from '../../stores/useLiveStore'
 import { audioEngine } from '../../audio/engine'
 import { pauseBroadcast, resumeBroadcast } from '../../audio/liveControl'
 import { listProgramAudioUnits, type ProgramAudioUnit } from '../../lib/audioUnits'
@@ -153,10 +153,12 @@ export function NowPlayingBar({
       : units.some((unit) => unit.status === 'ready')
 
   // —— 播放条上的水位：已播 / 就绪 / 待合成三段 ——
+  // 口径跟卡片流一致（同一份合并结果），条上的段数/位置不会和上面的卡片对不上
+  const rows = running ? mergeRows(history, pool.items, drafts) : []
+  const playedCount = running ? rows.filter((row) => row.played).length : 0
   const readyItems = pool.items.filter((item) => item.status === 'ready' || item.status === 'playing')
   const pendingItems = pool.items.filter((item) => item.status === 'pending' || item.status === 'synthesizing')
-  const total = running ? history.length + readyItems.length + pendingItems.length : drafts.length
-  const playedCount = running ? history.length : 0
+  const total = running ? rows.length : drafts.length
   const readyCount = running ? readyItems.length : 0
   const pendingCount = running ? pendingItems.length : drafts.length
   const readySec = readyItems.reduce((sum, item) => sum + secondsOf(item.text), 0)

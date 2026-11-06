@@ -27,7 +27,7 @@ export function WorkbenchTopBar({
   session,
   running,
   onConfigure,
-  onOpenDrawer,
+  onOpenAutoResponse,
   onOpenDirector,
   onManualBroadcast,
   onOpenStreamSettings,
@@ -37,8 +37,8 @@ export function WorkbenchTopBar({
   session: SessionConfig | null
   running: boolean
   onConfigure: () => void
-  /** 打开自动响应抽屉（本场唯一的互动接线入口） */
-  onOpenDrawer: () => void
+  /** 打开自动响应弹窗（本场唯一的互动接线入口） */
+  onOpenAutoResponse: () => void
   onOpenDirector: () => void
   onManualBroadcast: () => void
   onOpenStreamSettings: () => void
@@ -102,7 +102,7 @@ export function WorkbenchTopBar({
       {/* 自动响应是播出中的实时开关（改完立刻生效），不算「一场的配置」，播出中也能点 */}
       <button
         type="button"
-        onClick={onOpenDrawer}
+        onClick={onOpenAutoResponse}
         disabled={!program}
         className={cn(metaClass, 'hover:bg-muted/60 disabled:pointer-events-none disabled:opacity-50')}
         title="自动响应：决定哪些直播间动态派给主播（欢迎/送礼/点赞/冷场自救…），改动立刻生效"

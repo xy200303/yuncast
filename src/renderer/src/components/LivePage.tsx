@@ -48,7 +48,7 @@ import { NowPlayingBar } from './live/NowPlayingBar'
 import { CardStream } from './live/CardStream'
 import { LaunchConfigDialog, type LaunchConfig } from './live/LaunchConfigDialog'
 import { WorkbenchTopBar } from './live/WorkbenchTopBar'
-import { WorkbenchDrawer } from './live/WorkbenchDrawer'
+import { AutoResponseDialog } from './live/AutoResponseDialog'
 import { CONTENT_TYPE_LABELS, llmReady } from '../../../shared/types'
 import type {
   ChatEntry,
@@ -83,7 +83,7 @@ export function LivePage() {
   const [confirmClear, setConfirmClear] = useState<'drafts' | 'audio' | null>(null)
   const [clearing, setClearing] = useState(false)
   const [synthing, setSynthing] = useState(false)
-  /** 本场资料抽屉：只有自动响应一件事（场次/章节在主区卡片流里，不重复） */
+  /** 自动响应弹窗开关（本场唯一的互动接线入口） */
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [manualOpen, setManualOpen] = useState(false)
   const [comments, setComments] = useState<LiveComment[]>([])
@@ -278,7 +278,7 @@ export function LivePage() {
         session={programControl.session}
         running={programControl.running}
         onConfigure={() => programControl.setLaunchConfigOpen(true)}
-        onOpenDrawer={() => setDrawerOpen(true)}
+        onOpenAutoResponse={() => setDrawerOpen(true)}
         onOpenDirector={() => useAppStore.getState().openAgentPanel()}
         onManualBroadcast={() => setManualOpen(true)}
         onOpenStreamSettings={() => useAppStore.getState().openSettings('stream')}
@@ -375,10 +375,10 @@ export function LivePage() {
         />
       </div>
 
-      {/* 本场资料抽屉：只有自动响应（实时开关） */}
-      <WorkbenchDrawer
+      {/* 自动响应弹窗：本场唯一的互动接线入口（实时开关，播出中也能开） */}
+      <AutoResponseDialog
         open={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
+        onOpenChange={setDrawerOpen}
         program={activeProgram}
         session={programControl.session}
         onSessionSaved={programControl.setSession}

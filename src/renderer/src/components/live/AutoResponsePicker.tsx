@@ -7,7 +7,7 @@ import type { SessionConfig, Trigger } from '../../../../shared/types'
 
 /**
  * 自动响应配置（本场的互动总闸 + 触发器白名单）：
- * 开播确认页和直播台「⋯ → 自动响应」共用同一份组件——**播出中也能改**，
+ * 直播台顶栏「自动响应」弹窗用它——**播出中也能改**，
  * 改的是本场配置（不写回节目），主进程 refreshProgramGate 立刻让引擎按新配置判定。
  */
 export function AutoResponsePicker({
